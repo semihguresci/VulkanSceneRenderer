@@ -38,6 +38,53 @@ static_assert(noexcept(std::declval<ShadowCullManager&>().exchangeGeneration(
 
 class CullGenerationGpu : public ::testing::Test {
  protected:
+  struct DepthMip {
+    VkExtent2D extent;
+    std::vector<float> depths;
+  };
+
+  static std::vector<DepthMip> expectedHiZMips(VkExtent2D extent) {
+    DepthMip base{extent, std::vector<float>(size_t(extent.width) * extent.height)};
+    for (uint32_t y = 0; y < extent.height; ++y) {
+      for (uint32_t x = 0; x < extent.width; ++x) {
+        const bool trailingColumn = extent.width > 1 && x == extent.width - 1;
+        const bool trailingRow = extent.height > 1 && y == extent.height - 1;
+        const float depth = float(16 + (19 * x + 37 * y) % 97) / 128.f;
+        base.depths[size_t(y) * extent.width + x] =
+            trailingColumn || trailingRow ? 0.f : depth;
+      }
+    }
+    // At an odd extent, texel (2, 2) overlaps the first reduced texel's
+    // normalized footprint. A disjoint 2x2 reduction misses this minimum.
+    if (extent.width == 17 && extent.height == 9)
+      base.depths[2 * extent.width + 2] = 1.f / 16.f;
+
+    std::vector<DepthMip> levels;
+    levels.push_back(std::move(base));
+    while (extent.width > 1 || extent.height > 1) {
+      const auto& source = levels.back();
+      extent = {std::max(1u, extent.width / 2), std::max(1u, extent.height / 2)};
+      DepthMip next{extent, std::vector<float>(size_t(extent.width) * extent.height, 1.f)};
+      for (uint32_t y = 0; y < extent.height; ++y) {
+        for (uint32_t x = 0; x < extent.width; ++x) {
+          // Compare source texel intervals against the normalized interval
+          // sampled by this destination texel. Bounds are inclusive/exclusive.
+          const uint32_t xBegin = x * source.extent.width / extent.width;
+          const uint32_t xEnd = ((x + 1) * source.extent.width + extent.width - 1) / extent.width;
+          const uint32_t yBegin = y * source.extent.height / extent.height;
+          const uint32_t yEnd = ((y + 1) * source.extent.height + extent.height - 1) / extent.height;
+          float& minimum = next.depths[size_t(y) * extent.width + x];
+          for (uint32_t sy = yBegin; sy < yEnd; ++sy) {
+            for (uint32_t sx = xBegin; sx < xEnd; ++sx)
+              minimum = std::min(minimum, source.depths[size_t(sy) * source.extent.width + sx]);
+          }
+        }
+      }
+      levels.push_back(std::move(next));
+    }
+    return levels;
+  }
+
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(
       VkDebugUtilsMessageSeverityFlagBitsEXT severity,VkDebugUtilsMessageTypeFlagsEXT,
       const VkDebugUtilsMessengerCallbackDataEXT* data,void* user) {
@@ -176,6 +223,148 @@ class CullGenerationGpu : public ::testing::Test {
     std::vector<T> result(count);
     std::memcpy(result.data(),output.buffer.allocation_info.pMappedData,bytes);return result;
   }
+  void checkHiZMips(VkExtent2D extent) {
+    const auto expected = expectedHiZMips(extent);
+    SCOPED_TRACE(::testing::Message() << extent.width << 'x' << extent.height);
+    auto& memory = *allocation->memoryManager();
+    const auto sourceBytes = std::as_bytes(std::span(expected.front().depths));
+    StagingBuffer upload(memory, sourceBytes.size());
+    upload.upload(sourceBytes);
+
+    struct DepthImage {
+      VmaAllocator allocator;
+      VkImage image{};
+      VmaAllocation allocation{};
+      ~DepthImage() {
+        if (image) vmaDestroyImage(allocator, image, allocation);
+      }
+    } depth{memory.allocator()};
+    VkImageCreateInfo depthInfo{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+    depthInfo.imageType = VK_IMAGE_TYPE_2D;
+    depthInfo.format = VK_FORMAT_D32_SFLOAT;
+    depthInfo.extent = {extent.width, extent.height, 1};
+    depthInfo.mipLevels = depthInfo.arrayLayers = 1;
+    depthInfo.samples = VK_SAMPLE_COUNT_1_BIT;
+    depthInfo.tiling = VK_IMAGE_TILING_OPTIMAL;
+    depthInfo.usage = VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
+    VmaAllocationCreateInfo depthAllocation{};
+    depthAllocation.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    ASSERT_EQ(vmaCreateImage(depth.allocator, &depthInfo, &depthAllocation, &depth.image,
+                             &depth.allocation, nullptr), VK_SUCCESS);
+    vk::ImageViewCreateInfo viewInfo{};
+    viewInfo.image = depth.image;
+    viewInfo.viewType = vk::ImageViewType::e2D;
+    viewInfo.format = vk::Format::eD32Sfloat;
+    viewInfo.subresourceRange = {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1};
+    const vk::raii::ImageView depthView(device->raii(), viewInfo);
+    vk::SamplerCreateInfo samplerInfo{};
+    samplerInfo.magFilter = samplerInfo.minFilter = vk::Filter::eNearest;
+    samplerInfo.mipmapMode = vk::SamplerMipmapMode::eNearest;
+    samplerInfo.addressModeU = samplerInfo.addressModeV = samplerInfo.addressModeW =
+        vk::SamplerAddressMode::eClampToEdge;
+    const vk::raii::Sampler depthSampler(device->raii(), samplerInfo);
+
+    std::vector<VkBufferImageCopy> copies;
+    VkDeviceSize readbackBytes = 0;
+    for (uint32_t level = 0; level < expected.size(); ++level) {
+      const auto& mip = expected[level];
+      VkBufferImageCopy copy{};
+      copy.bufferOffset = readbackBytes;
+      copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
+      copy.imageExtent = {mip.extent.width, mip.extent.height, 1};
+      copies.push_back(copy);
+      readbackBytes += mip.depths.size() * sizeof(float);
+    }
+    struct Readback {
+      VulkanMemoryManager& memory;
+      AllocatedBuffer buffer;
+      ~Readback() { memory.destroyBuffer(buffer); }
+    } readback{memory, memory.createBuffer(readbackBytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VMA_MEMORY_USAGE_AUTO_PREFER_HOST, VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+        VMA_ALLOCATION_CREATE_MAPPED_BIT)};
+
+    constexpr uint32_t imageIndex = 0;
+    primary->ensureHiZImage(imageIndex, extent.width, extent.height);
+    primary->beginFrameCulling(imageIndex);
+    const VkImage pyramid = primary->hiZImage(imageIndex);
+    ASSERT_NE(pyramid, VK_NULL_HANDLE);
+    allocation->executeStagedCommands([&](VkCommandBuffer command) {
+      VkImageMemoryBarrier imageBarrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+      imageBarrier.srcQueueFamilyIndex = imageBarrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      imageBarrier.image = depth.image;
+      imageBarrier.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+      imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      imageBarrier.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+      imageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           0, 0, nullptr, 0, nullptr, 1, &imageBarrier);
+      VkBufferImageCopy sourceCopy{};
+      sourceCopy.imageSubresource = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 0, 1};
+      sourceCopy.imageExtent = depthInfo.extent;
+      vkCmdCopyBufferToImage(command, upload.buffer().buffer, depth.image,
+                             VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &sourceCopy);
+
+      imageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      imageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+      imageBarrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           0, 0, nullptr, 0, nullptr, 1, &imageBarrier);
+      primary->dispatchHiZGenerate(command, imageIndex, *depthView, *depthSampler,
+                                   extent.width, extent.height);
+      if (!primary->hizGeneratedThisFrame(imageIndex)) return;
+
+      imageBarrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+      imageBarrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      imageBarrier.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      imageBarrier.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      imageBarrier.image = pyramid;
+      imageBarrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, uint32_t(copies.size()), 0, 1};
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           0, 0, nullptr, 0, nullptr, 1, &imageBarrier);
+      vkCmdCopyImageToBuffer(command, pyramid, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                             readback.buffer.buffer, uint32_t(copies.size()), copies.data());
+
+      imageBarrier.srcAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+      imageBarrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+      imageBarrier.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+      imageBarrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+      VkBufferMemoryBarrier host{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+      host.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+      host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+      host.srcQueueFamilyIndex = host.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+      host.buffer = readback.buffer.buffer;
+      host.size = VK_WHOLE_SIZE;
+      vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_HOST_BIT,
+                           0, 0, nullptr, 1, &host, 1, &imageBarrier);
+    });
+    ASSERT_TRUE(primary->hizGeneratedThisFrame(imageIndex));
+    ASSERT_EQ(vmaInvalidateAllocation(memory.allocator(), readback.buffer.allocation, 0, VK_WHOLE_SIZE),
+              VK_SUCCESS);
+
+    ASSERT_NE(readback.buffer.allocation_info.pMappedData, nullptr);
+    std::vector<float> depths(size_t(readbackBytes / sizeof(float)));
+    std::memcpy(depths.data(), readback.buffer.allocation_info.pMappedData, size_t(readbackBytes));
+    auto actual = depths.cbegin();
+    size_t mismatchedLevels = 0;
+    for (size_t level = 0; level < expected.size(); ++level) {
+      const auto& mip = expected[level];
+      const auto mismatch = std::mismatch(mip.depths.begin(), mip.depths.end(), actual);
+      if (mismatch.first != mip.depths.end()) {
+        const auto offset = size_t(mismatch.first - mip.depths.begin());
+        ++mismatchedLevels;
+        ADD_FAILURE() << "Hi-Z mip " << level << " texel (" << offset % mip.extent.width << ','
+                      << offset / mip.extent.width << ") expected " << *mismatch.first
+                      << ", read " << *mismatch.second;
+      }
+      actual += mip.depths.size();
+    }
+    std::printf("HIZ_MIP_READBACK extent=%ux%u levels=%zu texels=%llu mismatchedLevels=%zu\n",
+                extent.width, extent.height, expected.size(),
+                static_cast<unsigned long long>(readbackBytes / sizeof(float)), mismatchedLevels);
+  }
   void checkPrimary(GpuCullManager& manager,std::span<const DrawCommand> draws,bool staged) {
     for(uint32_t image=0;image<2;++image) {
       allocation->executeStagedCommands([&](VkCommandBuffer command) {
@@ -232,6 +421,20 @@ class CullGenerationGpu : public ::testing::Test {
   const std::vector<DrawCommand> oldCommands{{0,3000,3,1}};
   std::vector<DrawCommand> commands;
 };
+
+TEST_F(CullGenerationGpu, HiZMipsMatchNormalizedFootprintMinimaAtActualExtents) {
+  VkFormatProperties format{};
+  vkGetPhysicalDeviceFormatProperties(device->physicalDevice(), VK_FORMAT_D32_SFLOAT, &format);
+  constexpr VkFormatFeatureFlags required = VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+      VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+  if ((format.optimalTilingFeatures & required) != required)
+    GTEST_SKIP() << "D32 depth upload and sampling are unavailable";
+
+  constexpr std::array extents{VkExtent2D{17, 9}, VkExtent2D{1, 17},
+                               VkExtent2D{17, 1}, VkExtent2D{1920, 1080}};
+  for (const auto extent : extents)
+    checkHiZMips(extent);
+}
 
 TEST_F(CullGenerationGpu,PrimaryStagesRealOutputsAndPublishesWithoutCapacityGrowth) {
   auto* identity=primary.get();const auto oldBuffer=primary->indirectDrawBuffer(0);

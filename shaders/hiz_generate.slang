@@ -11,10 +11,9 @@ ConstantBuffer<HiZPushConstants> pc;
 [[vk::binding(1, 0)]] SamplerState        gSrcSampler;
 [[vk::binding(2, 0)]] RWTexture2D<float>  gDstMip;
 
-float LoadSourceDepthClamped(uint2 coord, uint2 srcExtent)
+float LoadSourceDepth(uint2 coord)
 {
-    uint2 clampedCoord = min(coord, srcExtent - 1u);
-    float depth = gSrcDepth.Load(int3(clampedCoord, 0));
+    float depth = gSrcDepth.Load(int3(coord, 0));
     return (isfinite(depth) && depth >= 0.0 && depth <= 1.0) ? depth : 0.0;
 }
 
@@ -23,39 +22,39 @@ float LoadSourceDepthClamped(uint2 coord, uint2 srcExtent)
 void computeMain(uint3 dtid : SV_DispatchThreadID)
 {
     uint2 dstCoord = dtid.xy;
+    uint2 dstExtent;
+    gDstMip.GetDimensions(dstExtent.x, dstExtent.y);
+    if (any(dstCoord >= dstExtent))
+        return;
 
-    if (pc.srcWidth == 0u || pc.srcHeight == 0u)
+    uint2 srcExtent;
+    gSrcDepth.GetDimensions(srcExtent.x, srcExtent.y);
+    bool copyDepth = pc.dstMipLevel == 0;
+    uint2 expectedDstExtent = copyDepth ? srcExtent : max(srcExtent >> 1u, 1u);
+    if (any(srcExtent != uint2(pc.srcWidth, pc.srcHeight)) || any(dstExtent != expectedDstExtent))
     {
+        // A mismatched depth view cannot establish occlusion.
+        gDstMip[dstCoord] = 0.0;
         return;
     }
 
-    // Mip 0 is a full-resolution copy of the depth buffer. Higher mips are
-    // min-reduced by 2x from the previous Hi-Z mip.
-    uint dstWidth = pc.dstMipLevel == 0
-        ? pc.srcWidth
-        : max((pc.srcWidth + 1u) >> 1, 1u);
-    uint dstHeight = pc.dstMipLevel == 0
-        ? pc.srcHeight
-        : max((pc.srcHeight + 1u) >> 1, 1u);
-
-    if (dstCoord.x >= dstWidth || dstCoord.y >= dstHeight)
-        return;
-
-    uint2 srcExtent = uint2(pc.srcWidth, pc.srcHeight);
-
-    if (pc.dstMipLevel == 0)
+    if (copyDepth)
     {
-        gDstMip[dstCoord] = LoadSourceDepthClamped(dstCoord, srcExtent);
+        gDstMip[dstCoord] = LoadSourceDepth(dstCoord);
         return;
     }
 
-    // Reverse-Z: min = closest to far plane = most conservative for occlusion.
-    uint2 srcBase = dstCoord * 2u;
-    float d00 = LoadSourceDepthClamped(srcBase + uint2(0u, 0u), srcExtent);
-    float d10 = LoadSourceDepthClamped(srcBase + uint2(1u, 0u), srcExtent);
-    float d01 = LoadSourceDepthClamped(srcBase + uint2(0u, 1u), srcExtent);
-    float d11 = LoadSourceDepthClamped(srcBase + uint2(1u, 1u), srcExtent);
-    float minDepth = min(min(d00, d10), min(d01, d11));
-
+    // Include every source texel overlapping this destination texel in
+    // normalized coordinates. Odd source extents straddle a third texel.
+    uint2 srcBegin = dstCoord * 2u;
+    uint2 srcEnd = min(srcBegin + 2u + (srcExtent & 1u), srcExtent);
+    float minDepth = 1.0;
+    for (uint y = srcBegin.y; y < srcEnd.y; ++y)
+    {
+        for (uint x = srcBegin.x; x < srcEnd.x; ++x)
+        {
+            minDepth = min(minDepth, LoadSourceDepth(uint2(x, y)));
+        }
+    }
     gDstMip[dstCoord] = minDepth;
 }

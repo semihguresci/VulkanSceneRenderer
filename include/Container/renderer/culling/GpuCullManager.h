@@ -151,6 +151,11 @@ class GpuCullManager {
     return imageIndex < hizFrames_.size() &&
            hizFrames_[imageIndex].generatedThisFrame;
   }
+  // Borrowed handle, valid until the Hi-Z images are recreated or destroyed.
+  [[nodiscard]] VkImage hiZImage(uint32_t imageIndex) const {
+    return imageIndex < hizFrames_.size() ? hizFrames_[imageIndex].image
+                                         : VK_NULL_HANDLE;
+  }
   [[nodiscard]] bool occlusionDrawsValid(uint32_t imageIndex) const {
     return imageIndex < occlusionDrawsValid_.size() &&
            occlusionDrawsValid_[imageIndex];

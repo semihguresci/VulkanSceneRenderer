@@ -1063,6 +1063,14 @@ add_test(NAME forward_culling_gpu_regression
 set_tests_properties(forward_culling_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 360 LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME hiz_odd_extent_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_culling_regression.py"
+            --exe "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/hiz-odd-extent"
+            --hiz-odd-only)
+set_tests_properties(hiz_odd_extent_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 TIMEOUT 540 LABELS "requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME forward_sky_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_sky_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"
