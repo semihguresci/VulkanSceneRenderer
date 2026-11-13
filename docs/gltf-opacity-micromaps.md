@@ -28,8 +28,11 @@ transmission, vertex colors, and additional opacity inputs use sampled alpha.
 A shared geometry range also falls back when
 any active placement changes the mask. Geometry edits, local deformation,
 compressed topology, and repaired winding fall back. The linked-assets
-flattener and portable save/merge use the core glTF material and geometry
-without copying the baked acceleration payload.
+flattener and portable save/merge use the core glTF material and geometry and
+remove the micromap extension associations. Portable output can retain
+unreferenced bytes from source buffers.
+Undoing a merge restores eligible authored maps with the original geometry.
+Redo restores the merged scene's sampled-alpha route.
 
 Proven transparent microtriangles can be discarded by traversal. Other hits
 still reach the normal shader candidate path for material and clipping checks.
@@ -51,6 +54,17 @@ sampled alpha and 32.512 µs with micromaps. The corresponding total allocations
 were 14,080 and 18,176 bytes, including 640 bytes of map storage. These figures
 describe this fixture and device.
 
-Run the CPU `gltf_opacity_micromap_tests` and `ray_scene_tests`, and set
-`CONTAINER_RUN_GPU_RAY_QUERY=1` for `ray_scene_gpu_tests`. The native renderer
-fixture is `tests/validation/gltf_opacity_micromap_runtime_regression.py`.
+Run the CPU `gltf_opacity_micromap_tests` and `ray_scene_tests`. Set
+`CONTAINER_RUN_GPU_RAY_QUERY=1` for `ray_scene_gpu_tests`.
+
+The renderer test checks pixel parity with sampled alpha, material edits,
+merge undo and redo, clipping, malformed data, and portable export. Run it on a ray-query
+device with opacity micromaps. Supply the Vulkan Profiles layer to also simulate
+a device that exposes the extension with its `micromap` feature disabled.
+
+```powershell
+$env:CONTAINER_RUN_GPU_GLTF_OPACITY_MICROMAPS = '1'
+$env:CONTAINER_OPACITY_MICROMAP_VALIDATION_LAYER = "$env:VULKAN_SDK/Bin"
+$env:CONTAINER_OPACITY_MICROMAP_PROFILES_LAYER = "$env:VULKAN_SDK/Bin"
+ctest --test-dir out/build/windows-release -C Release -R '^gltf_opacity_micromap_gpu_regression$' --output-on-failure
+```

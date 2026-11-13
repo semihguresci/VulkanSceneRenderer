@@ -1,5 +1,7 @@
 #include <Container/common/CommonGLFW.h>
 #include <Container/geometry/GltfModelLoader.h>
+#include <Container/geometry/GltfOpacityMicromaps.h>
+#include <Container/renderer/raytracing/RaySceneExtraction.h>
 #include <Container/utility/AllocationManager.h>
 #include <Container/utility/GltfMaterialConversion.h>
 #include <Container/utility/MaterialSamplerKey.h>
@@ -20,6 +22,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <memory>
 #include <limits>
 #include <optional>
@@ -126,6 +129,37 @@ GltfLoadResult triangle(const std::string& name,unsigned char red,bool implicit=
   return result;
 }
 
+GltfLoadResult opacityMicromapTriangle() {
+  auto result = triangle("Masked triangle", 31);
+  auto& source = result.gltfModel;
+  source.materials.front().alphaMode = "MASK";
+  const auto addView = [&](std::initializer_list<unsigned char> data) {
+    auto& bytes = source.buffers.front().data;
+    const size_t offset = (bytes.size() + 3) & ~size_t(3);
+    bytes.resize(offset);
+    bytes.insert(bytes.end(), data);
+    tinygltf::BufferView view;
+    view.buffer = 0;
+    view.byteOffset = offset;
+    view.byteLength = data.size();
+    const auto index = static_cast<int>(source.bufferViews.size());
+    source.bufferViews.push_back(view);
+    return tinygltf::Value(index);
+  };
+  using Value = tinygltf::Value;
+  const std::string extension(container::geometry::gltf::kGltfOpacityMicromapExtension);
+  // The one opaque microtriangle matches the fixture's fully opaque PNG alpha.
+  const auto data = addView({1});
+  const auto triangles = addView({0, 0, 0, 0, 0, 0, 1, 0});
+  source.extensionsUsed.push_back(extension);
+  source.extensions[extension] = Value(Value::Object{{"micromaps", Value(Value::Array{Value(Value::Object{
+      {"data", data}, {"triangles", triangles}, {"usageCounts", Value(Value::Array{Value(1)})},
+      {"usageLevels", Value(Value::Array{Value(0)})}, {"usageFormats", Value(Value::Array{Value(1)})}
+  })})}});
+  source.meshes.front().primitives.front().extensions[extension] = Value(Value::Object{{"micromap", Value(0)}});
+  return result;
+}
+
 GltfLoadResult roleAliasedTriangle() {
   auto result=triangle("Role aliases",31);auto& source=result.gltfModel;
   const auto texture=source.textures[0];source.textures.push_back(texture);source.textures.push_back(texture);
@@ -187,6 +221,8 @@ GltfLoadResult cloneAnimatedAsset() {
 
 class SceneMergeGenerationGpu : public ::testing::Test {
  protected:
+  virtual bool enableOpacityMicromaps() const { return false; }
+
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
       VkDebugUtilsMessageTypeFlagsEXT,const VkDebugUtilsMessengerCallbackDataEXT* data,void* user) {
     if(severity&VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {
@@ -218,12 +254,16 @@ class SceneMergeGenerationGpu : public ::testing::Test {
     ASSERT_EQ(glfwCreateWindowSurface(instance->instance(),window,nullptr,&surfaceHandle),VK_SUCCESS);
     surface=vk::raii::SurfaceKHR(instance->raii(),surfaceHandle);
     DeviceCreateInfo info;info.requiredExtensions={VK_KHR_SWAPCHAIN_EXTENSION_NAME};
+    info.enableRayQueries = enableOpacityMicromaps();
+    info.enableOpacityMicromaps = enableOpacityMicromaps();
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.bufferDeviceAddress=VK_TRUE;v12.runtimeDescriptorArray=VK_TRUE;
     v12.descriptorBindingPartiallyBound=VK_TRUE;v12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;
     v12.shaderStorageBufferArrayNonUniformIndexing=VK_TRUE;
     info.next=&v12;
     device=std::make_shared<VulkanDevice>(*instance,surfaceHandle,info);
+    if (enableOpacityMicromaps() && !device->opacityMicromapsEnabled())
+      GTEST_SKIP() << "VK_EXT_opacity_micromap feature unavailable";
     pool=vk::raii::CommandPool(device->raii(),vk::CommandPoolCreateInfo(
         vk::CommandPoolCreateFlagBits::eResetCommandBuffer,device->queueFamilyIndices().graphicsFamily.value()));
     allocation=std::make_unique<AllocationManager>();
@@ -261,6 +301,7 @@ class SceneMergeGenerationGpu : public ::testing::Test {
     ASSERT_TRUE(writer.WriteGltfSceneToFile(&initial.gltfModel,path.string(),true,true,true,true));
     container::app::AppConfig config;
     config.gltfSceneIndex = startupScene;
+    config.experimentalOpacityMicromaps = enableOpacityMicromaps();
     manager = std::make_unique<SceneManager>(*allocation, *pipelines, device, config);
     manager->initialize(path.string(),2.0f,2);
     manager->populateSceneGraph(graph);
@@ -333,6 +374,11 @@ class SceneMergeGenerationGpu : public ::testing::Test {
   SceneGraph graph;uint32_t editor{};std::filesystem::path temp;
 };
 
+class SceneMergeGenerationOpacityMicromapGpu : public SceneMergeGenerationGpu {
+ protected:
+  bool enableOpacityMicromaps() const override { return true; }
+};
+
 TEST_F(SceneMergeGenerationGpu,PreparationKeepsLiveAssetsPathsAndDescriptorHandlesUnchanged) {
   load();manager->animationSource().defaultScene=-1;
   const auto before=manager->buildSceneExport(graph);
@@ -399,6 +445,44 @@ TEST_F(SceneMergeGenerationGpu,ExchangeUndoRedoKeepBothGenerationsAndMonotonicLi
   exchangeMerge(staged);
   EXPECT_EQ(manager->buildSceneExport(mergedGraph),merged);
   EXPECT_EQ(manager->mergeHistoryResidentBytes(),mergedBytes);
+}
+
+TEST_F(SceneMergeGenerationOpacityMicromapGpu,UndoRestoresOnlyMicromapsValidForTheRestoredGeometry) {
+  ASSERT_NO_FATAL_FAILURE(loadSource(opacityMicromapTriangle()));
+  const auto* primitive = graph.getNode(primitiveNode(sourceNode(0)));
+  ASSERT_NE(primitive, nullptr);
+  ASSERT_LT(primitive->primitiveIndex, manager->primitiveRanges().size());
+  const auto& range = manager->primitiveRanges()[primitive->primitiveIndex];
+  const std::array draws{container::renderer::DrawCommand{
+      .firstIndex = range.firstIndex, .indexCount = range.indexCount}};
+  std::array<ObjectData, 1> objects{};
+  objects.front().objectInfo.x = manager->resolveGpuMaterialIndex(primitive->materialIndex);
+  const auto eligible = [&] { return manager->rayOpacityMicromaps(draws, objects); };
+  const auto original = eligible();
+  ASSERT_EQ(original.size(), 1u);
+  ASSERT_NE(original.front().attachment, nullptr);
+
+  {
+    auto merge = manager->prepareMergeGeneration(triangle("B", 151), temp/"b.glb", {}, graph);
+    exchangeMerge(merge);
+    EXPECT_TRUE(eligible().empty());
+    exchangeMerge(merge);
+    const auto restored = eligible();
+    ASSERT_EQ(restored.size(), 1u);
+    EXPECT_EQ(restored.front().attachment, original.front().attachment);
+    exchangeMerge(merge);
+    EXPECT_TRUE(eligible().empty());
+    exchangeMerge(merge);
+    ASSERT_EQ(eligible().size(), 1u);
+  }
+
+  ASSERT_EQ(manager->appendRuntimeMesh(Model::MakeCube().meshes().front()), 1u);
+  ASSERT_TRUE(eligible().empty());
+  auto merge = manager->prepareMergeGeneration(triangle("B", 151), temp/"b.glb", {}, graph);
+  exchangeMerge(merge);
+  EXPECT_TRUE(eligible().empty());
+  exchangeMerge(merge);
+  EXPECT_TRUE(eligible().empty());
 }
 
 TEST_F(SceneMergeGenerationGpu,PreflightBudgetsAndMalformedGeometryLeaveLiveAllocationsUnchanged) {

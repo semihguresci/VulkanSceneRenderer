@@ -86,7 +86,6 @@ struct SceneManager::OpacityMicromapState {
     uint32_t material{};
     Coverage witness;
   };
-  uint64_t geometryRevision{};
   uint64_t retainedBytes{};
   std::vector<Candidate> candidates;
 };
@@ -100,7 +99,6 @@ void SceneManager::retainOpacityMicromaps(const container::geometry::gltf::GltfO
   if (assets.primitives.empty()) return;
 
   auto state = std::make_shared<OpacityMicromapState>();
-  state->geometryRevision = geometryRevision_;
   size_t sourcePrimitive = 0;
   for (size_t mesh = 0; mesh < gltfModel_.meshes.size(); ++mesh) {
     const auto& primitives = gltfModel_.meshes[mesh].primitives;
@@ -144,6 +142,7 @@ void SceneManager::retainOpacityMicromaps(const container::geometry::gltf::GltfO
   }
   state->retainedBytes = bytes;
   opacityMicromapState_ = std::move(state);
+  opacityMicromapGeometryRevision_ = geometryRevision_;
 }
 
 uint64_t SceneManager::retainedOpacityMicromapBytes() const noexcept {
@@ -153,7 +152,7 @@ uint64_t SceneManager::retainedOpacityMicromapBytes() const noexcept {
 std::vector<RayOpacityMicromapRange> SceneManager::rayOpacityMicromaps(
     std::span<const container::renderer::DrawCommand> draws,
     std::span<const container::gpu::ObjectData> objects) const {
-  if (!opacityMicromapState_ || opacityMicromapState_->geometryRevision != geometryRevision_) return {};
+  if (!opacityMicromapState_ || opacityMicromapGeometryRevision_ != geometryRevision_) return {};
   const auto& candidates = opacityMicromapState_->candidates;
   enum class Eligibility { Unused, Eligible, Rejected };
   std::vector<Eligibility> eligibility(candidates.size(), Eligibility::Unused);

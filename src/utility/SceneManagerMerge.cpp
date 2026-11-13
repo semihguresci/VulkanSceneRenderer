@@ -1319,7 +1319,7 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
   EXCHANGE_ASSET(materialEntryOwners_); EXCHANGE_ASSET(materialTailVacancy_);
   EXCHANGE_ASSET(cameraProjectionNamespace_);
   EXCHANGE_ASSET(model_); EXCHANGE_ASSET(sourcePrimitiveToRuntime_); EXCHANGE_ASSET(runtimePrimitiveToSource_);
-  EXCHANGE_ASSET(opacityMicromapState_);
+  EXCHANGE_ASSET(opacityMicromapState_); EXCHANGE_ASSET(opacityMicromapGeometryRevision_);
   EXCHANGE_ASSET(linkedComposition_); EXCHANGE_ASSET(linkedSceneBaseline_); EXCHANGE_ASSET(linkedAssetState_);
   swapSourceModel(gltfModel_,other.gltfModel_); EXCHANGE_ASSET(gltfInstancing_);
   EXCHANGE_ASSET(gltfTextureResources_);
@@ -1352,6 +1352,12 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
 #undef EXCHANGE_ASSET
   if(sharedMaterialLifecycle)
     materialLifecycleNextSlot_=other.materialLifecycleNextSlot_=lifecycleHighWater;
+  // A restored snapshot carries its original geometry and map together. Preserve
+  // eligibility only if the map still matched that geometry before publication.
+  if(opacityMicromapGeometryRevision_==geometryRevision_)
+    opacityMicromapGeometryRevision_=nextGeometry;
+  else
+    opacityMicromapGeometryRevision_.reset();
   // Object epochs describe publication, not the historical payload's old age.
   generationEpoch_=nextEpoch; geometryRevision_=nextGeometry; materialRevision_=nextMaterial;
   materialResourceRevision_=nextResource;
