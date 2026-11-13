@@ -1,8 +1,6 @@
 #include "Container/renderer/deferred/DeferredRasterLightingPassRecorder.h"
 
 #include "Container/renderer/bim/BimLightingOverlayRecorder.h"
-#include "Container/renderer/bim/BimPrimitivePassRecorder.h"
-#include "Container/renderer/bim/BimSectionClipCapPassRecorder.h"
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderPassScopeRecorder.h"
@@ -108,6 +106,8 @@ DeferredLightingFrameInputs deferredLightingFrameInputs(
       inputs.geometryOverlayRequested = false;
     }
   }
+  // The frontend enables technical elevation for the editor or a scripted capture.
+  inputs.wireframeSupported |= p.bim.technicalElevation.enabled;
   inputs.bimTechnicalElevation = {
       .enabled = p.bim.technicalElevation.enabled && !p.screenshot.sceneLinear,
       .hiddenLineOverlay = p.bim.technicalElevation.hiddenLineOverlay,
@@ -172,23 +172,6 @@ bool hasBimRenderableGeometry(const FrameRecordParams &p) {
          bimScene.indexSlice.buffer != VK_NULL_HANDLE && hasRenderable;
 }
 
-BimPrimitivePassDrawLists primitivePassDrawLists(const FrameDrawLists &draws) {
-  return {
-      .opaqueDrawCommands = draws.opaqueDrawCommands,
-      .opaqueSingleSidedDrawCommands = draws.opaqueSingleSidedDrawCommands,
-      .opaqueWindingFlippedDrawCommands =
-          draws.opaqueWindingFlippedDrawCommands,
-      .opaqueDoubleSidedDrawCommands = draws.opaqueDoubleSidedDrawCommands,
-      .transparentDrawCommands = draws.transparentDrawCommands,
-      .transparentSingleSidedDrawCommands =
-          draws.transparentSingleSidedDrawCommands,
-      .transparentWindingFlippedDrawCommands =
-          draws.transparentWindingFlippedDrawCommands,
-      .transparentDoubleSidedDrawCommands =
-          draws.transparentDoubleSidedDrawCommands,
-  };
-}
-
 BimSurfaceDrawLists surfaceDrawLists(const FrameDrawLists &draws) {
   return {
       .opaqueDrawCommands = draws.opaqueDrawCommands,
@@ -217,84 +200,6 @@ bimSurfaceFramePassDrawSources(const FrameBimResources &bim) {
               bim.transparentMeshDrawsUseGpuVisibility};
 }
 
-BimPrimitivePassGeometryBinding
-bimPrimitivePassGeometryBinding(const FrameRecordParams &p) {
-  return {.sceneDescriptorSet = deferredRasterBimSceneDescriptorSet(p),
-          .vertexSlice = p.bim.scene.vertexSlice,
-          .indexSlice = p.bim.scene.indexSlice,
-          .indexType = p.bim.scene.indexType};
-}
-
-BimSectionClipCapPassGeometryBinding
-bimSectionClipCapGeometryBinding(const FrameRecordParams &p) {
-  return {.sceneDescriptorSet = deferredRasterBimSceneDescriptorSet(p),
-          .vertexSlice = p.bim.sectionClipCapGeometry.scene.vertexSlice,
-          .indexSlice = p.bim.sectionClipCapGeometry.scene.indexSlice,
-          .indexType = p.bim.sectionClipCapGeometry.scene.indexType};
-}
-
-BimPrimitiveFramePassStyle
-bimPointCloudPrimitivePassStyle(const FrameRecordParams &p) {
-  const auto &pass = p.bim.primitivePasses.pointCloud;
-  return {.kind = BimPrimitivePassKind::Points,
-          .enabled = pass.enabled,
-          .depthTest = pass.depthTest,
-          .placeholderRangePreviewEnabled = pass.placeholderRangePreviewEnabled,
-          .nativeDrawsUseGpuVisibility = p.bim.nativePointDrawsUseGpuVisibility,
-          .opacity = pass.opacity,
-          .primitiveSize = pass.pointSize,
-          .color = pass.color,
-          .recordLineWidth = false,
-          .wideLinesSupported = false};
-}
-
-BimPrimitiveFramePassStyle
-bimCurvePrimitivePassStyle(const FrameRecordParams &p) {
-  const auto &pass = p.bim.primitivePasses.curves;
-  return {.kind = BimPrimitivePassKind::Curves,
-          .enabled = pass.enabled,
-          .depthTest = pass.depthTest,
-          .placeholderRangePreviewEnabled = pass.placeholderRangePreviewEnabled,
-          .nativeDrawsUseGpuVisibility = p.bim.nativeCurveDrawsUseGpuVisibility,
-          .opacity = pass.opacity,
-          .primitiveSize = pass.lineWidth,
-          .color = pass.color,
-          .recordLineWidth = true,
-          .wideLinesSupported = p.debug.wireframeWideLinesSupported};
-}
-
-BimSectionClipCapFramePassStyle
-bimSectionClipCapFramePassStyle(const FrameRecordParams &p) {
-  const auto &style = p.bim.sectionClipCaps;
-  const auto &technicalElevation = p.bim.technicalElevation;
-  const bool technicalCapsEnabled =
-      technicalElevation.enabled && technicalElevation.sectionCapsEnabled;
-  // Technical elevation views reuse the section-cap renderer instead of
-  // creating a drawing-specific cap pass. When the base cap preview is off,
-  // the technical style can still request fill/hatch for clipped elevations.
-  const bool sectionCapEnabled = style.enabled || technicalCapsEnabled;
-  return {.enabled = sectionCapEnabled,
-          .fillEnabled = technicalCapsEnabled
-                             ? technicalElevation.capFillEnabled
-                             : style.fillEnabled,
-          .hatchEnabled = technicalCapsEnabled
-                              ? technicalElevation.capHatchingEnabled
-                              : style.hatchEnabled,
-          .wideLinesSupported = p.debug.wireframeWideLinesSupported,
-          .fillColor = style.fillColor,
-          .hatchColor = style.hatchColor,
-          .hatchLineWidth =
-              technicalCapsEnabled
-                  ? std::max(style.hatchLineWidth, technicalElevation.lineWidth)
-                  : style.hatchLineWidth,
-          .fillDrawCommands = p.bim.sectionClipCapGeometry.fillDrawCommands,
-          .hatchDrawCommands = p.bim.sectionClipCapGeometry.hatchDrawCommands,
-          .fillDrawStyles = p.bim.sectionClipCapGeometry.fillDrawStyles,
-          .hatchDrawStyles = p.bim.sectionClipCapGeometry.hatchDrawStyles,
-          .sectionMarkerLines =
-              p.bim.sectionClipCapGeometry.sectionMarkerLines};
-}
-
 SceneTransparentDrawLists
 sceneTransparentDrawLists(const FrameDrawLists &draws) {
   return {
@@ -302,24 +207,6 @@ sceneTransparentDrawLists(const FrameDrawLists &draws) {
       .singleSided = draws.transparentSingleSidedDrawCommands,
       .windingFlipped = draws.transparentWindingFlippedDrawCommands,
       .doubleSided = draws.transparentDoubleSidedDrawCommands,
-  };
-}
-
-DeferredDebugOverlayDrawLists
-deferredDebugOverlayDrawLists(const FrameDrawLists &draws) {
-  return {
-      .opaqueDrawCommands = draws.opaqueDrawCommands,
-      .transparentDrawCommands = draws.transparentDrawCommands,
-      .opaqueSingleSidedDrawCommands = draws.opaqueSingleSidedDrawCommands,
-      .transparentSingleSidedDrawCommands =
-          draws.transparentSingleSidedDrawCommands,
-      .opaqueWindingFlippedDrawCommands =
-          draws.opaqueWindingFlippedDrawCommands,
-      .transparentWindingFlippedDrawCommands =
-          draws.transparentWindingFlippedDrawCommands,
-      .opaqueDoubleSidedDrawCommands = draws.opaqueDoubleSidedDrawCommands,
-      .transparentDoubleSidedDrawCommands =
-          draws.transparentDoubleSidedDrawCommands,
   };
 }
 
@@ -388,7 +275,7 @@ deferredDebugOverlayInputs(const FrameRecordParams &p,
       .geometryReady = sceneGeometryReady,
       .drawDiagnosticCube = true,
       .diagnosticCubeObjectIndex = p.scene.diagCubeObjectIndex,
-      .draws = deferredDebugOverlayDrawLists(p.draws)};
+      .draws = debugOverlayDrawLists(p.draws)};
 
   const bool bimGeometryReady =
       frameDebugGeometryReady(deferredRasterBimSceneDescriptorSet(p),
@@ -404,7 +291,7 @@ deferredDebugOverlayInputs(const FrameRecordParams &p,
     inputs.sources[inputs.sourceCount++] = {
         .source = bimSources[sourceIndex],
         .geometryReady = bimGeometryReady,
-        .draws = deferredDebugOverlayDrawLists(*bimDrawLists[sourceIndex])};
+        .draws = debugOverlayDrawLists(*bimDrawLists[sourceIndex])};
   }
 
   return inputs;
@@ -459,99 +346,6 @@ deferredDebugOverlayDiagnosticGeometry(const SceneController *sceneController) {
           .indexCount = sceneController->diagCubeIndexCount()};
 }
 
-BimLightingOverlayDrawLists
-bimLightingOverlayDrawLists(const FrameDrawLists &draws) {
-  return {
-      .opaqueSingleSidedDrawCommands = draws.opaqueSingleSidedDrawCommands,
-      .transparentSingleSidedDrawCommands =
-          draws.transparentSingleSidedDrawCommands,
-      .opaqueWindingFlippedDrawCommands =
-          draws.opaqueWindingFlippedDrawCommands,
-      .transparentWindingFlippedDrawCommands =
-          draws.transparentWindingFlippedDrawCommands,
-      .opaqueDoubleSidedDrawCommands = draws.opaqueDoubleSidedDrawCommands,
-      .transparentDoubleSidedDrawCommands =
-          draws.transparentDoubleSidedDrawCommands,
-  };
-}
-
-BimLightingOverlayFrameStyleState
-bimLightingOverlayPointFrameStyle(const FrameRecordParams &p) {
-  return {.enabled = p.bim.pointCurveStyle.points.enabled,
-          .depthTest = p.bim.pointCurveStyle.points.depthTest,
-          .color = p.bim.pointCurveStyle.points.color,
-          .opacity = p.bim.pointCurveStyle.points.opacity,
-          .lineWidth = p.bim.pointCurveStyle.points.pointSize};
-}
-
-BimLightingOverlayFrameStyleState
-bimLightingOverlayCurveFrameStyle(const FrameRecordParams &p) {
-  return {.enabled = p.bim.pointCurveStyle.curves.enabled,
-          .depthTest = p.bim.pointCurveStyle.curves.depthTest,
-          .color = p.bim.pointCurveStyle.curves.color,
-          .opacity = p.bim.pointCurveStyle.curves.opacity,
-          .lineWidth = p.bim.pointCurveStyle.curves.lineWidth};
-}
-
-BimLightingOverlayFrameStyleState
-bimLightingOverlayFloorPlanFrameStyle(const FrameRecordParams &p) {
-  return {.enabled = p.bim.floorPlan.enabled,
-          .depthTest = p.bim.floorPlan.depthTest,
-          .color = p.bim.floorPlan.color,
-          .opacity = p.bim.floorPlan.opacity,
-          .lineWidth = p.bim.floorPlan.lineWidth};
-}
-
-BimLightingOverlayFrameStyleState
-bimLightingOverlayIssueMarkerFrameStyle(const FrameRecordParams &p) {
-  return {.enabled = p.bim.coordinationMarkers.issueMarkersEnabled,
-          .depthTest = p.bim.coordinationMarkers.depthTest,
-          .color = p.bim.coordinationMarkers.issueColor,
-          .opacity = p.bim.coordinationMarkers.issueOpacity,
-          .lineWidth = p.bim.coordinationMarkers.issueLineWidth};
-}
-
-BimLightingOverlayFrameStyleState
-bimLightingOverlayClashMarkerFrameStyle(const FrameRecordParams &p) {
-  return {.enabled = p.bim.coordinationMarkers.clashMarkersEnabled,
-          .depthTest = p.bim.coordinationMarkers.depthTest,
-          .color = p.bim.coordinationMarkers.clashColor,
-          .opacity = p.bim.coordinationMarkers.clashOpacity,
-          .lineWidth = p.bim.coordinationMarkers.clashLineWidth};
-}
-
-BimLightingOverlayFrameStyleState
-bimLightingOverlaySectionPlaneVisualFrameStyle(const FrameRecordParams &p) {
-  return {.enabled = p.bim.sectionPlaneVisual.enabled,
-          .depthTest = p.bim.sectionPlaneVisual.depthTest,
-          .color = p.bim.sectionPlaneVisual.color,
-          .opacity = p.bim.sectionPlaneVisual.opacity,
-          .lineWidth = p.bim.sectionPlaneVisual.lineWidth};
-}
-
-BimLightingOverlayFrameDrawSources
-bimLightingOverlayFrameDrawSources(const FrameRecordParams &p) {
-  // Radiance capture excludes selection/hover strokes and editor annotations.
-  // Native point/curve scene geometry is recorded separately.
-  if (p.screenshot.sceneLinear) return {};
-  return {
-      .points = bimLightingOverlayDrawLists(p.bim.pointDraws),
-      .curves = bimLightingOverlayDrawLists(p.bim.curveDraws),
-      .floorPlan = p.bim.floorPlanDrawCommands,
-      .sceneHover = p.draws.hoveredDrawCommands,
-      .bimHover = p.bim.draws.hoveredDrawCommands,
-      .sceneSelection = p.draws.selectedDrawCommands,
-      .bimSelection = p.bim.draws.selectedDrawCommands,
-      .nativePointHover = p.bim.nativePointDraws.hoveredDrawCommands,
-      .nativeCurveHover = p.bim.nativeCurveDraws.hoveredDrawCommands,
-      .nativePointSelection = p.bim.nativePointDraws.selectedDrawCommands,
-      .nativeCurveSelection = p.bim.nativeCurveDraws.selectedDrawCommands,
-      .coordinationIssueMarkers = p.bim.coordinationIssueMarkerDrawCommands,
-      .coordinationClashMarkers = p.bim.coordinationClashMarkerDrawCommands,
-      .sectionPlaneVisual = p.bim.sectionPlaneVisualDrawCommands,
-  };
-}
-
 BimLightingOverlayPipelineHandles
 bimLightingOverlayPipelineHandles(const FrameRecordParams &p) {
   return {
@@ -576,15 +370,6 @@ bimLightingOverlayPipelineHandles(const FrameRecordParams &p) {
       .selectionOutline = deferredRasterPipelineHandle(
           p, DeferredRasterPipelineId::SelectionOutline),
   };
-}
-
-BimLightingOverlayGeometryBinding
-bimLightingOverlayGeometryBinding(VkDescriptorSet descriptorSet,
-                                  const FrameSceneGeometry &scene) {
-  return {.descriptorSet = descriptorSet,
-          .vertexSlice = scene.vertexSlice,
-          .indexSlice = scene.indexSlice,
-          .indexType = scene.indexType};
 }
 
 void syncOverlaySectionPlanePushConstants(
@@ -832,86 +617,24 @@ void DeferredRasterLightingPassRecorder::record(
         cmd, debugOverlayRecordInputs);
   }
 
-  if (!p.screenshot.sceneLinear) (void)recordBimSectionClipCapFramePassCommands(
-      cmd, {.style = bimSectionClipCapFramePassStyle(p),
-            .geometry = bimSectionClipCapGeometryBinding(p),
-            .fillPipeline = deferredRasterPipelineHandle(
-                p, DeferredRasterPipelineId::BimSectionClipCapFill),
-            .hatchPipeline = deferredRasterPipelineHandle(
-                p, DeferredRasterPipelineId::BimSectionClipCapHatch),
-            .wireframeLayout = deferredRasterPipelineLayout(
-                p, DeferredRasterPipelineLayoutId::Wireframe),
-            .pushConstants = p.pushConstants.wireframe,
-            .debugOverlay = services_.debugOverlay});
-  (void)recordBimPrimitiveFramePassCommands(
-      cmd,
-      {.style = bimPointCloudPrimitivePassStyle(p),
-       .placeholderDraws = primitivePassDrawLists(p.bim.pointDraws),
-       .nativeDraws = primitivePassDrawLists(p.bim.nativePointDraws),
-       .geometry = bimPrimitivePassGeometryBinding(p),
-       .pipelines = {.depth = deferredRasterPipelineHandle(
-                         p, DeferredRasterPipelineId::BimPointCloudDepth),
-                     .noDepth = deferredRasterPipelineHandle(
-                         p, DeferredRasterPipelineId::BimPointCloudNoDepth)},
+  recordBimRasterOverlays(
+      cmd, p,
+      {.sceneDescriptorSet = deferredRasterSceneDescriptorSet(p),
+       .bimDescriptorSet = deferredRasterBimSceneDescriptorSet(p),
+       .extent = lightingExtent,
        .wireframeLayout = deferredRasterPipelineLayout(
            p, DeferredRasterPipelineLayoutId::Wireframe),
-       .pushConstants = p.pushConstants.wireframe,
-       .debugOverlay = services_.debugOverlay,
-       .bimManager = p.services.bimManager});
-  (void)recordBimPrimitiveFramePassCommands(
-      cmd, {.style = bimCurvePrimitivePassStyle(p),
-            .placeholderDraws = primitivePassDrawLists(p.bim.curveDraws),
-            .nativeDraws = primitivePassDrawLists(p.bim.nativeCurveDraws),
-            .geometry = bimPrimitivePassGeometryBinding(p),
-            .pipelines = {.depth = deferredRasterPipelineHandle(
-                              p, DeferredRasterPipelineId::BimCurveDepth),
-                          .noDepth = deferredRasterPipelineHandle(
-                              p, DeferredRasterPipelineId::BimCurveNoDepth)},
-            .wireframeLayout = deferredRasterPipelineLayout(
-                p, DeferredRasterPipelineLayoutId::Wireframe),
-            .pushConstants = p.pushConstants.wireframe,
-            .debugOverlay = services_.debugOverlay,
-            .bimManager = p.services.bimManager});
-
-  (void)recordBimLightingOverlayFrameCommands(
-      cmd,
-      {.bimGeometryReady = hasBimRenderableGeometry(p),
-       .framebufferExtent = lightingExtent,
-       .points = bimLightingOverlayPointFrameStyle(p),
-       .curves = bimLightingOverlayCurveFrameStyle(p),
-       .floorPlan = bimLightingOverlayFloorPlanFrameStyle(p),
-       .coordinationIssueMarkers = bimLightingOverlayIssueMarkerFrameStyle(p),
-       .coordinationClashMarkers = bimLightingOverlayClashMarkerFrameStyle(p),
-       .sectionPlaneVisual = bimLightingOverlaySectionPlaneVisualFrameStyle(p),
-       .draws = bimLightingOverlayFrameDrawSources(p),
-       .nativePointSize = p.bim.primitivePasses.pointCloud.pointSize,
-       .nativeCurveLineWidth = p.bim.primitivePasses.curves.lineWidth,
-       .coordinationMarkerGeometryReady =
-           p.bim.coordinationMarkerScene.vertexSlice.buffer != VK_NULL_HANDLE &&
-           p.bim.coordinationMarkerScene.indexSlice.buffer != VK_NULL_HANDLE,
-       .sectionPlaneVisualGeometryReady =
-           p.bim.sectionPlaneVisualScene.vertexSlice.buffer != VK_NULL_HANDLE &&
-           p.bim.sectionPlaneVisualScene.indexSlice.buffer != VK_NULL_HANDLE,
        .pipelines = bimLightingOverlayPipelineHandles(p),
-       .wireframeLayout = deferredRasterPipelineLayout(
-           p, DeferredRasterPipelineLayoutId::Wireframe),
-       .scene = bimLightingOverlayGeometryBinding(
-           deferredRasterSceneDescriptorSet(p), p.scene),
-       .bim = bimLightingOverlayGeometryBinding(
-           deferredRasterBimSceneDescriptorSet(p), p.bim.scene),
-       .coordinationMarkers = bimLightingOverlayGeometryBinding(
-           deferredRasterBimSceneDescriptorSet(p),
-           p.bim.coordinationMarkerScene),
-       .sectionPlaneVisualGeometry = bimLightingOverlayGeometryBinding(
-           deferredRasterBimSceneDescriptorSet(p),
-           p.bim.sectionPlaneVisualScene),
-       .selectionStencilClearAttachment =
-           lightingPassPlan.selectionStencilClearAttachment,
-       .selectionStencilClearRect = lightingPassPlan.selectionStencilClearRect,
+       .pointCloudNoDepth = deferredRasterPipelineHandle(
+           p, DeferredRasterPipelineId::BimPointCloudNoDepth),
+       .curveNoDepth = deferredRasterPipelineHandle(
+           p, DeferredRasterPipelineId::BimCurveNoDepth),
+       .capFill = deferredRasterPipelineHandle(
+           p, DeferredRasterPipelineId::BimSectionClipCapFill),
+       .capHatch = deferredRasterPipelineHandle(
+           p, DeferredRasterPipelineId::BimSectionClipCapHatch),
        .wireframePushConstants = p.pushConstants.wireframe,
-       .debugOverlay = services_.debugOverlay,
-       .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
-       .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
+       .debugOverlay = services_.debugOverlay});
 
   static_cast<void>(recordRenderPassEndCommands(cmd));
 }

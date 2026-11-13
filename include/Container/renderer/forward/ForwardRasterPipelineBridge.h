@@ -27,6 +27,14 @@ enum class ForwardRasterPipelineId {
   BimPointCloudNoDepth,
   BimCurveDepth,
   BimCurveNoDepth,
+  WireframeDepth,
+  WireframeNoDepth,
+  WireframeDepthFrontCull,
+  WireframeNoDepthFrontCull,
+  BimFloorPlanDepth,
+  BimFloorPlanNoDepth,
+  BimSectionClipCapFill,
+  BimSectionClipCapHatch,
   BimFloorPlanDisplayDepth,
   BimFloorPlanDisplayNoDepth,
   SelectionMask,
@@ -83,6 +91,22 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
     return "bim-curve-depth";
   case ForwardRasterPipelineId::BimCurveNoDepth:
     return "bim-curve-no-depth";
+  case ForwardRasterPipelineId::WireframeDepth:
+    return "wireframe-depth";
+  case ForwardRasterPipelineId::WireframeNoDepth:
+    return "wireframe-no-depth";
+  case ForwardRasterPipelineId::WireframeDepthFrontCull:
+    return "wireframe-depth-front-cull";
+  case ForwardRasterPipelineId::WireframeNoDepthFrontCull:
+    return "wireframe-no-depth-front-cull";
+  case ForwardRasterPipelineId::BimFloorPlanDepth:
+    return "bim-floor-plan-depth";
+  case ForwardRasterPipelineId::BimFloorPlanNoDepth:
+    return "bim-floor-plan-no-depth";
+  case ForwardRasterPipelineId::BimSectionClipCapFill:
+    return "bim-section-clip-cap-fill";
+  case ForwardRasterPipelineId::BimSectionClipCapHatch:
+    return "bim-section-clip-cap-hatch";
   case ForwardRasterPipelineId::BimFloorPlanDisplayDepth:
     return "bim-floor-plan-display-depth";
   case ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth:

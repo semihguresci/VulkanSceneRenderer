@@ -28,7 +28,7 @@ An analytic shadow matte exports as `path-trace-shadow-matte` with
 `linear-mask` values for compositing. The sidecar records ground mode and
 the effective firefly clamp.
 
-In Deferred raster and Path tracing, the BIM floor plan appears in display
+In Deferred raster, Forward raster, and Path tracing, the BIM floor plan appears in display
 PNGs and stays out of raw EXR. Path tracing keeps its accumulated radiance
 when floor-plan settings change. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
 

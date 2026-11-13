@@ -234,17 +234,23 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
       "transparent");
   registerTransparentRecipe("forward-transparent-front-cull");
   registerTransparentRecipe("forward-transparent-no-cull");
-  for (const auto name : {"bim-point-cloud-depth", "bim-point-cloud-no-depth",
-                          "bim-curve-depth", "bim-curve-no-depth"}) {
-    registerGraphicsRecipe(name,
+  // The triangle wireframe aliases use the device-selected native or fallback
+  // stages. These recipes describe overlays with a fixed set of stages.
+  for (const auto pipeline : {ForwardRasterPipelineId::BimPointCloudDepth,
+                              ForwardRasterPipelineId::BimPointCloudNoDepth,
+                              ForwardRasterPipelineId::BimCurveDepth,
+                              ForwardRasterPipelineId::BimCurveNoDepth,
+                              ForwardRasterPipelineId::BimFloorPlanDepth,
+                              ForwardRasterPipelineId::BimFloorPlanNoDepth,
+                              ForwardRasterPipelineId::BimSectionClipCapFill,
+                              ForwardRasterPipelineId::BimSectionClipCapHatch,
+                              ForwardRasterPipelineId::SelectionMask}) {
+    registerGraphicsRecipe(forwardRasterPipelineName(pipeline),
                            {"spv_shaders/wireframe_debug.vert.spv",
                             "spv_shaders/wireframe_debug.frag.spv"},
-                           "wireframe");
+                           forwardRasterPipelineLayoutName(
+                               ForwardRasterPipelineLayoutId::Wireframe));
   }
-  registerGraphicsRecipe("selection-mask",
-                         {"spv_shaders/wireframe_debug.vert.spv",
-                          "spv_shaders/wireframe_debug.frag.spv"},
-                         "wireframe");
   registerGraphicsRecipe("selection-outline",
                          {"spv_shaders/selection_outline.vert.spv",
                           "spv_shaders/selection_outline.frag.spv"},
@@ -1011,7 +1017,7 @@ void recordPathTracingFloorPlan(
                .indexType = geometry.indexType},
        .wireframePushConstants = &overlayPushConstants,
        .debugOverlay = sharedContext.debugOverlay(),
-       .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
+       .lineListWideLinesSupported = p.debug.lineListWideLinesSupported});
 }
 
 void recordForwardRasterPostProcessPass(

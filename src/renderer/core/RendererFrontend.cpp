@@ -3284,7 +3284,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
           {"vmaBytes", allocationStats.total.statistics.allocationBytes}}},
       {"resolution", {extent.width, extent.height}},
       {"msaaSamples", sampleCountToSamples(msaaSampleCount_)},
-      {"wideLinesSupported", svc_.ctx.wireframeWideLinesSupported},
+      {"wideLinesSupported", svc_.ctx.deviceWrapper->enabledFeatures().wideLines == VK_TRUE},
       {"taa",
        {{"enabled", settings.enabled},
         {"historyWeight", settings.historyWeight},
@@ -9355,7 +9355,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       const auto elevation = subs_.guiManager ? subs_.guiManager->bimElevationViewState()
                                               : container::ui::BimElevationViewState{};
       const bool hiddenLineElevation = captureBimAnnotations_ ? captureBimAnnotations_->hiddenLines
-          : elevation.style == container::ui::BimElevationTechnicalStyle::HiddenLine;
+          : subs_.guiManager->editorOverlaysEnabled() && subs_.guiManager->wireframeSupported() &&
+                elevation.style == container::ui::BimElevationTechnicalStyle::HiddenLine;
       // Hidden-line elevation is a renderer composition mode: camera presets
       // stay in the camera controller, while the frame asks lighting to draw a
       // depth-tested line overlay and lets clipped views reuse section caps.
@@ -9378,6 +9379,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.debug.debugFreezeCulling = debugState_.freezeCulling;
   p.debug.wireframeRasterModeSupported = svc_.ctx.wireframeRasterModeSupported;
   p.debug.wireframeWideLinesSupported = svc_.ctx.wireframeWideLinesSupported;
+  p.debug.lineListWideLinesSupported = svc_.ctx.deviceWrapper->enabledFeatures().wideLines == VK_TRUE;
   pushConstants_.bindless.sectionPlaneEnabled = 0u;
   pushConstants_.bindless.semanticColorMode = 0u;
   pushConstants_.bindless.sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f};

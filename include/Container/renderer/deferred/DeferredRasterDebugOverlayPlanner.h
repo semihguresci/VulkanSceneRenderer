@@ -8,6 +8,7 @@
 namespace container::renderer {
 
 struct DrawCommand;
+struct FrameDrawLists;
 
 inline constexpr uint32_t kDeferredDebugOverlayNormalValidationInvertFaceClassification =
     1u << 0u;
@@ -76,6 +77,9 @@ struct DeferredDebugOverlayDrawLists {
   const std::vector<DrawCommand> *opaqueDoubleSidedDrawCommands{nullptr};
   const std::vector<DrawCommand> *transparentDoubleSidedDrawCommands{nullptr};
 };
+
+[[nodiscard]] DeferredDebugOverlayDrawLists
+debugOverlayDrawLists(const FrameDrawLists &draws);
 
 struct DeferredDebugOverlaySourceInput {
   DeferredDebugOverlaySource source{DeferredDebugOverlaySource::Scene};

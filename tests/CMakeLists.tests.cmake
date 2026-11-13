@@ -1107,6 +1107,23 @@ set_tests_properties(bim_floor_plan_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
     LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME bim_floor_plan_forward_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/bim_floor_plan_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/bim-floor-plan-forward" --managed-output
+            --comparison forward-raster)
+set_tests_properties(bim_floor_plan_forward_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
+    LABELS "requires-vulkan;requires-display;visual-regression")
+
+add_test(NAME bim_annotation_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/bim_annotation_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/bim-annotations" --managed-output)
+set_tests_properties(bim_annotation_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
+    LABELS "requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME forward_sky_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_sky_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"
