@@ -102,7 +102,7 @@ def fixture(path):
     asset.write(path)
 
 
-def read_data_exr(path):
+def read_data_exr(path, width=WIDTH, height=HEIGHT):
     # Decode the OpenEXR v2 single-part, uncompressed scanline layout directly.
     # Retain integer channel values even where a FLOAT could not represent them.
     def string(payload, position):
@@ -122,7 +122,7 @@ def read_data_exr(path):
         attributes[name] = kind, payload[position:position + size]
         position += size
     assert attributes["compression"] == ("compression", b"\0"), path
-    window = struct.pack("<iiii", 0, 0, WIDTH - 1, HEIGHT - 1)
+    window = struct.pack("<iiii", 0, 0, width - 1, height - 1)
     assert attributes["dataWindow"] == attributes["displayWindow"] == ("box2i", window), path
     kind, channel_list = attributes["channels"]
     assert kind == "chlist", path
@@ -136,30 +136,30 @@ def read_data_exr(path):
         channels[name] = pixel_type
     assert cursor == len(channel_list) - 1 and channels == CHANNELS, (path, channels)
 
-    values = {name: np.empty((HEIGHT, WIDTH), dtype="<u4" if pixel_type == 0 else "<f4")
+    values = {name: np.empty((height, width), dtype="<u4" if pixel_type == 0 else "<f4")
               for name, pixel_type in channels.items()}
-    offsets = struct.unpack_from(f"<{HEIGHT}Q", payload, position + 1)
-    scanline_size = WIDTH * 4 * len(channels)
-    first_offset = position + 1 + 8 * HEIGHT
+    offsets = struct.unpack_from(f"<{height}Q", payload, position + 1)
+    scanline_size = width * 4 * len(channels)
+    first_offset = position + 1 + 8 * height
     seen = set()
     for offset in offsets:
         assert first_offset <= offset <= len(payload) - 8 - scanline_size, (path, offset)
         row, size = struct.unpack_from("<iI", payload, offset)
-        assert 0 <= row < HEIGHT and row not in seen and size == scanline_size, (path, row, size)
+        assert 0 <= row < height and row not in seen and size == scanline_size, (path, row, size)
         seen.add(row)
         for plane, name in enumerate(channels):
-            values[name][row, :] = np.frombuffer(payload, values[name].dtype, WIDTH, offset + 8 + plane * WIDTH * 4)
-    assert len(seen) == HEIGHT
+            values[name][row, :] = np.frombuffer(payload, values[name].dtype, width, offset + 8 + plane * width * 4)
+    assert len(seen) == height
     return values
 
 
-def read_rgb(path):
+def read_rgb(path, width=WIDTH, height=HEIGHT):
     metadata = json.loads(Path(f"{path}.capture.json").read_bytes())
-    assert (metadata["width"], metadata["height"]) == (WIDTH, HEIGHT), metadata
+    assert (metadata["width"], metadata["height"]) == (width, height), metadata
     assert metadata["source"] == "raster-scene-composite" and metadata["colorSpace"] == "linear-sRGB", metadata
     assert not (metadata["includesUi"] or metadata["exposureApplied"] or metadata["toneMappingApplied"]), metadata
     bgr = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-    assert bgr.shape == (HEIGHT, WIDTH, 3) and bgr.dtype == np.float32 and np.isfinite(bgr).all(), path
+    assert bgr is not None and bgr.shape == (height, width, 3) and bgr.dtype == np.float32 and np.isfinite(bgr).all(), path
     return bgr[:, :, ::-1]
 
 
@@ -236,36 +236,37 @@ def main():
     model = output / "compositing.gltf"
     fixture(model)
 
-    def capture(name, *flags, invalid=False):
+    def capture(name, *flags, size=(WIDTH, HEIGHT), log_name=None, expected_errors=()):
         path = output / name
+        width, height = size
         command = [
             str(renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui", "--validation",
-            "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1", "--no-taa", "--no-bloom",
+            "--width", str(width), "--height", str(height), "--msaa", "1", "--no-taa", "--no-bloom",
             "--render-technique", "deferred-raster", "--display-mode", "lit", "--no-ray-query", "--no-ddgi",
             "--camera-position", *map(str, CAMERA), "--camera-target", "0", "0", "0", "--camera-fov", str(FOV),
             "--sky", "plain", "--sky-horizon", "0", "0", "0", "--environment-intensity", "0",
             "--directional-intensity", "0", "--bounce-intensity", "0",
             "--warmup-frames", "4", "--capture-frame", "5", "--screenshot", str(path), *flags,
         ]
-        log = path.with_suffix(".log")
+        log = output / log_name if log_name else path.with_suffix(".log")
         with log.open("w", encoding="utf-8") as stream:
             result = subprocess.run(command, cwd=renderer.parent, stdout=stream, stderr=subprocess.STDOUT,
                                     timeout=150, env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)),
                                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         contents = log.read_text(encoding="utf-8", errors="replace")
         assert not validation_log_error(contents), log
-        if invalid:
-            assert result.returncode != 0 and "--capture-data requires --screenshot FILE.exr" in contents, log
-            assert not path.exists() and not path.with_suffix(".data.exr").exists(), log
+        if expected_errors:
+            assert result.returncode != 0 and all(message in contents for message in expected_errors), log
             return path, None
         assert result.returncode == 0, log
         telemetry = json.loads(path.with_suffix(".telemetry.json").read_bytes())
         assert telemetry["technique"] == "deferred-raster" and telemetry["validationEnabled"], telemetry
-        assert telemetry["resolution"] == [WIDTH, HEIGHT] and telemetry["msaaSamples"] == 1, telemetry
+        assert telemetry["resolution"] == [width, height] and telemetry["msaaSamples"] == 1, telemetry
         assert not telemetry["taa"]["enabled"] and not telemetry["fsr"]["active"] and not telemetry["dlss"]["active"], telemetry
         return path, telemetry
 
-    capture("invalid.png", "--capture-data", invalid=True)
+    invalid, _ = capture("invalid.png", "--capture-data", expected_errors=("--capture-data requires --screenshot FILE.exr",))
+    assert not invalid.exists() and not invalid.with_suffix(".data.exr").exists()
     scene, state = capture("scene.exr", "--capture-data")
     ordinary, ordinary_state = capture("ordinary.exr")
     active_passes = {entry["name"] for entry in state["passes"] if entry["active"]}
@@ -277,12 +278,49 @@ def main():
     data = read_data_exr(scene.with_suffix(".data.exr"))
     lookup = json.loads(scene.with_suffix(".data.json").read_bytes())
     object_ids = verify(data, lookup, rgb, state)
+
+    lookup_path = scene.with_suffix(".data.json")
+    prior = {path: path.read_bytes() for path in (scene, Path(f"{scene}.capture.json"),
+             scene.with_suffix(".telemetry.json"), scene.with_suffix(".data.exr"))}
+    lookup_path.unlink()
+    lookup_path.mkdir()
+    marker = lookup_path / "keep.txt"
+    marker.write_text("existing directory", encoding="ascii")
+    before_paths = set(output.iterdir())
+    retry_size = (WIDTH + 16, HEIGHT + 8)
+    blocked_log = "blocked-lookup.log"
+    # A different resolution guarantees that every new sibling would differ
+    # from the first successful capture if it were published before the error.
+    capture(scene.name, "--capture-data", size=retry_size, log_name=blocked_log,
+            expected_errors=("Cannot publish scene data capture at", lookup_path.name,
+                             "destination is not a regular file"))
+    assert set(output.iterdir()) == before_paths | {output / blocked_log}
+    assert set(lookup_path.iterdir()) == {marker} and marker.read_text(encoding="ascii") == "existing directory"
+    for path, contents in prior.items():
+        assert path.read_bytes() == contents, f"Failed capture changed {path}"
+
+    marker.unlink()
+    lookup_path.rmdir()
+    retry_log = "retry-lookup.log"
+    capture(scene.name, "--capture-data", size=retry_size, log_name=retry_log)
+    assert set(output.iterdir()) == before_paths | {output / blocked_log, output / retry_log}
+    for path, contents in prior.items():
+        assert path.read_bytes() != contents, f"Retry did not replace {path}"
+    read_rgb(scene, *retry_size)
+    retry_data = read_data_exr(scene.with_suffix(".data.exr"), *retry_size)
+    retry_lookup = json.loads(lookup_path.read_bytes())
+    assert (retry_lookup["width"], retry_lookup["height"]) == retry_size, retry_lookup
+    assert set(np.unique(retry_data["ObjectID"]).tolist()) == {0, *object_ids}
+    assert [entry["id"] for entry in retry_lookup["objects"]] == object_ids, retry_lookup
+
     (output / "results.json").write_text(json.dumps({
         "passed": True, "build": state["build"], "gpu": state["gpu"],
-        "channels": CHANNELS, "objectIds": object_ids,
+        "channels": CHANNELS, "objectIds": object_ids, "blockedLookupPreservedSiblings": True,
+        "retryResolution": retry_size,
     }, indent=2) + "\n", encoding="utf-8")
     print("PASS FLOAT depth and shading normals, UINT IDs, alpha-mask and instance identity, and exact RGB alignment",
           flush=True)
+    print("PASS blocked lookup preserves all prior capture siblings and retry publishes the full bundle", flush=True)
 
 
 if __name__ == "__main__":
