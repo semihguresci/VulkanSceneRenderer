@@ -153,6 +153,14 @@ def capture(exe, output, environment, scene, frames, timeout, *, technique, diel
         record["failures"].append("Renderer failed or logged validation/runtime errors")
     try:
         telemetry = json.loads(telemetry_path.read_text(encoding="utf-8"))
+        thin.require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in log and
+                     telemetry["validationEnabled"] is True, "Khronos validation was not active")
+        thin.require(telemetry["technique"] == technique and telemetry["resolution"] == scene["captureSize"],
+                     "Unexpected dielectric capture technique or resolution")
+        model = output / scene["gltf"]
+        thin.require(Path(telemetry["scene"]["primary"]).resolve() == model.resolve(),
+                     "Unexpected dielectric fixture loaded")
+        thin.require(telemetry["build"]["revision"], "Missing renderer build revision")
         gi = telemetry["ddgi"]
         thin.require(gi["active"] is True and gi["updateFrame"] == frames,
                      "Inactive or incomplete dielectric field")
@@ -162,11 +170,16 @@ def capture(exe, output, environment, scene, frames, timeout, *, technique, diel
         thin.require(gi["settings"]["thinGlassTransmission"] is False,
                      "Legacy thin opt-in confounds the dielectric capture")
         thin.require(gi["settings"]["intensity"] == int(primary), "GI pair intensity mismatched")
+        thin.require(gi["tracedRays"] == gi["updatedProbes"] * gi["settings"]["raysPerProbe"] > 0,
+                     "No complete DDGI ray batch was measured")
+        passes = {"DdgiTrace", "DdgiUpdate"}
         timings = {entry["name"]: entry["gpuMs"] for entry in telemetry.get("passes", [])
-                   if entry["name"] in ("DdgiTrace", "DdgiUpdate") and entry["gpuTimed"]}
-        thin.require(all(math.isfinite(value) and value >= 0 for value in timings.values()),
-                     "Nonfinite dielectric GPU pass timing")
+                   if entry["name"] in passes and entry["active"] and entry["gpuTimed"]}
+        thin.require(timings.keys() == passes and all(
+                     math.isfinite(value) and value > 0 for value in timings.values()),
+                     "Missing or invalid dielectric GPU pass timing")
         record.update(png=png.name, gpu=telemetry["gpu"], ddgi=gi,
+                      build=telemetry["build"], camera=telemetry["camera"],
                       passGpuMilliseconds=timings, profiler=telemetry.get("gpuProfiler"),
                       raySceneAllocatedBytes=telemetry.get("rayShadows", {}).get("totalAllocatedBytes"),
                       receivers=receiver_metrics(png, scene, telemetry["camera"]))
@@ -192,7 +205,14 @@ def compare_dielectric(cases, techniques=TECHNIQUES):
     def delta(technique, fixture, enabled=True):
         pair = [records.get((technique, fixture, enabled, primary)) for primary in (True, False)]
         thin.require(all(pair), f"Missing matched dielectric pair: {technique}/{fixture}/{enabled}")
+        def matched_inputs(case):
+            settings = {key: value for key, value in case["ddgi"]["settings"].items() if key != "intensity"}
+            return case["build"], case["gpu"], case["camera"], settings
+
+        thin.require(matched_inputs(pair[0]) == matched_inputs(pair[1]),
+                     f"Mismatched observed dielectric inputs: {technique}/{fixture}/{enabled}")
         on, off = [case["receivers"]["shaded-back"] for case in pair]
+        thin.require(on["pixelRoi"] == off["pixelRoi"], "Mismatched dielectric receiver pixels")
         return {"indirectLuminance": on["estimatedLuminance"] - off["estimatedLuminance"],
                 "indirectRadiance": (np.asarray(on["estimatedRadiance"]) - off["estimatedRadiance"]).tolist()}
 
@@ -224,7 +244,9 @@ def compare_dielectric(cases, techniques=TECHNIQUES):
                      "Nested absorption did not restore the outer medium's red attenuation")
         for variant in ("thick-disabled", "opaque-behind", "malformed-open",
                         "same-geometry-nesting", "intersecting-volumes"):
-            thin.require(abs(measured[variant]["indirectLuminance"]) <= blocked_limit,
+            blocked = measured[variant]
+            thin.require(abs(blocked["indirectLuminance"]) <= blocked_limit and
+                         max(map(abs, blocked["indirectRadiance"])) <= blocked_limit,
                          f"{variant}: terminal or unsupported volume leaked illumination")
         result[technique] = {"receivers": measured, "blockedIndirectLimit": blocked_limit}
     return result
@@ -249,6 +271,7 @@ def main():
     manifest = write_dielectric_fixtures(output, args.width, args.height)
     environment = os.environ.copy()
     environment["VK_LAYER_SETTINGS_PATH"] = str(output)
+    environment["VK_LOADER_DEBUG"] = "layer"
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n")
     result = {"schemaVersion": 1, "startedUtc": datetime.now(timezone.utc).isoformat(),
               "exeSha256": hashlib.sha256(exe.read_bytes()).hexdigest(),
@@ -269,8 +292,16 @@ def main():
                     write_json(output / "dielectric-results.json", result)
     result["comparisonFailures"] = []
     try:
+        thin.require(result["exeSha256"] == hashlib.sha256(exe.read_bytes()).hexdigest() and
+                     result["runtimeShaderSha256"] == runtime_shader_hashes(exe),
+                     "Renderer executable or shaders changed during the dielectric cohort")
+        thin.require(all(scene["gltfSha256"] == hashlib.sha256((output / scene["gltf"]).read_bytes()).hexdigest()
+                         for scene in manifest["fixtures"]),
+                     "A dielectric fixture changed during the cohort")
+        thin.require(len({case.get("build", {}).get("revision") for case in result["cases"]}) == 1,
+                     "Renderer build revision changed during the dielectric cohort")
         result["comparisons"] = compare_dielectric(result["cases"], techniques)
-    except (AssertionError, KeyError, ValueError) as error:
+    except (AssertionError, KeyError, OSError, ValueError) as error:
         result["comparisonFailures"].append(str(error))
     result["passed"] = all(case["passed"] for case in result["cases"]) and not result["comparisonFailures"]
     write_json(output / "dielectric-results.json", result)

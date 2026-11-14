@@ -26,7 +26,11 @@ def synthetic_cases():
                     cases.append({"name": glass.case_name(fixture, technique, enabled, primary),
                         "technique": technique, "fixture": fixture, "dielectric": enabled,
                         "primaryIndirect": primary, "passed": True,
+                        "build": {"revision": "fixture"}, "gpu": "fixture GPU",
+                        "camera": {"position": [1, 2, 3]},
+                        "ddgi": {"settings": {"intensity": int(primary), "raysPerProbe": 128}},
                         "receivers": {"shaded-back": {
+                            "pixelRoi": [10, 12, 16, 18],
                             "estimatedLuminance": .3 + value,
                             "estimatedRadiance": [c + .3 for c in rgb] if primary else [.3] * 3,
                             "saturatedChannelFraction": 0}}})
@@ -146,6 +150,25 @@ class DielectricHarnessTests(unittest.TestCase):
             chosen["receivers"]["shaded-back"][field] = value
             with self.assertRaises(AssertionError):
                 glass.compare_dielectric(cases)
+
+    def test_comparison_rejects_mismatched_observed_inputs_and_chromatic_leaks(self):
+        for key, value in (("camera", {"position": [1, 2, 4]}),
+                           ("build", {"revision": "different"}),
+                           ("gpu", "different"),
+                           ("ddgi", {"settings": {"intensity": 1, "raysPerProbe": 64}})):
+            cases = synthetic_cases()
+            cases[0][key] = value
+            with self.assertRaisesRegex(AssertionError, "Mismatched observed"):
+                glass.compare_dielectric(cases)
+        cases = synthetic_cases()
+        cases[0]["receivers"]["shaded-back"]["pixelRoi"] = [11, 12, 17, 18]
+        with self.assertRaisesRegex(AssertionError, "Mismatched dielectric receiver"):
+            glass.compare_dielectric(cases)
+        cases = synthetic_cases()
+        blocked = next(case for case in cases if case["fixture"] == "malformed-open" and case["primaryIndirect"])
+        blocked["receivers"]["shaded-back"]["estimatedRadiance"] = [.38, .28, .3]
+        with self.assertRaisesRegex(AssertionError, "malformed-open.*leaked"):
+            glass.compare_dielectric(cases)
 
     def test_capture_rejects_stale_success_artifacts(self):
         scene = glass.dielectric_scene("thick-clear")

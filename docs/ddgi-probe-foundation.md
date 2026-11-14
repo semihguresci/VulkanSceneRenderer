@@ -406,25 +406,34 @@ Path tracing skips DDGI graphics preparation and schedules no probe work.
 The extended fixture runner `run_dielectric.py` uses matched active GI1/GI0
 captures in both raster routes. It compares clear, rough, absorbing and nested
 volumes with disabled, opaque-terminal, open, overlapping and same-instance
-controls. GPU transport contracts independently check Snell entry and exit,
-TIR, relative IOR, GGX sample directions, stack order and colored absorption
-at several scales. Run native and GPU workloads serially.
+controls. The harness checks the loaded scene, revision and render route,
+matches camera and DDGI settings across each receiver pair, and checks each
+blocked RGB channel as well as luminance. GPU transport contracts independently
+check finite output, Snell entry and exit, TIR, relative IOR, GGX sample
+directions, stack order and colored absorption at 0.001×, 1× and 100× scale.
 
-The 240×200 native cohort passed 44 captures across forward and deferred
-raster. With 44 updates of 32,768 rays each, the matched clear nested receiver
-measured indirect luminance 0.05121 in deferred and 0.05162 in forward. The
-absorbing stack retained blue at 0.03468 and 0.03519, with red at 0 and 0.00023.
-Open, intersecting, and same-instance shells stayed within the fixture's
-blocked controls. The clear nested captures sampled 0.778–0.791 ms for
-`DdgiTrace` and 0.240–0.243 ms for `DdgiUpdate` on the RTX 2080 SUPER. DDGI
-owned 5,549,936 bytes and the shared ray scene reported 10,852,288 bytes in
-this fixture. The trace timings are the most recent retired timestamps at
-capture. The full receipt is in
-`out/feature-parity/ddgi-nested-current/dielectric-results.json`.
+On Windows Release at `d5a056996226326f99c7899fa964e86076e8496b`, the RTX
+2080 SUPER passed all 14 transport contracts and 44 native 240×200 captures
+with Khronos synchronization validation. Each capture completed 44 updates
+of 32,768 rays. The table shows GI1 minus GI0 at the shaded receiver.
+
+| Raster mode | Clear nested luminance | Absorbing nested RGB | Maximum blocked channel | Trace ms | Update ms |
+| --- | ---: | --- | ---: | ---: | ---: |
+| Deferred | 0.05121 | (0, 0.00570, 0.03468) | 0.000585 | 0.584–0.714 | 0.202–0.242 |
+| Forward | 0.05162 | (0.00023, 0.00558, 0.03519) | 0.000687 | 1.470–1.874 | 0.198–0.199 |
+
+The receiver metrics estimate radiance from quantized PNGs. The trace and
+update ranges are the two retired timestamp samples from the clear nested
+GI1/GI0 pair in each mode. DDGI owned 5,549,936 bytes and the shared ray scene
+owned 10,852,288 bytes in that fixture. The runner writes
+`dielectric-results.json` with runtime hashes, comparison metrics and
+per-capture records, alongside the fixture hash manifest. Run the GPU tests
+and captures serially.
 
 ```powershell
-python -B tests/visual-regression/ddgi/run_extensions.py
-python -B tests/visual-regression/ddgi/run_dielectric.py --output out/ddgi-dielectric-validation
+$env:CONTAINER_RUN_GPU_DDGI = '1'
+ctest --test-dir out/build/visual-studio -C Release -R '^ddgi_transport_gpu_tests$' --output-on-failure
+python -B tests/visual-regression/ddgi/run_dielectric.py --output out/ddgi-dielectric-validation --width 240 --height 200 --frames 44
 ```
 
 ## Interactive controls and probe diagnostics
