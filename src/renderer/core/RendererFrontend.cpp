@@ -2338,11 +2338,14 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   updateMaterialVariantState();
   pollBimClash();
   publishBimClashUi();
+  pollBimSunHours();
+  publishBimSunHoursUi();
   presentSceneControls();
   updateGltfAnimation();
   processCaptureLightEvent();
   advancePhysics();
   pollBimClash();
+  pollBimSunHours();
   updateGltfDeformation();
   processPendingDdgiSceneFit();
   processPendingDdgiDetailFit();
@@ -3342,6 +3345,8 @@ void RendererFrontend::applyTemporalCapture(
     applyCaptureCameraMotion(*event.cameraMotion);
   if (event.bimClash)
     applyCaptureBimClash(*event.bimClash);
+  if (event.bimSunHours)
+    applyCaptureBimSunHours(*event.bimSunHours);
   uint32_t objectNode = sample.objectNode;
   // Capture tracks are sampled past their last key. An explicit unload retires
   // their target; only a later capture load event permits target lookup again.
@@ -3906,6 +3911,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
       subs_.bimManager ? subs_.bimManager->objectData().size() : 0u;
   appendBimFloorPlanTelemetry(json);
   appendBimClashTelemetry(json);
+  appendBimSunHoursTelemetry(json);
   json["scene"]["geometryArenaCapacityBytes"] =
       svc_.allocationManager.geometryArenaCapacityBytes();
   if (subs_.rayShadowManager) {
@@ -5832,6 +5838,11 @@ void RendererFrontend::drawModelLoadProgressFrame() {
 }
 
 void RendererFrontend::shutdown() {
+  bimSunHours_.stop.request_stop();
+  if (bimSunHours_.job.valid()) {
+    bimSunHours_.job.wait();
+    bimSunHours_.job = {};
+  }
   bimClash_.stop.request_stop();
   if (bimClash_.job.valid()) {
     bimClash_.job.wait();
@@ -5858,6 +5869,12 @@ void RendererFrontend::shutdown() {
     return;
 
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+  if (bimSunHours_.overlayVertices.buffer != VK_NULL_HANDLE) {
+    svc_.allocationManager.destroyBuffer(bimSunHours_.overlayVertices);
+    bimSunHours_.overlayVertices = {};
+    bimSunHours_.overlayResult.reset();
+    bimSunHours_.overlayVertexCount = 0;
+  }
   svc_.swapChainManager.drainAcquires();
   destroySceneDataCapture();
 
@@ -8459,6 +8476,8 @@ void RendererFrontend::presentSceneControls() {
     bimInspection.metadataSource = subs_.bimManager.get();
     bimInspection.metadataRevision = subs_.bimManager->metadataRevision();
     bimInspection.elements = elementMetadata;
+    const auto studyBounds = subs_.bimManager->sceneProviderBounds();
+    bimInspection.sunHoursModelBounds = {.valid = studyBounds.valid, .min = studyBounds.min, .max = studyBounds.max};
     bimInspection.selectObject = [this](uint32_t objectIndex) {
       selectBimObject(objectIndex);
     };
@@ -8830,6 +8849,7 @@ void RendererFrontend::presentSceneControls() {
   }
 
   processBimClashUi();
+  processBimSunHoursUi();
   if (auto elevationRequest =
           subs_.guiManager->consumeBimElevationViewRequest()) {
     if (subs_.cameraController) {
@@ -9484,6 +9504,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   syncSceneProviders();
 
   FrameRecordParams p{};
+  prepareBimSunHoursOverlay(p.bim.sunHours, retireBimOverlayReaders);
   if (referencePathActive() && subs_.referencePathTracePass)
     p.services.referencePathTrace = [this](VkCommandBuffer command, const FrameRecordParams& frame) {
       return recordReferencePathTrace(command, frame);

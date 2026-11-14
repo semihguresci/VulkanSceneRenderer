@@ -18,6 +18,8 @@ container_stage_runtime_dlls(ASLHandKinematicsProcessor)
 add_library(VulkanSceneRenderer_bim_ui_support
     renderer/bim/BimMeasurementSnapping.cpp
     renderer/bim/BimModelCompare.cpp
+    renderer/bim/BimSunHours.cpp
+    utility/SolarPosition.cpp
 )
 target_compile_features(VulkanSceneRenderer_bim_ui_support PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_bim_ui_support PUBLIC
@@ -88,6 +90,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendCameraPoses.cpp
     renderer/core/RendererFrontendCameraMotion.cpp
     renderer/core/RendererFrontendBimClash.cpp
+    renderer/core/RendererFrontendBimSunHours.cpp
     renderer/core/RendererFrontendDeformation.cpp
     renderer/core/RendererFrontendDeformationTelemetry.cpp
     renderer/scene/SceneLightExport.cpp

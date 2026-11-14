@@ -20,6 +20,7 @@
 #include "Container/app/GfxCapture.h"
 #include "Container/renderer/bim/BimInspectionCache.h"
 #include "Container/renderer/bim/BimHardClash.h"
+#include "Container/renderer/bim/BimSunHours.h"
 #include "Container/renderer/core/PushConstantBlock.h"
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
 #include "Container/renderer/core/RendererMsaa.h"
@@ -56,6 +57,7 @@ struct CaptureViewportPointer;
 struct CaptureSample;
 struct CaptureBimAnnotations;
 struct CaptureBimClash;
+struct CaptureBimSunHours;
 struct CaptureComfyUi;
 struct CapturePhysicsJointCreate;
 struct CaptureEvent;
@@ -99,6 +101,7 @@ class BimManager;
 enum class BimDisciplinePreset : uint32_t;
 struct BimDrawFilter;
 struct BimCoordinationOverlayClashPair;
+struct BimSunHoursOverlay;
 class CameraController;
 enum class ScenePrimitiveKind : uint32_t;
 class CommandBufferManager;
@@ -716,6 +719,21 @@ private:
     std::optional<size_t> selected;
     bool guiDirty{};
   } bimClash_;
+  struct BimSunHoursState {
+    enum class Status { Idle, Running, Complete, Cancelled, Failed };
+    const BimManager* model{};
+    uint64_t geometryRevision{}, metadataRevision{}, transformRevision{};
+    Status status{Status::Idle};
+    std::string message;
+    std::stop_source stop;
+    std::future<BimSunHoursResult> job;
+    std::shared_ptr<const BimSunHoursResult> result, overlayResult;
+    std::optional<size_t> captureSelection;
+    std::optional<bool> captureVisibility;
+    container::gpu::AllocatedBuffer overlayVertices{};
+    uint32_t overlayVertexCount{};
+    bool guiDirty{};
+  } bimSunHours_;
   container::scene::MeshSceneProviderAssetCache meshProviderAssetCache_{};
   struct SelectionNavigationAnchor {
     bool valid{false};
@@ -968,6 +986,17 @@ private:
   [[nodiscard]] bool bimClashMatchesScene() const;
   [[nodiscard]] bool selectedBimClashMarker(BimCoordinationOverlayClashPair&) const;
   void appendBimClashTelemetry(nlohmann::json&) const;
+  void startBimSunHours(const BimSunHoursSettings&);
+  void cancelBimSunHours();
+  void pollBimSunHours(bool wait = false);
+  void publishBimSunHoursUi();
+  void processBimSunHoursUi();
+  void saveBimSunHours(const std::filesystem::path&) const;
+  [[nodiscard]] bool bimSunHoursMatchesScene() const;
+  [[nodiscard]] bool bimSunHoursOverlayVisible() const;
+  void prepareBimSunHoursOverlay(BimSunHoursOverlay&, const std::function<void()>& retireReaders);
+  void applyCaptureBimSunHours(const container::temporal::CaptureBimSunHours&);
+  void appendBimSunHoursTelemetry(nlohmann::json&) const;
   void processEnvironmentLoad(bool wait = false);
 #ifdef CONTAINER_ENABLE_RENDERER_MCP
   void processMcpRequests();

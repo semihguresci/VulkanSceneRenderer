@@ -1859,6 +1859,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
          .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
          .recordAfterFullscreenDraw = [deferred, &p,
                                        ppSets](VkCommandBuffer passCmd) {
+           recordBimSunHoursOverlay(passCmd, p);
            if (p.screenshot.viewportOnly) {
              if (auto* gui = deferred->guiManager())
                gui->endFrame();

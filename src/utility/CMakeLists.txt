@@ -148,7 +148,6 @@ add_library(VulkanSceneRenderer_ui
     GltfXmpInspector.cpp
     OpenVdbAuthoring.cpp
     PhysicsControls.cpp
-    SolarPosition.cpp
     SkyPreset.cpp
     SceneHierarchyCache.cpp
 )

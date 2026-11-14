@@ -1077,6 +1077,7 @@ void recordForwardRasterPostProcessPass(
        .recordAfterFullscreenDraw = [&sharedContext, &p, extent,
                                      postProcessSets](VkCommandBuffer passCmd) {
          recordPathTracingFloorPlan(passCmd, p, sharedContext, extent);
+         recordBimSunHoursOverlay(passCmd, p);
          if (p.screenshot.viewportOnly) {
            if (auto* gui = sharedContext.guiManager())
              gui->endFrame();

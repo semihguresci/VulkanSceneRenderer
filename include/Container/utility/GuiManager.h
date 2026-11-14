@@ -31,6 +31,7 @@
 #include "Container/renderer/bim/BimModelCompare.h"
 #include "Container/renderer/bim/BimMetadata.h"
 #include "Container/renderer/bim/BimScheduleExtractor.h"
+#include "Container/renderer/bim/BimSunHours.h"
 #include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/temporal/TemporalState.h"
 #include "Container/renderer/temporal/UpscaleMode.h"
@@ -520,6 +521,12 @@ struct BimHardClashSaveViewpointRequest {
   std::string path;
 };
 
+struct BimSunHoursUiState {
+  bool running{};
+  std::string status;
+  std::shared_ptr<const container::renderer::BimSunHoursResult> result;
+};
+
 struct BimLodStreamingUiState {
   bool autoLod{true};
   bool drawBudgetEnabled{false};
@@ -573,6 +580,7 @@ struct BimInspectionState {
   const void *metadataSource{nullptr};
   uint64_t metadataRevision{0};
   std::string modelPath{};
+  container::renderer::BimElementBounds sunHoursModelBounds{};
   container::renderer::BimMetadataTableView elements{};
   std::function<void(uint32_t)> selectObject{};
   std::function<void(uint32_t)> focusObject{};
@@ -1022,6 +1030,7 @@ public:
   void drawGltfSceneSelector();
   void drawMaterialVariantSelector();
   void drawBimElementBrowser(const BimInspectionState &inspection);
+  void drawBimSunHoursPanel(const BimInspectionState &inspection);
   [[nodiscard]] const BimElementSearchCache &bimElementSearchCache() const {
     return bimElementSearchCache_;
   }
@@ -1119,6 +1128,23 @@ public:
     return std::exchange(bimHardClashSaveViewpointRequest_, std::nullopt);
   }
   void setBimHardClashState(BimHardClashUiState state);
+  [[nodiscard]] std::optional<container::renderer::BimSunHoursSettings>
+  consumeBimSunHoursRunRequest() {
+    return std::exchange(bimSunHoursRunRequest_, std::nullopt);
+  }
+  [[nodiscard]] bool consumeBimSunHoursCancelRequest() {
+    return std::exchange(bimSunHoursCancelRequest_, false);
+  }
+  [[nodiscard]] std::optional<std::string> consumeBimSunHoursExportRequest() {
+    return std::exchange(bimSunHoursExportRequest_, std::nullopt);
+  }
+  void setBimSunHoursState(BimSunHoursUiState state);
+  [[nodiscard]] bool bimSunHoursViewportVisible() const {
+    return bimSunHoursViewportVisible_;
+  }
+  [[nodiscard]] std::optional<size_t> bimSunHoursSelectedCell() const {
+    return bimSunHoursSelectedCell_;
+  }
   [[nodiscard]] std::span<
       const container::renderer::BimCoordinationOverlayIssuePin>
   bimIssueOverlayPins() const;
@@ -1536,6 +1562,14 @@ private:
   bool bimHardClashCancelRequest_{};
   std::optional<size_t> bimHardClashSelectRequest_{};
   std::optional<BimHardClashSaveViewpointRequest> bimHardClashSaveViewpointRequest_{};
+  std::optional<container::renderer::BimSunHoursSettings> bimSunHoursDraft_{};
+  BimSunHoursUiState bimSunHoursState_{};
+  std::optional<container::renderer::BimSunHoursSettings> bimSunHoursRunRequest_{};
+  bool bimSunHoursCancelRequest_{};
+  std::optional<std::string> bimSunHoursExportRequest_{};
+  std::string bimSunHoursCsvPath_{"bim-sun-hours.csv"};
+  std::optional<size_t> bimSunHoursSelectedCell_{};
+  bool bimSunHoursViewportVisible_{true};
   std::vector<ViewpointSnapshotState> viewpointSnapshots_{};
   int selectedViewpointSnapshotIndex_{-1};
   uint32_t nextViewpointSnapshotId_{1};

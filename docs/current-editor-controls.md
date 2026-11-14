@@ -179,6 +179,15 @@ volume. The panel lists overlap in cubic metres and reports skipped geometry
 and checks that failed. Select a result to frame both elements and show its
 clash marker. Use **Save BCF viewpoint** to share the selected pair and camera.
 
+Open **Sun Hours** to study direct sunlight on a horizontal grid. Fit the
+grid to the BIM model or edit its world coordinates and elevation. Set the
+location, date, UTC offset, and local study window. Model north starts at
+world +Z and rotates toward +X for positive angles. Each cell accumulates the
+unblocked daylight intervals sampled at its center. Open geometry can cast a
+shadow. Use the heatmap legend and click a cell to read its hours, toggle the
+grid in the viewport, or export cell centers, hours, and study settings to CSV.
+Loading another model or changing its placement clears the current study.
+
 For models with plan linework, **Floor plan overlay** shows it in Deferred
 raster, Forward raster, and Path tracing. Choose the projection, depth test, color, opacity,
 and line width in the BIM panel. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
