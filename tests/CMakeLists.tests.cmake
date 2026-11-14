@@ -1,6 +1,9 @@
 enable_testing()
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME render_queue_tests COMMAND "${Python3_EXECUTABLE}" -B
+        "${CMAKE_SOURCE_DIR}/tests/python/test_render_queue.py")
+    set_tests_properties(render_queue_tests PROPERTIES LABELS "cpu;python" TIMEOUT 60)
     add_test(NAME openvdb_python_bridge_tests COMMAND ${CMAKE_COMMAND} -E env
         "CONTAINER_OPENVDB_TOOL=$<TARGET_FILE:OpenVdbTool>" "${Python3_EXECUTABLE}"
         "${CMAKE_SOURCE_DIR}/tests/python/test_openvdb_bridge.py")
