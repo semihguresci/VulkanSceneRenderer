@@ -155,6 +155,25 @@ Run `ifc_spherical_edge_loops_gpu_regression` with
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to check shared-edge hemispheres and
 a tilted cap in Forward and Deferred raster with TAA off and on.
 
+An advanced face on a surface of revolution can use a Cartesian chart at a
+smooth axis endpoint. Clamped polynomial splines and single-span rational
+Bézier meridians qualify when their projected control points prove strictly
+monotone radius and the axis endpoint has a radial tangent. The chart uses
+analytic derivatives at the apex, honors the native surface sense and keeps
+the original angular and profile parameters for pcurves. The edge cache
+retains an apex inside a shared trim when it can verify its native parameter.
+Sector faces and rims preserve their source samples. An optional apex vertex
+loop becomes an exact interior vertex, including on faces with holes.
+
+A single polar seam can join the apex to a monotone rim with two opposite
+edge uses and two verified native pcurves. The same cut construction as for
+spherical caps retains holes clear of both cuts. Cusps, axis crossings,
+nonmonotone meridians, unsupported spline creases, composite axis-touching
+profiles and standalone polar tessellation remain outside this coverage.
+Run `ifc_revolution_axis_gpu_regression` with
+`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` for the analytic paraboloid fixtures in
+Forward and Deferred raster with TAA off and on.
+
 Sloped L/U/I profiles keep their bounding-box-centred coordinate systems. L-leg
 and U-flange thicknesses use the profile coordinate axes as reference stations;
 symmetric I-flange thickness is specified at the free edges. The two sloped
@@ -775,8 +794,8 @@ The remaining capabilities below and IFC source curve fonts/widths are tracked
 in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
 implementation tasks and independent geometry/rendering acceptance criteria.
 
-Ambiguous tag transitions, guided or incompatible sharp joins, non-spherical
-singular charts and spherical trims with multiple seams or holes meeting a
+Ambiguous tag transitions, guided or incompatible sharp joins, other singular
+charts and polar trims with multiple seams or holes meeting a
 seam cut remain outside native coverage. Swept surface limits include profiles
 with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.

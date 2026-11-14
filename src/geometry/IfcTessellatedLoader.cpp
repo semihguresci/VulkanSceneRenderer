@@ -3644,10 +3644,14 @@ private:
     return result;
   }
 
-  bool collectBrepEdgePoles(
-      std::span<const uint32_t> faces, BrepEdgePoles &edgePoles,
-      std::unordered_map<uint32_t, detail::ParametricSurface> &spheres,
-      std::optional<double> angle, std::string &error) const {
+  using BrepPolarCharts =
+      std::unordered_map<uint32_t, std::vector<detail::ParametricSurface>>;
+
+  bool collectBrepEdgePoles(std::span<const uint32_t> faces,
+                            BrepEdgePoles &edgePoles,
+                            BrepPolarCharts &polarCharts,
+                            std::optional<double> angle,
+                            std::string &error) const {
     size_t uses = 0;
     for (uint32_t faceRef : faces) {
       checkCancellation();
@@ -3655,21 +3659,31 @@ private:
       const auto surfaceRef = face ? firstRef(*face, 1) : std::nullopt;
       const auto *surface = surfaceRef ? entity(*surfaceRef) : nullptr;
       if (!face || face->type != "IFCADVANCEDFACE" || !surface ||
-          surface->type != "IFCSPHERICALSURFACE")
+          (surface->type != "IFCSPHERICALSURFACE" &&
+           surface->type != "IFCSURFACEOFREVOLUTION"))
         continue;
-      if (!spheres.contains(*surfaceRef)) {
-        auto chart = detail::readIfcSurface(entities_, *surfaceRef, unitScale_,
-                                            angle, error);
-        if (!chart || !chart->sphere) {
+      if (!polarCharts.contains(*surfaceRef)) {
+        std::vector<detail::ParametricSurface> charts;
+        if (!detail::readIfcSurfaceCharts(entities_, *surfaceRef, unitScale_,
+                                          angle, charts, error, stop_)) {
           error = "Face #" + std::to_string(faceRef) + ": " + error;
           return false;
         }
-        spheres.emplace(*surfaceRef, std::move(*chart));
+        polarCharts.emplace(*surfaceRef, std::move(charts));
       }
-      const auto &sphere = *spheres.at(*surfaceRef).sphere;
-      const auto &f = sphere.frame;
-      const std::array poles{f.origin + sphere.radius * f.z,
-                             f.origin - sphere.radius * f.z};
+      std::vector<glm::dvec3> poles;
+      for (const auto &chart : polarCharts.at(*surfaceRef)) {
+        if (chart.sphere) {
+          const auto &sphere = *chart.sphere;
+          const auto &f = sphere.frame;
+          poles.push_back(f.origin + sphere.radius * f.z);
+          poles.push_back(f.origin - sphere.radius * f.z);
+        }
+        if (chart.radialGraph)
+          poles.push_back(chart.radialGraph->frame.origin);
+      }
+      if (poles.empty())
+        continue;
       const auto bounds = asList(argAt(*face, 0));
       if (bounds.size() > 4096)
         continue;
@@ -3685,7 +3699,7 @@ private:
           continue;
         for (const auto &useValue : oriented) {
           if (++uses > 1'000'000) {
-            error = "B-rep spherical edge use budget exceeded";
+            error = "B-rep polar edge use budget exceeded";
             return false;
           }
           if (uses % 1024 == 0)
@@ -3702,7 +3716,7 @@ private:
             if (std::ranges::find(candidates, pole) == candidates.end()) {
               if (candidates.size() >= 4) {
                 error = "Edge #" + std::to_string(*edgeRef) +
-                        " has too many incident spherical pole candidates";
+                        " has too many incident pole candidates";
                 return false;
               }
               candidates.push_back(pole);
@@ -3711,6 +3725,31 @@ private:
       }
     }
     return true;
+  }
+
+  std::optional<ParametricCurve> readBrepSeamPcurve(uint32_t pcRef,
+                                                    uint32_t surfaceRef,
+                                                    double radians) const {
+    const auto *pc = entity(pcRef);
+    const auto representationRef = pc ? firstRef(*pc, 1) : std::nullopt;
+    const auto *representation =
+        representationRef ? entity(*representationRef) : nullptr;
+    if (!pc || pc->type != "IFCPCURVE" || firstRef(*pc, 0) != surfaceRef ||
+        !representation)
+      return std::nullopt;
+    auto parameterCurve = representationRef;
+    if (representation->type == "IFCDEFINITIONALREPRESENTATION") {
+      const auto items = asList(argAt(*representation, 3));
+      parameterCurve =
+          items.size() == 1 ? refValue(&items.front()) : std::nullopt;
+    }
+    if (!parameterCurve)
+      return std::nullopt;
+    std::string error;
+    auto curve = detail::readIfcCurve(entities_, *parameterCurve, unitScale_,
+                                      radians, error, {}, stop_);
+    return curve && curve->domain && curve->dimension == 2 ? std::move(curve)
+                                                           : std::nullopt;
   }
 
   bool validateSphericalBrepSeam(const BrepEdge &edge, uint32_t surfaceRef,
@@ -3772,27 +3811,8 @@ private:
     std::array<bool, 2> meridianSides{};
     for (const uint32_t pcRef : pcurves) {
       checkCancellation();
-      const auto *pc = entity(pcRef);
-      const auto representationRef = pc ? firstRef(*pc, 1) : std::nullopt;
-      const auto *representation =
-          representationRef ? entity(*representationRef) : nullptr;
-      if (!pc || pc->type != "IFCPCURVE" || firstRef(*pc, 0) != surfaceRef ||
-          !representation)
-        return fail("pcurve #" + std::to_string(pcRef) +
-                    " does not use the same sphere");
-      auto parameterCurve = representationRef;
-      if (representation->type == "IFCDEFINITIONALREPRESENTATION") {
-        const auto items = asList(argAt(*representation, 3));
-        parameterCurve =
-            items.size() == 1 ? refValue(&items.front()) : std::nullopt;
-      }
-      std::string curveError;
-      const auto curve =
-          parameterCurve
-              ? detail::readIfcCurve(entities_, *parameterCurve, unitScale_,
-                                     radians, curveError, {}, stop_)
-              : std::nullopt;
-      if (!curve || !curve->domain || curve->dimension != 2)
+      const auto curve = readBrepSeamPcurve(pcRef, surfaceRef, radians);
+      if (!curve)
         return fail("pcurve #" + std::to_string(pcRef) +
                     " requires a bounded 2D meridian");
       const auto [first, last] = *curve->domain;
@@ -3827,6 +3847,83 @@ private:
     return true;
   }
 
+  bool validateRevolvedBrepSeam(const BrepEdge &edge, uint32_t surfaceRef,
+                                const detail::ParametricSurface &surface,
+                                const Entity &seam, bool &apexAtStart,
+                                std::string &error) const {
+    const auto &graph = *surface.radialGraph;
+    const double tolerance =
+        std::max(1e-7 / unitScale_, graph.maxRadius * 4e-7);
+    const double radians = surface.angularScale.x;
+    const double uTolerance = 1e-7 / radians;
+    const auto fail = [&](std::string reason) {
+      error = "Revolved seam #" + std::to_string(seam.id) + ": " + reason;
+      return false;
+    };
+    if (!(radians > 0) || !std::isfinite(radians) || edge.points.size() < 2 ||
+        edge.start == edge.end)
+      return fail("expected an open meridian from the smooth apex");
+    const auto pointAtApex = [&](glm::vec3 p) {
+      return glm::length(glm::dvec3(p) - graph.frame.origin) <= tolerance;
+    };
+    apexAtStart = pointAtApex(edge.points.front());
+    if (apexAtStart == pointAtApex(edge.points.back()))
+      return fail("exactly one seam endpoint must be the smooth apex");
+    const auto orientedIndex = [&](size_t i) {
+      return apexAtStart ? i : edge.points.size() - 1 - i;
+    };
+    double previousRadius = 0.;
+    for (size_t i = 0; i < edge.points.size(); ++i) {
+      const auto uv = graph.inverse(glm::dvec3(edge.points[orientedIndex(i)]));
+      if (!uv || std::abs(uv->y) > tolerance || uv->x < -tolerance ||
+          uv->x < previousRadius - tolerance)
+        return fail("the shared edge must follow the zero-angle meridian");
+      previousRadius = uv->x;
+    }
+    const auto pcurves = refList(argAt(seam, 1));
+    if (pcurves.size() != 2 ||
+        pcurves.size() != asList(argAt(seam, 1)).size() ||
+        pcurves[0] == pcurves[1])
+      return fail("expected two distinct meridian pcurves");
+    const auto start =
+        glm::dvec3(edge.sameSense ? edge.points.front() : edge.points.back());
+    const auto end =
+        glm::dvec3(edge.sameSense ? edge.points.back() : edge.points.front());
+    std::array<bool, 2> sides{};
+    for (const auto pcRef : pcurves) {
+      checkCancellation();
+      const auto curve = readBrepSeamPcurve(pcRef, surfaceRef, radians);
+      if (!curve)
+        return fail("invalid bounded 2D pcurve #" + std::to_string(pcRef));
+      const auto [first, last] = *curve->domain;
+      const auto samples =
+          sampleCurve(*curve, first, last, uTolerance * .25, 4097);
+      if (samples.size() < 2)
+        return fail("meridian pcurve exceeds its sampling budget");
+      const auto a = samples.front().point, b = samples.back().point;
+      const size_t side = std::abs(a.x) <= uTolerance ? 0 : 1;
+      const double fixedU = side * surface.periods.x;
+      const auto p = surface.point(a.x, a.y), q = surface.point(b.x, b.y);
+      if (sides[side] || !p || !q || glm::length(*p - start) > tolerance ||
+          glm::length(*q - end) > tolerance || a.y == b.y)
+        return fail("meridian pcurve endpoints disagree with the shared edge");
+      const double direction = b.y > a.y ? 1. : -1.;
+      const double vTolerance = std::abs(b.y - a.y) * 1e-8;
+      double previous = a.y;
+      for (const auto &sample : samples) {
+        const auto uv = sample.point;
+        if (std::abs(uv.x - fixedU) > uTolerance ||
+            direction * (uv.y - previous) < -vTolerance ||
+            uv.y < std::min(a.y, b.y) - vTolerance ||
+            uv.y > std::max(a.y, b.y) + vTolerance)
+          return fail("pcurves must follow opposite native U chart ends");
+        previous = uv.y;
+      }
+      sides[side] = true;
+    }
+    return true;
+  }
+
   std::vector<MeshGroup> appendBrepGeometry(const Entity &brep) {
     const auto fail = [&](std::string reason) -> std::vector<MeshGroup> {
       conversionErrors_[brep.id] = std::move(reason);
@@ -3856,7 +3953,7 @@ private:
     };
     std::map<uint32_t, FaceGroup> groups;
     std::unordered_map<uint32_t, BrepEdge> edgeCache;
-    std::unordered_map<uint32_t, detail::ParametricSurface> spheres;
+    BrepPolarCharts polarCharts;
     std::unordered_set<uint32_t> shellIds, faceIds;
     std::vector<manifold::Manifold> solids;
     const auto angle = advanced ? projectPlaneAngleScale() : std::nullopt;
@@ -3876,7 +3973,7 @@ private:
       BrepEdgePoles edgePoles;
       if (advanced) {
         std::string error;
-        if (!collectBrepEdgePoles(faces, edgePoles, spheres, angle, error))
+        if (!collectBrepEdgePoles(faces, edgePoles, polarCharts, angle, error))
           return fail(error);
       }
       std::vector<TriangleVertices> shellTriangles;
@@ -3890,7 +3987,9 @@ private:
             !faceIds.insert(faceRef).second)
           return faceFail("Invalid or repeated face");
         const auto basisRef = advanced ? firstRef(*face, 1) : std::nullopt;
-        const bool spherical = basisRef && spheres.contains(*basisRef);
+        const auto *basis = basisRef ? entity(*basisRef) : nullptr;
+        const bool spherical = basis && basis->type == "IFCSPHERICALSURFACE";
+        const bool revolved = basis && basis->type == "IFCSURFACEOFREVOLUTION";
         std::vector<std::vector<glm::vec3>> loops;
         std::vector<BrepSeamUse> seamUses;
         const auto bounds = refList(argAt(*face, 0));
@@ -3975,7 +4074,7 @@ private:
               edgeCache.emplace(*edgeRef, std::move(*edge));
             }
             const auto &edge = edgeCache.at(*edgeRef);
-            if (spherical) {
+            if (spherical || revolved) {
               const auto *geometry = entity(edge.geometry);
               if (geometry && geometry->type == "IFCSEAMCURVE")
                 seamUses.push_back({*edgeRef, boundRef, sense == orientation,
@@ -4045,11 +4144,11 @@ private:
           const auto sameSense = enumValue(argAt(*face, 2)).value_or("");
           if (!surface || (sameSense != "T" && sameSense != "F"))
             return faceFail("Invalid face surface or SameSense");
-          if (surface->type != "IFCSPHERICALSURFACE" &&
+          if (!spherical && !revolved &&
               std::ranges::any_of(
                   loops, [](const auto &loop) { return loop.size() == 1; }))
             return faceFail(
-                "Vertex-loop charts are only supported on spherical faces");
+                "Surface does not support a singular vertex-loop chart");
           if (surface->type != "IFCPLANE") {
             if (surface->type != "IFCCYLINDRICALSURFACE" &&
                 surface->type != "IFCSPHERICALSURFACE" &&
@@ -4061,31 +4160,37 @@ private:
               return faceFail("Unsupported advanced face surface " +
                               surface->type);
             std::string error;
-            std::vector<detail::ParametricSurface> charts;
-            const detail::ParametricSurface *descriptor;
-            if (spherical) {
-              descriptor = &spheres.at(*surfaceRef);
-            } else {
+            std::vector<detail::ParametricSurface> localCharts;
+            const auto cached = polarCharts.find(*surfaceRef);
+            if (cached == polarCharts.end()) {
               const bool readCharts = detail::readIfcSurfaceCharts(
-                  entities_, *surfaceRef, unitScale_, angle, charts, error,
+                  entities_, *surfaceRef, unitScale_, angle, localCharts, error,
                   stop_);
               container::util::checkModelImportCancellation(stop_);
               if (!readCharts)
                 return faceFail(error);
-              descriptor = &charts.front();
             }
+            const auto &charts =
+                cached != polarCharts.end() ? cached->second : localCharts;
+            const detail::ParametricSurface *descriptor = &charts.front();
             if (charts.size() > 1) {
               descriptor = nullptr;
               std::string profiles;
               for (const auto &chart : charts) {
                 profiles += " #" + std::to_string(chart.profileSourceId);
-                if (!chart.inverse)
+                if (!chart.inverse && !chart.radialGraph)
                   continue;
                 const auto onChart = [&](glm::vec3 raw) {
                   container::util::checkModelImportCancellation(stop_);
                   const glm::dvec3 p(raw);
-                  const auto uv = chart.inverse(p);
-                  const auto q = uv ? chart.point(uv->x, uv->y) : std::nullopt;
+                  const auto &inverse = chart.radialGraph
+                                            ? chart.radialGraph->inverse
+                                            : chart.inverse;
+                  const auto &evaluate = chart.radialGraph
+                                             ? chart.radialGraph->point
+                                             : chart.point;
+                  const auto uv = inverse(p);
+                  const auto q = uv ? evaluate(uv->x, uv->y) : std::nullopt;
                   const double tolerance =
                       std::max(1e-7 / unitScale_, glm::length(p) * 2e-7);
                   return q && glm::length(*q - p) <= tolerance;
@@ -4107,18 +4212,21 @@ private:
                     "Face boundary samples match no chart on surface #" +
                     std::to_string(*surfaceRef) + " from profiles" + profiles);
             }
-            std::span<const glm::vec3> sphericalSeam;
+            std::span<const glm::vec3> polarSeam;
             std::vector<glm::vec3> orderedSeam;
             std::optional<std::array<BrepSeamUse, 2>> sameFaceSeam;
             std::unordered_map<uint32_t, const BrepSeamUse *> firstSeamUses;
-            for (const auto &use : seamUses) {
+            const auto uses = (spherical || descriptor->radialGraph)
+                                  ? std::span(seamUses)
+                                  : std::span<BrepSeamUse>();
+            for (const auto &use : uses) {
               const auto [it, first] = firstSeamUses.emplace(use.edge, &use);
               if (!first) {
                 const auto &other = *it->second;
                 if (sameFaceSeam || use.forward == other.forward ||
                     use.bound != other.bound ||
                     (!use.outer && loops.size() > 1))
-                  return faceFail("Spherical seam requires two opposite uses "
+                  return faceFail("Polar seam requires two opposite uses "
                                   "in one outer bound");
                 sameFaceSeam = std::array{other, use};
               }
@@ -4128,11 +4236,20 @@ private:
               const bool trimmed = first.boundUseCount > 2;
               const auto &edge = edgeCache.at(first.edge);
               bool poleAtStart = false;
-              if (!validateSphericalBrepSeam(edge, *surfaceRef, *descriptor,
-                                             *entity(edge.geometry), trimmed,
-                                             poleAtStart, error))
+              if (!spherical && !trimmed)
+                return faceFail(
+                    "Revolved seam requires an apex and a closed rim");
+              const bool valid =
+                  spherical
+                      ? validateSphericalBrepSeam(
+                            edge, *surfaceRef, *descriptor,
+                            *entity(edge.geometry), trimmed, poleAtStart, error)
+                      : validateRevolvedBrepSeam(edge, *surfaceRef, *descriptor,
+                                                 *entity(edge.geometry),
+                                                 poleAtStart, error);
+              if (!valid)
                 return faceFail(error);
-              sphericalSeam = edge.points;
+              polarSeam = edge.points;
               if (trimmed) {
                 // The oriented outer loop walks from the pole down its seam,
                 // around the physical rim, then returns up the same seam.
@@ -4148,7 +4265,7 @@ private:
                 const size_t afterUp =
                     (up.firstSample + up.sampleCount) % outer.size();
                 if (afterUp != down.firstSample || count < 3)
-                  return faceFail("Trimmed spherical seam must connect one "
+                  return faceFail("Trimmed polar seam must connect one "
                                   "pole to a closed rim");
                 std::vector<glm::vec3> rim;
                 rim.reserve(count);
@@ -4157,13 +4274,13 @@ private:
                 loops.front() = std::move(rim);
                 if (!poleAtStart) {
                   orderedSeam.assign(edge.points.rbegin(), edge.points.rend());
-                  sphericalSeam = orderedSeam;
+                  polarSeam = orderedSeam;
                 }
               }
             }
             const auto mesh = detail::meshIfcCurvedFace(
                 *descriptor, loops, hasOuterBound, sameSense == "T", unitScale_,
-                error, sphericalSeam);
+                error, polarSeam);
             if (!mesh)
               return faceFail(error);
             triangles.emplace();

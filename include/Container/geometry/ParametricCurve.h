@@ -36,6 +36,9 @@ struct ParametricCurve {
   std::function<std::optional<double>(const glm::dvec3 &)> inverse{};
   std::function<std::vector<CurveSample>(double, double, double, size_t)>
       sampler{};
+  // A sufficient control-hull certificate for strictly increasing
+  // projection over the native domain, with no internal spline creases.
+  std::function<bool(glm::dvec3)> increasingSplineProjection{};
 };
 
 [[nodiscard]] std::vector<CurveSample> sampleCurve(const ParametricCurve &,

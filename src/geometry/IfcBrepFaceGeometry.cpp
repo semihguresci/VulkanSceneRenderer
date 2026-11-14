@@ -47,13 +47,19 @@ struct Vertex {
   glm::vec3 point;
 };
 
+struct InteriorPoint {
+  glm::vec3 point;
+  bool required;
+};
+
 class Mesher {
 public:
   Mesher(const ParametricSurface &surface, double units, double extent,
-         std::optional<glm::vec3> fanPoint = {})
+         std::optional<glm::vec3> fanPoint = {},
+         std::optional<InteriorPoint> interiorPoint = {})
       : s_(surface), chord_(.001 / units),
-        tolerance_(std::max(1e-7 / units, extent * 2e-7)), fanPoint_(fanPoint) {
-  }
+        tolerance_(std::max(1e-7 / units, extent * 2e-7)), fanPoint_(fanPoint),
+        interiorPoint_(interiorPoint) {}
   std::vector<CurvedFaceTriangle>
   run(const std::vector<std::vector<glm::vec3>> &boundaries, bool explicitOuter,
       bool sameSense);
@@ -71,6 +77,14 @@ private:
     return *p;
   }
   std::pair<Point, Point> derivatives(UV uv, std::optional<UV> interior = {}) {
+    if (s_.derivatives) {
+      if (++evaluations_ > 4000000)
+        throw std::runtime_error("Curved face exceeds its evaluation budget");
+      const auto value = s_.derivatives(uv.x, uv.y);
+      if (!value)
+        throw std::runtime_error("Undefined curved face derivatives");
+      return *value;
+    }
     std::array<Point, 2> result;
     for (unsigned axis = 0; axis < 2; ++axis) {
       const auto domain = axis ? s_.vDomain : s_.uDomain;
@@ -105,6 +119,10 @@ private:
   void seedInverse();
   void triangulate(const std::vector<std::vector<Vertex>> &rings,
                    bool sameSense);
+  void restoreBoundaryChains(std::vector<Triangle> &triangles,
+                             std::span<const UV> normalized, size_t &checks);
+  void seedInteriorPoint(std::vector<Triangle> &triangles,
+                         std::span<const UV> normalized, UV uv, bool sameSense);
   void constrainCreases(std::vector<Triangle> &triangles);
   bool onCrease(double parameter, unsigned axis) const {
     const double epsilon = scale_[axis] * 1e-10;
@@ -187,6 +205,7 @@ private:
   size_t bandFirstSize_ = 0;
   unsigned bandAxis_ = 0;
   std::optional<glm::vec3> fanPoint_;
+  std::optional<InteriorPoint> interiorPoint_;
   std::map<Edge, std::set<uint32_t>> adjacent_;
 };
 
@@ -603,7 +622,9 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
     throw std::runtime_error("Invalid curved face parameter triangulation");
   // Earcut elides collinear UV samples (e.g. all samples on a cylinder's cap).
   // Restore them before refinement so the adjacent cap keeps identical edges.
-  for (uint32_t v = 0; v < used.size(); ++v) {
+  const bool restoreChains =
+      bool(s_.derivatives) && !fanPoint_ && !bandFirstSize_;
+  for (uint32_t v = 0; !restoreChains && v < used.size(); ++v) {
     if (used[v])
       continue;
     bool inserted = false;
@@ -625,13 +646,44 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
     if (!inserted)
       throw std::runtime_error("Curved face lost a shared boundary sample");
   }
+  if (restoreChains) {
+    restoreBoundaryChains(initial, normalized, checks);
+    double restoredArea = 0.;
+    for (const auto &t : initial)
+      restoredArea +=
+          orient(normalized[t[0]], normalized[t[1]], normalized[t[2]]);
+    if (std::abs(expectedArea - restoredArea) > std::abs(expectedArea) * 1e-7)
+      throw std::runtime_error(
+          "Curved face boundary restoration changed its area");
+  }
+  if (interiorPoint_) {
+    const auto uv = inverse(Point(interiorPoint_->point));
+    const auto p = (uv - low_) / scale_;
+    const bool contained = inside(p, polygon.front()) == 1 &&
+                           std::ranges::none_of(std::span(polygon).subspan(1),
+                                                [&](const auto &hole) {
+                                                  return inside(p, hole) >= 0;
+                                                });
+    if (contained)
+      seedInteriorPoint(initial, normalized, uv, sameSense);
+    else if (interiorPoint_->required)
+      throw std::runtime_error("Curved face apex must lie inside its trim");
+  }
   constrainCreases(initial);
   for (const auto &t : initial)
     add(t);
-  for (const auto &[e, neighbors] : adjacent_)
-    if (neighbors.size() != (boundary_.contains(e) ? 1u : 2u))
+  for (const auto &[e, neighbors] : adjacent_) {
+    const bool boundary = boundary_.contains(e);
+    if (neighbors.size() != (boundary ? 1u : 2u)) {
+      const auto a = vertices_[e.first].uv, b = vertices_[e.second].uv;
       throw std::runtime_error(
-          "Curved face parameter mesh has disconnected boundary edges");
+          "Curved face parameter mesh has disconnected " +
+          std::string(boundary ? "source boundary edge " : "interior edge ") +
+          std::to_string(e.first) + "-" + std::to_string(e.second) + " (" +
+          std::to_string(a.x) + "," + std::to_string(a.y) + " to " +
+          std::to_string(b.x) + "," + std::to_string(b.y) + ")");
+    }
+  }
   std::map<std::pair<std::array<float, 3>, std::array<float, 3>>, Edge>
       spatialEdges;
   for (const auto &e : boundary_) {
@@ -662,6 +714,131 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
         throw std::runtime_error(
             "Shared boundary exceeds the curved face chord budget");
   }
+}
+
+void Mesher::restoreBoundaryChains(std::vector<Triangle> &triangles,
+                                   std::span<const UV> normalized,
+                                   size_t &checks) {
+  // Earcut can use an intermediate source vertex on one side of a bridge
+  // while joining the entire collinear run on the other side.
+  struct EdgeUse {
+    size_t count = 0;
+    size_t triangle = 0;
+  };
+  std::map<Edge, EdgeUse> edges;
+  for (size_t i = 0; i < triangles.size(); ++i)
+    for (size_t j = 0; j < 3; ++j) {
+      auto &use = edges[edge(triangles[i][j], triangles[i][(j + 1) % 3])];
+      use.triangle = i;
+      ++use.count;
+    }
+  using Chain = std::pair<Edge, std::vector<uint32_t>>;
+  std::vector<std::vector<Chain>> splits(triangles.size());
+  // Projected samples came through float storage. Compare in the normalized
+  // chart, then require matching topology before accepting the result.
+  constexpr double epsilon = 1e-7;
+  for (const auto &[e, use] : edges) {
+    if (use.count != 1 || boundary_.contains(e))
+      continue;
+    const auto a = normalized[e.first], b = normalized[e.second];
+    const auto direction = b - a;
+    const double lengthSquared = glm::dot(direction, direction);
+    if (lengthSquared <= epsilon * epsilon)
+      continue;
+    const double endMargin = epsilon / std::sqrt(lengthSquared);
+    std::vector<std::pair<double, uint32_t>> ordered;
+    // Before interior refinement every input vertex is a source sample.
+    for (uint32_t v = 0; v < normalized.size(); ++v) {
+      if (++checks > 8000000)
+        throw std::runtime_error("Curved face boundary chain budget exceeded");
+      const auto offset = normalized[v] - a;
+      const double t = glm::dot(offset, direction) / lengthSquared;
+      if (t > endMargin && t < 1 - endMargin &&
+          glm::length(offset - t * direction) <= epsilon)
+        ordered.emplace_back(t, v);
+    }
+    if (ordered.empty())
+      continue;
+    std::ranges::sort(ordered);
+    auto &run =
+        splits[use.triangle].emplace_back(e, std::vector<uint32_t>{}).second;
+    for (const auto &[_, v] : ordered)
+      run.push_back(v);
+  }
+  for (size_t i = 0; i < splits.size(); ++i) {
+    auto &requests = splits[i];
+    if (requests.empty())
+      continue;
+    const auto original = triangles[i];
+    std::vector<Triangle> pieces{original};
+    for (auto &[e, chain] : requests) {
+      bool found = false;
+      for (size_t k = 0; k < pieces.size() && !found; ++k)
+        for (size_t j = 0; j < 3; ++j) {
+          const auto t = pieces[k];
+          const auto a = t[j], b = t[(j + 1) % 3], c = t[(j + 2) % 3];
+          if (edge(a, b) != e)
+            continue;
+          if (a != e.first)
+            std::ranges::reverse(chain);
+          pieces[k] = {a, chain.front(), c};
+          for (size_t split = 1; split < chain.size(); ++split)
+            pieces.push_back({chain[split - 1], chain[split], c});
+          pieces.push_back({chain.back(), b, c});
+          found = true;
+          break;
+        }
+      if (!found)
+        throw std::runtime_error("Curved face lost a boundary chain");
+    }
+    if (triangles.size() + pieces.size() > 524288)
+      throw std::runtime_error(
+          "Curved face boundary chains exceed the triangle budget");
+    const double sign = orient(normalized[original[0]], normalized[original[1]],
+                               normalized[original[2]]) > 0
+                            ? 1.
+                            : -1.;
+    for (const auto &t : pieces)
+      if (sign * orient(normalized[t[0]], normalized[t[1]], normalized[t[2]]) <=
+          0)
+        throw std::runtime_error(
+            "Curved face boundary chain reverses a triangle");
+    triangles[i] = pieces.front();
+    triangles.insert(triangles.end(), pieces.begin() + 1, pieces.end());
+  }
+}
+
+void Mesher::seedInteriorPoint(std::vector<Triangle> &triangles,
+                               std::span<const UV> normalized, UV uv,
+                               bool sameSense) {
+  const auto p = (uv - low_) / scale_;
+  const auto v = insert(uv);
+  vertices_[v].point = interiorPoint_->point;
+  const size_t count = triangles.size();
+  size_t edgeSplits = 0;
+  for (size_t i = 0; i < count; ++i) {
+    const auto t = triangles[i];
+    std::array<double, 3> side;
+    for (size_t j = 0; j < t.size(); ++j)
+      side[j] = orient(normalized[t[j]], normalized[t[(j + 1) % 3]], p) *
+                (sameSense ? 1. : -1.);
+    const auto onEdge = std::ranges::min_element(side);
+    if (*onEdge < -1e-14)
+      continue;
+    if (*onEdge > 1e-14) {
+      triangles[i] = {t[0], t[1], v};
+      triangles.push_back({t[1], t[2], v});
+      triangles.push_back({t[2], t[0], v});
+      return;
+    }
+    const size_t j = onEdge - side.begin();
+    triangles[i] = {t[j], v, t[(j + 2) % 3]};
+    triangles.push_back({v, t[(j + 1) % 3], t[(j + 2) % 3]});
+    if (++edgeSplits == 2)
+      return;
+  }
+  throw std::runtime_error(
+      "Curved face could not preserve its interior apex sample");
 }
 
 bool Mesher::acceptable(const Triangle &t, bool sameSense) {
@@ -1288,34 +1465,25 @@ meshSphericalEdgeLoops(const SphericalSurface &sphere,
   throw std::runtime_error("Spherical edge-loop chart failed: " + reason);
 }
 
-std::vector<CurvedFaceTriangle>
-meshTrimmedSphericalSeam(const SphericalSurface &sphere,
-                         const std::vector<std::vector<glm::vec3>> &boundaries,
-                         std::span<const glm::vec3> seam, bool sameSense,
-                         double units, double sign, double tolerance) {
-  const auto &f = sphere.frame;
-  const double radius = sphere.radius;
-  const auto polarAxis = sign * f.z;
-  const double direction = (sameSense ? 1. : -1.) * sign;
+using FaceLoops = std::vector<std::vector<glm::vec3>>;
+
+std::array<FaceLoops, 2> partitionPolarSeam(const FaceLoops &boundaries,
+                                            std::span<const glm::vec3> seam,
+                                            double direction, double units,
+                                            const auto &angleAt,
+                                            const auto &cutAt) {
   const auto &rim = boundaries.front();
   const auto seamEnd = std::ranges::find(rim, seam.back());
   if (rim.size() < 3 || seamEnd == rim.end())
-    throw std::runtime_error("Spherical seam must end at an exact rim sample");
+    throw std::runtime_error("Polar seam must end at an exact rim sample");
   std::vector<glm::vec3> rimFromSeam(rim);
   std::rotate(rimFromSeam.begin(),
               rimFromSeam.begin() + (seamEnd - rim.begin()), rimFromSeam.end());
-  const auto nativeAngle = [&](glm::vec3 position) {
-    const auto p = Point(position) - f.origin;
-    const double x = glm::dot(p, f.x), y = glm::dot(p, f.y);
-    if (std::hypot(x, y) <= tolerance)
-      throw std::runtime_error("Spherical seam rim or hole meets a pole");
-    return std::atan2(y, x);
-  };
-  const double seamAngle = nativeAngle(seam.back());
+  const double seamAngle = angleAt(seam.back());
   constexpr double period = 2 * std::numbers::pi;
   const auto azimuth = [&](glm::vec3 position) {
     const double angle =
-        std::remainder(direction * (nativeAngle(position) - seamAngle), period);
+        std::remainder(direction * (angleAt(position) - seamAngle), period);
     return angle < 0 ? angle + period : angle;
   };
   size_t cutIndex = 0;
@@ -1325,8 +1493,7 @@ meshTrimmedSphericalSeam(const SphericalSurface &sphere,
   for (size_t i = 1; i < rimFromSeam.size(); ++i) {
     const double angle = azimuth(rimFromSeam[i]);
     if (angle <= previous || angle - previous >= std::numbers::pi)
-      throw std::runtime_error(
-          "Spherical seam rim must wind once monotonically");
+      throw std::runtime_error("Polar seam rim must wind once monotonically");
     if (!cutIndex || std::abs(angle - std::numbers::pi) <
                          std::abs(cutAngle - std::numbers::pi)) {
       cutIndex = i;
@@ -1336,27 +1503,18 @@ meshTrimmedSphericalSeam(const SphericalSurface &sphere,
   }
   if (previous <= std::numbers::pi ||
       std::abs(cutAngle - std::numbers::pi) > std::numbers::pi / 4.)
-    throw std::runtime_error("Cannot find an opposite spherical rim cut");
-  const auto cutDirection =
-      glm::normalize(Point(rimFromSeam[cutIndex]) - f.origin);
-  const double cosine = std::clamp(glm::dot(polarAxis, cutDirection), -1., 1.);
-  const auto radial = glm::normalize(cutDirection - cosine * polarAxis);
-  const double end = std::acos(cosine);
-  ParametricCurve meridian;
-  meridian.domain = {{0, end}};
-  meridian.point = [=](double t) -> std::optional<Point> {
-    return f.origin + radius * (std::cos(t) * polarAxis + std::sin(t) * radial);
-  };
-  const auto samples = sampleCurve(meridian, 0, end, .0005 / units, 4097);
+    throw std::runtime_error("Cannot find an opposite polar rim cut");
+  const auto meridian = cutAt(rimFromSeam[cutIndex]);
+  const auto samples = sampleCurve(meridian, 0, 1, .0005 / units, 4097);
   if (samples.size() < 2)
-    throw std::runtime_error("Spherical rim cut exceeds its sample budget");
+    throw std::runtime_error("Polar rim cut exceeds its sample budget");
   std::vector<glm::vec3> cut;
   cut.reserve(samples.size());
   for (const auto &sample : samples)
     cut.emplace_back(sample.point);
   cut.front() = seam.front();
   cut.back() = rimFromSeam[cutIndex];
-  std::array<std::vector<std::vector<glm::vec3>>, 2> pieces;
+  std::array<FaceLoops, 2> pieces;
   auto &first = pieces[0].emplace_back(seam.begin(), seam.end());
   first.insert(first.end(), rimFromSeam.begin() + 1,
                rimFromSeam.begin() + cutIndex + 1);
@@ -1367,7 +1525,7 @@ meshTrimmedSphericalSeam(const SphericalSurface &sphere,
   second.insert(second.end(), seam.rbegin(), seam.rend() - 1);
   for (const auto &hole : std::span(boundaries).subspan(1)) {
     if (hole.size() < 3)
-      throw std::runtime_error("Invalid trimmed spherical seam hole");
+      throw std::runtime_error("Invalid polar seam hole");
     const auto side = azimuth(hole.front()) < cutAngle ? 0 : 1;
     if (!std::ranges::all_of(hole, [&](glm::vec3 position) {
           const auto angle = azimuth(position);
@@ -1375,10 +1533,43 @@ meshTrimmedSphericalSeam(const SphericalSurface &sphere,
                  std::abs(angle - cutAngle) > 1e-8 &&
                  (angle < cutAngle ? 0 : 1) == side;
         }))
-      throw std::runtime_error(
-          "Spherical seam or its opposite cut meets a hole");
+      throw std::runtime_error("Polar seam or its opposite cut meets a hole");
     pieces[side].push_back(hole);
   }
+  return pieces;
+}
+
+std::vector<CurvedFaceTriangle>
+meshTrimmedSphericalSeam(const SphericalSurface &sphere,
+                         const FaceLoops &boundaries,
+                         std::span<const glm::vec3> seam, bool sameSense,
+                         double units, double sign, double tolerance) {
+  const auto &f = sphere.frame;
+  const double radius = sphere.radius;
+  const auto polarAxis = sign * f.z;
+  const double direction = (sameSense ? 1. : -1.) * sign;
+  const auto angleAt = [&](glm::vec3 position) {
+    const auto p = Point(position) - f.origin;
+    const double x = glm::dot(p, f.x), y = glm::dot(p, f.y);
+    if (std::hypot(x, y) <= tolerance)
+      throw std::runtime_error("Spherical seam rim or hole meets a pole");
+    return std::atan2(y, x);
+  };
+  const auto cutAt = [&](glm::vec3 position) {
+    const auto direction = glm::normalize(Point(position) - f.origin);
+    const double cosine = std::clamp(glm::dot(polarAxis, direction), -1., 1.);
+    const auto radial = glm::normalize(direction - cosine * polarAxis);
+    const double end = std::acos(cosine);
+    ParametricCurve meridian;
+    meridian.domain = {{0, 1}};
+    meridian.point = [=](double t) -> std::optional<Point> {
+      return f.origin + radius * (std::cos(t * end) * polarAxis +
+                                  std::sin(t * end) * radial);
+    };
+    return meridian;
+  };
+  const auto pieces =
+      partitionPolarSeam(boundaries, seam, direction, units, angleAt, cutAt);
   auto result =
       meshSphericalEdgeLoops(sphere, pieces[0], true, sameSense, units);
   auto remainder =
@@ -1444,14 +1635,74 @@ meshSphericalSeam(const SphericalSurface &sphere,
   result.insert(result.end(), remainder.begin(), remainder.end());
   return result;
 }
+
+std::vector<CurvedFaceTriangle>
+meshRevolvedRadialGraph(const RevolvedRadialGraph &graph,
+                        const FaceLoops &boundaries, bool explicitOuter,
+                        bool sameSense, double units,
+                        std::span<const glm::vec3> seam) {
+  const double extent = graph.maxRadius * 2;
+  const double tolerance = std::max(1e-7 / units, extent * 2e-7);
+  ParametricSurface chart;
+  chart.point = graph.point;
+  chart.inverse = graph.inverse;
+  chart.derivatives = graph.derivatives;
+  if (!seam.empty()) {
+    if (seam.size() < 2 || seam.size() > 4097 ||
+        glm::length(Point(seam.front()) - graph.frame.origin) > tolerance)
+      throw std::runtime_error("Revolved seam must start at its smooth apex");
+    const auto angleAt = [&](glm::vec3 position) {
+      const auto uv = graph.inverse(Point(position));
+      if (!uv || glm::length(*uv) <= tolerance)
+        throw std::runtime_error("Revolved seam rim or hole meets its apex");
+      return std::atan2(uv->y, uv->x);
+    };
+    const auto cutAt = [&](glm::vec3 position) {
+      const auto uv = graph.inverse(Point(position));
+      if (!uv)
+        throw std::runtime_error("Revolved rim cut leaves its surface");
+      ParametricCurve meridian;
+      meridian.domain = {{0, 1}};
+      meridian.point = [point = graph.point, end = *uv](double t) {
+        return point(t * end.x, t * end.y);
+      };
+      return meridian;
+    };
+    const auto pieces = partitionPolarSeam(
+        boundaries, seam, sameSense ? 1. : -1., units, angleAt, cutAt);
+    auto result = Mesher(chart, units, extent).run(pieces[0], true, sameSense);
+    auto remainder =
+        Mesher(chart, units, extent).run(pieces[1], true, sameSense);
+    result.insert(result.end(), remainder.begin(), remainder.end());
+    return result;
+  }
+  FaceLoops rings;
+  InteriorPoint apex{glm::vec3(graph.frame.origin), false};
+  for (const auto &boundary : boundaries) {
+    if (boundary.size() != 1) {
+      rings.push_back(boundary);
+      continue;
+    }
+    if (apex.required || (explicitOuter && rings.empty()) ||
+        glm::length(Point(boundary.front()) - graph.frame.origin) > tolerance)
+      throw std::runtime_error(
+          "Revolved vertex loop must be the single smooth apex inside a rim");
+    apex = {boundary.front(), true};
+  }
+  if (rings.empty())
+    throw std::runtime_error("Revolved apex face requires an edge-loop rim");
+  if (!explicitOuter && rings.size() > 1)
+    throw std::runtime_error(
+        "Revolved apex face with holes requires an outer bound");
+  return Mesher(chart, units, extent, {}, apex).run(rings, true, sameSense);
+}
 } // namespace
 
 std::optional<std::vector<CurvedFaceTriangle>>
 meshIfcCurvedFace(const ParametricSurface &surface,
                   const std::vector<std::vector<glm::vec3>> &boundaries,
                   bool explicitOuter, bool sameSense, double units,
-                  std::string &error,
-                  std::span<const glm::vec3> sphericalSeam) {
+                  std::string &error, std::span<const glm::vec3> polarSeam) {
   try {
     if (boundaries.empty() || !std::isfinite(units) || units <= 0 ||
         !surface.point)
@@ -1460,10 +1711,16 @@ meshIfcCurvedFace(const ParametricSurface &surface,
     double extent = 0;
     if (boundaries.front().empty())
       throw std::runtime_error("Empty curved face outer loop");
-    if (!sphericalSeam.empty()) {
+    if (surface.radialGraph)
+      return meshRevolvedRadialGraph(*surface.radialGraph, boundaries,
+                                     explicitOuter, sameSense, units,
+                                     polarSeam);
+    if (!surface.radialGraphError.empty())
+      throw std::runtime_error(surface.radialGraphError);
+    if (!polarSeam.empty()) {
       if (!surface.sphere)
         throw std::runtime_error("Spherical seam requires a spherical face");
-      return meshSphericalSeam(*surface.sphere, boundaries, sphericalSeam,
+      return meshSphericalSeam(*surface.sphere, boundaries, polarSeam,
                                sameSense, units);
     }
     if (std::ranges::any_of(
