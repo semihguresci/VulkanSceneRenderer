@@ -70,7 +70,7 @@ private:
           "Curved face parameter is outside a regular surface domain");
     return *p;
   }
-  std::pair<Point, Point> derivatives(UV uv) {
+  std::pair<Point, Point> derivatives(UV uv, std::optional<UV> interior = {}) {
     std::array<Point, 2> result;
     for (unsigned axis = 0; axis < 2; ++axis) {
       const auto domain = axis ? s_.vDomain : s_.uDomain;
@@ -85,6 +85,15 @@ private:
         a[axis] = std::max(a[axis], domain->first);
         b[axis] = std::min(b[axis], domain->second);
       }
+      if (interior && onCrease(uv[axis], axis)) {
+        if ((*interior)[axis] > uv[axis]) {
+          a[axis] = uv[axis];
+          b[axis] = std::min(b[axis], (*interior)[axis]);
+        } else if ((*interior)[axis] < uv[axis]) {
+          b[axis] = uv[axis];
+          a[axis] = std::max(a[axis], (*interior)[axis]);
+        }
+      }
       if (b[axis] <= a[axis])
         throw std::runtime_error("Degenerate curved face parameter domain");
       result[axis] = (evaluate(b) - evaluate(a)) / (b[axis] - a[axis]);
@@ -96,6 +105,22 @@ private:
   void seedInverse();
   void triangulate(const std::vector<std::vector<Vertex>> &rings,
                    bool sameSense);
+  void constrainCreases(std::vector<Triangle> &triangles);
+  bool onCrease(double parameter, unsigned axis) const {
+    const double epsilon = scale_[axis] * 1e-10;
+    const auto &creases = creases_[axis];
+    const auto knot =
+        std::lower_bound(creases.begin(), creases.end(), parameter - epsilon);
+    return knot != creases.end() && *knot <= parameter + epsilon;
+  }
+  bool creaseEdge(Edge e) const {
+    for (unsigned axis = 0; axis < 2; ++axis)
+      if (onCrease(vertices_[e.first].uv[axis], axis) &&
+          std::abs(vertices_[e.first].uv[axis] -
+                   vertices_[e.second].uv[axis]) <= scale_[axis] * 1e-10)
+        return true;
+    return false;
+  }
   bool acceptable(const Triangle &t, bool sameSense);
   uint32_t insert(UV uv) {
     if (vertices_.size() >= 131072)
@@ -155,6 +180,7 @@ private:
   std::deque<std::pair<uint32_t, uint32_t>> pending_;
   std::vector<uint32_t> freeTriangles_, generations_;
   std::set<Edge> boundary_;
+  std::array<std::vector<double>, 2> creases_;
   std::map<Edge, Edge> seams_;
   std::deque<Edge> flipPending_;
   size_t flipChecks_ = 0;
@@ -163,6 +189,80 @@ private:
   std::optional<glm::vec3> fanPoint_;
   std::map<Edge, std::set<uint32_t>> adjacent_;
 };
+
+void Mesher::constrainCreases(std::vector<Triangle> &triangles) {
+  size_t checks = 0;
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    const double first = low_[axis], last = first + scale_[axis];
+    const double epsilon = scale_[axis] * 1e-10;
+    const double period = s_.periods[axis];
+    auto &cuts = creases_[axis];
+    for (double knot : axis ? s_.creaseV : s_.creaseU) {
+      if (period) {
+        knot += std::ceil((first - epsilon - knot) / period) * period;
+        for (unsigned repeat = 0; knot <= last + epsilon; ++repeat) {
+          if (repeat >= 2 || cuts.size() >= 4096)
+            throw std::runtime_error(
+                "Curved face crease lifting exceeds its budget");
+          cuts.push_back(knot);
+          knot += period;
+        }
+      } else if (knot >= first - epsilon && knot <= last + epsilon)
+        cuts.push_back(knot);
+    }
+    std::ranges::sort(cuts);
+    for (double knot : cuts) {
+      if (knot <= first + epsilon || knot >= last - epsilon)
+        continue;
+      std::vector<Triangle> pieces;
+      std::map<Edge, uint32_t> intersections;
+      const auto side = [&](uint32_t v) {
+        const double d = vertices_[v].uv[axis] - knot;
+        return (d > epsilon) - (d < -epsilon);
+      };
+      const auto crossing = [&](uint32_t a, uint32_t b) {
+        const auto e = edge(a, b);
+        if (boundary_.contains(e))
+          throw std::runtime_error(
+              "Shared edge must have a sample at its swept profile crease");
+        if (const auto it = intersections.find(e); it != intersections.end())
+          return it->second;
+        const auto p = vertices_[a].uv, q = vertices_[b].uv;
+        auto uv = p + (q - p) * ((knot - p[axis]) / (q[axis] - p[axis]));
+        uv[axis] = knot;
+        const auto v = insert(uv);
+        intersections.emplace(e, v);
+        return v;
+      };
+      for (const auto &triangle : triangles) {
+        if (++checks > 8000000 || pieces.size() >= 524284)
+          throw std::runtime_error(
+              "Curved face crease constraint exceeds its budget");
+        const std::array sides{side(triangle[0]), side(triangle[1]),
+                               side(triangle[2])};
+        if (*std::ranges::min_element(sides) >= 0 ||
+            *std::ranges::max_element(sides) <= 0) {
+          pieces.push_back(triangle);
+          continue;
+        }
+        for (int half : {-1, 1}) {
+          std::array<uint32_t, 4> polygon{};
+          unsigned count = 0;
+          for (unsigned i = 0; i < 3; ++i) {
+            const unsigned j = (i + 1) % 3;
+            if (sides[i] * half >= 0)
+              polygon[count++] = triangle[i];
+            if (sides[i] * sides[j] < 0)
+              polygon[count++] = crossing(triangle[i], triangle[j]);
+          }
+          for (unsigned i = 1; i + 1 < count; ++i)
+            pieces.push_back({polygon[0], polygon[i], polygon[i + 1]});
+        }
+      }
+      triangles = std::move(pieces);
+    }
+  }
+}
 
 void Mesher::seedInverse() {
   std::array<std::vector<double>, 2> parameters;
@@ -525,6 +625,7 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
     if (!inserted)
       throw std::runtime_error("Curved face lost a shared boundary sample");
   }
+  constrainCreases(initial);
   for (const auto &t : initial)
     add(t);
   for (const auto &[e, neighbors] : adjacent_)
@@ -627,7 +728,7 @@ void Mesher::improveQuality(bool sameSense) {
     if (++flipChecks_ > 8000000)
       throw std::runtime_error("Curved face mesh quality budget exceeded");
     const auto found = adjacent_.find(e);
-    if (boundary_.contains(e) || found == adjacent_.end() ||
+    if (boundary_.contains(e) || creaseEdge(e) || found == adjacent_.end() ||
         found->second.size() != 2)
       continue;
     const auto first = *found->second.begin(), second = *found->second.rbegin();
@@ -858,22 +959,36 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
   }
   triangulate(rings, sameSense);
   refine(sameSense);
-  std::vector<glm::vec3> normals;
-  for (const auto &v : vertices_) {
-    const auto [x, y] = derivatives(v.uv);
+  const auto normal = [&](UV uv, std::optional<UV> interior = {}) {
+    const auto [x, y] = derivatives(uv, interior);
     const auto n = glm::cross(x, y);
     if (glm::length(n) <= glm::length(x) * glm::length(y) * 1e-10)
       throw std::runtime_error(
           "Curved face contains a singular boundary parameter");
-    normals.emplace_back(glm::normalize(n) * (sameSense ? 1. : -1.));
-  }
+    return glm::vec3(glm::normalize(n) * (sameSense ? 1. : -1.));
+  };
+  std::vector<std::optional<glm::vec3>> normals(vertices_.size());
   std::vector<CurvedFaceTriangle> result;
   for (size_t i = 0; i < triangles_.size(); ++i)
     if (active_[i]) {
       const auto &t = triangles_[i];
+      const auto center =
+          (vertices_[t[0]].uv + vertices_[t[1]].uv + vertices_[t[2]].uv) / 3.;
+      std::array<glm::vec3, 3> triangleNormals;
+      for (unsigned j = 0; j < 3; ++j) {
+        const auto v = t[j];
+        const auto uv = vertices_[v].uv;
+        if (onCrease(uv.x, 0) || onCrease(uv.y, 1))
+          triangleNormals[j] = normal(uv, center);
+        else {
+          if (!normals[v])
+            normals[v] = normal(uv);
+          triangleNormals[j] = *normals[v];
+        }
+      }
       result.push_back({{vertices_[t[0]].point, vertices_[t[1]].point,
                          vertices_[t[2]].point},
-                        {normals[t[0]], normals[t[1]], normals[t[2]]}});
+                        triangleNormals});
     }
   return result;
 }

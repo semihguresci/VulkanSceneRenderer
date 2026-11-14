@@ -76,8 +76,10 @@ add_library(VulkanSceneRenderer_geometry
     IfcTessellatedLoader.cpp
     IfcAreaProfileGeometry.cpp
     IfcStructuralAreaShapes.cpp
+    IfcSweptProfileCurves.cpp
     IfcCurveReader.cpp
     IfcBrepFaceGeometry.cpp
+    IfcSweptSurfaceMesh.cpp
     Mesh.cpp
     Model.cpp
     PolylineGeometry.cpp

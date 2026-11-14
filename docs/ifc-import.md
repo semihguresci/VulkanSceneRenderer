@@ -57,6 +57,7 @@ checks are free of validation and synchronization errors.
 | `IfcSweptDiskSolid` | Solid/hollow disks on bounded 3D curves, including splines, closed loops and mitered C0 joins. Explicit extents retain the directrix's source parameter domain. Straight and open tangential line/arc paths retain their analytic conversion. Disconnected paths, detected tube overlaps, curvature folds, turns above 120 degrees and segments too short for their miters reject atomically. |
 | `IfcSweptDiskSolidPolygonal` | Polyline or omitted-segment indexed-polycurve directrices, optional circular fillets, hollow walls and closed seams. Omitted fillets retain mitered joins. Radius/segment constraints and tangent-extent overlap are checked; adjacent fillets may meet exactly. |
 | `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Arbitrary open curves and width/slope profiles are supported. Ordered tag runs support splits, merges and multiway branches using linear station interpolation. Planar piecewise-linear sharp joins use shared half-angle miters. Guide curves, crossing/reordered tags and other sharp-join configurations remain unsupported. |
+| `IfcSurfaceOfLinearExtrusion`, `IfcSurfaceOfRevolution` | Drawable open surface charts and pcurve/advanced-face bases. Centerlines, rounded rectangles, hollow circles and rectangles, and disjoint composite `CURVE` members retain their own domains and placements. Standalone revolution requires a regular, one-sided meridian. |
 | Auxiliary curves | Native Vulkan line lists for the concrete IFC 4.3 curve families listed below, including curves inside `IFCGEOMETRICCURVESET`. Closed paths retain their final segment; independent paths remain separate. Mapped instances, placements, units, curve colors and product identity are retained. Unbounded curves require explicit trims or segments. |
 
 Polygon triangulation uses Mapbox Earcut, a header-only vcpkg dependency
@@ -323,14 +324,51 @@ B-spline/rational B-spline surfaces. It also supports the following derived base
 | [IfcCurveBoundedSurface](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcCurveBoundedSurface.htm) | Boundary loops use pcurves on the matching basis. An explicit/inferred outer loop or a bounded implicit outer domain is supported, with inner holes. |
 | [IfcSectionedSurface](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSectionedSurface.htm) | Native convention: `u` is the directrix source parameter and `v` runs from 0 to 1 along the aligned cross section. Profile coordinates and local axis directions interpolate by physical station along smooth spans; planar polygonal spans are ruled between source sections and shared miter anchors. Profiles share their family; untagged profiles also require matching normalized break topology. |
 
-Swept-surface profiles support bounded arbitrary open/closed 2D curves, circles,
-ellipses and rectangles, including 2D placement.
+Swept-surface profiles support bounded arbitrary open and closed 2D curves,
+circles, ellipses, sharp and rounded rectangles, hollow circles and rectangles,
+and disjoint `CURVE` composites. A `CURVE` centerline uses its authored curve
+and knot domain. Thickness applies to the separate swept-area solid path.
 [Open cross profiles](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcOpenCrossProfileDef.htm)
 retain their offset point, project angle units, and horizontal or along-slope
-widths. Other profile families and void/multi-component profiles are diagnosed.
-Derived and mirrored wrappers work with these supported parent families.
-Supporting a surface as a pcurve basis does not generally add standalone surface
-meshing; `IfcSectionedSurface` additionally has a dedicated mesh converter.
+widths. Derived and mirrored wrappers preserve per-chart placement and domain.
+Generated rounded-rectangle parameters count consecutive line and arc pieces.
+Circle parameters use project angle units. Hollow boundaries and composite
+members are separate charts and touching or crossing composite boundaries
+produce source diagnostics. A composite accepts up to 64 members with 4,097
+boundary samples per chart and 32,768 across the profile.
+
+A multi-chart pcurve uses bounded UV geometry and the associated 3D curve or
+3D topological vertices to establish a unique chart. Curve agreement uses
+bidirectional chord-bounded samples and a capped search. Advanced faces use
+their shared 3D edge samples to identify the chart, then honor `SameSense`.
+Pcurves record sampled crossings of sharp profile joins. The face triangulation
+constrains these joins and uses a normal from each side. An edge crossing a
+join needs a sample at the join so adjoining faces can share its original
+boundary exactly. Ambiguous or conflicting bounds identify the surface and
+profile IDs in the diagnostic.
+
+### Standalone swept surface meshes
+
+Standalone extrusion displays one authored `Depth` along `v ∈ [0,1]`. An
+explicit rectangular trim supplies its own interval. Regular revolutions
+display one turn when untrimmed and use the project angle units. For standalone
+display the revolution axis lies in the profile plane. The meridian stays clear
+of the axis, and multi-component meridians remain on the same side. Older
+single-chart pcurves can still evaluate other axis orientations. Standalone
+linear sweeps require an extrusion direction out of the profile plane.
+Open sheets have no end caps. Closed generating loops preserve exterior or
+cavity winding after placement and reflection. Rectangular trim senses control
+the parameter orientation of the resulting sheet.
+
+The grid includes profile knots and full-period seams. It samples to a 0.25 mm
+chord target and enforces evaluation, axis and triangle budgets. Unsupported or
+collapsed charts reject the representation before mesh buffers change. A
+standalone swept item may also appear inside an `IfcGeometricSet`.
+
+Enable `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` and run
+`ctest -R '^ifc_swept_surface_gpu_regression$' --output-on-failure` in the build
+directory. The fixture compares centerline creases, separated composite sheets
+and a trimmed circular sheet in Forward and Deferred raster with TAA off and on.
 
 ### Derived and mirrored profiles
 
@@ -662,11 +700,10 @@ in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
 implementation tasks and independent geometry/rendering acceptance criteria.
 
 Guide-curve transitions, missing/reordered tag runs, curved or nonplanar sharp joins,
-unsupported swept-surface profile families, non-spherical singular charts and
-edge loops through spherical poles remain outside native coverage.
-Swept-surface profile gaps include center-line, hollow and
-composite definitions; swept-area solid profile support is listed separately
-above.
+non-spherical singular charts and edge loops through spherical poles remain
+outside native coverage. Swept surface limits include profiles with arbitrary
+`AREA` voids, standalone revolutions without a regular one-sided meridian, and
+multi-chart boundaries without enough 3D geometry to select their chart.
 Multiple-winding and otherwise ambiguous periodic spline charts also require
 further work. Each omitted
 representation is reported. A full IFC backend remains an option if future
