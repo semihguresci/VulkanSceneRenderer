@@ -855,6 +855,10 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
   candidate.materialBaseColor_=materialBaseColor_;
   candidate.sceneClipState_=sceneClipState_;
   candidate.sourcePath_=sourcePath_; // Secondary URI resolution never uses this path.
+  candidate.renderSetupSourceFingerprint_ = renderSetupSourceFingerprint_;
+  candidate.renderSetupSourceSceneCount_ = renderSetupSourceSceneCount_;
+  candidate.renderSetupSourceNodeCount_ = renderSetupSourceNodeCount_;
+  candidate.renderSetupSourceVariantCount_ = renderSetupSourceVariantCount_;
   candidate.exportSource_=plan.model;
   candidate.gltfModel_=result.sources_->evaluatedSource;
   candidate.linkedComposition_=linkedComposition_;
@@ -1216,6 +1220,10 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareSubtreeCloneGeneratio
   candidate.textureImageOwnership_=textureImageOwnership_;candidate.model_=model_;
   candidate.sourcePrimitiveToRuntime_=sourcePrimitiveToRuntime_;candidate.runtimePrimitiveToSource_=runtimePrimitiveToSource_;
   candidate.gltfModel_=plan.evaluatedSource;candidate.exportSource_=plan.authoredSource;candidate.sourcePath_=sourcePath_;
+  candidate.renderSetupSourceFingerprint_ = renderSetupSourceFingerprint_;
+  candidate.renderSetupSourceSceneCount_ = renderSetupSourceSceneCount_;
+  candidate.renderSetupSourceNodeCount_ = renderSetupSourceNodeCount_;
+  candidate.renderSetupSourceVariantCount_ = renderSetupSourceVariantCount_;
   candidate.linkedComposition_=linkedComposition_;
   candidate.linkedAssetState_=linkedAssetState_;
   candidate.inheritCameraProjectionNamespace(*this);cpu.add(candidate.cameraProjectionNamespaceBytes());
@@ -1331,6 +1339,8 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
   EXCHANGE_ASSET(deformation_); EXCHANGE_ASSET(materialVariants_); EXCHANGE_ASSET(selectedMaterialVariant_);
   EXCHANGE_ASSET(variantOriginalModel_); EXCHANGE_ASSET(variantOriginalDeformation_); EXCHANGE_ASSET(variantNormalTexCoords_);
   swapSourceModel(exportSource_,other.exportSource_); EXCHANGE_ASSET(sourcePath_);
+  EXCHANGE_ASSET(renderSetupSourceFingerprint_); EXCHANGE_ASSET(renderSetupSourceSceneCount_);
+  EXCHANGE_ASSET(renderSetupSourceNodeCount_); EXCHANGE_ASSET(renderSetupSourceVariantCount_);
   EXCHANGE_ASSET(exportMaterialSources_); EXCHANGE_ASSET(exportMaterialTextureBindings_); EXCHANGE_ASSET(exportTextureIndices_);
   EXCHANGE_ASSET(vertices_); EXCHANGE_ASSET(indices_); EXCHANGE_ASSET(geometryRevision_); EXCHANGE_ASSET(materialRevision_);
   EXCHANGE_ASSET(modelBounds_); EXCHANGE_ASSET(authoredPointLights_); EXCHANGE_ASSET(authoredDirectionalLights_);

@@ -1519,7 +1519,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
                              std::vector<CapabilityDiagnostic>* diagnostics = nullptr,
                              const GltfLinkedReadContext* linkedContext = nullptr,
                              GltfLinkedManifest* linkedManifest = nullptr,
-                             uintmax_t* linkedBudget = nullptr) {
+                             uintmax_t* linkedBudget = nullptr,
+                             std::optional<container::util::ContentFingerprint>* fingerprint = nullptr) {
   const auto& stop = options.stop;
   checkModelImportCancellation(stop);
   tinygltf::TinyGLTF loader;
@@ -1647,6 +1648,8 @@ tinygltf::Model loadGltfModel(const std::string& path,
             linkedRead->observe(filePath, *output);
           if (!sourceRead) {
             try {
+              if (fingerprint)
+                fingerprint->emplace(container::util::FingerprintContent(*output, stop));
               auto json = parseSourceJson(*output, isBinaryGltf(path), stop);
               if (options.requireSelfContained) {
                 for (const auto* table : {"buffers", "images"}) {
@@ -2004,11 +2007,13 @@ void discardOpacityMicromapMetadata(tinygltf::Model& model) {
 
 tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& options,
                                   std::vector<CapabilityDiagnostic>* diagnostics = nullptr,
-                                  GltfLinkedCompositionInfo* composition = nullptr) {
+                                  GltfLinkedCompositionInfo* composition = nullptr,
+                                  std::optional<container::util::ContentFingerprint>* fingerprint = nullptr) {
   checkModelImportCancellation(options.stop);
   if (options.requireSelfContained && options.enableLinkedAssets)
     throw gltfError("glTF asset '" + path + "'", "self-contained loading cannot enable linked assets");
-  if (!options.enableLinkedAssets) return loadGltfModel(path, options, diagnostics);
+  if (!options.enableLinkedAssets)
+    return loadGltfModel(path, options, diagnostics, nullptr, nullptr, nullptr, fingerprint);
   uintmax_t remaining = std::min<uintmax_t>(options.maxInputBytes, 512ull * 1024 * 1024);
   const auto reader = [&](const GltfLinkedReadContext& context) {
     if (context.child && !remaining)
@@ -2019,7 +2024,8 @@ tinygltf::Model loadGltfComposition(const std::string& path, const LoadOptions& 
     const auto documentPath = context.child ? std::string(source.begin(), source.end()) : path;
     result.binary = isBinaryGltf(documentPath);
     result.model = loadGltfModel(documentPath, options,
-        diagnostics ? &documentDiagnostics : nullptr, &context, &result.manifest, &remaining);
+        diagnostics ? &documentDiagnostics : nullptr, &context, &result.manifest, &remaining,
+        context.child ? nullptr : fingerprint);
     if (diagnostics)
       diagnostics->insert(diagnostics->end(), std::make_move_iterator(documentDiagnostics.begin()),
                           std::make_move_iterator(documentDiagnostics.end()));
@@ -2064,7 +2070,9 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
                                   const LoadOptions& options) {
   std::vector<CapabilityDiagnostic> diagnostics;
   auto linked = options.enableLinkedAssets ? std::make_shared<GltfLinkedCompositionInfo>() : nullptr;
-  auto gltfModel = loadGltfComposition(path, options, &diagnostics, linked.get());
+  std::optional<container::util::ContentFingerprint> fingerprint;
+  auto gltfModel = loadGltfComposition(path, options, &diagnostics, linked.get(),
+                                      options.fingerprintPrimarySource ? &fingerprint : nullptr);
   try {
     checkModelImportCancellation(options.stop);
     GltfOpacityMicromapAssets micromaps;
@@ -2081,6 +2089,7 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
                           std::move(gltfModel), std::move(diagnostics)};
     result.opacityMicromaps = std::move(micromaps);
     if (linked && !linked->placements.empty()) result.linkedComposition = std::move(linked);
+    result.sourceFingerprint = std::move(fingerprint);
     const bool hasMorphs = std::ranges::any_of(result.gltfModel.meshes, [](const auto& mesh) {
       return std::ranges::any_of(mesh.primitives, [](const auto& primitive) {
         return !primitive.targets.empty();

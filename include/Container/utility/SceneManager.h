@@ -47,6 +47,7 @@
 #include "Container/utility/CameraProjectionTarget.h"
 #include "Container/utility/CameraViewPoseTarget.h"
 #include "Container/geometry/GltfCameraMotion.h"
+#include "Container/renderer/scene/RenderSetup.h"
 #include "Container/utility/SceneGraph.h"
 
 namespace container::gpu {
@@ -620,6 +621,10 @@ class SceneManager {
   void populateSceneGraph(SceneGraph& sceneGraph);
   [[nodiscard]] const GltfSceneCatalog& sceneCatalog() const { return sceneCatalog_; }
   [[nodiscard]] size_t selectedScene() const { return selectedScene_; }
+  [[nodiscard]] std::optional<container::renderer::RenderSetupSource> renderSetupSource() const;
+  [[nodiscard]] const std::filesystem::path& loadedPrimarySourcePath() const noexcept { return sourcePath_; }
+  [[nodiscard]] size_t renderSetupSourceNodeCount() const { return renderSetupSourceNodeCount_; }
+  [[nodiscard]] size_t renderSetupSourceVariantCount() const { return renderSetupSourceVariantCount_; }
   [[nodiscard]] GltfSceneActivation planSceneSelection(const SceneGraph&, size_t) const;
   void applySceneSelection(SceneGraph&, const GltfSceneActivation&);
   void registerActiveSceneNode(SceneGraph&, uint32_t node);
@@ -666,7 +671,8 @@ class SceneManager {
   void saveScene(const SceneGraph& sceneGraph,
                  const std::filesystem::path& destination) const;
   [[nodiscard]] tinygltf::Model buildSceneExport(const SceneGraph& sceneGraph,
-      const container::geometry::gltf::GltfLinkedPortableExportOptions* linked = nullptr) const;
+      const container::geometry::gltf::GltfLinkedPortableExportOptions* linked = nullptr,
+      const container::geometry::Model* baseGeometry = nullptr) const;
   void captureLinkedSceneBaseline(const SceneGraph&);
   [[nodiscard]] bool hasLinkedScene() const noexcept { return bool(linkedComposition_); }
   [[nodiscard]] const container::geometry::gltf::GltfLinkedCompositionInfo* linkedPrimaryComposition() const noexcept {
@@ -691,7 +697,8 @@ class SceneManager {
   [[nodiscard]] const container::geometry::gltf::MaterialVariantLibrary& materialVariants() const { return materialVariants_; }
   [[nodiscard]] std::optional<size_t> selectedMaterialVariant() const { return selectedMaterialVariant_; }
   [[nodiscard]] MaterialVariantGraphEdit planMaterialVariant(const SceneGraph&,std::optional<size_t>) const;
-  bool applyMaterialVariant(SceneGraph&,const MaterialVariantGraphEdit&,bool forward=true);
+  bool applyMaterialVariant(SceneGraph&,const MaterialVariantGraphEdit&,bool forward=true,
+      std::optional<container::geometry::Model>* previousGeometry = nullptr);
   [[nodiscard]] tinygltf::Model& animationSource() { return gltfModel_; }
   [[nodiscard]] const tinygltf::Model& animationSource() const { return gltfModel_; }
   [[nodiscard]] container::geometry::gltf::GltfNodeFlagEdit prepareGltfNodeFlagEdit(
@@ -1119,6 +1126,10 @@ class SceneManager {
   };
   std::vector<MaterialTextureSourceRequest> materialTextureSourceRequests_{};
   std::filesystem::path sourcePath_{};
+  std::optional<container::util::ContentFingerprint> renderSetupSourceFingerprint_;
+  size_t renderSetupSourceSceneCount_{};
+  size_t renderSetupSourceNodeCount_{};
+  size_t renderSetupSourceVariantCount_{};
   std::vector<std::optional<tinygltf::Material>> exportMaterialSources_{};
   std::vector<std::optional<container::geometry::gltf::ImportedMaterialTextureBindings>> exportMaterialTextureBindings_{};
   std::vector<int32_t> exportTextureIndices_{};

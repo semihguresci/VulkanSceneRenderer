@@ -198,6 +198,20 @@ hides lines behind filled geometry.
 
 ## Rendering, lighting and diagnostics
 
+Open **Render Setups** in Scene Controls to capture a named look for the
+primary glTF or GLB scene. A setup records the selected authored camera,
+material variant, node visibility, HDR panorama, and display grade. A setup
+with no authored camera or panorama uses the base viewport camera or sky.
+Save the collection as a JSON sidecar and open it alongside the same source
+asset and glTF scene. Move the referenced HDR files with the sidecar when it
+uses relative paths.
+
+Activate a named setup to preview it. Switch to another setup or choose
+**Deactivate preview** to restore the camera, material assignments, visibility,
+environment, and grade present before the first activation. Missing HDR files
+and stale node references are reported before switching. Saving the scene
+from a preview exports the base visibility and materials.
+
 | Go to destination | What to use there |
 | --- | --- |
 | **Rendering / display / overlays** | Choose an available **Rendering Engine** (forward, deferred or path tracing), display visualization, Editor/Render Preview mode, MSAA, vertex/light overlays, normal validation and wireframe settings. Unsupported options explain their availability. |

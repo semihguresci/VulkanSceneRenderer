@@ -22,6 +22,25 @@ namespace {
 using container::scene::SceneGraph;
 using container::scene::SceneNode;
 
+TEST(SceneGraph, PreviewVisibilityOverridesInheritedViewWithoutAuthoringFlags) {
+  SceneGraph graph;
+  const auto root = graph.createNode(glm::mat4(1), 0);
+  const auto child = graph.createNode(glm::mat4(1), 0, true);
+  ASSERT_TRUE(graph.setParent(child, root));
+  graph.setVisible(root, false);
+  EXPECT_FALSE(graph.isNodeEffectivelyVisible(child));
+  const auto revision = graph.revision();
+  graph.setPreviewVisibility({1, -1});
+  EXPECT_GT(graph.revision(), revision);
+  EXPECT_FALSE(graph.getNode(root)->visible);
+  EXPECT_TRUE(graph.isNodeEffectivelyVisible(child));
+  graph.setPreviewVisibility({1, 0});
+  EXPECT_TRUE(graph.getNode(child)->visible);
+  EXPECT_FALSE(graph.isNodeEffectivelyVisible(child));
+  graph.setPreviewVisibility({});
+  EXPECT_FALSE(graph.isNodeEffectivelyVisible(child));
+}
+
 // ============================================================================
 // SceneNode defaults
 // ============================================================================

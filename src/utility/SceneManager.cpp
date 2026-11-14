@@ -1706,7 +1706,17 @@ container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
   options.enableOpacityMicromaps = enableOpacityMicromaps;
   options.mergeInput = mergeInput;
   options.stop = stop;
+  options.fingerprintPrimarySource = !mergeInput;
   return prepareSceneGltfAsset(resolvedPath, std::move(options));
+}
+
+std::optional<container::renderer::RenderSetupSource> SceneManager::renderSetupSource() const {
+  if (!renderSetupSourceFingerprint_ || selectedScene() >= renderSetupSourceSceneCount_ ||
+      selectedScene() > std::numeric_limits<uint32_t>::max()) {
+    return std::nullopt;
+  }
+  return container::renderer::RenderSetupSource{renderSetupSourceFingerprint_->digest,
+      renderSetupSourceFingerprint_->byteSize, static_cast<uint32_t>(selectedScene())};
 }
 
 bool SceneManager::reloadModel(
@@ -2087,7 +2097,8 @@ float SceneManager::importScale() const {
 }
 
 tinygltf::Model SceneManager::buildSceneExport(const SceneGraph& graph,
-    const container::geometry::gltf::GltfLinkedPortableExportOptions* linked) const {
+    const container::geometry::gltf::GltfLinkedPortableExportOptions* linked,
+    const container::geometry::Model* baseGeometry) const {
   auto source = exportSource_;
   if (linked) {
     if (linked->linkedGraphNodes.size() != graph.nodeCount() ||
@@ -2229,7 +2240,7 @@ tinygltf::Model SceneManager::buildSceneExport(const SceneGraph& graph,
   for(size_t i=0;i<sceneCatalog_.entries.size();++i)
     roots.push_back(planSceneSelection(graph,i,kMaxAssetRenderableObjects).runtimeRoots);
   return container::geometry::gltf::buildExportModel(
-      {graph, model_, &source, sourcePath_, sourceNodes, materials, sourceMaterials,
+      {graph, baseGeometry ? *baseGeometry : model_, &source, sourcePath_, sourceNodes, materials, sourceMaterials,
        &exportSource_,roots,int32_t(selectedScene_),runtimePrimitiveToSource_,
        {phases.images,phases.textures,phases.samplers,materialActive},
        linked ? linked->linkedGraphNodes : std::span<const uint8_t>{},
@@ -2258,7 +2269,8 @@ MaterialVariantGraphEdit SceneManager::planMaterialVariant(const SceneGraph& gra
       throw std::runtime_error("Material variant references an unavailable runtime material");
   return edit;
 }
-bool SceneManager::applyMaterialVariant(SceneGraph& graph,const MaterialVariantGraphEdit& edit,bool forward) {
+bool SceneManager::applyMaterialVariant(SceneGraph& graph,const MaterialVariantGraphEdit& edit,bool forward,
+    std::optional<container::geometry::Model>* previousGeometry) {
   if (graph.identity()!=edit.graphIdentity) return false;
   for (const auto& assignment:edit.assignments)
     if (!graph.getNode(assignment.node) || graph.isNodeRetired(assignment.node) ||
@@ -2325,6 +2337,7 @@ bool SceneManager::applyMaterialVariant(SceneGraph& graph,const MaterialVariantG
   }
   if (!ApplyMaterialVariantGraphEdit(graph,edit,forward,selectedMaterialVariant_)) return false;
   if (regenerated) {
+    if (previousGeometry && !*previousGeometry) previousGeometry->emplace(std::move(model_));
     model_=std::move(*regenerated); deformation_=std::move(deformation);
     vertices_=std::move(regeneratedVertices); indices_=std::move(regeneratedIndices);
     variantNormalTexCoords_=std::move(texCoords); ++geometryRevision_;
@@ -3011,6 +3024,10 @@ void SceneManager::loadGltfAssets(int requestedScene,
     runtimeMaterialProvenance_[id].known=std::ranges::all_of(bindings,[](uint32_t texture){return texture==UINT32_MAX;});
   }
   sourcePath_.clear();
+  renderSetupSourceFingerprint_.reset();
+  renderSetupSourceSceneCount_ = 0;
+  renderSetupSourceNodeCount_ = 0;
+  renderSetupSourceVariantCount_ = 0;
   exportMaterialSources_.clear();
   exportMaterialTextureBindings_.clear();
   exportTextureIndices_.clear();
@@ -3122,6 +3139,12 @@ void SceneManager::loadGltfAssets(int requestedScene,
       runtimePrimitiveToSource_ = std::move(primitiveMapping.runtimeToSource);
       if(needsImplicit) sourcePrimitiveImplicitMaterials_.assign(sourcePrimitiveToRuntime_.size(),implicitMaterial);
       retainOpacityMicromaps(result.opacityMicromaps);
+      if (result.sourceFingerprint && !linkedComposition_) {
+        renderSetupSourceFingerprint_ = std::move(result.sourceFingerprint);
+        renderSetupSourceSceneCount_ = std::max<size_t>(1, gltfModel_.scenes.size());
+        renderSetupSourceNodeCount_ = gltfModel_.nodes.size();
+        renderSetupSourceVariantCount_ = materialVariants_.names().size();
+      }
     } catch (const std::exception& e) {
       std::println(stderr, "glTF load failed: {}", e.what());
       throw;
@@ -3327,15 +3350,16 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
     for (auto root = activation.runtimeRoots.rbegin(); root != activation.runtimeRoots.rend(); ++root) {
       bool parentVisible = true;
       bool retiredAncestor = false;
-      auto ancestor = graph->getNode(graph->getNode(*root)->parent);
+      auto ancestorIndex = graph->getNode(*root)->parent;
       size_t depth = 0;
-      while (ancestor && depth++ < graph->nodeCount()) {
+      while (graph->getNode(ancestorIndex) && depth++ < graph->nodeCount()) {
+        const auto* ancestor = graph->getNode(ancestorIndex);
         if(ancestor->retired) { retiredAncestor=true; break; }
-        parentVisible = parentVisible && ancestor->visible;
-        ancestor = graph->getNode(ancestor->parent);
+        parentVisible = parentVisible && graph->previewLocalVisible(ancestorIndex);
+        ancestorIndex = ancestor->parent;
       }
       if(retiredAncestor) continue;
-      if (ancestor) parentVisible = false; // Fail closed on a corrupted parent cycle.
+      if (graph->getNode(ancestorIndex)) parentVisible = false; // Fail closed on a corrupted parent cycle.
       work.push_back({*root, parentVisible});
     }
     while (!work.empty()) {
@@ -3344,7 +3368,7 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
       visited[id] = true;
       const auto& runtime = *graph->getNode(id);
       if(graph->isNodeRetired(id)) continue; // Retirement is independent of includeHidden.
-      const bool visible = parentVisible && runtime.visible;
+      const bool visible = parentVisible && graph->previewLocalVisible(id);
       if (!includeHidden && !visible) continue;
       if (runtime.sourceNodeIndex >= 0 && size_t(runtime.sourceNodeIndex) < gltfModel_.nodes.size())
         lightNodes.push_back({runtime.sourceNodeIndex, inverseOuterRoot * runtime.worldTransform});
@@ -4071,6 +4095,10 @@ void SceneManager::resetLoadedAssets() {
   exportSource_ = tinygltf::Model{};
   gltfTextureResources_ = {};
   sourcePath_.clear();
+  renderSetupSourceFingerprint_.reset();
+  renderSetupSourceSceneCount_ = 0;
+  renderSetupSourceNodeCount_ = 0;
+  renderSetupSourceVariantCount_ = 0;
   exportMaterialSources_.clear();
   exportMaterialTextureBindings_.clear();
   exportTextureIndices_.clear();

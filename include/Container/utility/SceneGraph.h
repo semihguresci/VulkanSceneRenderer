@@ -237,6 +237,10 @@ class SceneGraph {
   void setLocalTransform(uint32_t nodeIndex, const glm::mat4& localTransform);
   void setRenderable(uint32_t nodeIndex, bool renderable);
   void setVisible(uint32_t nodeIndex, bool visible);
+  // A render setup replaces visibility at selected authored nodes, without
+  // changing the local flags used by authoring, undo, and scene export.
+  void setPreviewVisibility(std::vector<int8_t> visibility) noexcept;
+  [[nodiscard]] bool previewLocalVisible(uint32_t nodeIndex) const noexcept;
   void setSelectable(uint32_t nodeIndex, bool selectable);
   void setHoverable(uint32_t nodeIndex, bool hoverable);
   void setName(uint32_t nodeIndex, std::string name);
@@ -391,6 +395,7 @@ private:
   uint64_t identity_{0};
   uint64_t hierarchyRevision_{0};
   std::optional<std::vector<uint32_t>> activeRoots_;
+  std::vector<int8_t> previewVisibility_;
   mutable uint64_t activeMembershipRevision_{std::numeric_limits<uint64_t>::max()};
   mutable std::vector<uint8_t> activeMembership_;
   mutable std::vector<uint32_t> activeRenderables_;

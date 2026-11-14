@@ -1148,6 +1148,14 @@ set_tests_properties(bim_sun_hours_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 240
     LABELS "bim;requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME render_setup_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/render_setup_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/render-setups" --managed-output)
+set_tests_properties(render_setup_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 400
+    LABELS "requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME forward_wireframe_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_wireframe_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
@@ -2474,6 +2482,11 @@ target_sources(bim_hard_clash_tests PRIVATE
 add_custom_test(bim_sun_hours_tests
     ${TEST_RENDERER_BIM_DIR}/bim_sun_hours_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_bim_ui_support
+)
+
+add_custom_test(render_setup_tests
+    ${TEST_RENDERER_DIR}/render_setup_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_render_setup nlohmann_json::nlohmann_json
 )
 
 add_custom_test(bim_frame_draw_routing_planner_tests

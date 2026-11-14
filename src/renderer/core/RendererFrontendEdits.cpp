@@ -170,6 +170,8 @@ void RendererFrontend::selectGltfScene(size_t index, bool expectRejection) {
   if (expectRejection) throw std::runtime_error("Capture glTF scene selection unexpectedly passed preflight");
 
   // Rejected requests leave live previews, the journal and the active view intact.
+  deactivateRenderSetup();
+  clearRenderSetupDocument();
   finishEditGestures();
   if (sceneEditPublicationPending_ || pendingSceneRetirement_) publishSceneEdit();
   if(subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
@@ -255,6 +257,7 @@ void RendererFrontend::processGltfSceneRequest() {
 }
 
 bool RendererFrontend::selectMaterialVariant(std::optional<size_t> variant,bool recordHistory) {
+  deactivateRenderSetup();
   finishEditGestures();
   if (pendingSceneRetirement_) publishSceneEdit();
   if (!subs_.sceneManager) throw std::runtime_error("No primary scene is loaded");
@@ -285,6 +288,7 @@ void RendererFrontend::updateMaterialVariantState() {
   if (const auto requested=std::exchange(captureMaterialVariant_,{}))
     selectMaterialVariant(*requested<0?std::nullopt:std::optional<size_t>(size_t(*requested)));
   if (!captureSceneHistory_.empty()) {
+    deactivateRenderSetup();
     finishEditGestures();
     ensureSceneEditHistory(); sceneEdits_->finishGesture();
     const auto action=std::exchange(captureSceneHistory_,{});
@@ -352,11 +356,18 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, b
   }
   std::optional<LinkedExportPlan> linked;
   GltfLinkedPortableExportOptions projection;
+  std::optional<container::scene::SceneGraph> detached;
+  const container::geometry::Model* baseGeometry = nullptr;
+  if (renderSetupPreview_) {
+    detached.emplace();
+    baseGeometry = renderSetupExportGraph(*detached);
+  }
+  const auto& exportGraph = detached ? *detached : sceneGraph_;
   if (composition) {
     linked = planLinkedExport(manager, sceneGraph_, *composition);
     projection = {linked->linkedGraphNodes, linked->omittedAnimations, &linked->resources};
   }
-  auto snapshot = manager.buildSceneExport(sceneGraph_, linked ? &projection : nullptr);
+  auto snapshot = manager.buildSceneExport(exportGraph, linked ? &projection : nullptr, baseGeometry);
   if (subs_.lightingManager) {
     std::vector<int32_t> sourceNodes;
     sourceNodes.reserve(sceneGraph_.nodeCount());
@@ -373,8 +384,8 @@ void RendererFrontend::saveSceneModel(const std::filesystem::path& outputPath, b
     const auto* root=sceneGraph_.getNode(sceneState_.rootNode);
     const auto outerTransform=root?root->worldTransform:glm::mat4(1);
     for(size_t index=0;index<sceneLights.size();++index) {
-      sceneBindings[index]=subs_.sceneManager->evaluateAuthoredSceneLights(sceneGraph_,index,true);
-      visibleSceneBindings[index]=subs_.sceneManager->evaluateAuthoredSceneLights(sceneGraph_,index);
+      sceneBindings[index]=subs_.sceneManager->evaluateAuthoredSceneLights(exportGraph,index,true);
+      visibleSceneBindings[index]=subs_.sceneManager->evaluateAuthoredSceneLights(exportGraph,index);
       const auto cached=gltfSceneLightEdits_.find(index);
       const auto edits=index==active?current:cached==gltfSceneLightEdits_.end()?SceneLightEdits{}:*cached->second;
       sceneLights[index]=evaluateEditableSceneLightsForExport(sceneBindings[index],edits,imported,outerTransform);
@@ -603,6 +614,7 @@ bool RendererFrontend::authorSceneNode(const container::ui::SceneNodeAuthoringRe
 
 uint32_t RendererFrontend::addScenePrimitive(ScenePrimitiveKind kind,std::string name,
     std::optional<uint32_t> parent) {
+  deactivateRenderSetup();
   finishEditGestures();
   using container::scene::SceneGraph;
   using container::scene::SceneManager;
@@ -896,6 +908,7 @@ void RendererFrontend::applyEditHistoryRequest() {
   transformDragSession_.active = false;
   sceneEdits_->finishGesture();
   try {
+    deactivateRenderSetup();
     const bool undo =
         request == container::ui::GuiManager::EditHistoryRequest::Undo;
     const auto label =

@@ -6,6 +6,7 @@
 #include <Container/geometry/GltfCompression.h>
 #include <Container/geometry/GltfInstancing.h>
 #include <Container/geometry/GltfOpacityMicromaps.h>
+#include <Container/utility/ContentFingerprint.h>
 
 #include <tiny_gltf.h>
 
@@ -29,6 +30,7 @@ struct GltfLoadResult {
   gltf::GltfInstancingData instancing;
   gltf::GltfOpacityMicromapAssets opacityMicromaps;
   std::shared_ptr<const gltf::GltfLinkedCompositionInfo> linkedComposition;
+  std::optional<container::util::ContentFingerprint> sourceFingerprint;
 };
 
 namespace gltf {
@@ -59,6 +61,8 @@ struct LoadOptions {
   // The detached source is an incoming scene composition operand and may have no meshes.
   bool mergeInput{false};
   std::stop_token stop;
+  // Identify the exact primary file read by the parser before source rewriting.
+  bool fingerprintPrimarySource{false};
 };
 
 // Capability policy for consumers of static mesh primitives without materials

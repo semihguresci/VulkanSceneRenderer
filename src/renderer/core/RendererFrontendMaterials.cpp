@@ -673,6 +673,7 @@ bool RendererFrontend::replayResourceRetirement(const ResourceRetirementHistory&
 }
 
 bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publication) {
+  if (renderSetupPreview_) throw std::invalid_argument("Deactivate the render setup before editing scene materials or resources");
   if(!subs_.sceneManager || !subs_.sceneController || !subs_.lightingManager || !subs_.frameResourceManager ||
       !subs_.frameRuntimeResourceRegistry || !subs_.sceneProviderSynchronizer || !subs_.sceneProviderRegistry)
     throw std::runtime_error("Material editing requires an initialized scene renderer");

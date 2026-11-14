@@ -35,6 +35,7 @@
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
 #include "Container/renderer/resources/RenderResources.h"
 #include "Container/renderer/scene/DrawCommand.h"
+#include "Container/renderer/scene/RenderSetup.h"
 #include "Container/renderer/scene/PhysicsDemoNodes.h"
 #include "Container/renderer/scene/SceneState.h"
 #include "Container/scene/MeshSceneProviderAssetAdapter.h"
@@ -58,6 +59,7 @@ struct CaptureSample;
 struct CaptureBimAnnotations;
 struct CaptureBimClash;
 struct CaptureBimSunHours;
+struct CaptureRenderSetup;
 struct CaptureComfyUi;
 struct CapturePhysicsJointCreate;
 struct CaptureEvent;
@@ -67,6 +69,7 @@ struct CaptureCameraMotion;
 namespace container::ui {
 struct BimFloorPlanOverlayState;
 struct BimHardClashRunRequest;
+struct RenderSetupRequest;
 struct GltfAnimationControls;
 struct CameraMotionRequest;
 struct SceneNodeAuthoringRequest;
@@ -734,6 +737,12 @@ private:
     uint32_t overlayVertexCount{};
     bool guiDirty{};
   } bimSunHours_;
+  struct RenderSetupPreview;
+  std::shared_ptr<RenderSetupPreview> renderSetupPreview_;
+  RenderSetupDocument renderSetups_;
+  std::filesystem::path renderSetupPath_;
+  std::string renderSetupStatus_, renderSetupDiagnostic_;
+  std::optional<DisplayGrade> captureDisplayGrade_;
   container::scene::MeshSceneProviderAssetCache meshProviderAssetCache_{};
   struct SelectionNavigationAnchor {
     bool valid{false};
@@ -997,6 +1006,17 @@ private:
   void prepareBimSunHoursOverlay(BimSunHoursOverlay&, const std::function<void()>& retireReaders);
   void applyCaptureBimSunHours(const container::temporal::CaptureBimSunHours&);
   void appendBimSunHoursTelemetry(nlohmann::json&) const;
+  void processRenderSetupUi();
+  void publishRenderSetupUi();
+  void handleRenderSetup(const container::ui::RenderSetupRequest&);
+  void applyCaptureRenderSetup(const container::temporal::CaptureRenderSetup&);
+  void appendRenderSetupTelemetry(nlohmann::json&) const;
+  void deactivateRenderSetup();
+  void clearRenderSetupDocument();
+  void refreshRenderSetupView(bool environmentChanged);
+  void activateRenderSetup(const RenderSetupEntry&);
+  [[nodiscard]] DisplayGrade effectiveDisplayGrade() const;
+  [[nodiscard]] const container::geometry::Model* renderSetupExportGraph(container::scene::SceneGraph&) const;
   void processEnvironmentLoad(bool wait = false);
 #ifdef CONTAINER_ENABLE_RENDERER_MCP
   void processMcpRequests();

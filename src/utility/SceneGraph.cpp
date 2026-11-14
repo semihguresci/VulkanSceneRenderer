@@ -671,7 +671,8 @@ SceneGraph::SceneGraph(const SceneGraph &other)
     : nodes_(other.nodes_), nodeIncarnations_(other.nodeIncarnations_), roots_(other.roots_),
       renderableNodes_(other.renderableNodes_), revision_(other.revision_),
       identity_(nextSceneGraphIdentity()),
-      hierarchyRevision_(other.hierarchyRevision_),activeRoots_(other.activeRoots_) {}
+      hierarchyRevision_(other.hierarchyRevision_),activeRoots_(other.activeRoots_),
+      previewVisibility_(other.previewVisibility_) {}
 
 SceneGraph &SceneGraph::operator=(const SceneGraph &other) {
   if (this != &other) {
@@ -695,6 +696,7 @@ SceneGraph &SceneGraph::operator=(SceneGraph &&other) noexcept {
     revision_ = other.revision_;
     hierarchyRevision_ = other.hierarchyRevision_;
     activeRoots_=std::move(other.activeRoots_);
+    previewVisibility_=std::move(other.previewVisibility_);
     activeMembershipRevision_=std::numeric_limits<uint64_t>::max();
     activeMembership_.clear(); activeRenderables_.clear();
     identity_ = nextSceneGraphIdentity();
@@ -706,6 +708,7 @@ SceneGraph &SceneGraph::operator=(SceneGraph &&other) noexcept {
     other.revision_ = 0u;
     other.hierarchyRevision_ = 0u;
     other.activeRoots_.reset(); other.activeMembership_.clear(); other.activeRenderables_.clear();
+    other.previewVisibility_.clear();
     other.activeMembershipRevision_=std::numeric_limits<uint64_t>::max();
     other.identity_ = nextSceneGraphIdentity();
   }
@@ -958,6 +961,18 @@ void SceneGraph::setVisible(uint32_t nodeIndex, bool visible) {
   ++revision_;
 }
 
+void SceneGraph::setPreviewVisibility(std::vector<int8_t> visibility) noexcept {
+  if (previewVisibility_ == visibility) return;
+  previewVisibility_.swap(visibility);
+  ++revision_;
+}
+
+bool SceneGraph::previewLocalVisible(uint32_t nodeIndex) const noexcept {
+  if (nodeIndex >= nodes_.size()) return false;
+  const auto value = nodeIndex < previewVisibility_.size() ? previewVisibility_[nodeIndex] : int8_t{-1};
+  return value < 0 ? nodes_[nodeIndex].visible : value != 0;
+}
+
 void SceneGraph::setSelectable(uint32_t nodeIndex, bool selectable) {
   if (nodeIndex >= nodes_.size() || nodes_[nodeIndex].retired || nodes_[nodeIndex].selectable == selectable) return;
   nodes_[nodeIndex].selectable = selectable;
@@ -1191,7 +1206,7 @@ bool SceneGraph::isNodeEffectivelyVisible(uint32_t nodeIndex) const {
   uint32_t current = nodeIndex;
   while (current != kInvalidNode && current < nodes_.size()) {
     const SceneNode& node = nodes_[current];
-    if (node.retired || !node.visible) return false;
+    if (node.retired || !previewLocalVisible(current)) return false;
     current = node.parent;
   }
   return true;

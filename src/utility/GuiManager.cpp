@@ -3309,6 +3309,124 @@ void GuiManager::drawMaterialVariantSelector() {
   if (!state.error.empty()) ImGui::TextWrapped("%s", state.error.c_str());
 }
 
+void GuiManager::setRenderSetupState(RenderSetupUiState state) {
+  if (state.path != renderSetupState_.path) {
+    renderSetupPathInput_ = state.path.empty() ? "render-setups.json" : state.path;
+  }
+  if (!std::ranges::contains(state.names, selectedRenderSetupName_)) {
+    selectedRenderSetupName_ = state.activeName;
+    if (selectedRenderSetupName_.empty() && !state.names.empty()) {
+      selectedRenderSetupName_ = state.names.front();
+    }
+  }
+  renderSetupState_ = std::move(state);
+}
+
+void GuiManager::drawRenderSetupControls() {
+  if (!ImGui::TreeNode("Render Setups")) {
+    return;
+  }
+  const auto &state = renderSetupState_;
+  if (!state.status.empty()) {
+    ImGui::TextWrapped("%s", WrapLongPathForImGui(state.status).c_str());
+  }
+  if (!state.available) {
+    ImGui::TextDisabled("Load a primary glTF or GLB scene to use render setups.");
+    ImGui::TreePop();
+    return;
+  }
+
+  const auto queue = [this](RenderSetupAction action, std::string name = {},
+                            std::string newName = {}, std::string path = {}) {
+    if (!renderSetupRequest_) {
+      renderSetupRequest_.emplace(RenderSetupRequest{
+          action, std::move(name), std::move(newName), std::move(path)});
+    }
+  };
+  const bool previewActive = !state.activeName.empty();
+  if (previewActive) {
+    ImGui::TextWrapped("Active preview %s", state.activeName.c_str());
+    if (ImGui::Button("Deactivate preview")) {
+      queue(RenderSetupAction::Deactivate);
+    }
+    ImGui::SetItemTooltip("Restore the base view before capturing or updating a setup.");
+  }
+
+  if (!state.names.empty()) {
+    if (ImGui::BeginCombo("Saved setup", selectedRenderSetupName_.c_str())) {
+      for (size_t index = 0; index < state.names.size(); ++index) {
+        const auto &name = state.names[index];
+        const bool selected = name == selectedRenderSetupName_;
+        ImGui::PushID(static_cast<int>(index));
+        if (selectableAssetName("##setup", SingleLineDisplayText(name), selected)) {
+          selectedRenderSetupName_ = name;
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::BeginDisabled(selectedRenderSetupName_ == state.activeName);
+    if (ImGui::Button("Activate")) {
+      queue(RenderSetupAction::Activate, selectedRenderSetupName_);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(previewActive);
+    if (ImGui::Button("Update from current view")) {
+      queue(RenderSetupAction::Update, selectedRenderSetupName_);
+    }
+    ImGui::EndDisabled();
+    ShowItemTooltip("Deactivate the preview before updating a setup.",
+                    previewActive ? ImGuiHoveredFlags_AllowWhenDisabled : 0);
+  }
+
+  ImGui::BeginDisabled(previewActive);
+  ImGui::InputText("Setup name", &renderSetupNameInput_);
+  const std::string name = TrimAscii(renderSetupNameInput_);
+  const bool uniqueName = !name.empty() && !std::ranges::contains(state.names, name);
+  ImGui::BeginDisabled(!uniqueName);
+  if (ImGui::Button("Capture current view")) {
+    queue(RenderSetupAction::Capture, name);
+  }
+  ImGui::EndDisabled();
+  if (!name.empty() && !uniqueName) {
+    ShowItemTooltip("Choose a new name or use Update from current view.",
+                    ImGuiHoveredFlags_AllowWhenDisabled);
+  }
+  if (!state.names.empty()) {
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!uniqueName);
+    if (ImGui::Button("Rename")) {
+      queue(RenderSetupAction::Rename, selectedRenderSetupName_, name);
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Rename the selected setup to the name entered above.");
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+      queue(RenderSetupAction::Delete, selectedRenderSetupName_);
+    }
+  }
+  ImGui::EndDisabled();
+
+  ImGui::InputText("Sidecar file", &renderSetupPathInput_);
+  const std::string path = TrimAscii(renderSetupPathInput_);
+  ImGui::BeginDisabled(path.empty());
+  ImGui::BeginDisabled(previewActive);
+  if (ImGui::Button("Open")) {
+    queue(RenderSetupAction::Open, {}, {}, path);
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Save")) {
+    queue(RenderSetupAction::Save, {}, {}, path);
+  }
+  ImGui::EndDisabled();
+  ImGui::TreePop();
+}
+
 void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
   const void *source = BimElementMetadataSource(inspection);
   if (!inspection.hasScene || !ImGui::TreeNode("BIM Elements")) {
@@ -4158,6 +4276,9 @@ void GuiManager::resetModelInspectionState() {
   savedScenePath_.clear();
   sceneSaveRequest_.reset();
   linkedSceneSaveRequest_.reset();
+  renderSetupRequest_.reset();
+  renderSetupNameInput_.clear();
+  setRenderSetupState({});
   materialVariantControls_={};
   gltfSceneControls_={};
   // ImGui retains an active InputText buffer independently of std::string.
@@ -5050,7 +5171,7 @@ void GuiManager::drawSceneControls(
   }
   enum class ControlsSection {
     None, Project, GltfScene, Hierarchy, Selection, Material, Variants,
-    Animation, Physics, Volumes,
+    Animation, RenderSetups, Physics, Volumes,
     Rendering, Lighting, Shadows, Ddgi, PostProcess, Transforms, Bim, Diagnostics
   };
   ControlsSection requestedSection = ControlsSection::None;
@@ -5078,6 +5199,7 @@ void GuiManager::drawSceneControls(
                         ImGuiHoveredFlags_AllowWhenDisabled);
       ImGui::Separator();
       sectionItem("Animation / authored cameras", ControlsSection::Animation);
+      sectionItem("Render setups", ControlsSection::RenderSetups);
       sectionItem("Physics", ControlsSection::Physics);
       sectionItem("Volumes / OpenVDB tools", ControlsSection::Volumes);
       ImGui::Separator();
@@ -5290,6 +5412,8 @@ void GuiManager::drawSceneControls(
   xmp.drawAnimation(gltfAnimationControls_.selectedClip);
   sectionAnchor(ControlsSection::Variants);
   drawMaterialVariantSelector();
+  if (sectionAnchor(ControlsSection::RenderSetups)) ImGui::SetNextItemOpen(true);
+  drawRenderSetupControls();
 
   if (ImGui::Button("Add Primitive")) {
     ImGui::OpenPopup("Add Primitive Menu");
