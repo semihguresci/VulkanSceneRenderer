@@ -311,7 +311,8 @@ def read_state(path):
     return json.loads(path.with_suffix(".telemetry.json").read_bytes())
 
 
-def record(renderer, output, model, sequence, frames, technique, taa, fixture):
+def record(renderer, output, model, sequence, frames, technique, taa, fixture,
+           expected_depth=None, check_image=check_pixels):
     import numpy as np
 
     base = output / f"{technique}-taa{int(taa)}.png"
@@ -349,14 +350,18 @@ def record(renderer, output, model, sequence, frames, technique, taa, fixture):
         require(sample["depthProbe"]["pixel"] == project(product, point), sample["depthProbe"])
         if positive:
             matrix = np.asarray(sample["camera"]["viewProjColumns"]).T
-            clip = matrix @ [0., 0., DEPTH, 1.]
-            require(depth is not None and abs(depth - clip[2] / clip[3]) < 2e-6,
-                    f"{product.name} {label} misses the front cap: {depth}")
+            if expected_depth is None:
+                clip = matrix @ [0., 0., DEPTH, 1.]
+                expected = clip[2] / clip[3]
+            else:
+                expected = expected_depth(index, point, sample["depthProbe"]["pixel"], matrix)
+            require(depth is not None and abs(depth - expected) < 2e-6,
+                    f"{product.name} {label} depth {depth}, expected {expected}")
         else:
             require(depth is None or depth < 1e-7, f"{product.name} {label} is unexpectedly filled: {depth}")
         witnesses[f"{product.name} {label}"] = depth
     return dict(technique=technique, taa=taa, revision=state["build"]["revision"], imported=report,
-                footprints=check_pixels(base, fixture), depthWitnesses=witnesses, command=command, log=str(log))
+                footprints=check_image(base, fixture), depthWitnesses=witnesses, command=command, log=str(log))
 
 
 def main():

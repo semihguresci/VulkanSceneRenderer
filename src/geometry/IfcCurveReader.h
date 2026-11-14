@@ -5,6 +5,7 @@
 #include <array>
 #include <glm/vec2.hpp>
 #include <optional>
+#include <stop_token>
 #include <string_view>
 #include <unordered_map>
 
@@ -36,6 +37,11 @@ struct ParametricSurface {
   // Branch tips and zero-width profile segments create coincident mesh edges.
   bool allowCoincidentEdges = false;
   std::optional<glm::dvec3> meshUp;
+  uint32_t profileSourceId = 0;
+  bool innerProfile = false;
+  bool reverseMeshWinding = false;
+  bool standaloneRegular = true;
+  std::vector<double> creaseU, creaseV;
 };
 [[nodiscard]] bool isCurveEntity(std::string_view type);
 // Pure conversion: errors cannot leave partial geometry in the model buffers.
@@ -43,10 +49,21 @@ struct ParametricSurface {
 readIfcCurve(const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,
              double metersPerUnit, std::optional<double> radiansPerAngleUnit,
              std::string &error);
+[[nodiscard]] std::optional<ParametricCurve>
+readIfcEdgeCurve(const std::unordered_map<uint32_t, Entity> &entities,
+                 uint32_t id, double metersPerUnit,
+                 std::optional<double> radiansPerAngleUnit, glm::dvec3 start,
+                 glm::dvec3 end, std::string &error);
 [[nodiscard]] std::optional<ParametricSurface>
 readIfcSurface(const std::unordered_map<uint32_t, Entity> &entities,
                uint32_t id, double metersPerUnit,
                std::optional<double> radiansPerAngleUnit, std::string &error);
+[[nodiscard]] bool
+readIfcSurfaceCharts(const std::unordered_map<uint32_t, Entity> &entities,
+                     uint32_t id, double metersPerUnit,
+                     std::optional<double> radiansPerAngleUnit,
+                     std::vector<ParametricSurface> &charts, std::string &error,
+                     std::stop_token stop = {});
 [[nodiscard]] std::vector<std::array<glm::dvec3, 3>>
 readIfcSectionedSurfaceMesh(
     const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,

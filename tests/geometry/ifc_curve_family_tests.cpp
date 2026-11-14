@@ -21,11 +21,11 @@ using container::geometry::ifc::Model;
 constexpr double pi = std::numbers::pi;
 
 std::string fixture(std::string_view definitions,
-                    std::string_view items = "#10") {
+                    std::string_view items = "#10",
+                    std::string_view representation = "'Axis','Curve3D'") {
   return "ISO-10303-21; DATA; #1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);" +
-         std::string(definitions) +
-         "#900001=IFCSHAPEREPRESENTATION($,'Axis','Curve3D',(" +
-         std::string(items) +
+         std::string(definitions) + "#900001=IFCSHAPEREPRESENTATION($," +
+         std::string(representation) + ",(" + std::string(items) +
          "));"
          "#900002=IFCPRODUCTDEFINITIONSHAPE($,$,(#900001));"
          "#900003=IFCBUILDINGELEMENTPROXY('curve-families',$,'Curves',$,$,$,#"
@@ -714,6 +714,501 @@ TEST(IfcCurveFamilies,
     EXPECT_NEAR(v.y, 5, 1e-6);
     EXPECT_NEAR(glm::length(glm::dvec2(v.x - 4, v.z - 6)), 1.5, 1e-6);
   }
+}
+
+// Raw STEP entities let these checks exercise the same analytic reader as
+// pcurves and advanced faces, including UVs independent of triangulation.
+struct SweptChartEntities {
+  using Entity = container::geometry::ifc::detail::Entity;
+  using Value = container::geometry::ifc::detail::StepValue;
+  std::unordered_map<uint32_t, Entity> entities;
+
+  static Value number(double n) {
+    return {.kind = Value::Kind::Number, .number = n};
+  }
+  static Value ref(uint32_t id) {
+    return {.kind = Value::Kind::Ref, .ref = id};
+  }
+  static Value list(std::initializer_list<Value> values) {
+    return {.kind = Value::Kind::List, .list = values};
+  }
+  void add(uint32_t id, const char *type, std::initializer_list<Value> args) {
+    entities.emplace(id, Entity{id, type, list(args)});
+  }
+  void coordinate(uint32_t id, const char *type,
+                  std::initializer_list<double> coordinates) {
+    Value args{.kind = Value::Kind::List};
+    for (double x : coordinates)
+      args.list.push_back(number(x));
+    add(id, type, {args});
+  }
+  void point(uint32_t id, std::initializer_list<double> coordinates) {
+    coordinate(id, "IFCCARTESIANPOINT", coordinates);
+  }
+  void direction(uint32_t id, std::initializer_list<double> coordinates) {
+    coordinate(id, "IFCDIRECTION", coordinates);
+  }
+  static Value curve() { return {.kind = Value::Kind::Enum, .text = "CURVE"}; }
+};
+
+using container::geometry::ifc::detail::ParametricSurface;
+using container::geometry::ifc::detail::readIfcSurface;
+using container::geometry::ifc::detail::readIfcSurfaceCharts;
+
+void expectChartPoint(const ParametricSurface &chart, glm::dvec2 parameter,
+                      glm::dvec3 expected) {
+  const auto point = chart.point(parameter.x, parameter.y);
+  ASSERT_TRUE(point);
+  EXPECT_LT(glm::length(*point - expected), 1e-7);
+  ASSERT_TRUE(chart.inverse);
+  const auto inverse = chart.inverse(expected);
+  ASSERT_TRUE(inverse);
+  glm::dvec2 delta = *inverse - parameter;
+  for (int axis = 0; axis < 2; ++axis)
+    if (chart.periods[axis] > 0)
+      delta[axis] = std::remainder(delta[axis], chart.periods[axis]);
+  EXPECT_LT(glm::length(delta), 1e-6);
+}
+
+TEST(IfcCurveFamilies, HollowCircleSweptChartsKeepIndependentAngleDomains) {
+  SweptChartEntities step;
+  using S = SweptChartEntities;
+  step.point(1, {2, 3});
+  step.add(2, "IFCAXIS2PLACEMENT2D", {S::ref(1), {}});
+  step.add(3, "IFCCIRCLEHOLLOWPROFILEDEF",
+           {S::curve(), {}, S::ref(2), S::number(5), S::number(1.25)});
+  step.point(4, {11, 13, 17});
+  step.direction(5, {1, 0, 0});
+  step.direction(6, {0, 1, 0});
+  step.add(7, "IFCAXIS2PLACEMENT3D", {S::ref(4), S::ref(5), S::ref(6)});
+  step.direction(8, {0, 3, 4});
+  step.add(10, "IFCSURFACEOFLINEAREXTRUSION",
+           {S::ref(3), S::ref(7), S::ref(8), S::number(10)});
+
+  std::vector<ParametricSurface> charts;
+  std::string error;
+  ASSERT_TRUE(
+      readIfcSurfaceCharts(step.entities, 10, .001, pi / 180, charts, error))
+      << error;
+  ASSERT_EQ(charts.size(), 2u);
+  for (size_t i = 0; i < charts.size(); ++i) {
+    const auto &chart = charts[i];
+    EXPECT_EQ(chart.profileSourceId, 3u);
+    EXPECT_EQ(chart.innerProfile, i == 1);
+    ASSERT_TRUE(chart.uDomain);
+    EXPECT_EQ(chart.uDomain->first, 0.);
+    EXPECT_NEAR(chart.uDomain->second, 360., 1e-10);
+    EXPECT_NEAR(chart.periods.x, 360., 1e-10);
+    EXPECT_NEAR(chart.angularScale.x, pi / 180, 1e-12);
+    EXPECT_FALSE(chart.vDomain);
+    const double radius = i == 0 ? 5. : 3.75;
+    for (const double u : {90., 225., 450.}) {
+      const double radians = u * pi / 180;
+      expectChartPoint(chart, {u, 1.25},
+                       {21, 15 + radius * std::cos(radians),
+                        27.5 + radius * std::sin(radians)});
+    }
+  }
+  EXPECT_FALSE(readIfcSurface(step.entities, 10, .001, pi / 180, error));
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(IfcCurveFamilies, HollowRectangleSweptChartsKeepIndependentExactFillets) {
+  SweptChartEntities step;
+  using S = SweptChartEntities;
+  step.add(3, "IFCRECTANGLEHOLLOWPROFILEDEF",
+           {S::curve(),
+            {},
+            {},
+            S::number(6),
+            S::number(4),
+            S::number(.5),
+            S::number(.3),
+            S::number(.6)});
+  step.direction(8, {0, 0, 1});
+  step.add(10, "IFCSURFACEOFLINEAREXTRUSION",
+           {S::ref(3), {}, S::ref(8), S::number(4)});
+  std::vector<ParametricSurface> charts;
+  std::string error;
+  ASSERT_TRUE(readIfcSurfaceCharts(step.entities, 10, 1., 1., charts, error))
+      << error;
+  ASSERT_EQ(charts.size(), 2u);
+  for (size_t i = 0; i < charts.size(); ++i) {
+    SCOPED_TRACE(i);
+    const auto &chart = charts[i];
+    const double x = 3 - .5 * i, y = 2 - .5 * i, r = i == 0 ? .6 : .3;
+    EXPECT_EQ(chart.profileSourceId, 3u);
+    EXPECT_EQ(chart.innerProfile, i == 1);
+    ASSERT_TRUE(chart.uDomain);
+    EXPECT_EQ(chart.uDomain->first, 0.);
+    EXPECT_EQ(chart.uDomain->second, 8.);
+    expectChartPoint(
+        chart, {.5, .25},
+        {x - r + r / std::sqrt(2.), y - r + r / std::sqrt(2.), 1.});
+    expectChartPoint(chart, {1.5, .75}, {0, y, 3});
+  }
+}
+
+TEST(IfcCurveFamilies,
+     CompositeSweptChartsKeepSourceIdsThroughNestedTransforms) {
+  SweptChartEntities step;
+  using S = SweptChartEntities;
+  step.point(1, {-3, 1});
+  step.add(2, "IFCAXIS2PLACEMENT2D", {S::ref(1), {}});
+  step.add(13, "IFCRECTANGLEPROFILEDEF",
+           {S::curve(), {}, S::ref(2), S::number(2), S::number(1)});
+  step.point(4, {4, 2});
+  step.add(5, "IFCAXIS2PLACEMENT2D", {S::ref(4), {}});
+  step.add(20, "IFCCIRCLEPROFILEDEF",
+           {S::curve(), {}, S::ref(5), S::number(.6)});
+  step.add(21, "IFCCOMPOSITEPROFILEDEF",
+           {S::curve(), {}, S::list({S::ref(20), S::ref(13)}), {}});
+  step.point(22, {8, -6});
+  step.add(23, "IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM",
+           {{}, {}, S::ref(22), S::number(2), S::number(.5)});
+  step.add(24, "IFCDERIVEDPROFILEDEF",
+           {S::curve(), {}, S::ref(21), S::ref(23), {}});
+  step.add(25, "IFCMIRROREDPROFILEDEF", {S::curve(), {}, S::ref(24), {}, {}});
+  step.direction(8, {0, 0, 1});
+  step.add(10, "IFCSURFACEOFLINEAREXTRUSION",
+           {S::ref(25), {}, S::ref(8), S::number(3000)});
+
+  std::vector<ParametricSurface> charts;
+  std::string error;
+  ASSERT_TRUE(readIfcSurfaceCharts(step.entities, 10, .001, 1., charts, error))
+      << error;
+  ASSERT_EQ(charts.size(), 2u);
+  EXPECT_EQ(charts[0].profileSourceId, 13u);
+  EXPECT_EQ(charts[1].profileSourceId, 20u);
+  EXPECT_FALSE(charts[0].innerProfile);
+  EXPECT_FALSE(charts[1].innerProfile);
+  expectChartPoint(charts[0], {.5, .5}, {-2, -5.75, 1500});
+  expectChartPoint(charts[1], {.7, .25},
+                   {-16 - 1.2 * std::cos(.7), -5 + .3 * std::sin(.7), 750});
+
+  // The second profile now crosses the first one's envelope.
+  // Failure must retire both charts even though the rectangle is valid alone.
+  step.entities.erase(4);
+  step.point(4, {-2.2, 1});
+  charts.clear();
+  EXPECT_FALSE(
+      readIfcSurfaceCharts(step.entities, 10, .001, 1., charts, error));
+  EXPECT_TRUE(charts.empty());
+  EXPECT_FALSE(error.empty());
+}
+
+TEST(IfcCurveFamilies, CenterlineSweptChartKeepsNativeKnotDomainAndDepth) {
+  SweptChartEntities step;
+  using S = SweptChartEntities;
+  step.point(1, {2, 0});
+  step.point(2, {4, 2});
+  step.add(3, "IFCBSPLINECURVEWITHKNOTS",
+           {S::number(1),
+            S::list({S::ref(1), S::ref(2)}),
+            {.kind = S::Value::Kind::Enum, .text = "UNSPECIFIED"},
+            {.kind = S::Value::Kind::Enum, .text = "F"},
+            {.kind = S::Value::Kind::Enum, .text = "F"},
+            S::list({S::number(2), S::number(2)}),
+            S::list({S::number(-2), S::number(6)}),
+            {.kind = S::Value::Kind::Enum, .text = "UNSPECIFIED"}});
+  step.add(4, "IFCCENTERLINEPROFILEDEF",
+           {S::curve(), {}, S::ref(3), S::number(.5)});
+  step.direction(8, {0, 0, 1});
+  step.add(10, "IFCSURFACEOFLINEAREXTRUSION",
+           {S::ref(4), {}, S::ref(8), S::number(4)});
+  step.point(11, {1, 0, 0});
+  step.direction(12, {0, 1, 0});
+  step.add(13, "IFCAXIS1PLACEMENT", {S::ref(11), S::ref(12)});
+  step.add(14, "IFCSURFACEOFREVOLUTION", {S::ref(4), {}, S::ref(13)});
+
+  std::vector<ParametricSurface> charts;
+  std::string error;
+  ASSERT_TRUE(readIfcSurfaceCharts(step.entities, 10, 1., 1., charts, error))
+      << error;
+  ASSERT_EQ(charts.size(), 1u);
+  const auto &chart = charts.front();
+  EXPECT_EQ(chart.profileSourceId, 4u);
+  EXPECT_FALSE(chart.innerProfile);
+  ASSERT_TRUE(chart.uDomain);
+  EXPECT_EQ(chart.uDomain->first, -2.);
+  EXPECT_EQ(chart.uDomain->second, 6.);
+  EXPECT_FALSE(chart.point(-2.001, .5));
+  EXPECT_FALSE(chart.point(6.001, .5));
+  expectChartPoint(chart, {2., -.25}, {3, 1, -1});
+
+  charts.clear();
+  ASSERT_TRUE(
+      readIfcSurfaceCharts(step.entities, 14, 1., pi / 180, charts, error))
+      << error;
+  ASSERT_EQ(charts.size(), 1u);
+  const auto &revolution = charts.front();
+  EXPECT_EQ(revolution.profileSourceId, 4u);
+  EXPECT_NEAR(revolution.periods.x, 360., 1e-10);
+  ASSERT_TRUE(revolution.vDomain);
+  EXPECT_EQ(revolution.vDomain->first, -2.);
+  EXPECT_EQ(revolution.vDomain->second, 6.);
+  EXPECT_FALSE(revolution.point(60., -2.001));
+  expectChartPoint(revolution, {60., 2.}, {2., 1., -std::sqrt(3.)});
+  expectChartPoint(revolution, {-420., 2.}, {2., 1., std::sqrt(3.)});
+}
+
+const std::string hollowSweptPcurve =
+    "#3=IFCCIRCLEHOLLOWPROFILEDEF(.CURVE.,$,$,3.,1.);"
+    "#4=IFCDIRECTION((0.,0.,1.));"
+    "#5=IFCSURFACEOFLINEAREXTRUSION(#3,$,#4,4.);"
+    "#6=IFCCARTESIANPOINT((0.,0.2)); #7=IFCCARTESIANPOINT((0.,0.8));"
+    "#8=IFCPOLYLINE((#6,#7)); #9=IFCPCURVE(#5,#8);";
+
+TEST(IfcCurveFamilies,
+     SurfaceCurveUsesExplicitWitnessToSelectHollowSweepChart) {
+  for (const std::string radius : {"2.", "3."}) {
+    SCOPED_TRACE(radius);
+    const auto model = container::geometry::ifc::LoadFromStep(
+        fixture(hollowSweptPcurve + "#11=IFCCARTESIANPOINT((" + radius +
+                ",0.,0.8)); #12=IFCCARTESIANPOINT((" + radius +
+                ",0.,3.2)); #13=IFCPOLYLINE((#11,#12));"
+                "#10=IFCSURFACECURVE(#13,(#9),.PCURVE_S1.);"));
+    complete(model);
+    const auto points = vertices(model);
+    ASSERT_FALSE(points.empty());
+    EXPECT_NEAR(points.front().z, .8, 1e-6);
+    EXPECT_NEAR(points.back().z, 3.2, 1e-6);
+    EXPECT_NEAR(length(points), 2.4, 1e-6);
+    for (const auto p : points) {
+      EXPECT_NEAR(p.x, std::stod(radius), 1e-6);
+      EXPECT_NEAR(p.y, 0., 1e-6);
+    }
+  }
+}
+
+TEST(IfcCurveFamilies, AmbiguousAndMismatchedSweptPcurvesAreAtomic) {
+  for (const std::string_view item : {"#9", "#10", "#18"}) {
+    SCOPED_TRACE(item);
+    const auto model = container::geometry::ifc::LoadFromStep(fixture(
+        hollowSweptPcurve +
+            "#11=IFCCARTESIANPOINT((2.5,0.,0.8));"
+            "#12=IFCCARTESIANPOINT((2.5,0.,3.2)); #13=IFCPOLYLINE((#11,#12));"
+            "#10=IFCSURFACECURVE(#13,(#9),.PCURVE_S1.);"
+            "#14=IFCCARTESIANPOINT((2.,0.,0.8));"
+            "#15=IFCCARTESIANPOINT((2.5,0.,2.));"
+            "#16=IFCCARTESIANPOINT((2.,0.,3.2));"
+            "#17=IFCPOLYLINE((#14,#15,#16));"
+            "#18=IFCSURFACECURVE(#17,(#9),.PCURVE_S1.);",
+        item));
+    EXPECT_TRUE(model.vertices.empty());
+    EXPECT_TRUE(model.indices.empty());
+    EXPECT_TRUE(model.nativeCurveRanges.empty());
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    EXPECT_EQ(model.importReport.diagnostics.front().entityId,
+              static_cast<unsigned>(std::stoi(std::string(item.substr(1)))));
+  }
+}
+
+TEST(IfcCurveFamilies, SweepPcurveSamplesNativeNonintegerCreaseExactly) {
+  const auto model = container::geometry::ifc::LoadFromStep(fixture(
+      "#2=IFCCARTESIANPOINT((0.,0.)); #3=IFCCARTESIANPOINT((3.,0.));"
+      "#4=IFCCARTESIANPOINT((3.,2.));"
+      "#5=IFCBSPLINECURVEWITHKNOTS(1,(#2,#3,#4),.UNSPECIFIED.,.F.,.F.,"
+      "(2,1,2),(-2.,1.3,8.),.UNSPECIFIED.);"
+      "#6=IFCCENTERLINEPROFILEDEF(.CURVE.,$,#5,1.);"
+      "#7=IFCDIRECTION((0.,0.,1.)); #8=IFCSURFACEOFLINEAREXTRUSION(#6,$,#7,4.);"
+      "#11=IFCCARTESIANPOINT((-1.,0.25)); #12=IFCCARTESIANPOINT((7.,0.25));"
+      "#9=IFCPOLYLINE((#11,#12)); #10=IFCPCURVE(#8,#9);"));
+  complete(model);
+  const auto points = vertices(model);
+  ASSERT_FALSE(points.empty());
+  EXPECT_EQ(std::ranges::count(points, glm::dvec3(3, 0, 1)), 2);
+  const double firstLeg = 3. * (1.3 + 1.) / 3.3;
+  const double secondLeg = 2. * (7. - 1.3) / 6.7;
+  EXPECT_NEAR(length(points), firstLeg + secondLeg, 1e-6);
+  for (size_t i = 0; i < points.size(); i += 2) {
+    const auto &a = points[i], &b = points[i + 1];
+    EXPECT_TRUE((a.y == 0 && b.y == 0) || (a.x == 3 && b.x == 3))
+        << a.x << ',' << a.y << " to " << b.x << ',' << b.y;
+  }
+}
+
+void completeSweptMesh(const Model &model) {
+  for (const auto &diagnostic : model.importReport.diagnostics)
+    ADD_FAILURE() << diagnostic.entityId << ": " << diagnostic.reason;
+  ASSERT_EQ(model.importReport.completeness, ImportCompleteness::Complete);
+  ASSERT_FALSE(model.meshRanges.empty());
+  ASSERT_FALSE(model.indices.empty());
+  ASSERT_EQ(model.indices.size() % 3, 0u);
+  EXPECT_TRUE(model.nativeCurveRanges.empty());
+}
+
+TEST(IfcCurveFamilies, HollowSweptExtrusionDrawsBothWallsWithOppositeWinding) {
+  const auto model = container::geometry::ifc::LoadFromStep(
+      fixture(hollowSweptPcurve, "#5", "'Surface','Surface3D'"));
+  completeSweptMesh(model);
+  std::array<double, 2> area{};
+  std::array<bool, 2> lower{}, upper{};
+  for (size_t i = 0; i < model.indices.size(); i += 3) {
+    std::array<glm::dvec3, 3> p;
+    const size_t wall =
+        glm::length(
+            glm::dvec2(model.vertices.at(model.indices.at(i)).position)) < 2.5
+            ? 0
+            : 1;
+    const double radius = wall == 0 ? 2. : 3.;
+    const double direction = wall == 0 ? -1. : 1.;
+    for (size_t j = 0; j < p.size(); ++j) {
+      const auto &vertex = model.vertices.at(model.indices.at(i + j));
+      p[j] = glm::dvec3(vertex.position);
+      EXPECT_NEAR(glm::length(glm::dvec2(p[j])), radius, 1e-6);
+      EXPECT_GE(p[j].z, 0.);
+      EXPECT_LE(p[j].z, 4.);
+      lower[wall] |= p[j].z == 0.;
+      upper[wall] |= p[j].z == 4.;
+      const auto expected = glm::normalize(glm::dvec3(p[j].x, p[j].y, 0));
+      EXPECT_GT(direction * glm::dot(glm::dvec3(vertex.normal), expected),
+                .999);
+    }
+    const auto normal = glm::cross(p[1] - p[0], p[2] - p[0]);
+    const auto centroid = (p[0] + p[1] + p[2]) / 3.;
+    EXPECT_GT(direction *
+                  glm::dot(normal, glm::dvec3(centroid.x, centroid.y, 0)),
+              0.);
+    area[wall] += .5 * glm::length(normal);
+  }
+  EXPECT_TRUE(lower[0] && lower[1] && upper[0] && upper[1]);
+  EXPECT_NEAR(area[0], 16 * pi, .02);
+  EXPECT_NEAR(area[1], 24 * pi, .02);
+}
+
+const std::string sweptDegreeUnits =
+    "#30=IFCSIUNIT(*,.PLANEANGLEUNIT.,$,.RADIAN.);"
+    "#31=IFCMEASUREWITHUNIT(IFCPLANEANGLEMEASURE(0.017453292519943295),#30);"
+    "#32=IFCCONVERSIONBASEDUNIT($,.PLANEANGLEUNIT.,'degree',#31);"
+    "#33=IFCUNITASSIGNMENT((#1,#32));"
+    "#34=IFCPROJECT('project',$,$,$,$,$,$,(),#33);";
+
+TEST(IfcCurveFamilies,
+     TrimmedSweptRevolutionWrapsDegreeSeamAndReversesWinding) {
+  const auto model = container::geometry::ifc::LoadFromStep(fixture(
+      sweptDegreeUnits +
+          "#2=IFCCARTESIANPOINT((2.,1.)); #3=IFCCARTESIANPOINT((2.,4.));"
+          "#4=IFCPOLYLINE((#2,#3)); "
+          "#5=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#4);"
+          "#6=IFCCARTESIANPOINT((0.,0.,0.)); #7=IFCDIRECTION((0.,1.,0.));"
+          "#8=IFCAXIS1PLACEMENT(#6,#7); #9=IFCSURFACEOFREVOLUTION(#5,$,#8);"
+          "#10=IFCRECTANGULARTRIMMEDSURFACE(#9,350.,0.75,10.,0.25,.T.,.F.);",
+      "#10", "'Surface','Surface3D'"));
+  completeSweptMesh(model);
+  const double seam = pi / 18;
+  double low = seam, high = -seam, area = 0;
+  for (size_t i = 0; i < model.indices.size(); i += 3) {
+    std::array<glm::dvec3, 3> p;
+    for (size_t j = 0; j < p.size(); ++j) {
+      const auto &vertex = model.vertices.at(model.indices.at(i + j));
+      p[j] = glm::dvec3(vertex.position);
+      EXPECT_GE(p[j].y, 1.75);
+      EXPECT_LE(p[j].y, 3.25);
+      EXPECT_NEAR(std::hypot(p[j].x, p[j].z), 2., 1e-6);
+      const double angle = std::atan2(-p[j].z, p[j].x);
+      low = std::min(low, angle);
+      high = std::max(high, angle);
+      EXPECT_LE(std::abs(angle), seam + 1e-6);
+      EXPECT_LT(
+          glm::dot(glm::dvec3(vertex.normal), glm::dvec3(p[j].x, 0, p[j].z)),
+          -1.999);
+    }
+    const auto normal = glm::cross(p[1] - p[0], p[2] - p[0]);
+    const auto centroid = (p[0] + p[1] + p[2]) / 3.;
+    EXPECT_LT(glm::dot(normal, glm::dvec3(centroid.x, 0, centroid.z)), 0.);
+    area += .5 * glm::length(normal);
+  }
+  EXPECT_NEAR(low, -seam, 1e-6);
+  EXPECT_NEAR(high, seam, 1e-6);
+  EXPECT_NEAR(area, pi / 3, .002);
+}
+
+TEST(IfcCurveFamilies,
+     StandaloneRevolutionWindingOnBothSidesAndSingularRejection) {
+  for (const auto &[start, end, axis] :
+       std::array<std::array<std::string_view, 3>, 4>{
+           {{"2.", "2.", "0.,1.,0."},
+            {"-2.", "-2.", "0.,1.,0."},
+            {"-2.", "2.", "0.,1.,0."},
+            {"2.", "2.", "0.,0.,1."}}}) {
+    SCOPED_TRACE(::testing::Message()
+                 << start << " → " << end << " about " << axis);
+    const auto model = container::geometry::ifc::LoadFromStep(fixture(
+        "#2=IFCCARTESIANPOINT((" + std::string(start) +
+            ",1.)); #3=IFCCARTESIANPOINT((" + std::string(end) +
+            ",4.));"
+            "#4=IFCPOLYLINE((#2,#3)); "
+            "#5=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#4);"
+            "#6=IFCCARTESIANPOINT((0.,0.,0.)); #7=IFCDIRECTION((" +
+            std::string(axis) +
+            "));"
+            "#8=IFCAXIS1PLACEMENT(#6,#7); #10=IFCSURFACEOFREVOLUTION(#5,$,#8);",
+        "#10", "'Surface','Surface3D'"));
+    if (start != end || axis != "0.,1.,0.") {
+      EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+      EXPECT_TRUE(model.vertices.empty());
+      EXPECT_TRUE(model.indices.empty());
+      ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+      EXPECT_EQ(model.importReport.diagnostics.front().entityId, 10u);
+      continue;
+    }
+    completeSweptMesh(model);
+    double area = 0;
+    for (size_t i = 0; i < model.indices.size(); i += 3) {
+      std::array<glm::dvec3, 3> p;
+      for (size_t j = 0; j < p.size(); ++j) {
+        const auto &vertex = model.vertices.at(model.indices.at(i + j));
+        p[j] = glm::dvec3(vertex.position);
+        const glm::dvec3 radial(p[j].x, 0, p[j].z);
+        EXPECT_NEAR(glm::length(radial), 2., 1e-6);
+        EXPECT_GT(glm::dot(glm::dvec3(vertex.normal), radial), 1.999);
+      }
+      const auto n = glm::cross(p[1] - p[0], p[2] - p[0]);
+      const auto centroid = (p[0] + p[1] + p[2]) / 3.;
+      EXPECT_GT(glm::dot(n, glm::dvec3(centroid.x, 0, centroid.z)), 0.);
+      area += .5 * glm::length(n);
+    }
+    EXPECT_NEAR(area, 12 * pi, .02);
+  }
+}
+
+TEST(IfcCurveFamilies, InvalidStandaloneSweepTrimLeavesOnlyFallbackSurface) {
+  constexpr std::string_view definitions =
+      "#2=IFCCARTESIANPOINT((1.,2.)); #3=IFCCARTESIANPOINT((4.,2.));"
+      "#4=IFCPOLYLINE((#2,#3)); #5=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#4);"
+      "#6=IFCDIRECTION((0.,0.,1.)); #7=IFCSURFACEOFLINEAREXTRUSION(#5,$,#6,2.);"
+      "#9=IFCRECTANGULARTRIMMEDSURFACE(#7,0.25,1.5,0.75,-0.5,.T.,.F.);"
+      "#10=IFCRECTANGULARTRIMMEDSURFACE(#7,0.5,0.,0.5,1.,.T.,.T.);";
+  const auto reference = container::geometry::ifc::LoadFromStep(
+      fixture(definitions, "#9", "'Surface','Surface3D'"));
+  completeSweptMesh(reference);
+  const auto model = container::geometry::ifc::LoadFromStep(
+      fixture(definitions, "#10,#9", "'Surface','Surface3D'"));
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  EXPECT_EQ(model.importReport.diagnostics.front().entityId, 10u);
+  EXPECT_EQ(model.indices, reference.indices);
+  ASSERT_EQ(model.vertices.size(), reference.vertices.size());
+  for (size_t i = 0; i < model.vertices.size(); ++i) {
+    EXPECT_EQ(model.vertices[i].position, reference.vertices[i].position);
+    EXPECT_EQ(model.vertices[i].normal, reference.vertices[i].normal);
+  }
+  std::set<std::array<float, 3>> corners;
+  for (const auto &vertex : model.vertices) {
+    const auto p = vertex.position;
+    EXPECT_EQ(p.y, 2.);
+    EXPECT_GE(p.x, 1.75);
+    EXPECT_LE(p.x, 3.25);
+    EXPECT_GE(p.z, -1.);
+    EXPECT_LE(p.z, 3.);
+    EXPECT_GT(vertex.normal.y, .999);
+    corners.insert({p.x, p.y, p.z});
+  }
+  for (float x : {1.75f, 3.25f})
+    for (float z : {-1.f, 3.f})
+      EXPECT_TRUE(corners.contains({x, 2.f, z}));
 }
 
 TEST(IfcCurveFamilies, RectangularSurfaceTrimsHaveLocalDomainsAndReverseSense) {
@@ -1738,48 +2233,23 @@ TEST(IfcCurveFamilies, ScaledSplineProfilesKeepChordAccuracyAndSurfaceInverse) {
     previous = current;
   }
 
-  using container::geometry::ifc::detail::Entity;
-  using container::geometry::ifc::detail::StepValue;
-  const auto numeric = [](double n) {
-    StepValue v;
-    v.kind = StepValue::Kind::Number;
-    v.number = n;
-    return v;
-  };
-  const auto ref = [](uint32_t id) {
-    StepValue v;
-    v.kind = StepValue::Kind::Ref;
-    v.ref = id;
-    return v;
-  };
-  const auto values = [](std::initializer_list<StepValue> a) {
-    StepValue v;
-    v.kind = StepValue::Kind::List;
-    v.list = a;
-    return v;
-  };
-  StepValue curveType;
-  curveType.kind = StepValue::Kind::Enum;
-  curveType.text = "CURVE";
-  std::unordered_map<uint32_t, Entity> entities;
-  const auto add = [&](uint32_t id, const char *type,
-                       std::initializer_list<StepValue> a) {
-    entities.emplace(id, Entity{id, type, values(a)});
-  };
-  add(1, "IFCCARTESIANPOINT", {values({numeric(0), numeric(0)})});
-  add(2, "IFCAXIS2PLACEMENT2D", {ref(1), {}});
-  add(3, "IFCCIRCLE", {ref(2), numeric(1)});
-  add(4, "IFCARBITRARYCLOSEDPROFILEDEF", {curveType, {}, ref(3)});
-  add(5, "IFCCARTESIANPOINT", {values({numeric(10), numeric(20)})});
-  add(6, "IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM",
-      {{}, {}, ref(5), numeric(100), numeric(1)});
-  add(7, "IFCDERIVEDPROFILEDEF", {curveType, {}, ref(4), ref(6), {}});
-  add(8, "IFCMIRROREDPROFILEDEF", {curveType, {}, ref(7), {}, {}});
-  add(9, "IFCDIRECTION", {values({numeric(0), numeric(0), numeric(1)})});
-  add(10, "IFCSURFACEOFLINEAREXTRUSION", {ref(8), {}, ref(9), numeric(3)});
+  SweptChartEntities step;
+  using S = SweptChartEntities;
+  step.point(1, {0, 0});
+  step.add(2, "IFCAXIS2PLACEMENT2D", {S::ref(1), {}});
+  step.add(3, "IFCCIRCLE", {S::ref(2), S::number(1)});
+  step.add(4, "IFCARBITRARYCLOSEDPROFILEDEF", {S::curve(), {}, S::ref(3)});
+  step.point(5, {10, 20});
+  step.add(6, "IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM",
+           {{}, {}, S::ref(5), S::number(100), S::number(1)});
+  step.add(7, "IFCDERIVEDPROFILEDEF",
+           {S::curve(), {}, S::ref(4), S::ref(6), {}});
+  step.add(8, "IFCMIRROREDPROFILEDEF", {S::curve(), {}, S::ref(7), {}, {}});
+  step.direction(9, {0, 0, 1});
+  step.add(10, "IFCSURFACEOFLINEAREXTRUSION",
+           {S::ref(8), {}, S::ref(9), S::number(3)});
   std::string error;
-  const auto surface = container::geometry::ifc::detail::readIfcSurface(
-      entities, 10, 1, 1, error);
+  const auto surface = readIfcSurface(step.entities, 10, 1, 1, error);
   ASSERT_TRUE(surface) << error;
   ASSERT_TRUE(surface->inverse);
   const auto p = surface->point(.7, 1.2);

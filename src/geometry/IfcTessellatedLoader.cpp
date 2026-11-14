@@ -1,14 +1,15 @@
 #include "Container/geometry/IfcTessellatedLoader.h"
 
+#include "BimImportInput.h"
 #include "Container/geometry/CoordinateSystem.h"
 #include "Container/geometry/PolylineGeometry.h"
 #include "Container/geometry/SweptDiskGeometry.h"
 #include "Container/utility/Platform.h"
-#include "BimImportInput.h"
 #include "IfcAreaProfileGeometry.h"
 #include "IfcBrepFaceGeometry.h"
 #include "IfcCurveReader.h"
 #include "IfcStructuralAreaShapes.h"
+#include "IfcSweptSurfaceMesh.h"
 
 #include <algorithm>
 #include <array>
@@ -3480,8 +3481,9 @@ private:
               std::to_string(ref);
       return std::nullopt;
     }
-    auto curve = detail::readIfcCurve(entities_, *geometry, unitScale_,
-                                      projectPlaneAngleScale(), error);
+    auto curve =
+        detail::readIfcEdgeCurve(entities_, *geometry, unitScale_,
+                                 projectPlaneAngleScale(), *a, *b, error);
     if (!curve)
       return std::nullopt;
     if (curve->dimension != 3) {
@@ -3740,11 +3742,47 @@ private:
               return faceFail("Unsupported advanced face surface " +
                               surface->type);
             std::string error;
-            const auto descriptor =
-                detail::readIfcSurface(entities_, *surfaceRef, unitScale_,
-                                       projectPlaneAngleScale(), error);
-            if (!descriptor)
+            std::vector<detail::ParametricSurface> charts;
+            const bool readCharts = detail::readIfcSurfaceCharts(
+                entities_, *surfaceRef, unitScale_, projectPlaneAngleScale(),
+                charts, error, stop_);
+            container::util::checkModelImportCancellation(stop_);
+            if (!readCharts)
               return faceFail(error);
+            const auto *descriptor = &charts.front();
+            if (charts.size() > 1) {
+              descriptor = nullptr;
+              std::string profiles;
+              for (const auto &chart : charts) {
+                profiles += " #" + std::to_string(chart.profileSourceId);
+                if (!chart.inverse)
+                  continue;
+                const auto onChart = [&](glm::vec3 raw) {
+                  container::util::checkModelImportCancellation(stop_);
+                  const glm::dvec3 p(raw);
+                  const auto uv = chart.inverse(p);
+                  const auto q = uv ? chart.point(uv->x, uv->y) : std::nullopt;
+                  const double tolerance =
+                      std::max(1e-7 / unitScale_, glm::length(p) * 2e-7);
+                  return q && glm::length(*q - p) <= tolerance;
+                };
+                if (!std::ranges::all_of(loops, [&](const auto &ring) {
+                      return std::ranges::all_of(ring, onChart);
+                    }))
+                  continue;
+                if (descriptor)
+                  return faceFail("Ambiguous charts on surface #" +
+                                  std::to_string(*surfaceRef) +
+                                  " from profiles #" +
+                                  std::to_string(descriptor->profileSourceId) +
+                                  " #" + std::to_string(chart.profileSourceId));
+                descriptor = &chart;
+              }
+              if (!descriptor)
+                return faceFail(
+                    "Face boundary samples match no chart on surface #" +
+                    std::to_string(*surfaceRef) + " from profiles" + profiles);
+            }
             const auto mesh =
                 detail::meshIfcCurvedFace(*descriptor, loops, hasOuterBound,
                                           sameSense == "T", unitScale_, error);
@@ -5606,15 +5644,17 @@ private:
       return;
     }
 
-    if (source->type == "IFCGEOMETRICCURVESET") {
+    if (source->type == "IFCGEOMETRICCURVESET" ||
+        source->type == "IFCGEOMETRICSET") {
       const auto *items = argAt(*source, 0);
       if (!items || items->kind != StepValue::Kind::List ||
           items->list.empty()) {
-        reportGeometryIssue(ref, product, "Missing geometric curve-set items");
+        reportGeometryIssue(ref, product, "Missing geometric set items");
         return;
       }
       for (const auto &item : items->list) {
-        if (walk.exceeded) return;
+        if (walk.exceeded)
+          return;
         if (item.kind == StepValue::Kind::Ref)
           collectGeometryInstances(item.ref, transform, instances, walk,
                                    product, curveColor);
@@ -5622,7 +5662,7 @@ private:
           walk.exceeded = true;
         else
           reportGeometryIssue(ref, product,
-                              "Invalid geometric curve-set item reference");
+                              "Invalid geometric set item reference");
       }
       return;
     }
@@ -5649,6 +5689,59 @@ private:
                             conversionErrors_.contains(ref)
                                 ? conversionErrors_.at(ref)
                                 : "Boolean conversion failed");
+      return;
+    }
+    if (source->type == "IFCSURFACEOFLINEAREXTRUSION" ||
+        source->type == "IFCSURFACEOFREVOLUTION" ||
+        source->type == "IFCRECTANGULARTRIMMEDSURFACE") {
+      if (!groupsByItem_.contains(ref) && !conversionErrors_.contains(ref)) {
+        std::string error;
+        const Entity *basis = source;
+        for (unsigned depth = 0;
+             basis && basis->type == "IFCRECTANGULARTRIMMEDSURFACE" &&
+             depth < 64;
+             ++depth) {
+          const auto baseRef = firstRef(*basis, 0);
+          basis = baseRef ? entity(*baseRef) : nullptr;
+        }
+        if (!basis || (basis->type != "IFCSURFACEOFLINEAREXTRUSION" &&
+                       basis->type != "IFCSURFACEOFREVOLUTION")) {
+          error =
+              "Standalone rectangular trim requires a supported swept basis";
+        } else {
+          std::vector<detail::ParametricSurface> charts;
+          const bool hasCharts = detail::readIfcSurfaceCharts(
+              entities_, ref, unitScale_, projectPlaneAngleScale(), charts,
+              error, stop_);
+          container::util::checkModelImportCancellation(stop_);
+          if (hasCharts) {
+            const auto mesh = detail::meshIfcSweptSurfaces(
+                charts, source->type == "IFCSURFACEOFLINEAREXTRUSION",
+                unitScale_, stop_, error);
+            if (mesh) {
+              std::vector<TriangleVertices> triangles;
+              triangles.reserve(mesh->size());
+              for (const auto &triangle : *mesh)
+                triangles.push_back({triangle.positions, triangle.normals});
+              if (auto group = appendTriangleMesh(
+                      triangles, styleColorByItem_.contains(ref)
+                                     ? styleColorByItem_.at(ref)
+                                     : defaultColor()))
+                groupsByItem_[ref] = {*group};
+              else
+                error =
+                    "Swept surface collapses at renderer coordinate precision";
+            }
+          }
+        }
+        if (!groupsByItem_.contains(ref))
+          conversionErrors_[ref] =
+              source->type + " #" + std::to_string(ref) + ": " + error;
+      }
+      if (groupsByItem_.contains(ref))
+        instances.push_back({ref, transform, curveColor});
+      else
+        reportGeometryIssue(ref, product, conversionErrors_.at(ref));
       return;
     }
     if (source->type == "IFCSECTIONEDSURFACE" && !groupsByItem_.contains(ref) &&

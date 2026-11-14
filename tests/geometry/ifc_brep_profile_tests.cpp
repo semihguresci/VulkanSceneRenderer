@@ -1740,6 +1740,173 @@ TEST(IfcCurvedBrep, SweptSurfaceAndExplicitSeamBoundsReuseSharedCurves) {
   }
 }
 
+TEST(IfcCurvedBrep, HollowSweepBoundsSelectOppositeWallChartsOfOneSurface) {
+  CurvedBuilder step;
+  const auto outerBottom = step.circle(3, 0), outerTop = step.circle(3, 4);
+  const auto innerBottom = step.circle(2, 0), innerTop = step.circle(2, 4);
+  const auto profile = step.add("IFCCIRCLEHOLLOWPROFILEDEF(.CURVE.,$,$,3.,1.)");
+  const auto surface = step.add("IFCSURFACEOFLINEAREXTRUSION(" + profile +
+                                ",$," + step.direction({0, 0, 1}) + ",4.)");
+  const auto addWall = [&](const CurvedBuilder::Circle &bottom,
+                           const CurvedBuilder::Circle &top, bool outer) {
+    const auto pcurve = [&](double angle) {
+      const auto u = number(angle);
+      const auto a = step.add("IFCCARTESIANPOINT((" + u + ",0.))"),
+                 b = step.add("IFCCARTESIANPOINT((" + u + ",1.))");
+      return step.add("IFCPCURVE(" + surface + "," +
+                      step.add("IFCPOLYLINE((" + a + "," + b + "))") + ")");
+    };
+    const auto curve = step.add(
+        "IFCSEAMCURVE(" +
+        step.add("IFCPOLYLINE((" + bottom.point + "," + top.point + "))") +
+        ",(" + pcurve(0) + "," + pcurve(2 * pi) + "),.CURVE3D.)");
+    const auto seam = step.edge(bottom.point, top.point, curve);
+    const std::vector<CurvedBuilder::Use> uses =
+        outer ? std::vector<CurvedBuilder::Use>{{bottom.edge, true},
+                                                {seam, true},
+                                                {top.edge, false},
+                                                {seam, false}}
+              : std::vector<CurvedBuilder::Use>{{seam, true},
+                                                {top.edge, true},
+                                                {seam, false},
+                                                {bottom.edge, false}};
+    step.face({step.bound(uses)}, surface, outer);
+  };
+  addWall(outerBottom, outerTop, true);
+  addWall(innerBottom, innerTop, false);
+  step.face({step.bound({{outerTop.edge, true}}),
+             step.bound({{innerTop.edge, false}}, false)},
+            step.add("IFCPLANE(" + step.placement({0, 0, 4}) + ")"));
+  step.face(
+      {step.bound({{outerBottom.edge, false}}),
+       step.bound({{innerBottom.edge, true}}, false)},
+      step.add("IFCPLANE(" + step.placement({0, 0, 0}, {0, 0, -1}) + ")"));
+  const auto brep = step.finish();
+  const auto model = LoadFromStep(fixture(step.definitions, brep));
+  complete(model);
+  ASSERT_FALSE(model.indices.empty());
+  watertight(model);
+  EXPECT_NEAR(volume(model), 20 * pi, .05);
+  std::array<size_t, 2> sideVertices{};
+  for (const auto &vertex : model.vertices) {
+    if (std::abs(vertex.normal.z) > .5)
+      continue;
+    const double radius = std::hypot(vertex.position.x, vertex.position.y);
+    const size_t wall = radius < 2.5 ? 0 : 1;
+    EXPECT_NEAR(radius, wall == 0 ? 2. : 3., 1e-5);
+    const auto radial = glm::normalize(glm::dvec2(vertex.position));
+    EXPECT_GT((wall == 0 ? -1. : 1.) *
+                  glm::dot(glm::dvec2(vertex.normal), radial),
+              .999);
+    ++sideVertices[wall];
+  }
+  EXPECT_GT(sideVertices[0], 0u);
+  EXPECT_GT(sideVertices[1], 0u);
+}
+
+TEST(IfcCurvedBrep, CenterlineSweepRetainsSharpCreaseAcrossTwoWalls) {
+  for (const bool omitCorner : {false, true}) {
+    SCOPED_TRACE(omitCorner);
+    CurvedBuilder step;
+    const auto a = step.point({0, 0, 0}), b = step.point({3, 0, 0}),
+               c = step.point({3, 2, 0}), d = step.point({0, 2, 0});
+    const auto A = step.point({0, 0, 4}), B = step.point({3, 0, 4}),
+               C = step.point({3, 2, 4}), D = step.point({0, 2, 4});
+    const auto parameterPoint = [&](int x, int y) {
+      return step.add("IFCCARTESIANPOINT((" + std::to_string(x) + "," +
+                      std::to_string(y) + "))");
+    };
+    const auto profileCurve =
+        step.add("IFCPOLYLINE((" +
+                 step.refs({parameterPoint(0, 0), parameterPoint(3, 0),
+                            parameterPoint(3, 2)}) +
+                 "))");
+    const auto profile =
+        step.add("IFCCENTERLINEPROFILEDEF(.CURVE.,$," + profileCurve + ",1.)");
+    const auto surface = step.add("IFCSURFACEOFLINEAREXTRUSION(" + profile +
+                                  ",$," + step.direction({0, 0, 1}) + ",4.)");
+    const auto bottom = omitCorner
+                            ? step.line(a, c)
+                            : step.edge(a, c,
+                                        step.add("IFCPOLYLINE((" +
+                                                 step.refs({a, b, c}) + "))"));
+    const auto top = step.edge(
+        A, C, step.add("IFCPOLYLINE((" + step.refs({A, B, C}) + "))"));
+    const auto cd = step.line(c, d), da = step.line(d, a), CD = step.line(C, D),
+               DA = step.line(D, A), aA = step.line(a, A), cC = step.line(c, C),
+               dD = step.line(d, D);
+    step.face(
+        {step.bound({{bottom, true}, {cC, true}, {top, false}, {aA, false}})},
+        surface);
+    step.plane({{bottom, false}, {da, false}, {cd, false}}, {0, 0, 0},
+               {0, 0, -1});
+    step.plane({{top, true}, {CD, true}, {DA, true}}, {0, 0, 4}, {0, 0, 1});
+    step.plane({{cd, true}, {dD, true}, {CD, false}, {cC, false}}, {0, 2, 0},
+               {0, 1, 0});
+    step.plane({{da, true}, {aA, true}, {DA, false}, {dD, false}}, {0, 0, 0},
+               {-1, 0, 0});
+
+    const auto brep = step.finish();
+    const auto model = LoadFromStep(fixture(step.definitions, brep));
+    if (omitCorner) {
+      EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+      EXPECT_TRUE(model.vertices.empty());
+      EXPECT_TRUE(model.indices.empty());
+      ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+      EXPECT_NE(model.importReport.diagnostics.front().reason.find("Face #"),
+                std::string::npos);
+      continue;
+    }
+    complete(model);
+    watertight(model);
+    EXPECT_NEAR(volume(model), 24., 1e-5);
+
+    // A triangle across the crease would have vertices in both planes, but
+    // all three must belong to one face of the rectangular prism.
+    const std::array<glm::dvec3, 6> normals{
+        {{-1, 0, 0}, {1, 0, 0}, {0, -1, 0}, {0, 1, 0}, {0, 0, -1}, {0, 0, 1}}};
+    const std::array<double, 6> offsets{0., 3., 0., 2., 0., 4.};
+    std::array<double, 6> areas{};
+    for (size_t i = 0; i < model.indices.size(); i += 3) {
+      std::array<glm::dvec3, 3> p;
+      for (size_t j = 0; j < p.size(); ++j)
+        p[j] = glm::dvec3(model.vertices.at(model.indices.at(i + j)).position);
+      const auto n = glm::cross(p[1] - p[0], p[2] - p[0]);
+      bool inPlane = false;
+      for (size_t plane = 0; plane < normals.size(); ++plane) {
+        if (std::ranges::all_of(p, [&](glm::dvec3 q) {
+              return std::abs(glm::dot(q, normals[plane]) - offsets[plane]) <
+                     1e-6;
+            })) {
+          EXPECT_GT(glm::dot(n, normals[plane]), 0.);
+          areas[plane] += .5 * glm::length(n);
+          inPlane = true;
+          break;
+        }
+      }
+      EXPECT_TRUE(inPlane) << "Triangle " << i / 3 << " crosses a prism corner";
+    }
+    const std::array<double, 6> expected{8., 8., 12., 12., 6., 6.};
+    for (size_t i = 0; i < areas.size(); ++i)
+      EXPECT_NEAR(areas[i], expected[i], 1e-5);
+    std::map<float, std::pair<bool, bool>> crease;
+    for (const auto &vertex : model.vertices) {
+      const auto p = vertex.position;
+      if (p.x == 3. && p.y == 0.) {
+        auto &normalsAtCrease = crease[p.z];
+        normalsAtCrease.first |= vertex.normal.x > .9999;
+        normalsAtCrease.second |= vertex.normal.y < -.9999;
+      }
+    }
+    ASSERT_TRUE(crease.contains(0.f));
+    ASSERT_TRUE(crease.contains(4.f));
+    for (const auto &[z, normalsAtCrease] : crease) {
+      EXPECT_TRUE(normalsAtCrease.first) << z;
+      EXPECT_TRUE(normalsAtCrease.second) << z;
+    }
+  }
+}
+
 TEST(IfcCurvedBrep,
      PolynomialAndRationalSplineFacesRetainKnotDomainsAndVolume) {
   for (bool rational : {false, true}) {

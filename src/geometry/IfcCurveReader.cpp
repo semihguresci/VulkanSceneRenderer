@@ -1,4 +1,6 @@
 #include "IfcCurveReader.h"
+#include "Container/utility/ModelImportCancellation.h"
+#include "IfcSweptProfileCurves.h"
 
 #include <algorithm>
 #include <array>
@@ -9,6 +11,7 @@
 #include <map>
 #include <memory>
 #include <numbers>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 #include <unordered_set>
@@ -76,6 +79,7 @@ struct Measure {
   bool parameter;
 };
 using Surface = ParametricSurface;
+std::string chartProfiles(const std::vector<Surface> &charts);
 Measure measure(const StepValue *v) {
   if (!v || v->kind != StepValue::Kind::List || v->list.size() != 1 ||
       (v->text != "IFCPARAMETERVALUE" && v->text != "IFCLENGTHMEASURE" &&
@@ -95,6 +99,17 @@ template <class Function> void shareFunction(Function &function) {
     };
   }
 }
+
+struct VisitEntity {
+  std::unordered_set<uint32_t> &set;
+  uint32_t id;
+  ~VisitEntity() { set.erase(id); }
+};
+
+struct CurveWitness {
+  const ParametricCurve *curve = nullptr;
+  std::optional<std::array<glm::dvec3, 2>> endpoints;
+};
 ParametricCurve sharedCurve(ParametricCurve curve) {
   // Sharing callbacks bounds closure storage for deeply nested curve parents.
   shareFunction(curve.point);
@@ -265,13 +280,16 @@ ParametricCurve transformedProfile(ParametricCurve parent,
 class Reader {
 public:
   Reader(const std::unordered_map<uint32_t, Entity> &entities, double units,
-         std::optional<double> angle)
+         std::optional<double> angle, std::stop_token stop = {})
       : entities_(entities), tolerance_(1e-5 / units),
-        chordError_(.001 / units), angle_(angle) {}
-  ParametricCurve read(uint32_t id, double spiralLength = 0);
-  ParametricCurve readImpl(uint32_t id, double spiralLength);
+        chordError_(.001 / units), angle_(angle), stop_(stop) {}
+  ParametricCurve read(uint32_t id, double spiralLength = 0,
+                       CurveWitness witness = {});
+  ParametricCurve readImpl(uint32_t id, double spiralLength,
+                           CurveWitness witness);
   std::vector<std::array<glm::dvec3, 3>> sectionedMesh(uint32_t id);
   Surface surface(uint32_t id);
+  std::vector<Surface> surfaceCharts(uint32_t id);
   ProfileTransform2D profileTransform(uint32_t id);
 
 private:
@@ -314,8 +332,10 @@ private:
   ParametricCurve alignment(const Entity &);
   ParametricCurve spiral(const Entity &, double length);
   ParametricCurve offset(const Entity &);
-  ParametricCurve pcurve(const Entity &);
+  ParametricCurve pcurve(const Entity &, CurveWitness);
   Surface surfaceImpl(uint32_t id);
+  std::vector<Surface> sweptSurfaceCharts(const Entity &);
+  std::vector<Surface> trimmedSurfaceCharts(const Entity &);
   ParametricCurve profile(uint32_t id);
   ParametricCurve profileImpl(uint32_t id);
   const Entity &profileBasis(const Entity &e) const;
@@ -337,6 +357,7 @@ private:
   const std::unordered_map<uint32_t, Entity> &entities_;
   double tolerance_, chordError_;
   std::optional<double> angle_;
+  std::stop_token stop_;
   std::unordered_set<uint32_t> visiting_;
   size_t nodes_{0};
   size_t sourcePoints_{0};
@@ -1328,6 +1349,13 @@ ParametricCurve Reader::profileImpl(uint32_t id) {
       return radians * (-a * std::sin(t * radians) * f.x +
                         b * std::cos(t * radians) * f.y);
     };
+    c.inverse = [=, period = c.period](glm::dvec3 p) {
+      const auto local = p - f.origin;
+      return std::optional(wrapped(
+          std::atan2(glm::dot(local, f.y) / b, glm::dot(local, f.x) / a) /
+              radians,
+          period));
+    };
     return sharedCurve(std::move(c));
   }
   if (e.type == "IFCRECTANGLEPROFILEDEF") {
@@ -1348,6 +1376,335 @@ ParametricCurve Reader::profileImpl(uint32_t id) {
     return sharedCurve(std::move(c));
   }
   throw std::runtime_error("Unsupported swept surface profile " + e.type);
+}
+
+std::vector<double> profileCreases(const ParametricCurve &curve) {
+  std::vector<double> breaks = curve.breaks;
+  const auto [first, last] = *curve.domain;
+  breaks.insert(breaks.end(), {first, last});
+  std::erase_if(breaks, [=](double t) { return t < first || t > last; });
+  std::ranges::sort(breaks);
+  breaks.erase(std::unique(breaks.begin(), breaks.end()), breaks.end());
+  constexpr double tangentCosine = .999999;
+  const auto corner = [&](double left, double right) {
+    const auto a = curveTangent(curve, left), b = curveTangent(curve, right);
+    return a && b && glm::dot(*a, *b) < tangentCosine;
+  };
+  std::vector<double> result;
+  if (curve.period && corner(last - (last - breaks[breaks.size() - 2]) * 1e-7,
+                             first + (breaks[1] - first) * 1e-7))
+    result.push_back(first);
+  for (size_t i = 1; i + 1 < breaks.size(); ++i) {
+    const double t = breaks[i];
+    if (corner(t - (t - breaks[i - 1]) * 1e-7, t + (breaks[i + 1] - t) * 1e-7))
+      result.push_back(t);
+  }
+  return result;
+}
+
+int closedProfileWinding(const std::vector<CurveSample> &samples,
+                         double tolerance) {
+  if (samples.size() < 4 ||
+      glm::length(samples.back().point - samples.front().point) > tolerance)
+    return 0;
+  double twiceArea = 0;
+  const auto origin = samples.front().point;
+  for (size_t i = 1; i < samples.size(); ++i)
+    twiceArea +=
+        glm::cross(samples[i - 1].point - origin, samples[i].point - origin).z;
+  return twiceArea > 0 ? 1 : -1;
+}
+
+std::vector<Surface> Reader::sweptSurfaceCharts(const Entity &e) {
+  const IfcSweptProfileCallbacks callbacks{
+      .entity = [&](uint32_t id) -> const Entity & { return get(id); },
+      .readCurve = [&](uint32_t id) { return read(id); },
+      .readSingleProfile = [&](uint32_t id) { return profile(id); },
+      .readProfilePlacement =
+          [&](uint32_t id) {
+            unsigned dimension = 0;
+            auto result = placement(id, dimension);
+            if (dimension != 2)
+              throw std::runtime_error(
+                  "Swept surface profile placement must be 2D");
+            return result;
+          },
+      .readTransform = [&](uint32_t id) { return profileTransform(id); },
+      .applyTransform = transformedProfile};
+  auto boundaries = readIfcSweptProfileBoundaries(
+      reference(arg(e, 0)), callbacks, tolerance_ * .01, angle_, stop_);
+  CurveFrame frame;
+  if (!omitted(arg(e, 1))) {
+    unsigned dimension = 0;
+    frame = placement(reference(arg(e, 1)), dimension);
+    if (dimension != 3)
+      throw std::runtime_error("Swept surface placement must be 3D");
+  }
+  const auto place = [frame](glm::dvec3 p) {
+    return frame.origin + frame.x * p.x + frame.y * p.y + frame.z * p.z;
+  };
+  const auto unplace = [frame](glm::dvec3 p) {
+    const auto d = p - frame.origin;
+    return glm::dvec3(glm::dot(d, frame.x), glm::dot(d, frame.y),
+                      glm::dot(d, frame.z));
+  };
+  const bool linear = e.type == "IFCSURFACEOFLINEAREXTRUSION";
+  glm::dvec3 axis, origin(0);
+  double radians = 0;
+  if (linear) {
+    const double depth = number(arg(e, 3));
+    if (depth <= 0)
+      throw std::runtime_error("Nonpositive swept surface depth");
+    axis = direction(reference(arg(e, 2)), 3) * depth;
+  } else {
+    const auto &axisPlacement = referenced(e, 2);
+    if (axisPlacement.type != "IFCAXIS1PLACEMENT")
+      throw std::runtime_error("Invalid surface revolution axis placement");
+    const auto p = point(reference(arg(axisPlacement, 0)));
+    if (p.second != 3 || !angle_ || *angle_ <= 0)
+      throw std::runtime_error("Invalid surface revolution origin/angle units");
+    origin = p.first;
+    axis = omitted(arg(axisPlacement, 1))
+               ? glm::dvec3(0, 0, 1)
+               : direction(reference(arg(axisPlacement, 1)), 3);
+    radians = *angle_;
+  }
+  const double tolerance = tolerance_ * .01, samplingError = chordError_ * .25;
+  const auto inverseTolerance = [=](glm::dvec3 p) {
+    return std::max(tolerance,
+                    glm::length(p) * std::numeric_limits<float>::epsilon() * 2);
+  };
+  const auto rotate = [axis](glm::dvec3 q, double angle) {
+    const double cosine = std::cos(angle), sine = std::sin(angle);
+    return q * cosine + glm::cross(axis, q) * sine +
+           axis * glm::dot(axis, q) * (1 - cosine);
+  };
+  std::vector<Surface> result;
+  std::vector<glm::dvec3> radialDirections;
+  for (auto &boundary : boundaries) {
+    const auto &c = boundary.curve;
+    if (!c.domain || c.dimension != 2)
+      throw std::runtime_error("Swept profile #" +
+                               std::to_string(boundary.sourceId) +
+                               " must have a finite 2D domain");
+    const auto [first, last] = *c.domain;
+    const auto samples = sampleCurve(c, first, last, samplingError, 4097);
+    if (samples.size() < 2)
+      throw std::runtime_error("Swept profile #" +
+                               std::to_string(boundary.sourceId) +
+                               " exceeds its sampling budget");
+    const int winding = closedProfileWinding(samples, tolerance);
+    const auto onProfile = [c](double t) -> std::optional<glm::dvec3> {
+      if (!std::isfinite(t) ||
+          (!c.period && (t < c.domain->first || t > c.domain->second)))
+        return std::nullopt;
+      return c.point(c.period ? c.domain->first +
+                                    wrapped(t - c.domain->first, c.period)
+                              : t);
+    };
+    const double profileAngle = c.period ? 2 * pi / c.period : 0;
+    Surface &surface = result.emplace_back();
+    surface.profileSourceId = boundary.sourceId;
+    surface.innerProfile = boundary.inner;
+    const auto meshBreaks = [&] {
+      auto breaks = c.breaks;
+      std::ranges::sort(breaks);
+      breaks.erase(std::unique(breaks.begin(), breaks.end()), breaks.end());
+      return breaks;
+    }();
+    if (linear) {
+      surface.point = [onProfile, place,
+                       axis](double u, double v) -> std::optional<glm::dvec3> {
+        const auto p = onProfile(u);
+        if (!p || !std::isfinite(v))
+          return std::nullopt;
+        const auto q = place(*p + axis * v);
+        return finite(q) ? std::optional(q) : std::nullopt;
+      };
+      surface.angularScale = {profileAngle, 0};
+      surface.periods = {c.period, 0};
+      surface.uDomain = c.domain;
+      surface.meshU = meshBreaks;
+      surface.creaseU = profileCreases(c);
+      surface.reverseMeshWinding =
+          (winding && winding * axis.z < 0) != boundary.inner;
+      surface.standaloneRegular = std::abs(axis.z) > 1e-12 * glm::length(axis);
+      if (surface.standaloneRegular)
+        surface.inverse = [=](glm::dvec3 p) -> std::optional<glm::dvec2> {
+          const auto local = unplace(p);
+          const double v = local.z / axis.z;
+          const auto u = curveParameterAtPoint(c, local - axis * v,
+                                               inverseTolerance(local));
+          return u ? std::optional(glm::dvec2(*u, v)) : std::nullopt;
+        };
+      continue;
+    }
+
+    const double period = 2 * pi / radians;
+    surface.point = [=](double u, double v) -> std::optional<glm::dvec3> {
+      const auto p = onProfile(v);
+      if (!p || !std::isfinite(u))
+        return std::nullopt;
+      const auto q =
+          place(origin + rotate(*p - origin, wrapped(u, period) * radians));
+      return finite(q) ? std::optional(q) : std::nullopt;
+    };
+    surface.angularScale = {radians, profileAngle};
+    surface.periods = {period, c.period};
+    surface.vDomain = c.domain;
+    surface.meshV = meshBreaks;
+    surface.creaseV = profileCreases(c);
+    surface.reverseMeshWinding = boundary.inner;
+    // A one-sided meridian gives a unique polar inverse including at the seam.
+    // Retain point evaluation for earlier pcurves that revolve nonmeridians.
+    surface.standaloneRegular = false;
+    if (std::abs(axis.z) <= 1e-12 && std::abs(origin.z) <= tolerance) {
+      auto radial = normalized(glm::cross(axis, glm::dvec3(0, 0, 1)));
+      if (glm::dot(samples.front().point - origin, radial) < 0)
+        radial = -radial;
+      if (std::ranges::all_of(samples, [&](const auto &sample) {
+            return glm::dot(sample.point - origin, radial) >
+                   samplingError + tolerance;
+          })) {
+        surface.standaloneRegular = true;
+        surface.reverseMeshWinding =
+            (winding * glm::cross(radial, axis).z < 0) != boundary.inner;
+        radialDirections.push_back(radial);
+        surface.inverse = [=](glm::dvec3 p) -> std::optional<glm::dvec2> {
+          const auto local = unplace(p) - origin;
+          const double height = glm::dot(local, axis);
+          const auto perpendicular = local - height * axis;
+          const double radius = glm::length(perpendicular);
+          if (!(radius > tolerance))
+            return std::nullopt;
+          const double angle =
+              std::atan2(glm::dot(perpendicular, glm::cross(axis, radial)),
+                         glm::dot(perpendicular, radial));
+          const auto v =
+              curveParameterAtPoint(c, origin + height * axis + radius * radial,
+                                    inverseTolerance(local));
+          return v ? std::optional(
+                         glm::dvec2(wrapped(angle / radians, period), *v))
+                   : std::nullopt;
+        };
+      }
+    }
+  }
+  if (!linear && result.size() > 1 &&
+      (radialDirections.size() != result.size() ||
+       std::ranges::any_of(radialDirections, [&](glm::dvec3 radial) {
+         return glm::dot(radial, radialDirections.front()) < 0;
+       })))
+    throw std::runtime_error("Multi-profile revolution requires disjoint "
+                             "meridians on the same side of its axis" +
+                             chartProfiles(result));
+  return result;
+}
+
+std::vector<double> trimBreaks(const std::vector<double> &breaks, double start,
+                               double extent, double sense, double period) {
+  std::vector<double> values;
+  for (double knot : breaks) {
+    const double t = sense * (knot - start);
+    const double local = period ? wrapped(t, period) : t;
+    if (local >= 0 && local <= extent)
+      values.push_back(local);
+  }
+  std::ranges::sort(values);
+  values.erase(std::unique(values.begin(), values.end()), values.end());
+  return values;
+}
+
+std::vector<Surface> Reader::trimmedSurfaceCharts(const Entity &e) {
+  auto bases = surfaceCharts(reference(arg(e, 0)));
+  const glm::dvec2 start(number(arg(e, 1)), number(arg(e, 2)));
+  const glm::dvec2 last(number(arg(e, 3)), number(arg(e, 4)));
+  const glm::dvec2 sense(boolean(arg(e, 5)) ? 1. : -1.,
+                         boolean(arg(e, 6)) ? 1. : -1.);
+  const auto extentOf = [](double first, double last, double sense,
+                           double period) {
+    if (first == last || (!period && (sense > 0) != (last > first)))
+      throw std::runtime_error("Incompatible rectangular surface trim/sense");
+    double extent = sense * (last - first);
+    if (period && extent <= 0)
+      extent += (std::floor(-extent / period) + 1) * period;
+    if (!std::isfinite(extent) || extent <= 0 || (period && extent > period))
+      throw std::runtime_error("Invalid rectangular surface trim extent");
+    return extent;
+  };
+  for (auto &base : bases) {
+    const glm::dvec2 extent(extentOf(start.x, last.x, sense.x, base.periods.x),
+                            extentOf(start.y, last.y, sense.y, 0));
+    if (base.periods.y && extent.y > base.periods.y)
+      throw std::runtime_error("Rectangular surface trim exceeds one V period");
+    for (double u : {start.x, start.x + sense.x * extent.x})
+      for (double v : {start.y, last.y})
+        if (!base.point(u, v))
+          throw std::runtime_error(
+              "Rectangular surface trim outside basis domain");
+    const glm::dvec2 trimPeriods(extent.x == base.periods.x ? extent.x : 0,
+                                 extent.y == base.periods.y ? extent.y : 0);
+    const auto map = [=](glm::dvec2 p) {
+      for (unsigned axis = 0; axis < 2; ++axis)
+        if (trimPeriods[axis])
+          p[axis] = wrapped(p[axis], trimPeriods[axis]);
+      return start + sense * p;
+    };
+    Surface result{
+        .point = [=, evaluate = base.point](
+                     double u, double v) -> std::optional<glm::dvec3> {
+          const glm::dvec2 p(u, v);
+          for (unsigned axis = 0; axis < 2; ++axis)
+            if (!std::isfinite(p[axis]) ||
+                (!trimPeriods[axis] && (p[axis] < 0 || p[axis] > extent[axis])))
+              return std::nullopt;
+          const auto uv = map(p);
+          return evaluate(uv.x, uv.y);
+        },
+        .angularScale = base.angularScale,
+        .periods = trimPeriods,
+        .uDomain = {{0, extent.x}},
+        .vDomain = {{0, extent.y}}};
+    if (base.regionStep)
+      result.regionStep =
+          [start, sense, region = base.regionStep](glm::dvec2 a, glm::dvec2 b) {
+            return region(start + sense * a, start + sense * b);
+          };
+    if (base.inverse)
+      result.inverse = [=, inverse = base.inverse, periods = base.periods](
+                           glm::dvec3 p) -> std::optional<glm::dvec2> {
+        const auto source = inverse(p);
+        if (!source)
+          return std::nullopt;
+        auto uv = sense * (*source - start);
+        for (unsigned axis = 0; axis < 2; ++axis) {
+          const double epsilon = extent[axis] * 1e-7;
+          if (periods[axis]) {
+            uv[axis] = wrapped(uv[axis], periods[axis]);
+            if (uv[axis] >= periods[axis] - epsilon)
+              uv[axis] = 0;
+          }
+          if (uv[axis] < -epsilon || uv[axis] > extent[axis] + epsilon)
+            return std::nullopt;
+          uv[axis] = std::clamp(uv[axis], 0., extent[axis]);
+        }
+        return uv;
+      };
+    result.meshU =
+        trimBreaks(base.meshU, start.x, extent.x, sense.x, base.periods.x);
+    result.meshV =
+        trimBreaks(base.meshV, start.y, extent.y, sense.y, base.periods.y);
+    result.creaseU =
+        trimBreaks(base.creaseU, start.x, extent.x, sense.x, base.periods.x);
+    result.creaseV =
+        trimBreaks(base.creaseV, start.y, extent.y, sense.y, base.periods.y);
+    result.profileSourceId = base.profileSourceId;
+    result.innerProfile = base.innerProfile;
+    result.reverseMeshWinding = base.reverseMeshWinding;
+    result.standaloneRegular = base.standaloneRegular;
+    base = std::move(result);
+  }
+  return bases;
 }
 
 ParametricCurve Reader::parameterCurve(uint32_t id, uint32_t basis) {
@@ -1378,19 +1735,46 @@ ParametricCurve Reader::parameterCurve(uint32_t id, uint32_t basis) {
   return c;
 }
 
+std::string chartProfiles(const std::vector<Surface> &charts) {
+  std::string ids;
+  for (const auto &chart : charts)
+    if (chart.profileSourceId)
+      ids += " #" + std::to_string(chart.profileSourceId);
+  return ids;
+}
+
 Surface Reader::surface(uint32_t id) {
+  auto charts = surfaceCharts(id);
+  if (charts.size() != 1)
+    throw std::runtime_error("Ambiguous surface #" + std::to_string(id) +
+                             " requires a chart for profiles" +
+                             chartProfiles(charts));
+  return std::move(charts.front());
+}
+
+std::vector<Surface> Reader::surfaceCharts(uint32_t id) {
+  container::util::checkModelImportCancellation(stop_);
   if (++nodes_ > 4096 || visiting_.size() >= 64 || !visiting_.insert(id).second)
     throw std::runtime_error("Cyclic or excessive surface reference tree");
-  struct Visit {
-    std::unordered_set<uint32_t> &set;
-    uint32_t id;
-    ~Visit() { set.erase(id); }
-  } visit{visiting_, id};
-  auto result = surfaceImpl(id);
-  shareFunction(result.point);
-  shareFunction(result.regionStep);
-  shareFunction(result.inverse);
-  return result;
+  const VisitEntity visit{visiting_, id};
+  const auto &e = get(id);
+  try {
+    auto charts = e.type == "IFCSURFACEOFLINEAREXTRUSION" ||
+                          e.type == "IFCSURFACEOFREVOLUTION"
+                      ? sweptSurfaceCharts(e)
+                  : e.type == "IFCRECTANGULARTRIMMEDSURFACE"
+                      ? trimmedSurfaceCharts(e)
+                      : std::vector<Surface>{surfaceImpl(id)};
+    for (auto &chart : charts) {
+      shareFunction(chart.point);
+      shareFunction(chart.regionStep);
+      shareFunction(chart.inverse);
+    }
+    return charts;
+  } catch (const std::runtime_error &error) {
+    throw std::runtime_error(e.type + " #" + std::to_string(id) + ": " +
+                             error.what());
+  }
 }
 
 Surface Reader::surfaceImpl(uint32_t id) {
@@ -1793,128 +2177,6 @@ Surface Reader::surfaceImpl(uint32_t id) {
     };
     return result;
   }
-  if (e.type == "IFCSURFACEOFLINEAREXTRUSION" ||
-      e.type == "IFCSURFACEOFREVOLUTION") {
-    auto c = profile(reference(arg(e, 0)));
-    CurveFrame f;
-    if (!omitted(arg(e, 1))) {
-      unsigned d = 0;
-      f = placement(reference(arg(e, 1)), d);
-      if (d != 3)
-        throw std::runtime_error("Swept surface placement must be 3D");
-    }
-    const auto place = [f](glm::dvec3 p) {
-      return f.origin + f.x * p.x + f.y * p.y + f.z * p.z;
-    };
-    if (e.type == "IFCSURFACEOFLINEAREXTRUSION") {
-      const double depth = number(arg(e, 3));
-      if (depth <= 0)
-        throw std::runtime_error("Nonpositive swept surface depth");
-      const auto axis = direction(reference(arg(e, 2)), 3) * depth;
-      return {.point = [=](double u, double v) -> std::optional<glm::dvec3> {
-                if (!std::isfinite(u) || !std::isfinite(v) ||
-                    (c.domain && !c.period &&
-                     (u < c.domain->first || u > c.domain->second)))
-                  return std::nullopt;
-                auto p = c.point(u);
-                if (!p)
-                  return std::nullopt;
-                const auto result = place(*p + axis * v);
-                return finite(result) ? std::optional(result) : std::nullopt;
-              },
-              .angularScale = {c.period ? 2 * pi / c.period : 0, 0},
-              .periods = {c.period, 0},
-              .uDomain = c.domain,
-              .inverse = [=, tolerance = tolerance_ * .01](
-                             glm::dvec3 p) -> std::optional<glm::dvec2> {
-                if (c.dimension != 2 || std::abs(axis.z) <= 1e-12)
-                  return std::nullopt;
-                const auto d = p - f.origin;
-                const glm::dvec3 local(glm::dot(d, f.x), glm::dot(d, f.y),
-                                       glm::dot(d, f.z));
-                const double v = local.z / axis.z;
-                // Face boundaries have already been stored as renderer floats.
-                // Account for that rounding here; the face mesher independently
-                // verifies surface membership and the physical chord budget.
-                const double positionTolerance = std::max(
-                    tolerance, glm::length(local) *
-                                   std::numeric_limits<float>::epsilon() * 2);
-                auto u = curveParameterAtPoint(c, local - axis * v,
-                                               positionTolerance);
-                return u ? std::optional(glm::dvec2(*u, v)) : std::nullopt;
-              }};
-    }
-    const auto &axisPlacement = referenced(e, 2);
-    if (axisPlacement.type != "IFCAXIS1PLACEMENT")
-      throw std::runtime_error("Invalid surface revolution axis placement");
-    const auto origin = point(reference(arg(axisPlacement, 0)));
-    if (origin.second != 3 || !angle_ || *angle_ <= 0)
-      throw std::runtime_error("Invalid surface revolution origin/angle units");
-    const auto axis = omitted(arg(axisPlacement, 1))
-                          ? glm::dvec3(0, 0, 1)
-                          : direction(reference(arg(axisPlacement, 1)), 3);
-    const double radians = *angle_;
-    return {.point = [=](double u, double v) -> std::optional<glm::dvec3> {
-              if (!std::isfinite(u) || !std::isfinite(v) ||
-                  (c.domain && !c.period &&
-                   (v < c.domain->first || v > c.domain->second)))
-                return std::nullopt;
-              auto p = c.point(v);
-              if (!p)
-                return std::nullopt;
-              const auto q = *p - origin.first;
-              const double cosine = std::cos(u * radians),
-                           sine = std::sin(u * radians);
-              const auto result =
-                  place(origin.first + q * cosine + glm::cross(axis, q) * sine +
-                        axis * glm::dot(axis, q) * (1 - cosine));
-              return finite(result) ? std::optional(result) : std::nullopt;
-            },
-            .angularScale = {radians, c.period ? 2 * pi / c.period : 0},
-            .periods = {2 * pi / radians, c.period},
-            .vDomain = c.domain};
-  }
-  if (e.type == "IFCRECTANGULARTRIMMEDSURFACE") {
-    auto base = surface(reference(arg(e, 0)));
-    const double u1 = number(arg(e, 1)), v1 = number(arg(e, 2)),
-                 u2 = number(arg(e, 3)), v2 = number(arg(e, 4));
-    const bool us = boolean(arg(e, 5)), vs = boolean(arg(e, 6));
-    const auto extent = [](double a, double b, bool sense, double period) {
-      if (a == b || (!period && sense != (b > a)))
-        throw std::runtime_error("Incompatible rectangular surface trim/sense");
-      double d = (sense ? 1 : -1) * (b - a);
-      if (period && d <= 0)
-        d += (std::floor(-d / period) + 1) * period;
-      if (!std::isfinite(d) || d <= 0)
-        throw std::runtime_error("Invalid rectangular surface trim extent");
-      return d;
-    };
-    const double du = extent(u1, u2, us, base.periods.x),
-                 dv = extent(v1, v2, vs, 0);
-    for (double u : {u1, u1 + (us ? du : -du)})
-      for (double v : {v1, v2})
-        if (!base.point(u, v))
-          throw std::runtime_error(
-              "Rectangular surface trim outside basis domain");
-    Surface result{
-        .point = [=](double u, double v) -> std::optional<glm::dvec3> {
-          if (!std::isfinite(u) || !std::isfinite(v) || u < 0 || u > du ||
-              v < 0 || v > dv)
-            return std::nullopt;
-          return base.point(u1 + (us ? u : -u), v1 + (vs ? v : -v));
-        },
-        .angularScale = base.angularScale,
-        .uDomain = {{0, du}},
-        .vDomain = {{0, dv}}};
-    if (base.regionStep)
-      result.regionStep = [=](glm::dvec2 a, glm::dvec2 b) {
-        const auto map = [=](glm::dvec2 p) {
-          return glm::dvec2(u1 + (us ? p.x : -p.x), v1 + (vs ? p.y : -p.y));
-        };
-        return base.regionStep(map(a), map(b));
-      };
-    return result;
-  }
   if (e.type == "IFCCURVEBOUNDEDPLANE" || e.type == "IFCCURVEBOUNDEDSURFACE") {
     const uint32_t basisId = reference(arg(e, 0));
     auto base = surface(basisId);
@@ -2266,27 +2528,84 @@ Surface Reader::surfaceImpl(uint32_t id) {
   return result;
 }
 
-ParametricCurve Reader::pcurve(const Entity &e) {
-  const auto evaluate = surface(reference(arg(e, 0)));
-  const auto &referenceCurve = referenced(e, 1);
-  // IFC4.3 references the 2D curve directly. Older exchanges can use a
-  // definitional representation containing that single reference curve.
-  uint32_t id = referenceCurve.id;
-  if (referenceCurve.type == "IFCDEFINITIONALREPRESENTATION") {
-    const auto &items = list(arg(referenceCurve, 3), 1);
-    id = reference(&items.front());
+std::map<double, glm::dvec2> pcurveCreases(const ParametricCurve &uv,
+                                           const Surface &surface) {
+  std::map<double, glm::dvec2> crossings;
+  if (!uv.domain || (surface.creaseU.empty() && surface.creaseV.empty()))
+    return crossings;
+  const auto [first, last] = *uv.domain;
+  const auto samples = sampleCurve(uv, first, last, 1e-6, 4097);
+  if (samples.empty())
+    throw std::runtime_error("Pcurve exceeds its crease sampling budget");
+  size_t checks = 0;
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    const double period = surface.periods[axis];
+    for (size_t i = 1; i < samples.size(); ++i) {
+      const auto &a = samples[i - 1], &b = samples[i];
+      const auto [lo, hi] = std::minmax(a.point[axis], b.point[axis]);
+      for (double knot : axis ? surface.creaseV : surface.creaseU) {
+        if (++checks > 1000000)
+          throw std::runtime_error("Pcurve crease search exceeds its budget");
+        if (period)
+          knot += std::ceil((lo - knot) / period) * period;
+        for (unsigned repeat = 0; knot <= hi; ++repeat) {
+          if (repeat >= 16 || crossings.size() >= 4096)
+            throw std::runtime_error(
+                "Pcurve crease crossings exceed their budget");
+          if (knot >= lo && lo != hi) {
+            double u = a.parameter, v = b.parameter;
+            if (a.point[axis] == knot)
+              v = u;
+            else if (b.point[axis] == knot)
+              u = v;
+            else {
+              const bool increasing = b.point[axis] > a.point[axis];
+              for (unsigned step = 0; step < 53; ++step) {
+                const double mid = std::midpoint(u, v);
+                const auto p = uv.point(mid);
+                if (!p)
+                  throw std::runtime_error(
+                      "Undefined pcurve at swept profile crease");
+                if (((*p)[axis] < knot) == increasing)
+                  u = mid;
+                else
+                  v = mid;
+              }
+            }
+            const double t = std::midpoint(u, v);
+            const auto p = uv.point(t);
+            if (!p)
+              throw std::runtime_error(
+                  "Undefined pcurve at swept profile crease");
+            const auto entry = crossings.try_emplace(t, glm::dvec2(*p)).first;
+            entry->second[axis] = knot;
+          }
+          if (!period)
+            break;
+          knot += period;
+        }
+      }
+    }
   }
-  auto uv = read(id);
-  if (uv.dimension != 2)
-    throw std::runtime_error("Pcurve reference curve must be 2D");
+  return crossings;
+}
+
+ParametricCurve onSurfaceCurve(const ParametricCurve &uv,
+                               const Surface &evaluate) {
   ParametricCurve c;
   c.dimension = 3;
   c.domain = uv.domain;
   c.breaks = uv.breaks;
+  auto crossings = pcurveCreases(uv, evaluate);
+  for (const auto &[parameter, point] : crossings)
+    c.breaks.push_back(parameter);
   c.period = uv.period;
-  c.point = [uv, evaluate](double t) {
+  c.point = [uv, evaluate = evaluate.point,
+             crossings = std::move(crossings)](double t) {
+    if (const auto at = crossings.find(t); at != crossings.end())
+      return evaluate(at->second.x, at->second.y);
     auto p = uv.point(t);
-    return p ? evaluate.point(p->x, p->y) : std::nullopt;
+    return p ? evaluate(p->x, p->y) : std::nullopt;
   };
   if (evaluate.angularScale != glm::dvec2(0) || evaluate.regionStep ||
       uv.stepValidator) {
@@ -2311,6 +2630,103 @@ ParametricCurve Reader::pcurve(const Entity &e) {
     };
   }
   return c;
+}
+
+ParametricCurve Reader::pcurve(const Entity &e, CurveWitness witness) {
+  const auto basis = reference(arg(e, 0));
+  auto charts = surfaceCharts(basis);
+  const auto uv = parameterCurve(e.id, basis);
+  if (charts.size() == 1)
+    return onSurfaceCurve(uv, charts.front());
+  const auto description = " pcurve #" + std::to_string(e.id) +
+                           " on surface #" + std::to_string(basis) +
+                           " with profiles" + chartProfiles(charts);
+  if (!witness.curve && !witness.endpoints)
+    throw std::runtime_error("Ambiguous" + description +
+                             " requires an authored 3D curve or edge vertices");
+  // Parameters of the two representations need not agree. Verify their
+  // geometry in both directions rather than comparing at equal parameters.
+  const auto sample = [=,
+                       tolerance = tolerance_](const ParametricCurve &curve) {
+    return curve.domain
+               ? sampleCurve(curve, curve.domain->first, curve.domain->second,
+                             tolerance * .25, 4097)
+               : std::vector<CurveSample>{};
+  };
+  size_t checks = 0;
+  const auto onCurve = [&](const ParametricCurve &curve,
+                           const std::vector<CurveSample> &samples,
+                           glm::dvec3 p, size_t &hint) {
+    const double tolerance = std::max(tolerance_, glm::length(p) * 1e-12);
+    if (!curve.domain)
+      return curveParameterAtPoint(curve, p, tolerance).has_value();
+    const auto matches = [&](size_t i) {
+      if (++checks > 4000000)
+        throw std::runtime_error("Pcurve chart witnesses exceed search budget");
+      const auto a = samples[i - 1].point, b = samples[i].point, d = b - a;
+      const double length = glm::dot(d, d);
+      const auto q =
+          p - a -
+          d * (length > 0 ? std::clamp(glm::dot(p - a, d) / length, 0., 1.)
+                          : 0.);
+      if (glm::dot(q, q) > tolerance * tolerance)
+        return false;
+      hint = i;
+      return true;
+    };
+    const size_t begin = hint > 8 ? hint - 8 : 1;
+    const size_t end = std::min(hint + 9, samples.size());
+    for (size_t i = begin; i < end; ++i)
+      if (matches(i))
+        return true;
+    for (size_t i = 1; i < samples.size(); ++i)
+      if ((i < begin || i >= end) && matches(i))
+        return true;
+    return false;
+  };
+  const auto explicitSamples =
+      witness.curve ? sample(*witness.curve) : std::vector<CurveSample>{};
+  const auto witnesses = [&](const std::vector<CurveSample> &source,
+                             const ParametricCurve &target,
+                             const std::vector<CurveSample> &targetSamples) {
+    if (source.size() < 2)
+      return false;
+    size_t hint = 1;
+    const auto matches = [&](glm::dvec3 p) {
+      container::util::checkModelImportCancellation(stop_);
+      return onCurve(target, targetSamples, p, hint);
+    };
+    // Include every turn and authored break, plus interior samples on straight
+    // runs whose endpoints could lie on different pieces of the other curve.
+    for (size_t i = 1; i < source.size(); ++i)
+      if (!matches(source[i - 1].point) ||
+          !matches((source[i - 1].point + source[i].point) * .5))
+        return false;
+    return matches(source.back().point);
+  };
+  std::optional<ParametricCurve> match;
+  for (const auto &chart : charts) {
+    container::util::checkModelImportCancellation(stop_);
+    auto curve = onSurfaceCurve(uv, chart);
+    const auto samples = sample(curve);
+    size_t hint = 1;
+    if (witness.endpoints &&
+        (!onCurve(curve, samples, witness.endpoints->front(), hint) ||
+         !onCurve(curve, samples, witness.endpoints->back(), hint)))
+      continue;
+    if (witness.curve &&
+        (!witnesses(samples, *witness.curve, explicitSamples) ||
+         (witness.curve->domain &&
+          !witnesses(explicitSamples, curve, samples))))
+      continue;
+    if (match)
+      throw std::runtime_error("Ambiguous" + description +
+                               " matches more than one profile boundary");
+    match = std::move(curve);
+  }
+  if (!match)
+    throw std::runtime_error("No chart matches" + description);
+  return std::move(*match);
 }
 
 std::vector<std::array<glm::dvec3, 3>> Reader::sectionedMesh(uint32_t id) {
@@ -2713,11 +3129,13 @@ ParametricCurve Reader::alignment(const Entity &e) {
   return c;
 }
 
-ParametricCurve Reader::read(uint32_t id, double spiralLength) {
-  return sharedCurve(readImpl(id, spiralLength));
+ParametricCurve Reader::read(uint32_t id, double spiralLength,
+                             CurveWitness witness) {
+  return sharedCurve(readImpl(id, spiralLength, witness));
 }
 
-ParametricCurve Reader::readImpl(uint32_t id, double spiralLength) {
+ParametricCurve Reader::readImpl(uint32_t id, double spiralLength,
+                                 CurveWitness witness) {
   if (++nodes_ > 4096 || visiting_.size() >= 64)
     throw std::runtime_error(
         "Excessive curve reference depth or component count");
@@ -2749,7 +3167,7 @@ ParametricCurve Reader::readImpl(uint32_t id, double spiralLength) {
         e.type == "IFCOFFSETCURVEBYDISTANCES")
       return offset(e);
     if (e.type == "IFCPCURVE")
-      return pcurve(e);
+      return pcurve(e, witness);
     if (e.type == "IFCCLOTHOID" || e.type == "IFCCOSINESPIRAL" ||
         e.type == "IFCSINESPIRAL" ||
         e.type == "IFCSECONDORDERPOLYNOMIALSPIRAL" ||
@@ -2948,7 +3366,7 @@ ParametricCurve Reader::readImpl(uint32_t id, double spiralLength) {
       if (pc.type != "IFCPCURVE")
         throw std::runtime_error(
             "Preferred surface curve representation is not a pcurve");
-      return read(pc.id);
+      return read(pc.id, 0, {&c, witness.endpoints});
     }
     throw std::runtime_error("Unsupported curve family " + e.type);
   } catch (const std::runtime_error &error) {
@@ -3011,6 +3429,36 @@ readIfcCurve(const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,
   } catch (const std::runtime_error &e) {
     error = e.what();
     return std::nullopt;
+  }
+}
+std::optional<ParametricCurve>
+readIfcEdgeCurve(const std::unordered_map<uint32_t, Entity> &entities,
+                 uint32_t id, double units, std::optional<double> angle,
+                 glm::dvec3 start, glm::dvec3 end, std::string &error) {
+  try {
+    if (!std::isfinite(units) || units <= 0)
+      throw std::runtime_error("Invalid edge curve length units");
+    return Reader(entities, units, angle)
+        .read(id, 0, {.endpoints = std::array{start, end}});
+  } catch (const std::runtime_error &e) {
+    error = e.what();
+    return std::nullopt;
+  }
+}
+bool readIfcSurfaceCharts(const std::unordered_map<uint32_t, Entity> &entities,
+                          uint32_t id, double units,
+                          std::optional<double> angle,
+                          std::vector<ParametricSurface> &charts,
+                          std::string &error, std::stop_token stop) {
+  try {
+    if (!std::isfinite(units) || units <= 0)
+      throw std::runtime_error("Invalid surface length units");
+    auto result = Reader(entities, units, angle, stop).surfaceCharts(id);
+    charts = std::move(result);
+    return true;
+  } catch (const std::runtime_error &e) {
+    error = e.what();
+    return false;
   }
 }
 std::optional<ParametricSurface>
