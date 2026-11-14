@@ -56,4 +56,29 @@ $enabledError = 'The TinyUSDZ-enabled build requires -TinyUsdzSourceDirectory fo
 foreach ($value in @('ON', 'Y', '2')) {
     Assert-Preflight @("ENABLE_TINYUSDZ_USD_LOADER:BOOL=$value") $enabledError
 }
-"PASS $caseCount TinyUSDZ packaging preflight cases"
+
+$minimalCache = @('ENABLE_TINYUSDZ_USD_LOADER:BOOL=OFF', 'ENABLE_PHYSICS:BOOL=OFF')
+$shaderDirectory = Join-Path $runtimeDirectory 'spv_shaders'
+New-Item -ItemType Directory -Path $shaderDirectory | Out-Null
+
+& {
+    # Exercise the runtime-file gate independently of the checkout's state.
+    function git {
+        $global:LASTEXITCODE = 0
+        switch ($args -join ' ') {
+            'rev-parse HEAD' { '0000000000000000000000000000000000000000' }
+            'status --porcelain' { }
+            default { throw "Unexpected git invocation: $args" }
+        }
+    }
+
+    foreach ($shader in @('brdf_lut.comp.spv', 'equirect_to_cubemap.comp.spv',
+            'irradiance_convolution.comp.spv', 'prefilter_specular.comp.spv')) {
+        Assert-Preflight $minimalCache "Missing runtime file: spv_shaders/$shader"
+        # These files are sentinels. The preflight never loads shader binaries.
+        New-Item -ItemType File -Path (Join-Path $shaderDirectory $shader) | Out-Null
+    }
+    Assert-Preflight $minimalCache 'Missing runtime file: VulkanSceneRenderer.exe'
+}
+
+"PASS $caseCount Windows packaging preflight cases"
