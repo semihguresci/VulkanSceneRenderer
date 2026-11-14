@@ -20,6 +20,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 #include "Container/common/CommonMath.h"
@@ -480,6 +481,45 @@ struct BimLayerVisibilityState {
   bool markupLayerVisible{false};
 };
 
+struct BimHardClashElementRef {
+  std::string guid;
+  std::string sourceId;
+  uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
+};
+
+struct BimHardClashGroup {
+  // A category by exact name, or the saved set's members at the time of Run.
+  std::variant<std::string, std::vector<BimHardClashElementRef>> members;
+};
+
+struct BimHardClashRunRequest {
+  BimHardClashGroup first;
+  BimHardClashGroup second;
+};
+
+struct BimHardClashResultRow {
+  uint32_t firstObjectIndex{}, secondObjectIndex{};
+  std::string firstId, secondId;
+  double overlapM3{};
+};
+
+struct BimHardClashSkippedRow {
+  std::string id, reason;
+};
+
+struct BimHardClashUiState {
+  bool running{}, pairLimitReached{};
+  std::string status;
+  size_t scannedPairs{}, invalidElements{}, failedPairs{};
+  std::vector<BimHardClashResultRow> rows;
+  std::vector<BimHardClashSkippedRow> skipped;
+};
+
+struct BimHardClashSaveViewpointRequest {
+  size_t rowIndex{};
+  std::string path;
+};
+
 struct BimLodStreamingUiState {
   bool autoLod{true};
   bool drawBudgetEnabled{false};
@@ -657,6 +697,11 @@ struct BimInspectionState {
   float selectionFloorElevation{0.0f};
 };
 
+struct ViewpointBimComponent {
+  std::string guid;
+  std::string sourceId;
+};
+
 struct ViewpointSnapshotState {
   std::string label{};
   TransformControls camera{};
@@ -665,6 +710,7 @@ struct ViewpointSnapshotState {
   std::string selectedBimGuid{};
   std::string selectedBimType{};
   std::string selectedBimSourceId{};
+  std::vector<ViewpointBimComponent> additionalBimSelections{};
   std::string bimModelPath{};
   BimFilterState bimFilter{};
   BimPhaseTimelineUiState phaseTimeline{};
@@ -1058,6 +1104,21 @@ public:
   [[nodiscard]] const BimLayerVisibilityState &bimLayerVisibilityState() const {
     return bimLayerVisibilityState_;
   }
+  [[nodiscard]] std::optional<BimHardClashRunRequest>
+  consumeBimHardClashRunRequest() {
+    return std::exchange(bimHardClashRunRequest_, std::nullopt);
+  }
+  [[nodiscard]] bool consumeBimHardClashCancelRequest() {
+    return std::exchange(bimHardClashCancelRequest_, false);
+  }
+  [[nodiscard]] std::optional<size_t> consumeBimHardClashSelectRequest() {
+    return std::exchange(bimHardClashSelectRequest_, std::nullopt);
+  }
+  [[nodiscard]] std::optional<BimHardClashSaveViewpointRequest>
+  consumeBimHardClashSaveViewpointRequest() {
+    return std::exchange(bimHardClashSaveViewpointRequest_, std::nullopt);
+  }
+  void setBimHardClashState(BimHardClashUiState state);
   [[nodiscard]] std::span<
       const container::renderer::BimCoordinationOverlayIssuePin>
   bimIssueOverlayPins() const;
@@ -1271,6 +1332,7 @@ private:
   void discoverSampleModels();
   void drawRendererTelemetryWindow();
   void drawDdgiControls();
+  void drawBimHardClashPanel(const BimInspectionState &inspection);
   [[nodiscard]] int sampleModelIndexForPath(const std::string &path) const;
 
   struct BimMeasurementPointState {
@@ -1463,6 +1525,17 @@ private:
   std::vector<BimSelectionSetState> bimSelectionSets_{};
   int selectedBimSelectionSetIndex_{-1};
   uint32_t nextBimSelectionSetId_{1};
+  using BimHardClashGroupChoice =
+      std::variant<std::monostate, std::string, uint32_t>;
+  const void *bimHardClashMetadataSource_{};
+  uint64_t bimHardClashMetadataRevision_{};
+  BimHardClashGroupChoice bimHardClashFirstGroup_, bimHardClashSecondGroup_;
+  BimHardClashUiState bimHardClashState_{};
+  std::optional<size_t> bimHardClashSelectedRow_{};
+  std::optional<BimHardClashRunRequest> bimHardClashRunRequest_{};
+  bool bimHardClashCancelRequest_{};
+  std::optional<size_t> bimHardClashSelectRequest_{};
+  std::optional<BimHardClashSaveViewpointRequest> bimHardClashSaveViewpointRequest_{};
   std::vector<ViewpointSnapshotState> viewpointSnapshots_{};
   int selectedViewpointSnapshotIndex_{-1};
   uint32_t nextViewpointSnapshotId_{1};

@@ -3244,11 +3244,12 @@ void GuiManager::setSceneHierarchyNodeExpanded(
 
 namespace {
 
-bool selectableAssetName(const char* id, std::string_view label, bool selected) {
+bool selectableAssetName(const char* id, std::string_view label, bool selected,
+                         ImGuiSelectableFlags flags = ImGuiSelectableFlags_None) {
   const ImVec2 origin = ImGui::GetCursorScreenPos();
   // Draw authored names separately from ImGui's label/ID syntax.
   const ImVec2 size = ImGui::CalcTextSize(label.data(), label.data() + label.size(), false);
-  const bool chosen = ImGui::Selectable(id, selected, 0, size);
+  const bool chosen = ImGui::Selectable(id, selected, flags, size);
   ImGui::GetWindowDrawList()->AddText(origin, ImGui::GetColorU32(ImGuiCol_Text),
                                      label.data(), label.data() + label.size());
   return chosen;
@@ -3395,6 +3396,233 @@ void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
     ImGui::EndTable();
   }
   ImGui::TreePop();
+}
+
+void GuiManager::drawBimHardClashPanel(const BimInspectionState &inspection) {
+  if (!ImGui::TreeNode("Hard Clashes")) {
+    return;
+  }
+
+  const auto findSet = [&](uint32_t id) -> const BimSelectionSetState * {
+    const auto set = std::ranges::find(bimSelectionSets_, id,
+                                       &BimSelectionSetState::id);
+    if (set == bimSelectionSets_.end() || set->modelPath != inspection.modelPath) {
+      return nullptr;
+    }
+    return &*set;
+  };
+  const auto drawGroup = [&](const char *label, BimHardClashGroupChoice &choice) {
+    const auto *category = std::get_if<std::string>(&choice);
+    const auto *setId = std::get_if<uint32_t>(&choice);
+    const auto *set = setId ? findSet(*setId) : nullptr;
+    if ((category && !std::ranges::contains(inspection.elementTypes, *category)) ||
+        (setId && !set)) {
+      choice = std::monostate{};
+    }
+
+    std::string preview = "Choose a category or selection set";
+    if (const auto *type = std::get_if<std::string>(&choice)) {
+      preview = *type;
+    } else if (set) {
+      preview = set->label + " (" + std::to_string(set->members.size()) + ")";
+    }
+    if (!ImGui::BeginCombo(label, preview.c_str())) {
+      return;
+    }
+    if (!inspection.elementTypes.empty()) {
+      ImGui::SeparatorText("Categories");
+      ImGui::PushID("Categories");
+      for (size_t i = 0; i < inspection.elementTypes.size(); ++i) {
+        const std::string &type = inspection.elementTypes[i];
+        const auto *selectedType = std::get_if<std::string>(&choice);
+        const bool selected = selectedType && *selectedType == type;
+        ImGui::PushID(static_cast<int>(i));
+        if (selectableAssetName("##category", SingleLineDisplayText(type),
+                                selected)) {
+          choice = type;
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+        ImGui::PopID();
+      }
+      ImGui::PopID();
+    }
+    if (!bimSelectionSets_.empty()) {
+      ImGui::SeparatorText("Saved selection sets");
+      ImGui::PushID("Selection sets");
+      for (const BimSelectionSetState &option : bimSelectionSets_) {
+        if (option.modelPath != inspection.modelPath) {
+          continue;
+        }
+        const auto *selectedId = std::get_if<uint32_t>(&choice);
+        const bool selected = selectedId && *selectedId == option.id;
+        ImGui::PushID(static_cast<int>(option.id));
+        ImGui::BeginDisabled(option.members.empty());
+        if (selectableAssetName("##set", SingleLineDisplayText(option.label),
+                                selected)) {
+          choice = option.id;
+        }
+        ImGui::EndDisabled();
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+        ShowItemTooltip(option.members.empty() ? "This selection set is empty"
+                                              : option.label,
+                        ImGuiHoveredFlags_AllowWhenDisabled);
+        ImGui::PopID();
+      }
+      ImGui::PopID();
+    }
+    ImGui::EndCombo();
+  };
+  const bool running = bimHardClashState_.running;
+  ImGui::BeginDisabled(running);
+  drawGroup("Group A", bimHardClashFirstGroup_);
+  drawGroup("Group B", bimHardClashSecondGroup_);
+
+  const auto usable = [&](const BimHardClashGroupChoice &choice) {
+    if (const auto *id = std::get_if<uint32_t>(&choice)) {
+      const auto *set = findSet(*id);
+      return set && !set->members.empty();
+    }
+    return std::holds_alternative<std::string>(choice);
+  };
+  ImGui::BeginDisabled(!usable(bimHardClashFirstGroup_) ||
+                       !usable(bimHardClashSecondGroup_));
+  if (ImGui::Button("Run clash check")) {
+    const auto snapshot = [&](const BimHardClashGroupChoice &choice)
+        -> BimHardClashGroup {
+      if (const auto *type = std::get_if<std::string>(&choice)) {
+        return {*type};
+      }
+      const auto *set = findSet(std::get<uint32_t>(choice));
+      std::vector<BimHardClashElementRef> refs;
+      refs.reserve(set->members.size());
+      for (const auto &member : set->members) {
+        refs.push_back({member.snapshot.selectedBimGuid,
+                        member.snapshot.selectedBimSourceId,
+                        member.snapshot.selectedBimObjectIndex});
+      }
+      return {std::move(refs)};
+    };
+    bimHardClashRunRequest_ = BimHardClashRunRequest{
+        snapshot(bimHardClashFirstGroup_), snapshot(bimHardClashSecondGroup_)};
+  }
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  if (running) {
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+      bimHardClashCancelRequest_ = true;
+    }
+  }
+
+  const auto &state = bimHardClashState_;
+  if (!state.status.empty()) {
+    ImGui::TextWrapped("%s", state.status.c_str());
+  }
+  if (state.pairLimitReached) {
+    ImGui::TextWrapped("The pair limit was reached. Results are partial.");
+  }
+  if (!state.status.empty() && !running) {
+    ImGui::Text("Checked pairs %zu", state.scannedPairs);
+    ImGui::Text("Skipped elements %zu", state.invalidElements);
+    ImGui::Text("Failed intersections %zu", state.failedPairs);
+    ImGui::Text("Clashes %zu", state.rows.size());
+  }
+
+  if (!state.rows.empty() && ImGui::BeginTable(
+          "BimHardClashResults", 3,
+          ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
+              ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY,
+          ImVec2(0.0f, 180.0f))) {
+    ImGui::TableSetupColumn("Element A");
+    ImGui::TableSetupColumn("Element B");
+    ImGui::TableSetupColumn("Overlap (m\xC2\xB3)", ImGuiTableColumnFlags_WidthFixed);
+    ImGui::TableSetupScrollFreeze(0, 1);
+    ImGui::TableHeadersRow();
+    ImGui::PushID("ClashRows");
+    ImGuiListClipper clipper;
+    clipper.Begin(static_cast<int>(state.rows.size()));
+    while (clipper.Step()) {
+      for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+        const auto rowIndex = static_cast<size_t>(i);
+        const auto &row = state.rows[rowIndex];
+        ImGui::PushID(i);
+        ImGui::TableNextRow();
+        ImGui::TableNextColumn();
+        const std::string firstLabel = SingleLineDisplayText(row.firstId);
+        if (selectableAssetName("##first", firstLabel,
+                                bimHardClashSelectedRow_ == rowIndex,
+                                ImGuiSelectableFlags_SpanAllColumns)) {
+          bimHardClashSelectedRow_ = rowIndex;
+          bimHardClashSelectRequest_ = rowIndex;
+          bimLayerVisibilityState_.clashLayerVisible = true;
+        }
+        ShowItemTooltip(row.firstId);
+        ImGui::TableNextColumn();
+        DrawSingleLineBimText(row.secondId);
+        ImGui::TableNextColumn();
+        ImGui::Text("%.6g", row.overlapM3);
+        ImGui::PopID();
+      }
+    }
+    ImGui::PopID();
+    ImGui::EndTable();
+  }
+  if (!state.rows.empty()) {
+    ImGui::InputText("BCF viewpoint file", &bcfViewpointPath_);
+    const std::string path = TrimAscii(bcfViewpointPath_);
+    ImGui::BeginDisabled(!bimHardClashSelectedRow_ || path.empty());
+    if (ImGui::Button("Save BCF viewpoint")) {
+      bimHardClashSaveViewpointRequest_ =
+          BimHardClashSaveViewpointRequest{*bimHardClashSelectedRow_, path};
+    }
+    ImGui::EndDisabled();
+  }
+  if (!state.skipped.empty() && ImGui::TreeNode("Skipped elements")) {
+    if (ImGui::BeginTable("BimHardClashSkipped", 2,
+                          ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_RowBg |
+                              ImGuiTableFlags_Resizable | ImGuiTableFlags_ScrollY,
+                          ImVec2(0.0f, 140.0f))) {
+      ImGui::TableSetupColumn("Element ID");
+      ImGui::TableSetupColumn("Reason");
+      ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableHeadersRow();
+      ImGuiListClipper clipper;
+      clipper.Begin(static_cast<int>(state.skipped.size()));
+      while (clipper.Step()) {
+        for (int i = clipper.DisplayStart; i < clipper.DisplayEnd; ++i) {
+          const auto &row = state.skipped[static_cast<size_t>(i)];
+          ImGui::TableNextRow();
+          ImGui::TableNextColumn();
+          DrawSingleLineBimText(row.id);
+          ImGui::TableNextColumn();
+          DrawSingleLineBimText(row.reason);
+        }
+      }
+      ImGui::EndTable();
+    }
+    ImGui::TreePop();
+  }
+  ImGui::TreePop();
+}
+
+void GuiManager::setBimHardClashState(BimHardClashUiState state) {
+  if (bimHardClashSelectedRow_) {
+    const size_t index = *bimHardClashSelectedRow_;
+    if (index >= state.rows.size() ||
+        state.rows[index].firstObjectIndex !=
+            bimHardClashState_.rows[index].firstObjectIndex ||
+        state.rows[index].secondObjectIndex !=
+            bimHardClashState_.rows[index].secondObjectIndex) {
+      bimHardClashSelectedRow_.reset();
+      bimHardClashSelectRequest_.reset();
+      bimHardClashSaveViewpointRequest_.reset();
+    }
+  }
+  bimHardClashState_ = std::move(state);
 }
 
 std::optional<BimMeasurementCapturedPoint>
@@ -3714,6 +3942,11 @@ void GuiManager::resetModelInspectionState() {
   bimSelectionSets_.clear();
   selectedBimSelectionSetIndex_ = -1;
   nextBimSelectionSetId_ = 1;
+  bimHardClashFirstGroup_ = {};
+  bimHardClashSecondGroup_ = {};
+  bimHardClashRunRequest_.reset();
+  bimHardClashCancelRequest_ = false;
+  setBimHardClashState({});
   bcfIssueOverlayPins_.clear();
   sceneHierarchyParentCandidateCache_ = {};
   sceneHierarchyCache_.clear();
@@ -4513,6 +4746,15 @@ void GuiManager::drawSceneControls(
   // The Scene Controls window and BIM tree can both be closed during a model
   // publication. Retire stale browser data before those drawing gates.
   const void *metadataSource = BimElementMetadataSource(bimInspection);
+  if (metadataSource != bimHardClashMetadataSource_ ||
+      bimInspection.metadataRevision != bimHardClashMetadataRevision_) {
+    bimHardClashMetadataSource_ = metadataSource;
+    bimHardClashMetadataRevision_ = bimInspection.metadataRevision;
+    bimHardClashFirstGroup_ = {};
+    bimHardClashSecondGroup_ = {};
+    bimHardClashRunRequest_.reset();
+    bimHardClashCancelRequest_ = false;
+  }
   bimElementSearchCache_.invalidateIfStale(
       metadataSource, bimInspection.metadataRevision, bimInspection.elements);
   if (bimRelationshipBrowserCache_.refresh(
@@ -6057,6 +6299,8 @@ void GuiManager::drawSceneControls(
                             "multi-select rendering is not connected");
         ImGui::TreePop();
       }
+
+      drawBimHardClashPanel(bimInspection);
 
       if (ImGui::TreeNode("Property Browser")) {
         if (bimInspection.hasSelection) {

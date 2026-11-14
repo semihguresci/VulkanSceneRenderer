@@ -5128,6 +5128,7 @@ bool BimManager::setObjectTransforms(
                                       temporalRootTranslation_))
     return false;
   sectionClipCapBuildOptionsValid_ = false;
+  ++transformRevision_;
   ++objectDataRevision_;
   for (const auto index : changed) objectRowRevisions_[index] = objectDataRevision_;
   return true;
@@ -5158,6 +5159,7 @@ void BimManager::setRootTranslation(glm::vec3 translation) {
   }
   temporalRootTranslation_ = translation;
   sectionClipCapBuildOptionsValid_ = false;
+  ++transformRevision_;
   fullObjectRevision_ = ++objectDataRevision_;
 }
 

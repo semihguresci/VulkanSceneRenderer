@@ -753,19 +753,18 @@ bool readStandardPerspectiveCamera(std::string_view xml,
 
 void readStandardComponentSelection(std::string_view xml,
                                     ViewpointSnapshotState& snapshot) {
-  const auto componentTag = openTag(xml, "Component");
-  if (!componentTag) {
-    return;
-  }
-  if (auto guid = attribute(*componentTag, "IfcGuid")) {
-    snapshot.selectedBimGuid = *guid;
-  } else if (auto guid = attribute(*componentTag, "ifcGuid")) {
-    snapshot.selectedBimGuid = *guid;
-  }
-  if (auto sourceId = attribute(*componentTag, "AuthoringToolId")) {
-    snapshot.selectedBimSourceId = *sourceId;
-  } else if (auto sourceId = attribute(*componentTag, "OriginatingSystem")) {
-    snapshot.selectedBimSourceId = *sourceId;
+  const auto selection = tagBody(xml, "Selection");
+  for (const auto& component : elements(selection.value_or(xml), "Component")) {
+    ViewpointBimComponent identity;
+    identity.guid = attribute(component.tag, "IfcGuid").value_or(stringAttribute(component.tag, "ifcGuid"));
+    identity.sourceId = attribute(component.tag, "AuthoringToolId").value_or(stringAttribute(component.tag, "OriginatingSystem"));
+    if (identity.guid.empty() && identity.sourceId.empty()) continue;
+    if (snapshot.selectedBimGuid.empty() && snapshot.selectedBimSourceId.empty()) {
+      snapshot.selectedBimGuid = std::move(identity.guid);
+      snapshot.selectedBimSourceId = std::move(identity.sourceId);
+    } else if (snapshot.selectedBimGuid != identity.guid || snapshot.selectedBimSourceId != identity.sourceId) {
+      snapshot.additionalBimSelections.push_back(std::move(identity));
+    }
   }
 }
 
@@ -1050,13 +1049,16 @@ std::string ExportVisualizationInfo(const ViewpointSnapshotState& snapshot,
   stream << "  </PerspectiveCamera>\n";
   stream << "  <Components>\n";
   stream << "    <Selection>\n";
-  if (!snapshot.selectedBimGuid.empty() ||
-      !snapshot.selectedBimSourceId.empty()) {
+  const auto writeComponent = [&](std::string_view guid, std::string_view sourceId) {
+    if (guid.empty() && sourceId.empty()) return;
     stream << "      <Component";
-    writeAttribute(stream, "IfcGuid", snapshot.selectedBimGuid);
-    writeAttribute(stream, "AuthoringToolId", snapshot.selectedBimSourceId);
+    writeAttribute(stream, "IfcGuid", guid);
+    writeAttribute(stream, "AuthoringToolId", sourceId);
     stream << "/>\n";
-  }
+  };
+  writeComponent(snapshot.selectedBimGuid, snapshot.selectedBimSourceId);
+  for (const auto& component : snapshot.additionalBimSelections)
+    writeComponent(component.guid, component.sourceId);
   stream << "    </Selection>\n";
   stream << "    <Visibility DefaultVisibility=\"true\"/>\n";
   stream << "  </Components>\n";
@@ -1125,9 +1127,8 @@ std::optional<ViewpointSnapshotState> ImportVisualizationInfo(
     snapshot.selectedBimType = stringAttribute(*tag, "BimType");
     snapshot.selectedBimSourceId = stringAttribute(*tag, "BimSourceId");
     snapshot.bimModelPath = stringAttribute(*tag, "BimModelPath");
-  } else {
-    readStandardComponentSelection(xml, snapshot);
   }
+  readStandardComponentSelection(xml, snapshot);
   if (const auto tag = openTag(xml, "BimFilter")) {
     readFilter(*tag, snapshot.bimFilter);
   }

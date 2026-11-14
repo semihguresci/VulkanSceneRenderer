@@ -1132,6 +1132,14 @@ set_tests_properties(bim_annotation_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
     LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME bim_hard_clash_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/bim_hard_clash_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/bim-hard-clashes" --managed-output)
+set_tests_properties(bim_hard_clash_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 240
+    LABELS "bim;requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME forward_wireframe_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_wireframe_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
@@ -2445,6 +2453,14 @@ add_custom_test(bim_coordination_overlay_tests
 )
 target_sources(bim_coordination_overlay_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimCoordinationOverlay.cpp
+)
+
+add_custom_test(bim_hard_clash_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_hard_clash_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math manifold::manifold
+)
+target_sources(bim_hard_clash_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/bim/BimHardClash.cpp
 )
 
 add_custom_test(bim_frame_draw_routing_planner_tests

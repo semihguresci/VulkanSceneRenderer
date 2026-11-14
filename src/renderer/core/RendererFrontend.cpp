@@ -2336,10 +2336,13 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   phaseStart = TelemetryClock::now();
   updateGltfSceneState();
   updateMaterialVariantState();
+  pollBimClash();
+  publishBimClashUi();
   presentSceneControls();
   updateGltfAnimation();
   processCaptureLightEvent();
   advancePhysics();
+  pollBimClash();
   updateGltfDeformation();
   processPendingDdgiSceneFit();
   processPendingDdgiDetailFit();
@@ -3337,6 +3340,8 @@ void RendererFrontend::applyTemporalCapture(
   }
   if (event.cameraMotion)
     applyCaptureCameraMotion(*event.cameraMotion);
+  if (event.bimClash)
+    applyCaptureBimClash(*event.bimClash);
   uint32_t objectNode = sample.objectNode;
   // Capture tracks are sampled past their last key. An explicit unload retires
   // their target; only a later capture load event permits target lookup again.
@@ -3900,6 +3905,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   json["scene"]["auxiliaryObjectCount"] =
       subs_.bimManager ? subs_.bimManager->objectData().size() : 0u;
   appendBimFloorPlanTelemetry(json);
+  appendBimClashTelemetry(json);
   json["scene"]["geometryArenaCapacityBytes"] =
       svc_.allocationManager.geometryArenaCapacityBytes();
   if (subs_.rayShadowManager) {
@@ -5826,6 +5832,11 @@ void RendererFrontend::drawModelLoadProgressFrame() {
 }
 
 void RendererFrontend::shutdown() {
+  bimClash_.stop.request_stop();
+  if (bimClash_.job.valid()) {
+    bimClash_.job.wait();
+    bimClash_.job = {};
+  }
 #ifdef CONTAINER_ENABLE_RENDERER_MCP
   subs_.mcpServer.reset();
 #endif
@@ -8818,6 +8829,7 @@ void RendererFrontend::presentSceneControls() {
     }
   }
 
+  processBimClashUi();
   if (auto elevationRequest =
           subs_.guiManager->consumeBimElevationViewRequest()) {
     if (subs_.cameraController) {
@@ -9654,16 +9666,20 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       p.bim.floorPlan = bimFloorPlanFrameStyle(*floorPlan, !p.bim.floorPlanDrawCommands->empty());
     }
 
-    if (captureBimAnnotations_ || subs_.guiManager != nullptr) {
+    BimCoordinationOverlayClashPair computedClash;
+    const bool showComputedClash = !captureBimAnnotations_ &&
+        (!subs_.guiManager || bimLayers.clashLayerVisible) && selectedBimClashMarker(computedClash);
+    if (captureBimAnnotations_ || subs_.guiManager != nullptr || showComputedClash) {
       const bool issueMarkers = captureBimAnnotations_
           ? captureBimAnnotations_->issuePin.has_value() : bimLayers.markupLayerVisible;
       const bool clashMarkers = captureBimAnnotations_
-          ? captureBimAnnotations_->clash.has_value() : bimLayers.clashLayerVisible;
+          ? captureBimAnnotations_->clash.has_value() : showComputedClash;
       if (issueMarkers || clashMarkers) {
         BimCoordinationOverlayIssuePin capturePin;
         BimCoordinationOverlayClashPair captureClash;
         std::span<const BimCoordinationOverlayIssuePin> issuePins;
         std::span<const BimCoordinationOverlayClashPair> clashPairs;
+        if (showComputedClash) clashPairs = {&computedClash, 1};
         if (captureBimAnnotations_) {
           if (const auto &pin = captureBimAnnotations_->issuePin) {
             capturePin.position = *pin;
@@ -9676,7 +9692,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
                             .position = clash->position};
             clashPairs = {&captureClash, 1};
           }
-        } else {
+        } else if (subs_.guiManager) {
           issuePins = subs_.guiManager->bimIssueOverlayPins();
         }
         const BimCoordinationOverlayResult coordinationOverlay =
@@ -9712,6 +9728,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
               issueMarkers && !markerDrawData.issuePinDrawCommands.empty();
           p.bim.coordinationMarkers.clashMarkersEnabled =
               clashMarkers && !markerDrawData.clashDrawCommands.empty();
+          // Actual intersections are normally inside both solids.
+          p.bim.coordinationMarkers.clashDepthTest = !showComputedClash;
         }
       } else {
         subs_.bimManager->clearCoordinationMarkerGeometry(retireBimOverlayReaders);
@@ -9728,7 +9746,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           technical.lineColor = glm::vec3(0.02f);
           technical.overlayIntensity = 0.70f;
         }
-      } else if (subs_.guiManager->editorOverlaysEnabled() &&
+      } else if (subs_.guiManager && subs_.guiManager->editorOverlaysEnabled() &&
                  subs_.guiManager->wireframeSupported()) {
         const auto elevationStyle = subs_.guiManager->appliedBimElevationStyle();
         const auto& wireframe = subs_.guiManager->wireframeSettings();
@@ -9746,6 +9764,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           technical.overlayIntensity = wireframe.overlayIntensity;
         }
       }
+    } else {
+      subs_.bimManager->clearCoordinationMarkerGeometry(retireBimOverlayReaders);
     }
   }
   p.transformGizmo = buildTransformGizmoState();
