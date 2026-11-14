@@ -4,6 +4,7 @@
 #include "Container/renderer/lighting/EnvironmentManager.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/SceneData.h"
 #include "Container/utility/VulkanDevice.h"
 #include <gtest/gtest.h>
 #include <array>
@@ -69,6 +70,7 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
     create.enabledFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.bufferDeviceAddress = VK_TRUE;
+    v12.separateDepthStencilLayouts = VK_TRUE;
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     v13.synchronization2 = VK_TRUE;
     v13.pNext = &v12;
@@ -237,8 +239,12 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
 TEST_F(ManagedComputeOwnerGpu, BloomRetirementAndRecreationRegisterOnlyTheLiveSlots) {
   BloomManager bloom(device, *allocation, *pipelines, *pool);
   bloom.createResources(root);
-  bloom.createTextures(32, 32);
+  bloom.createTextures(32, 32, 2);
   ASSERT_TRUE(bloom.isReady());
+  ASSERT_EQ(bloom.bloomResultViews().size(), 2u);
+  EXPECT_NE(bloom.bloomResultViews()[0], VK_NULL_HANDLE);
+  EXPECT_NE(bloom.bloomResultViews()[1], VK_NULL_HANDLE);
+  EXPECT_NE(bloom.bloomResultViews()[0], bloom.bloomResultViews()[1]);
   replacement({"bloom_downsample.comp.spv", "bloom_upsample.comp.spv"});
   {
     auto abandoned = pipelines->prepareComputeReload(scratch);
@@ -254,15 +260,88 @@ TEST_F(ManagedComputeOwnerGpu, BloomRetirementAndRecreationRegisterOnlyTheLiveSl
   EXPECT_EQ(pipelines->prepareComputeReload(scratch).size(), 0u);
   bloom.destroy();
   EXPECT_FALSE(bloom.isReady());
+  EXPECT_TRUE(bloom.bloomResultViews().empty());
   EXPECT_EQ(pipelines->prepareComputeReload(root).size(), 0u);
   bloom.createResources(root);
-  bloom.createTextures(64, 32);
+  bloom.createTextures(64, 32, 3);
   ASSERT_TRUE(bloom.isReady());
+  ASSERT_EQ(bloom.bloomResultViews().size(), 3u);
   // Recreation uses the last published directory, rather than stale startup
   // bytes. Both reverse replacements must therefore be registered.
   auto reverse = pipelines->prepareComputeReload(root);
   EXPECT_EQ(reverse.size(), 2u);
   pipelines->publishComputeReload(reverse);
+}
+
+TEST_F(ManagedComputeOwnerGpu, BloomRecordsTwoImagesWithoutInvalidatingEither) {
+  BloomManager bloom(device, *allocation, *pipelines, *pool);
+  bloom.createResources(root);
+  bloom.createTextures(32, 32, 2);
+  ASSERT_TRUE(bloom.isReady());
+  const vk::ImageSubresourceRange range(vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1);
+  const auto allocator = allocation->memoryManager()->allocator();
+  const VkImageCreateInfo imageInfo{
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = VK_FORMAT_R16G16B16A16_SFLOAT,
+      .extent = {32, 32, 1},
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+  VmaAllocationCreateInfo create{};
+  create.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  VkImage image{};
+  VmaAllocation memory{};
+  ASSERT_EQ(vmaCreateImage(allocator, &imageInfo, &create, &image, &memory, nullptr), VK_SUCCESS);
+  struct ImageCleanup {
+    VmaAllocator allocator;
+    VkImage image;
+    VmaAllocation memory;
+    ~ImageCleanup() { vmaDestroyImage(allocator, image, memory); }
+  } cleanup{allocator, image, memory};
+  const vk::raii::ImageView view(device->raii(), vk::ImageViewCreateInfo(
+      {}, image, vk::ImageViewType::e2D, vk::Format::eR16G16B16A16Sfloat, {}, range));
+  command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  VkImageMemoryBarrier barrier{
+      .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+      .dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+      .newLayout = VK_IMAGE_LAYOUT_GENERAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = image,
+      .subresourceRange = static_cast<VkImageSubresourceRange>(range)};
+  vkCmdPipelineBarrier(*command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                       0, 0, nullptr, 0, nullptr, 1, &barrier);
+  const VkClearColorValue color{{4.0f, 2.0f, 1.0f, 1.0f}};
+  vkCmdClearColorImage(*command, image, VK_IMAGE_LAYOUT_GENERAL, &color, 1, &barrier.subresourceRange);
+  barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_GENERAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  vkCmdPipelineBarrier(*command, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                       0, 0, nullptr, 0, nullptr, 1, &barrier);
+  submit();
+
+  auto commands = device->raii().allocateCommandBuffers(
+      vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, 2));
+
+  // Record both images before either is submitted. A shared descriptor set
+  // update for command 1 would invalidate the already recorded command 0.
+  for (uint32_t imageIndex = 0; imageIndex < commands.size(); ++imageIndex) {
+    auto& cmd = commands[imageIndex];
+    cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    bloom.dispatch(*cmd, imageIndex, *view, 32, 32);
+    cmd.end();
+  }
+  vk::raii::Queue queue(device->raii(), device->graphicsQueue());
+  const std::array handles{*commands[0], *commands[1]};
+  vk::SubmitInfo info;
+  info.commandBufferCount = static_cast<uint32_t>(handles.size());
+  info.pCommandBuffers = handles.data();
+  queue.submit(info, nullptr);
+  queue.waitIdle();
 }
 
 TEST_F(ManagedComputeOwnerGpu, ExposureDispatchRetainsHistogramAndAdaptationAcrossPublication) {
@@ -312,13 +391,10 @@ TEST_F(ManagedComputeOwnerGpu, ExposureDispatchRetainsHistogramAndAdaptationAcro
   settings.mode = kExposureModeAuto;
   const auto dispatch = [&](uint32_t imageIndex = 0u) {
     command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    exposure.beginFrame();
     exposure.dispatch(imageIndex, *command, *view, 32, 32, settings);
-    VkMemoryBarrier host{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-    host.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    host.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
-    vkCmdPipelineBarrier(*command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
-                         0, 1, &host, 0, nullptr, 0, nullptr);
     submit();
+    exposure.onSubmitted();
     exposure.collectReadback(imageIndex, settings);
     EXPECT_TRUE(exposure.hasExposureDebugState());
     // Histogram bin quantization brackets the constant four-nit input.
@@ -340,6 +416,42 @@ TEST_F(ManagedComputeOwnerGpu, ExposureDispatchRetainsHistogramAndAdaptationAcro
   exposure.resizeFrameResources(3);
   ASSERT_EQ(exposure.exposureStateBuffer(2), exposureState);
   EXPECT_FLOAT_EQ(dispatch(2), initial);
+
+  // Queue three frames before retiring any of them. The intervening manual
+  // frame seeds adaptation, and the following images continue one history.
+  auto pending = device->raii().allocateCommandBuffers(
+      vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, 3));
+  auto manual = settings;
+  manual.mode = kExposureModeManual;
+  manual.manualExposure = 2.0f;
+  const vk::raii::Queue queue(device->raii(), device->queueFamilyIndices().graphicsFamily.value(), 0);
+  vk::raii::Fence fence(device->raii(), vk::FenceCreateInfo{});
+  for (uint32_t imageIndex = 0; imageIndex < pending.size(); ++imageIndex) {
+    pending[imageIndex].begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    exposure.beginFrame();
+    if (imageIndex == 0)
+      exposure.recordManualExposure(*pending[imageIndex], manual);
+    else
+      exposure.dispatch(imageIndex, *pending[imageIndex], *view, 32, 32, settings);
+    pending[imageIndex].end();
+    const vk::CommandBuffer handle = *pending[imageIndex];
+    vk::SubmitInfo queued;
+    queued.commandBufferCount = 1;
+    queued.pCommandBuffers = &handle;
+    queue.submit(queued, imageIndex + 1 == pending.size() ? *fence : vk::Fence{});
+    exposure.onSubmitted();
+  }
+  ASSERT_EQ(device->raii().waitForFences(*fence, true, UINT64_MAX), vk::Result::eSuccess);
+
+  const float weight = 1.0f - std::exp(-settings.adaptationRate / 60.0f);
+  const float first = std::lerp(manual.manualExposure, initial, weight);
+  const float second = std::lerp(first, initial, weight);
+  exposure.collectReadback(1, settings);
+  EXPECT_NEAR(exposure.resolvedExposure(settings), first, 1e-5f);
+  exposure.collectReadback(2, settings);
+  EXPECT_NEAR(exposure.resolvedExposure(settings), second, 1e-5f);
+  exposure.collectReadback(1, settings);
+  EXPECT_NEAR(exposure.resolvedExposure(settings), second, 1e-5f);
   exposure.destroy();
   EXPECT_EQ(pipelines->prepareComputeReload(root).size(), 0u);
 }
@@ -366,6 +478,137 @@ TEST_F(ManagedComputeOwnerGpu, EnvironmentRegistersAllSixBrdfIblAndGtaoExecutabl
   EXPECT_EQ(pipelines->prepareComputeReload(scratch).size(), 0u);
   environment.destroy();
   EXPECT_EQ(pipelines->prepareComputeReload(root).size(), 0u);
+}
+
+TEST_F(ManagedComputeOwnerGpu, GtaoRecordsTwoImagesWithoutInvalidatingEither) {
+  EnvironmentManager environment(device, *allocation, *pipelines, *pool);
+  environment.createResources(root);
+  environment.createGtaoResources(root, 32, 32, 2);
+  const auto views = environment.aoTextureViews();
+  ASSERT_EQ(views.size(), 2u);
+  const auto firstView = views[0];
+  ASSERT_NE(firstView, VK_NULL_HANDLE);
+  ASSERT_NE(views[1], VK_NULL_HANDLE);
+  EXPECT_NE(firstView, views[1]);
+  environment.recreateGtaoTextures(32, 32, 2);
+  EXPECT_EQ(environment.aoTextureViews()[0], firstView);
+
+  struct InputImage {
+    VmaAllocator allocator{};
+    VkImage image{};
+    VmaAllocation memory{};
+    vk::raii::ImageView view{nullptr};
+    ~InputImage() {
+      view.clear();
+      if (image) vmaDestroyImage(allocator, image, memory);
+    }
+  } depth, normal;
+  const auto initImage = [&](InputImage& input, VkFormat format, VkImageUsageFlags usage,
+                             vk::ImageAspectFlags viewAspect) {
+    input.allocator = allocation->memoryManager()->allocator();
+    const VkImageCreateInfo imageInfo{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = VK_IMAGE_TYPE_2D, .format = format, .extent = {32, 32, 1},
+        .mipLevels = 1, .arrayLayers = 1, .samples = VK_SAMPLE_COUNT_1_BIT,
+        .usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | usage};
+    VmaAllocationCreateInfo allocationInfo{};
+    allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+    ASSERT_EQ(vmaCreateImage(input.allocator, &imageInfo, &allocationInfo,
+                             &input.image, &input.memory, nullptr), VK_SUCCESS);
+    input.view = vk::raii::ImageView(device->raii(), vk::ImageViewCreateInfo(
+        {}, input.image, vk::ImageViewType::e2D, vk::Format(format), {},
+        vk::ImageSubresourceRange(viewAspect, 0, 1, 0, 1)));
+  };
+  VkFormat depthFormat = VK_FORMAT_UNDEFINED;
+  for (const auto format : {VK_FORMAT_D32_SFLOAT_S8_UINT, VK_FORMAT_D24_UNORM_S8_UINT}) {
+    VkFormatProperties properties{};
+    vkGetPhysicalDeviceFormatProperties(device->physicalDevice(), format, &properties);
+    constexpr VkFormatFeatureFlags needed = VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT |
+        VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT | VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+    if ((properties.optimalTilingFeatures & needed) == needed) {
+      depthFormat = format;
+      break;
+    }
+  }
+  ASSERT_NE(depthFormat, VK_FORMAT_UNDEFINED);
+  initImage(depth, depthFormat, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+            vk::ImageAspectFlagBits::eDepth);
+  initImage(normal, VK_FORMAT_R8G8B8A8_UNORM, 0, vk::ImageAspectFlagBits::eColor);
+  ASSERT_FALSE(HasFatalFailure());
+
+  const vk::raii::Sampler sampler(device->raii(), vk::SamplerCreateInfo{});
+  const CameraData camera{};
+  auto cameraBuffer = allocation->createBuffer(sizeof(camera), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+      VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  struct BufferCleanup {
+    AllocationManager& owner;
+    AllocatedBuffer& buffer;
+    ~BufferCleanup() { owner.destroyBuffer(buffer); }
+  } cleanup{*allocation, cameraBuffer};
+  ASSERT_NE(cameraBuffer.allocation_info.pMappedData, nullptr);
+  std::memcpy(cameraBuffer.allocation_info.pMappedData, &camera, sizeof(camera));
+  ASSERT_EQ(vmaFlushAllocation(depth.allocator, cameraBuffer.allocation, 0, sizeof(camera)), VK_SUCCESS);
+
+  const VkImageSubresourceRange depthRange{VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1};
+  const VkImageSubresourceRange normalRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  auto transition = [&](VkImage image, VkImageSubresourceRange range,
+                        VkImageLayout oldLayout, VkImageLayout newLayout,
+                        VkPipelineStageFlags source, VkAccessFlags srcAccess,
+                        VkPipelineStageFlags destination, VkAccessFlags dstAccess) {
+    const VkImageMemoryBarrier barrier{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER,
+        .srcAccessMask = srcAccess, .dstAccessMask = dstAccess,
+        .oldLayout = oldLayout, .newLayout = newLayout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = image, .subresourceRange = range};
+    vkCmdPipelineBarrier(*command, source, destination, 0, 0, nullptr, 0, nullptr, 1, &barrier);
+  };
+  for (const auto& [image, range] : {std::pair{depth.image, depthRange}, std::pair{normal.image, normalRange}})
+    transition(image, range, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+               VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, 0,
+               VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT);
+  const VkClearDepthStencilValue depthValue{0.0f, 0u};
+  const VkClearColorValue normalValue{{0.5f, 1.0f, 0.5f, 1.0f}};
+  vkCmdClearDepthStencilImage(*command, depth.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                              &depthValue, 1, &depthRange);
+  vkCmdClearColorImage(*command, normal.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                       &normalValue, 1, &normalRange);
+  transition(depth.image, depthRange, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL,
+             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+  transition(normal.image, normalRange, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+             VK_PIPELINE_STAGE_TRANSFER_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, VK_ACCESS_SHADER_READ_BIT);
+  submit();
+
+  auto commands = device->raii().allocateCommandBuffers(
+      vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, 2));
+  // Updating the second image's sets must not invalidate the first command buffer.
+  for (uint32_t index = 0; index < commands.size(); ++index) {
+    auto& cmd = commands[index];
+    cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    environment.dispatchGtao(*cmd, index, 32, 32, cameraBuffer.buffer, sizeof(camera),
+                             *depth.view, *sampler, *normal.view, *sampler);
+    environment.dispatchGtaoBlur(*cmd, index, *depth.view, *sampler, 0.1f, 100.0f, false);
+    cmd.end();
+  }
+  const std::array handles{*commands[0], *commands[1]};
+  const vk::raii::Queue queue(device->raii(), device->graphicsQueue());
+  vk::SubmitInfo info{};
+  info.commandBufferCount = static_cast<uint32_t>(handles.size());
+  info.pCommandBuffers = handles.data();
+  queue.submit(info, nullptr);
+  queue.waitIdle();
+
+  environment.recreateGtaoTextures(32, 32, 3);
+  ASSERT_EQ(environment.aoTextureViews().size(), 3u);
+  EXPECT_NE(environment.aoTextureViews()[0], firstView);
+  EXPECT_NE(environment.aoTextureViews()[1], environment.aoTextureViews()[2]);
 }
 
 TEST_F(ManagedComputeOwnerGpu, PlainGradientAndAtmosphereGenerateActualCubeRadiance) {

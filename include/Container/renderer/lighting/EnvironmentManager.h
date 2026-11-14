@@ -13,6 +13,7 @@
 #include <functional>
 #include <future>
 #include <memory>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -85,24 +86,27 @@ class EnvironmentManager {
   // this candidate, which owns the previous textures after publication.
   void publishShaderBake(PreparedShaderBake& candidate) noexcept;
 
-  // Create GTAO resources: AO textures, blur texture, compute pipelines.
+  // Create GTAO pipelines and private resources for each swapchain image.
   void createGtaoResources(const std::filesystem::path& shaderDir,
-                           uint32_t fullWidth, uint32_t fullHeight);
+                           uint32_t fullWidth, uint32_t fullHeight,
+                           uint32_t imageCount = 1);
 
-  // Recreate GTAO textures on resize.
-  void recreateGtaoTextures(uint32_t fullWidth, uint32_t fullHeight);
+  // Retire all graphics readers before changing dimensions or image count.
+  void recreateGtaoTextures(uint32_t fullWidth, uint32_t fullHeight,
+                            uint32_t imageCount);
 
   void destroy();
 
   // ---- Per-frame GTAO dispatch ----
 
-  void dispatchGtao(VkCommandBuffer cmd,
+  // The caller retires the acquired image before updating its descriptors.
+  void dispatchGtao(VkCommandBuffer cmd, uint32_t imageIndex,
                     uint32_t fullWidth, uint32_t fullHeight,
                     VkBuffer cameraBuffer, VkDeviceSize cameraBufferSize,
                     VkImageView depthView, VkSampler depthSampler,
                     VkImageView normalView, VkSampler normalSampler) const;
 
-  void dispatchGtaoBlur(VkCommandBuffer cmd,
+  void dispatchGtaoBlur(VkCommandBuffer cmd, uint32_t imageIndex,
                         VkImageView depthView,
                         VkSampler depthSampler,
                         float cameraNear,
@@ -112,7 +116,7 @@ class EnvironmentManager {
   // ---- Accessors ----
 
   [[nodiscard]] bool isReady()             const { return brdfLutView_ != VK_NULL_HANDLE; }
-  [[nodiscard]] bool isGtaoReady()         const { return gtaoBlurredView_ != VK_NULL_HANDLE; }
+  [[nodiscard]] bool isGtaoReady()         const { return static_cast<bool>(gtaoResources_); }
   [[nodiscard]] bool isAoEnabled()         const { return aoEnabled_; }
   [[nodiscard]] bool usingPlaceholderEnvironment() const {
     return usingPlaceholderEnvironment_;
@@ -131,7 +135,7 @@ class EnvironmentManager {
   [[nodiscard]] VkSampler     envSampler()            const { return envSampler_; }
 
   // AO texture for lighting descriptor binding (blurred result).
-  [[nodiscard]] VkImageView   aoTextureView()         const { return gtaoBlurredView_; }
+  [[nodiscard]] std::span<const VkImageView> aoTextureViews() const;
   [[nodiscard]] VkSampler     aoSampler()             const { return gtaoSampler_; }
 
   // GTAO settings.
@@ -146,8 +150,6 @@ class EnvironmentManager {
   void createPlaceholderCubemaps();
   void createSamplers();
   void createGtaoPipelines(const std::filesystem::path& shaderDir);
-  void createGtaoTextures(uint32_t halfWidth, uint32_t halfHeight);
-  void destroyGtaoTextures();
   [[nodiscard]] VkFormat selectGtaoStorageFormat() const;
   void destroyEnvironmentCubemaps();
   bool submitEnvironment(const std::filesystem::path& path,
@@ -215,31 +217,20 @@ class EnvironmentManager {
   VkPipelineLayout        prefilterPipelineLayout_{VK_NULL_HANDLE};
 
   // ---- GTAO ----
-  VkImage       gtaoImage_{VK_NULL_HANDLE};
-  VmaAllocation gtaoAlloc_{nullptr};
-  VkImageView   gtaoView_{VK_NULL_HANDLE};
-
-  VkImage       gtaoBlurredImage_{VK_NULL_HANDLE};
-  VmaAllocation gtaoBlurredAlloc_{nullptr};
-  VkImageView   gtaoBlurredView_{VK_NULL_HANDLE};
+  struct GtaoResources;
+  std::unique_ptr<GtaoResources> gtaoResources_;
 
   VkSampler     gtaoSampler_{VK_NULL_HANDLE};
   VkFormat      gtaoFormat_{VK_FORMAT_UNDEFINED};
-  uint32_t      gtaoWidth_{0};
-  uint32_t      gtaoHeight_{0};
 
   // GTAO compute pipelines
   container::gpu::ComputePipeline gtaoPipeline_{};
   VkPipelineLayout      gtaoPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout gtaoSetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool      gtaoDescriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet       gtaoSet_{VK_NULL_HANDLE};
 
   container::gpu::ComputePipeline gtaoBlurPipeline_{};
   VkPipelineLayout      gtaoBlurPipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout gtaoBlurSetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool      gtaoBlurDescriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet       gtaoBlurSet_{VK_NULL_HANDLE};
 
   // GTAO settings
   float    aoRadius_{0.5f};

@@ -1215,7 +1215,6 @@ bool hasLocalShadowAtlasResources(const ShadowManager *shadowManager,
 bool hasGtaoResources(const EnvironmentManager *environmentManager) {
   return environmentManager != nullptr && environmentManager->isGtaoReady() &&
          environmentManager->isAoEnabled() &&
-         environmentManager->aoTextureView() != VK_NULL_HANDLE &&
          environmentManager->aoSampler() != VK_NULL_HANDLE;
 }
 
@@ -2061,8 +2060,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     ++modelLoad_->preparationFrames;
   const auto frameStart = TelemetryClock::now();
   const auto concurrencyPolicy = FrameConcurrencyPolicy::serializedGpuResources(
-      "shared object buffer plus GPU cull, tile cull, GTAO, bloom, "
-      "exposure, and readback resources are not yet per-frame");
+      "shared BIM object and clip uploads, clustered lighting, and shadow atlas access");
   auto *telemetry = subs_.rendererTelemetry.get();
   if (telemetry) {
     telemetry->beginFrame(frame_.submittedFrameCount, frame_.currentFrame,
@@ -2142,18 +2140,13 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
   }
 
-  // Collect culling statistics from the previous frame (now safe after fence).
+  // Clustered lighting still uses a shared stats buffer retired above.
   phaseStart = TelemetryClock::now();
-  if (subs_.gpuCullManager)
-    subs_.gpuCullManager->collectStats();
   if (subs_.lightingManager)
     subs_.lightingManager->collectStats();
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::Readbacks,
                            elapsedMilliseconds(phaseStart));
-    if (subs_.gpuCullManager) {
-      telemetry->setCullingStats(subs_.gpuCullManager->cullStats());
-    }
     if (subs_.lightingManager) {
       telemetry->setLightCullingStats(
           subs_.lightingManager->lightCullingStats());
@@ -2206,6 +2199,15 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
   if (subs_.ddgiManager)
     subs_.ddgiManager->retireImage(imageIndex);
+  if (subs_.gpuCullManager) {
+    const auto readbackStart = TelemetryClock::now();
+    subs_.gpuCullManager->collectStats(imageIndex);
+    if (telemetry) {
+      telemetry->setCullingStats(subs_.gpuCullManager->cullStats());
+      telemetry->addCpuPhase(RendererTelemetryPhase::Readbacks,
+                             elapsedMilliseconds(readbackStart));
+    }
+  }
   collectReferenceDiagnostics(imageIndex);
   ensureReferencePathResources();
   if (!svc_.config.pathSampleSeries.empty() && !referencePathActive())
@@ -2487,6 +2489,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
   phaseStart = TelemetryClock::now();
   vkResetCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), 0);
+  if (subs_.exposureManager)
+    subs_.exposureManager->beginFrame();
   recordCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), imageIndex,
                       &frameRecordParams);
   if (telemetry) {
@@ -2541,6 +2545,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                     submittedFrameFence) != VK_SUCCESS) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
+  if (subs_.exposureManager)
+    subs_.exposureManager->onSubmitted();
   subs_.temporalManager->commit();
   if (subs_.screenReflectionPass)
     subs_.screenReflectionPass->onSubmitted(
@@ -2592,6 +2598,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
     if (frameRecordParams.screenshot.sceneLinear)
       subs_.frameResourceManager->setLinearCaptureTarget(imageIndex);
+    if (subs_.exposureManager)
+      subs_.exposureManager->collectReadback(
+          imageIndex, frameRecordParams.postProcess.exposureSettings);
     // This graphics fence also retires every earlier reference submission.
     for (uint32_t i = 0; i < referenceDiagnosticSeen_.size(); ++i)
       collectReferenceDiagnostics(i);
@@ -4015,7 +4024,7 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
     subs_.exposureManager->resizeFrameResources(imageCount);
   createFrameResources();
   if (subs_.bloomManager)
-    subs_.bloomManager->createTextures(extent.width, extent.height);
+    subs_.bloomManager->createTextures(extent.width, extent.height, imageCount);
   svc_.commandBufferManager.reallocate(imageCount);
   if (subs_.renderPassGpuProfiler)
     subs_.renderPassGpuProfiler->recreate(imageCount);
@@ -6113,11 +6122,13 @@ void RendererFrontend::initializeScene() {
   if (subs_.environmentManager) {
     const VkExtent2D ext = sceneRenderExtent();
     subs_.environmentManager->createGtaoResources(
-        container::util::executableDirectory(), ext.width, ext.height);
+        container::util::executableDirectory(), ext.width, ext.height,
+        subs_.frameResourceManager->frameCount());
   }
   if (subs_.bloomManager) {
     const VkExtent2D ext = svc_.swapChainManager.extent();
-    subs_.bloomManager->createTextures(ext.width, ext.height);
+    subs_.bloomManager->createTextures(
+        ext.width, ext.height, subs_.frameResourceManager->frameCount());
   }
   createGeometryBuffers();
   subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
@@ -6288,7 +6299,6 @@ void RendererFrontend::createFrameResources() {
   subs_.volumetricFogPass.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->destroyImages();
-  const auto previousSceneExtent = sceneRenderExtent();
   const auto displayExtent = svc_.swapChainManager.extent();
   auto sceneExtent = displayExtent;
   upscaleResourceRequest_ = currentUpscaleResourceRequest();
@@ -6344,9 +6354,10 @@ void RendererFrontend::createFrameResources() {
   subs_.oitManager->prepareNativeComposeResources(
       svc_.pipelineManager, container::util::executableDirectory(),
       subs_.frameResourceManager->frameCount());
-  if (subs_.environmentManager && subs_.environmentManager->isGtaoReady() &&
-      (sceneExtent.width != previousSceneExtent.width || sceneExtent.height != previousSceneExtent.height))
-    subs_.environmentManager->recreateGtaoTextures(sceneExtent.width, sceneExtent.height);
+  if (subs_.environmentManager && subs_.environmentManager->isGtaoReady())
+    subs_.environmentManager->recreateGtaoTextures(
+        sceneExtent.width, sceneExtent.height,
+        subs_.frameResourceManager->frameCount());
   if (svc_.config.screenReflections != ScreenReflectionMode::Off) {
     try {
       auto reflections = std::make_unique<ScreenReflectionPass>(
@@ -6665,7 +6676,7 @@ void RendererFrontend::updateFrameDescriptorSets(
     VkImageView brdfLutView = VK_NULL_HANDLE;
     VkSampler envSampler = VK_NULL_HANDLE;
     VkSampler brdfLutSampler = VK_NULL_HANDLE;
-    VkImageView aoTextureView = VK_NULL_HANDLE;
+    std::span<const VkImageView> aoTextureViews{};
     VkSampler aoSampler = VK_NULL_HANDLE;
     if (subs_.environmentManager && subs_.environmentManager->isReady()) {
       irradianceView = subs_.environmentManager->irradianceView();
@@ -6675,13 +6686,13 @@ void RendererFrontend::updateFrameDescriptorSets(
       brdfLutSampler = subs_.environmentManager->brdfLutSampler();
     }
     if (featureReadiness.gtao && subs_.environmentManager) {
-      aoTextureView = subs_.environmentManager->aoTextureView();
+      aoTextureViews = subs_.environmentManager->aoTextureViews();
       aoSampler = subs_.environmentManager->aoSampler();
     }
-    VkImageView bloomTextureView = VK_NULL_HANDLE;
+    std::span<const VkImageView> bloomTextureViews{};
     VkSampler bloomSampler = VK_NULL_HANDLE;
     if (subs_.bloomManager && subs_.bloomManager->isReady()) {
-      bloomTextureView = subs_.bloomManager->bloomResultView();
+      bloomTextureViews = subs_.bloomManager->bloomResultViews();
       bloomSampler = subs_.bloomManager->bloomSampler();
     }
     VkBuffer tileGridBuffer = VK_NULL_HANDLE;
@@ -6711,9 +6722,10 @@ void RendererFrontend::updateFrameDescriptorSets(
         buffers_.cameras, objectBuffer, shadowView, shadowSampler,
         shadowUbos, localShadowView, localShadowSampler, localShadowUbos,
         irradianceView, prefilteredView, brdfLutView, envSampler,
-        brdfLutSampler, aoTextureView, aoSampler, bloomTextureView,
+        brdfLutSampler, aoTextureViews, aoSampler, bloomTextureViews,
         bloomSampler, tileGridBuffer, tileGridBufferSize, exposureStateBuffers,
-        exposureStateBufferSize, anisotropyViews, diffuseTransmissionViews);
+        exposureStateBufferSize, anisotropyViews, diffuseTransmissionViews,
+        imageIndex == UINT32_MAX ? std::nullopt : std::optional(imageIndex));
   }
   if (subs_.temporalManager && preparedParams &&
       imageIndex < buffers_.cameras.size()) {
@@ -10062,6 +10074,19 @@ void RendererFrontend::attachActiveTechniqueLifecycle(
   default:
     params.lifecycle = {};
     break;
+  }
+  if (subs_.exposureManager &&
+      sanitizeExposureSettings(params.postProcess.exposureSettings).mode ==
+          container::gpu::kExposureModeManual) {
+    auto previous = std::move(params.lifecycle.afterCommandBufferBegin);
+    params.lifecycle.afterCommandBufferBegin =
+        [this, previous = std::move(previous)](VkCommandBuffer command,
+                                               const FrameRecordParams &frame) {
+          if (previous)
+            previous(command, frame);
+          subs_.exposureManager->recordManualExposure(
+              command, frame.postProcess.exposureSettings);
+        };
   }
   if (subs_.gltfDeformationPass) {
     auto previous = std::move(params.lifecycle.afterCommandBufferBegin);

@@ -1645,12 +1645,12 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         depthSamplingView != VK_NULL_HANDLE && normalView != VK_NULL_HANDLE) {
       const auto extent = deferred->sceneExtent(p);
       deferred->environmentManager()->dispatchGtao(
-          cmd, extent.width, extent.height, deferredRasterCameraBuffer(p),
+          cmd, p.runtime.imageIndex, extent.width, extent.height, deferredRasterCameraBuffer(p),
           deferredRasterCameraBufferSize(p), depthSamplingView,
           deferredRasterGBufferSampler(p), normalView,
           deferredRasterGBufferSampler(p));
       deferred->environmentManager()->dispatchGtaoBlur(
-          cmd, depthSamplingView, deferredRasterGBufferSampler(p),
+          cmd, p.runtime.imageIndex, depthSamplingView, deferredRasterGBufferSampler(p),
           p.camera.nearPlane, p.camera.farPlane, p.camera.orthographic);
     }
   });
@@ -1777,8 +1777,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         cmd, sceneColorReadPlan));
 
     const auto extent = deferred->swapchainExtent();
-    deferred->bloomManager()->dispatch(cmd, sceneColorView, extent.width,
-                                       extent.height,
+    deferred->bloomManager()->dispatch(cmd, p.runtime.imageIndex, sceneColorView,
+                                       extent.width, extent.height,
                                        temporalSceneColorLayout(p));
   });
 

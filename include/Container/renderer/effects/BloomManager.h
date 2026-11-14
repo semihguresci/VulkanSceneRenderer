@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <span>
 #include <vector>
 
 namespace container::gpu {
@@ -39,12 +40,14 @@ class BloomManager {
   // Create compute pipelines and sampler. Call once after construction.
   void createResources(const std::filesystem::path& shaderDir);
 
-  // Create or recreate the mip chain textures for the given viewport size.
-  void createTextures(uint32_t width, uint32_t height);
+  // Replace all mip chains after retiring the old swapchain-image readers.
+  void createTextures(uint32_t width, uint32_t height, uint32_t imageCount);
 
   // Dispatch the full bloom pass: downsample chain → upsample chain.
+  // The caller retires this swapchain image before updating its descriptors.
   // sceneColorView should be the HDR lighting result image view.
   void dispatch(VkCommandBuffer cmd,
+                uint32_t        imageIndex,
                 VkImageView     sceneColorView,
                 uint32_t        sceneWidth,
                 uint32_t        sceneHeight,
@@ -55,12 +58,13 @@ class BloomManager {
 
   // ---- Accessors ----
 
-  [[nodiscard]] bool isReady() const { return downsamplePipeline_ != VK_NULL_HANDLE && mipCount_ > 0; }
+  [[nodiscard]] bool isReady() const {
+    return downsamplePipeline_ != VK_NULL_HANDLE && !resultViews_.empty();
+  }
 
   // The final bloom result to sample in the post-process shader.
-  [[nodiscard]] VkImageView bloomResultView() const {
-    if (!upsampleViews_.empty()) return upsampleViews_[0];
-    return mipCount_ > 0 ? mipViews_[0] : VK_NULL_HANDLE;
+  [[nodiscard]] std::span<const VkImageView> bloomResultViews() const {
+    return resultViews_;
   }
   [[nodiscard]] VkSampler    bloomSampler()    const { return linearSampler_; }
 
@@ -72,27 +76,32 @@ class BloomManager {
   bool&     enabled()       { return enabled_; }
 
  private:
+  struct MipLevel {
+    VkImage image{VK_NULL_HANDLE};
+    VmaAllocation allocation{nullptr};
+    VkImageView view{VK_NULL_HANDLE};
+    uint32_t width{0};
+    uint32_t height{0};
+  };
+  struct FrameTextures {
+    std::vector<MipLevel> downsample;
+    std::vector<MipLevel> upsample;
+    std::vector<VkDescriptorSet> downsampleSets;
+    std::vector<VkDescriptorSet> upsampleSets;
+  };
+
   void createPipelines(const std::filesystem::path& shaderDir);
-  void destroyTextures();
+  void createMip(MipLevel& mip);
+  void destroyTextures(std::vector<FrameTextures>& frames) noexcept;
 
   std::shared_ptr<container::gpu::VulkanDevice> device_;
   container::gpu::AllocationManager&            allocationManager_;
   container::gpu::PipelineManager&              pipelineManager_;
   VkCommandPool                                  commandPool_{VK_NULL_HANDLE};
 
-  // Mip chain images
-  struct MipLevel {
-    VkImage       image{VK_NULL_HANDLE};
-    VmaAllocation allocation{nullptr};
-    VkImageView   view{VK_NULL_HANDLE};
-    uint32_t      width{0};
-    uint32_t      height{0};
-  };
-  std::vector<MipLevel> mips_;
-  std::vector<VkImageView> mipViews_;  // redundant pointers for fast access
-  std::vector<MipLevel> upsampleMips_;
-  std::vector<VkImageView> upsampleViews_;
-  uint32_t mipCount_{0};
+  std::vector<FrameTextures> frames_;
+  std::vector<VkImageView> resultViews_;
+  VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};
 
   VkSampler linearSampler_{VK_NULL_HANDLE};
 
@@ -100,15 +109,11 @@ class BloomManager {
   container::gpu::ComputePipeline downsamplePipeline_{};
   VkPipelineLayout      downsamplePipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout downsampleSetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool      downsampleDescriptorPool_{VK_NULL_HANDLE};
-  std::vector<VkDescriptorSet> downsampleSets_;  // one per mip transition
 
   // Upsample pipeline
   container::gpu::ComputePipeline upsamplePipeline_{};
   VkPipelineLayout      upsamplePipelineLayout_{VK_NULL_HANDLE};
   VkDescriptorSetLayout upsampleSetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool      upsampleDescriptorPool_{VK_NULL_HANDLE};
-  std::vector<VkDescriptorSet> upsampleSets_;
 
   // Settings
   float    threshold_{1.0f};

@@ -223,7 +223,8 @@ bool GpuCullManager::exchangeGeneration(PreparedGeneration& prepared) noexcept {
   CULL_EXCHANGE(objectSsboBuffers_);CULL_EXCHANGE(objectSsboSizes_);CULL_EXCHANGE(indirectDrawBuffers_);
   CULL_EXCHANGE(drawCountBuffers_);CULL_EXCHANGE(occlusionIndirectBuffers_);CULL_EXCHANGE(occlusionCountBuffers_);
   CULL_EXCHANGE(frustumCullPool_);CULL_EXCHANGE(frustumCullSets_);CULL_EXCHANGE(occlusionCullPool_);CULL_EXCHANGE(occlusionCullSets_);
-  CULL_EXCHANGE(statsReadbackBuffers_);CULL_EXCHANGE(statsReadbackSubmitted_);CULL_EXCHANGE(lastStats_);
+  CULL_EXCHANGE(statsReadbackBuffers_);CULL_EXCHANGE(statsReadbackSubmitted_);
+  CULL_EXCHANGE(statsInputCounts_);CULL_EXCHANGE(lastStats_);
   CULL_EXCHANGE(frustumDrawsValid_);CULL_EXCHANGE(occlusionDrawsValid_);CULL_EXCHANGE(ownsGenerationPools_);
 #undef CULL_EXCHANGE
   std::fill(frustumDrawsValid_.begin(),frustumDrawsValid_.end(),false);
@@ -309,6 +310,7 @@ void GpuCullManager::resizePerImageState(uint32_t imageCount) {
   frustumDrawsValid_.assign(count, false);
   occlusionDrawsValid_.assign(count, false);
   statsReadbackSubmitted_.assign(count, false);
+  statsInputCounts_.assign(count, 0u);
 }
 
 void GpuCullManager::recreatePerFrameResources(uint32_t descriptorSetCount,
@@ -455,7 +457,6 @@ void GpuCullManager::uploadDrawCommands(uint32_t imageIndex,
   }
 
   const uint32_t count = uploadPlan.drawCount;
-  lastStats_.totalInputCount = count;
   if (!uploadPlan.uploadsBuffer()) {
     return;
   }
@@ -478,7 +479,6 @@ void GpuCullManager::uploadDrawCommands(uint32_t imageIndex,
                                  gpuCmds.data(),
                                  sizeof(GpuDrawIndexedIndirectCommand) * count);
 
-  lastStats_.totalInputCount = count;
   lastUploadSourceData_[imageIndex] = commands.data();
   lastUploadSourceSize_[imageIndex] = commands.size();
   lastUploadSourceRevision_[imageIndex] = sourceRevision;
@@ -496,6 +496,7 @@ void GpuCullManager::dispatchFrustumCull(VkCommandBuffer cmd,
   if (imageIndex >= frustumCullSets_.size() ||
       imageIndex >= frustumDrawsValid_.size()) return;
   frustumDrawsValid_[imageIndex] = false;
+  statsInputCounts_[imageIndex] = 0;
   const VkDescriptorSet frustumCullSet = frustumCullSets_[imageIndex];
   if (frustumCullPipeline_ == VK_NULL_HANDLE ||
       !bufferReadyAt(indirectDrawBuffers_, imageIndex) ||
@@ -562,6 +563,7 @@ void GpuCullManager::dispatchFrustumCull(VkCommandBuffer cmd,
                            VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                        0, 1, &barrier, 0, nullptr, 0, nullptr);
   frustumDrawsValid_[imageIndex] = true;
+  statsInputCounts_[imageIndex] = objectCount;
 }
 
 // ---------------------------------------------------------------------------
@@ -1293,9 +1295,6 @@ void GpuCullManager::updateObjectSsboDescriptor(
 void GpuCullManager::scheduleStatsReadback(VkCommandBuffer cmd,
                                            uint32_t imageIndex) {
   if (!bufferReadyAt(statsReadbackBuffers_, imageIndex)) return;
-  if (imageIndex < statsReadbackSubmitted_.size()) {
-    statsReadbackSubmitted_[imageIndex] = true;
-  }
   const auto& statsReadbackBuffer = statsReadbackBuffers_[imageIndex];
 
   if (!frustumDrawsValid(imageIndex) ||
@@ -1310,6 +1309,8 @@ void GpuCullManager::scheduleStatsReadback(VkCommandBuffer cmd,
         VK_PIPELINE_STAGE_TRANSFER_BIT,
         VK_PIPELINE_STAGE_HOST_BIT,
         0, 1, &postBarrier, 0, nullptr, 0, nullptr);
+    statsInputCounts_[imageIndex] = 0;
+    statsReadbackSubmitted_[imageIndex] = true;
     return;
   }
 
@@ -1353,46 +1354,23 @@ void GpuCullManager::scheduleStatsReadback(VkCommandBuffer cmd,
       VK_PIPELINE_STAGE_TRANSFER_BIT,
       VK_PIPELINE_STAGE_HOST_BIT,
       0, 1, &postBarrier, 0, nullptr, 0, nullptr);
+  statsReadbackSubmitted_[imageIndex] = true;
 }
 
-void GpuCullManager::collectStats() {
-  bool readAny = false;
-  uint32_t frustumPassedCount = 0u;
-  uint32_t occlusionPassedCount = 0u;
-
-  for (uint32_t imageIndex = 0;
-       imageIndex < static_cast<uint32_t>(statsReadbackBuffers_.size());
-       ++imageIndex) {
-    if (imageIndex < statsReadbackSubmitted_.size() &&
-        !statsReadbackSubmitted_[imageIndex]) {
-      continue;
-    }
-    auto& statsReadbackBuffer = statsReadbackBuffers_[imageIndex];
-    if (statsReadbackBuffer.buffer == VK_NULL_HANDLE ||
-        statsReadbackBuffer.allocation == nullptr) {
-      continue;
-    }
-
-    VmaAllocationInfo allocInfo{};
-    vmaGetAllocationInfo(allocationManager_.memoryManager()->allocator(),
-                         statsReadbackBuffer.allocation, &allocInfo);
-    if (allocInfo.pMappedData == nullptr) continue;
-
-    vmaInvalidateAllocation(allocationManager_.memoryManager()->allocator(),
-                            statsReadbackBuffer.allocation, 0,
-                            sizeof(uint32_t) * 2);
-
-    const auto* data = static_cast<const uint32_t*>(allocInfo.pMappedData);
-    if (!readAny || data[0] != 0u || data[1] != 0u) {
-      frustumPassedCount = data[0];
-      occlusionPassedCount = data[1];
-    }
-    readAny = true;
-  }
-
-  if (!readAny) return;
-  lastStats_.frustumPassedCount = frustumPassedCount;
-  lastStats_.occlusionPassedCount = occlusionPassedCount;
+void GpuCullManager::collectStats(uint32_t imageIndex) {
+  if (imageIndex >= statsReadbackSubmitted_.size() ||
+      !statsReadbackSubmitted_[imageIndex])
+    return;
+  statsReadbackSubmitted_[imageIndex] = false;
+  const auto& readback = statsReadbackBuffers_[imageIndex];
+  const auto allocator = allocationManager_.memoryManager()->allocator();
+  VmaAllocationInfo info{};
+  vmaGetAllocationInfo(allocator, readback.allocation, &info);
+  if (!info.pMappedData || vmaInvalidateAllocation(allocator, readback.allocation, 0,
+                                                  sizeof(uint32_t) * 2) != VK_SUCCESS)
+    return;
+  const auto* data = static_cast<const uint32_t*>(info.pMappedData);
+  lastStats_ = {statsInputCounts_[imageIndex], data[0], data[1]};
 }
 // ---------------------------------------------------------------------------
 // Freeze-culling

@@ -862,7 +862,7 @@ void recordForwardRasterBloom(
   recordForwardRasterSceneColorReadBarrier(cmd, p);
   const auto extent = sharedContext.swapchainExtent();
   bloomManager->dispatch(
-      cmd,
+      cmd, p.runtime.imageIndex,
       temporalSceneColorView(
           p, forwardRasterImageView(p, ForwardRasterImageId::SceneColor)),
       extent.width, extent.height, temporalSceneColorLayout(p));

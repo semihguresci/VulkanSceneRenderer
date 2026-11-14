@@ -48,6 +48,10 @@ def check(exe: Path):
     invoke(["--exposure", "0.5", "--auto-exposure"], None)
     invoke(["--auto-exposure", "--exposure", "0.5"], None)
     invoke(["--auto-exposure", "--exposure", "nan"], "invalid float for --exposure")
+    for value in ("1", "2", "3", "4"):
+        invoke(["--frames-in-flight", value], None)
+    for value in ("0", "5", "-1", "1.5"):
+        invoke(["--frames-in-flight", value], "--frames-in-flight")
     return dict(passed=True, gpuInitialized=False, caseCount=len(cases), cases=cases)
 
 

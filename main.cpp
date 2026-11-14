@@ -330,6 +330,7 @@ void printCommandLineHelp() {
   --path-focus-distance F      Perspective focal plane distance in scene units (10)
   --display-mode NAME           Display mode (--render-mode is an alias)
   --msaa N                     MSAA sample count
+  --frames-in-flight N         Graphics frame slots (1 to 4, default 2)
   --taa / --no-taa              Enable/disable temporal antialiasing
   --fsr MODE                    Vulkan FSR native, quality, balanced, or performance
   --dlss MODE                   Vulkan DLSS SR native, quality, balanced, or performance
@@ -1078,6 +1079,11 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.taaResetFrame = parseUint(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--msaa") {
       config.msaaSamples = parseUint(requireValue(argc, argv, i, arg), arg);
+    } else if (arg == "--frames-in-flight") {
+      const uint32_t frames = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (frames < 1 || frames > 4)
+        throw std::invalid_argument("--frames-in-flight must be in [1,4]");
+      config.maxFramesInFlight = frames;
     } else if (arg == "--ray-shadows") {
       const auto mode = requireValue(argc, argv, i, arg);
       if (mode == "raster")
