@@ -34,7 +34,7 @@ struct RaySurfacePoint
     // sqrt(UV area / world area) per coordinate set (x = UV0, y = UV1).
     // Multiplied by a world-space ray footprint it gives the UV gradient
     // magnitude for explicit-gradient texture filtering; 0 marks a
-    // degenerate or absent set.
+    // set with no usable footprint.
     float2 texelDensity;
     uint materialIndex;
     uint objectFlags;
@@ -168,8 +168,8 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
     result.colorAlpha = color.w;
     // Per-set UV-to-world area ratio for ray-footprint texture filtering.
     // World edges use the instance's linear transform, matching the
-    // interpolated position above; degenerate sets report 0 so those
-    // fetches keep the base mip.
+    // interpolated position above. An unavailable footprint keeps the base
+    // mip for that UV set, without invalidating the surface attributes.
     float3 worldEdge0 = mul((float3x3)instance.model,
         triangle.positions[1].xyz - triangle.positions[0].xyz);
     float3 worldEdge1 = mul((float3x3)instance.model,
@@ -182,8 +182,10 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
         float2 third = set == 0u ? uv.uv[2].xy : uv.uv[2].zw;
         float2 edgeU = second - first, edgeV = third - first;
         float uvArea = abs(edgeU.x * edgeV.y - edgeU.y * edgeV.x);
-        result.texelDensity[set] = uvArea > 0.0 && worldArea > 0.0
+        float density = uvArea > 0.0 && isfinite(uvArea) &&
+                        worldArea > 0.0 && isfinite(worldArea)
             ? sqrt(uvArea / worldArea) : 0.0;
+        result.texelDensity[set] = isfinite(density) ? density : 0.0;
     }
     result.position = mul(instance.model, float4(objectPosition, 1.0)).xyz;
     result.shadingNormal = RaySurfaceNormalize(worldNormal, result.geometricNormal);
@@ -197,11 +199,10 @@ RaySurfacePoint ReconstructRaySurface(RayTriangleData uv,
     result.valid = all(isfinite(result.position)) && all(isfinite(result.color)) &&
         isfinite(result.colorAlpha) &&
         all(isfinite(result.uv)) && all(isfinite(result.shadingNormal)) &&
-        all(isfinite(result.texelDensity)) &&
         all(isfinite(result.tangent)) && all(isfinite(result.bitangent)) ? 1u : 0u;
     if (!all(isfinite(result.position))) result.reconstructionFault |= 2097152u;
     if (!all(isfinite(result.color)) || !isfinite(result.colorAlpha)) result.reconstructionFault |= 4194304u;
-    if (!all(isfinite(result.uv)) || !all(isfinite(result.texelDensity))) result.reconstructionFault |= 8388608u;
+    if (!all(isfinite(result.uv))) result.reconstructionFault |= 8388608u;
     if (!all(isfinite(result.shadingNormal)) || !all(isfinite(result.tangent)) || !all(isfinite(result.bitangent)))
         result.reconstructionFault |= 16777216u;
     return result;

@@ -411,8 +411,9 @@ neighboring perspective samples or the world-space pixel width for orthographic
 projection. Scattered rays inherit the slant-corrected footprint of the surface
 they leave. Straight-through segments keep the cone's cross section. At each hit,
 the world diameter gives a gradient for each UV set, and the texture transform's
-linear part maps the gradient into the sampled texture. Coverage and volume
-boundary tests use the base mip. BSDF paths and direct-light connections carry
+linear part maps the gradient into the sampled texture. A degenerate or
+overflowing footprint uses the base mip for that UV set. Coverage and volume
+boundary tests also use the base mip. BSDF paths and direct-light connections carry
 matching cones through transparent sheets so their tint and MIS probabilities
 agree. Normal mapping uses the interpolated shading frame with geometric
 hemisphere rejection, without a separate shading-normal energy correction.

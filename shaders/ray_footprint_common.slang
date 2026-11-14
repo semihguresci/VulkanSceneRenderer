@@ -17,7 +17,10 @@ float RayConeWorldFootprint(RayCone cone, float hitT, float3 normal, float3 view
     // Grazing intersections stretch the cone's cross-section across the
     // surface plane; keep the reference renderer's 1e-3 slant floor.
     float width = cone.width + cone.spread * max(hitT, 0.0);
-    return width / max(abs(dot(normal, view)), 1e-3);
+    float footprint = width / max(abs(dot(normal, view)), 1e-3);
+    // A failed footprint uses the base mip here and leaves the following
+    // segment free to grow from its own travel distance and cone spread.
+    return isfinite(footprint) && footprint > 0.0 ? footprint : 0.0;
 }
 
 float2 RayConeGradient(RayCone cone, float hitT, float3 normal, float3 view,

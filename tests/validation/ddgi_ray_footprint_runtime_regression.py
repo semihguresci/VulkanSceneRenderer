@@ -1,6 +1,7 @@
 """Compare DDGI ray cones to a shader-only mip-zero control in both raster paths."""
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,20 @@ from gltf_accessor_runtime_regression import Asset
 from gltf_extended_materials_runtime_regression import validation_log_error
 
 FRAMES = list(range(14, 30, 2))
+TRACE_SHADER = "spv_shaders/ddgi_trace.comp.spv"
+TECHNIQUES = {"deferred": "deferred-raster", "forward": "forward-raster"}
+
+
+def runtime_manifest(renderer):
+    root = renderer.parent
+    files = [renderer, *root.glob("*.dll"), *(root / "spv_shaders").glob("*.spv")]
+    for directory in ("materials", "hdr"):
+        assets = sorted(path for path in (root / directory).rglob("*") if path.is_file())
+        if not assets:
+            raise ValueError(f"Missing runtime assets in {root / directory}")
+        files.extend(assets)
+    return {path.relative_to(root).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(files)}
 
 
 def create_scene(path, uniform):
@@ -49,8 +64,8 @@ def create_scene(path, uniform):
     asset.write(path)
 
 
-def capture(renderer, output, model, label, technique):
-    stem = output / (label + "-" + technique)
+def capture(renderer, output, model, label, route, technique):
+    stem = output / (label + "-" + route)
     sequence = stem.with_suffix(".sequence.json")
     sequence.write_text(json.dumps(dict(schemaVersion=1, frames=FRAMES[-1], sampleFrames=FRAMES,
                                        events=[])), encoding="utf-8")
@@ -77,8 +92,11 @@ def capture(renderer, output, model, label, technique):
         assert image.shape == (192,256,3) and np.isfinite(image).all()
         captures.append(image[65:128, 80:135].mean(axis=-1))
         state = json.loads(Path(f"{sample}.telemetry.json").read_text(encoding="utf-8"))
+        assert state["technique"] == technique and state["validationEnabled"], sample
         assert state["ddgi"]["active"] and state["ddgi"]["tracedRays"] == 144 * 64
-        timings.append(next(row["gpuMs"] for row in state["passes"] if row["name"] == "DdgiTrace"))
+        trace = next(row for row in state["passes"] if row["name"] == "DdgiTrace")
+        assert trace["active"] and trace["gpuTimed"] and np.isfinite(trace["gpuMs"]) and trace["gpuMs"] > 0, sample
+        timings.append(trace["gpuMs"])
     images = np.asarray(captures, dtype=np.float64)
     return dict(mean=images.mean(), temporalRms=float(np.sqrt(np.mean(np.var(images, axis=0)))),
                 medianTraceGpuMs=statistics.median(timings), captures=len(captures))
@@ -91,24 +109,43 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     renderer, baseline, output = args.renderer.resolve(), args.baseline.resolve(), args.output.resolve()
-    assert renderer.read_bytes() == baseline.read_bytes(), "Only the DDGI trace shader should differ"
     output.mkdir(parents=True, exist_ok=True)
-    (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n")
-    textured, uniform = output / "checker.gltf", output / "uniform.gltf"
-    create_scene(textured, False)
-    create_scene(uniform, True)
+    runtimes = {"filtered": renderer, "mipZero": baseline}
     results = {}
-    for technique in ("deferred", "forward"):
-        results[technique] = dict(
-            filtered=capture(renderer, output, textured, "filtered", technique),
-            mipZero=capture(baseline, output, textured, "mip-zero", technique),
-            uniform=capture(renderer, output, uniform, "uniform", technique))
-        print(technique, json.dumps(results[technique]), flush=True)
-    (output / "results.json").write_text(json.dumps(results, indent=2))
-    for result in results.values():
-        assert result["filtered"]["temporalRms"] < .65 * result["mipZero"]["temporalRms"], result
-        assert result["uniform"]["mean"] > .1, result
-        assert abs(result["filtered"]["mean"] / result["uniform"]["mean"] - 1) < .03, result
+    proof = dict(passed=False, rendererPaths={name: str(path) for name, path in runtimes.items()})
+    try:
+        before = {name: runtime_manifest(path) for name, path in runtimes.items()}
+        proof["before"] = before
+        fixed, control = before["filtered"], before["mipZero"]
+        differing = sorted(name for name in fixed.keys() | control.keys() if fixed.get(name) != control.get(name))
+        proof["differingFiles"] = differing
+        if differing != [TRACE_SHADER] or not all(TRACE_SHADER in manifest for manifest in before.values()):
+            raise ValueError(f"Only the DDGI trace shader should differ, got {differing}")
+        try:
+            (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n")
+            textured, uniform = output / "checker.gltf", output / "uniform.gltf"
+            create_scene(textured, False)
+            create_scene(uniform, True)
+            for route, technique in TECHNIQUES.items():
+                result = results[route] = {}
+                result["filtered"] = capture(renderer, output, textured, "filtered", route, technique)
+                result["mipZero"] = capture(baseline, output, textured, "mip-zero", route, technique)
+                result["uniform"] = capture(renderer, output, uniform, "uniform", route, technique)
+                print(route, json.dumps(result), flush=True)
+                assert result["filtered"]["temporalRms"] < .65 * result["mipZero"]["temporalRms"], result
+                assert result["uniform"]["mean"] > .1, result
+                assert abs(result["filtered"]["mean"] / result["uniform"]["mean"] - 1) < .03, result
+        finally:
+            proof["after"] = {name: runtime_manifest(path) for name, path in runtimes.items()}
+            if proof["after"] != before:
+                raise ValueError("Frozen runtime inputs changed during capture")
+        proof["passed"] = True
+    except Exception as error:
+        proof["failure"] = f"{type(error).__name__}: {error}"
+        raise
+    finally:
+        (output / "results.json").write_text(json.dumps(results, indent=2))
+        (output / "runtime-proof.json").write_text(json.dumps(proof, indent=2))
 
 
 if __name__ == "__main__":
