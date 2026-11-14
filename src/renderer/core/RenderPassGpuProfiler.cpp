@@ -142,10 +142,17 @@ void RenderPassGpuProfiler::beginFrame(VkCommandBuffer cmd,
   const uint32_t queryCount =
       backend_ == Backend::PerformanceQuery ? kPerformanceQueriesPerFrame
                                             : kQueriesPerFrame + 2u;
-  vkResetQueryPool(device_, queryPool_, queryBase(frameSlot), queryCount);
+  if (backend_ == Backend::PerformanceQuery) {
+    // The hardware-counter backend is serialized and requires a host reset.
+    vkResetQueryPool(device_, queryPool_, queryBase(frameSlot), queryCount);
+  } else {
+    // Other slots can still have timestamp commands pending on this pool.
+    vkCmdResetQueryPool(cmd, queryPool_, queryBase(frameSlot), queryCount);
+  }
   if (graphicsQueryPool_ != VK_NULL_HANDLE) {
     const uint32_t first = backend_ == Backend::Timestamp ? queryBase(frameSlot) + kQueriesPerFrame : frameSlot * 2u;
-    if (graphicsQueryPool_ != queryPool_) vkResetQueryPool(device_, graphicsQueryPool_, first, 2u);
+    if (graphicsQueryPool_ != queryPool_)
+      vkCmdResetQueryPool(cmd, graphicsQueryPool_, first, 2u);
     vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, graphicsQueryPool_, first);
   }
 }
