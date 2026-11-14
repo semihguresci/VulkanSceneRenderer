@@ -3120,8 +3120,13 @@ void RendererFrontend::applyTemporalCapture(
       }
     const auto* node = sceneGraph_.getNode(target);
     if (!node) throw std::invalid_argument("Capture nodeFlags sourceNode does not exist");
+    const bool blockVisibility = renderSetupPreview_ && event.nodeFlags->visible.has_value();
+    if (blockVisibility) {
+      renderSetupDiagnostic_ = "Deactivate the render setup before editing node visibility";
+    }
     ensureSceneEditHistory();
-    sceneEdits_->setNodeFlags(target, event.nodeFlags->visible.value_or(node->visible),
+    sceneEdits_->setNodeFlags(target,
+        blockVisibility ? node->visible : event.nodeFlags->visible.value_or(node->visible),
         event.nodeFlags->selectable.value_or(node->selectable),
         event.nodeFlags->hoverable.value_or(node->hoverable));
   }
@@ -3398,10 +3403,14 @@ void RendererFrontend::applyTemporalCapture(
   if (objectTracksActive && event.objectVisible) {
     if (!sceneGraph_.getNode(objectNode))
       throw std::invalid_argument("Capture objectNode does not exist");
-    requireEditableSceneNode(objectNode);
-    finishEditGestures();
-    sceneGraph_.setVisible(objectNode, *event.objectVisible);
-    publishSceneEdit();
+    if (renderSetupPreview_) {
+      renderSetupDiagnostic_ = "Deactivate the render setup before editing node visibility";
+    } else {
+      requireEditableSceneNode(objectNode);
+      finishEditGestures();
+      sceneGraph_.setVisible(objectNode, *event.objectVisible);
+      publishSceneEdit();
+    }
   }
   if (sample.bimTranslation && subs_.bimManager) {
     if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
@@ -8774,6 +8783,10 @@ void RendererFrontend::presentSceneControls() {
         }
       },
       [this](uint32_t nodeIndex, bool visible) {
+        if (renderSetupPreview_) {
+          renderSetupDiagnostic_ = "Deactivate the render setup before editing node visibility";
+          return;
+        }
         finishEditGestures();
         ensureSceneEditHistory();
         if (!sceneEdits_->setVisible(nodeIndex, visible)) return;

@@ -131,6 +131,7 @@ bool RendererFrontend::authorCameraProjectionSource(int32_t sourceNode,const Glt
   return authorCameraProjection(*target,patch);
 }
 bool RendererFrontend::authorCameraProjection(const Target& target,const GltfCameraProjectionPatch& patch) {
+  if (renderSetupPreview_) throw std::invalid_argument("Deactivate the render setup before editing a camera");
   if(subs_.sceneManager && (!gltfAnimation_ || gltfAnimationGraphIdentity_!=sceneGraph_.identity())) resetGltfAnimation();
   if(!subs_.sceneManager || !gltfAnimation_) throw std::invalid_argument("Camera editing requires the current authored scene and animation rest owner");
   if(linkedCameraProjection(*subs_.sceneManager,sceneGraph_,target))

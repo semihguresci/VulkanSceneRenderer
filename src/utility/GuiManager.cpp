@@ -434,6 +434,7 @@ struct SceneHierarchyPanelActions {
   const std::function<void()>* cancelInlineRename{nullptr};
   const std::function<bool(uint32_t)>* linkedReadOnly{nullptr};
   const std::function<bool(uint32_t)>* canMakeLinkedEditable{nullptr};
+  bool visibilityReadOnly{};
 };
 
 void CloseSceneHierarchyPopup(uint32_t id) {
@@ -632,14 +633,19 @@ void DrawSceneHierarchyRow(
     ImGui::Unindent(indent);
 
   ImGui::TableNextColumn();
-  bool visible = node->visible;
-  ImGui::BeginDisabled(linkedReadOnly);
+  const bool localVisible = sceneGraph.previewLocalVisible(nodeIndex);
+  bool visible = localVisible;
+  ImGui::BeginDisabled(linkedReadOnly || actions.visibilityReadOnly);
   if (ImGui::Checkbox("##SceneHierarchyVisible", &visible) &&
       actions.setSceneNodeVisible != nullptr) {
     (*actions.setSceneNodeVisible)(nodeIndex, visible);
   }
   ImGui::EndDisabled();
-  if (!sceneGraph.isNodeEffectivelyVisible(nodeIndex) && node->visible) {
+  if (actions.visibilityReadOnly) {
+    ShowItemTooltip("Deactivate the render setup before editing node visibility.",
+                    ImGuiHoveredFlags_AllowWhenDisabled);
+  }
+  if (!sceneGraph.isNodeEffectivelyVisible(nodeIndex) && localVisible) {
     ImGui::SameLine();
     ImGui::TextDisabled("parent");
   }
@@ -3158,7 +3164,8 @@ void GuiManager::drawSceneHierarchy(
                                  .commitInlineRename = &commitInline,
                                  .cancelInlineRename = &cancelInline,
                                  .linkedReadOnly = &linkedNodeReadOnly_,
-                                 .canMakeLinkedEditable = &canMakeLinkedNodeEditable_},
+                                 .canMakeLinkedEditable = &canMakeLinkedNodeEditable_,
+                                 .visibilityReadOnly = !renderSetupState_.activeName.empty()},
       sceneHierarchyParentCandidateCache_, sceneHierarchyCache_,
       sceneHierarchySubmittedRows_);
 
@@ -8905,30 +8912,36 @@ void GuiManager::drawSceneControls(
   ImGui::Separator();
   sectionAnchor(ControlsSection::PostProcess);
   ImGui::Text("Post-process");
-  int toneMapper = static_cast<int>(displayGrade_.toneMapper);
+  auto previewGrade = renderSetupState_.previewGrade;
+  auto& grade = previewGrade ? *previewGrade : displayGrade_;
+  if (previewGrade) ImGui::TextDisabled("Deactivate the render setup to edit color grading.");
+  ImGui::BeginDisabled(previewGrade.has_value());
+  int toneMapper = static_cast<int>(grade.toneMapper);
   static constexpr const char *kToneMapperLabels[] = {
       "ACES", "Reinhard", "Clipping", "Filmic", "Uncharted 2", "AgX", "Khronos PBR Neutral"};
   if (ImGui::Combo("Tone Mapping", &toneMapper, kToneMapperLabels,
                    IM_ARRAYSIZE(kToneMapperLabels))) {
-    displayGrade_.toneMapper = static_cast<container::renderer::ToneMapper>(toneMapper);
+    grade.toneMapper = static_cast<container::renderer::ToneMapper>(toneMapper);
   }
-  ImGui::SliderFloat("Saturation", &displayGrade_.saturation, 0.0f, 2.0f, "%.2f",
+  ImGui::SliderFloat("Saturation", &grade.saturation, 0.0f, 2.0f, "%.2f",
                      ImGuiSliderFlags_AlwaysClamp);
-  ImGui::SliderFloat("Contrast", &displayGrade_.contrast, 0.5f, 2.0f, "%.2f",
+  ImGui::SliderFloat("Contrast", &grade.contrast, 0.5f, 2.0f, "%.2f",
                      ImGuiSliderFlags_AlwaysClamp);
+  ImGui::EndDisabled();
   if (ImGui::TreeNode("Color Grading")) {
-    ImGui::SliderFloat("White Balance (K)", &displayGrade_.temperatureKelvin, 2000.0f,
+    ImGui::BeginDisabled(previewGrade.has_value());
+    ImGui::SliderFloat("White Balance (K)", &grade.temperatureKelvin, 2000.0f,
                        15000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SliderFloat("Tint (Duv)", &displayGrade_.tintDuv, -0.025f, 0.025f, "%.4f",
+    ImGui::SliderFloat("Tint (Duv)", &grade.tintDuv, -0.025f, 0.025f, "%.4f",
                        ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SliderFloat("Vibrance", &displayGrade_.vibrance, -1.0f, 1.0f, "%.2f",
+    ImGui::SliderFloat("Vibrance", &grade.vibrance, -1.0f, 1.0f, "%.2f",
                        ImGuiSliderFlags_AlwaysClamp);
-    ImGui::ColorEdit3("Shadow Tone", displayGrade_.shadowTone.data());
-    ImGui::ColorEdit3("Highlight Tone", displayGrade_.highlightTone.data());
+    ImGui::ColorEdit3("Shadow Tone", grade.shadowTone.data());
+    ImGui::ColorEdit3("Highlight Tone", grade.highlightTone.data());
     if (ImGui::Button("Reset Color Grading")) {
-      const auto toneMapper = displayGrade_.toneMapper;
-      displayGrade_ = {};
-      displayGrade_.toneMapper = toneMapper;
+      const auto toneMapper = grade.toneMapper;
+      grade = {};
+      grade.toneMapper = toneMapper;
     }
     ImGui::InputText("Preset file", &displayGradePath_);
     const bool saveGrade = ImGui::Button("Save Preset##DisplayGrade");
@@ -8937,8 +8950,8 @@ void GuiManager::drawSceneControls(
     if (saveGrade || loadGrade) {
       try {
         const auto path = container::util::pathFromUtf8(displayGradePath_);
-        if (saveGrade) container::renderer::saveDisplayGrade(path, displayGrade_);
-        else displayGrade_ = container::renderer::loadDisplayGrade(path);
+        if (saveGrade) container::renderer::saveDisplayGrade(path, grade);
+        else grade = container::renderer::loadDisplayGrade(path);
         displayGradeMessage_ = saveGrade ? "Preset saved." : "Preset loaded.";
       } catch (const std::exception &error) {
         displayGradeMessage_ = error.what();
@@ -8946,6 +8959,7 @@ void GuiManager::drawSceneControls(
     }
     if (!displayGradeMessage_.empty())
       ImGui::TextWrapped("%s", displayGradeMessage_.c_str());
+    ImGui::EndDisabled();
     ImGui::TreePop();
   }
   int exposureMode =

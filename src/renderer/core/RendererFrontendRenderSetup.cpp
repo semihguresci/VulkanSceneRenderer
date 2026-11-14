@@ -311,7 +311,10 @@ void RendererFrontend::publishRenderSetupUi() {
   if (!subs_.guiManager) return;
   container::ui::RenderSetupUiState state;
   state.available = subs_.sceneManager && subs_.sceneManager->renderSetupSource().has_value();
-  if (renderSetupPreview_) state.activeName = renderSetupPreview_->name;
+  if (renderSetupPreview_) {
+    state.activeName = renderSetupPreview_->name;
+    state.previewGrade = renderSetupPreview_->previewGrade;
+  }
   state.status = renderSetupDiagnostic_.empty() ? renderSetupStatus_ : renderSetupDiagnostic_;
   state.path = container::util::pathToUtf8(renderSetupPath_);
   for (const auto& setup : renderSetups_.setups) state.names.push_back(setup.name);

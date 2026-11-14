@@ -210,7 +210,8 @@ Activate a named setup to preview it. Switch to another setup or choose
 **Deactivate preview** to restore the camera, material assignments, visibility,
 environment, and grade present before the first activation. Missing HDR files
 and stale node references are reported before switching. Saving the scene
-from a preview exports the base visibility and materials.
+from a preview exports the base visibility and materials. Deactivate the
+preview before editing node visibility, authored cameras, or color grading.
 
 | Go to destination | What to use there |
 | --- | --- |

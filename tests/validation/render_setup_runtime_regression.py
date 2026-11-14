@@ -89,6 +89,7 @@ class Capture:
         self.frame = 2
         self.events = []
         self.samples = {}
+        self.object_name = ""
 
     def step(self, **event):
         self.frame += 1
@@ -102,7 +103,10 @@ class Capture:
         self.samples[label] = self.frame
 
     def write(self, path):
-        write_json(path, dict(schemaVersion=1, frames=self.frame, events=self.events, sampleFrames=list(self.samples.values())))
+        data = dict(schemaVersion=1, frames=self.frame, events=self.events, sampleFrames=list(self.samples.values()))
+        if self.object_name:
+            data["objectName"] = self.object_name
+        write_json(path, data)
 
 
 def authoring_sequence(sidecar, hdr, grade):
@@ -125,11 +129,16 @@ def authoring_sequence(sidecar, hdr, grade):
 
 def replay_sequence(sidecar, faulty):
     sequence = Capture()
+    sequence.object_name = "Right panel"
     sequence.sample("base")
     sequence.setup("load", path=str(sidecar))
     sequence.sample("loaded")
     sequence.setup("activate", name=NAMES[0])
     sequence.sample("a")
+    sequence.step(nodeFlags=dict(sourceNode=1, visible=False))
+    sequence.sample("node-visibility-blocked")
+    sequence.step(objectVisible=True)
+    sequence.sample("object-visibility-blocked")
     sequence.setup("activate", name=NAMES[1])
     sequence.sample("b")
     sequence.setup("deactivate")
@@ -258,6 +267,7 @@ def check_replay(authored, replayed, hdr):
         check_look(authored_states[label], look, hdr)
     expected = {
         "base": "base", "loaded": "base", "a": "a", "b": "b", "restored": "base",
+        "node-visibility-blocked": "a", "object-visibility-blocked": "a",
         "a-again": "a", "missing-hdr": "a", "stale-node": "a", "b-again": "b", "restored-again": "base",
         "exported-preview": "b",
     }
@@ -272,6 +282,9 @@ def check_replay(authored, replayed, hdr):
         np.testing.assert_array_equal(pictures[label], authored_images[look], err_msg=f"Viewport replay changed at {label}")
     require(states["loaded"]["renderSetup"]["names"] == list(NAMES), states["loaded"]["renderSetup"])
     require(states["a-again"]["renderSetup"]["names"] == list(NAMES + FAULT_NAMES), states["a-again"]["renderSetup"])
+    for label in ("node-visibility-blocked", "object-visibility-blocked"):
+        diagnostic = states[label]["renderSetup"]["diagnostic"].lower()
+        require("deactivate" in diagnostic and "visibility" in diagnostic, diagnostic)
     np.testing.assert_array_equal(authored_images["after-save"], authored_images["b"],
                                   err_msg="Saving the sidecar changed the live scene")
     diagnostics = [states[label]["renderSetup"]["diagnostic"].lower() for label in ("missing-hdr", "stale-node")]

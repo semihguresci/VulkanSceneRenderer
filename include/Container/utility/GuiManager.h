@@ -797,6 +797,7 @@ struct RenderSetupUiState {
   std::string activeName;
   std::string status;
   std::string path;
+  std::optional<container::renderer::DisplayGrade> previewGrade;
 };
 
 // Reusable CPU ImGui widget: call inside an active window/popup. The returned

@@ -439,6 +439,8 @@ void RendererFrontend::ensureSceneEditHistory() {
             },
             .prepareNodeFlags = [this](uint32_t node,
                 const container::util::SceneEditHistory::NodeFlagChanges& changes) {
+              if (renderSetupPreview_ && changes[0])
+                throw std::invalid_argument("Deactivate the render setup before editing node visibility");
               using Actions = container::util::SceneEditHistory::NodeFlagActions;
               const auto sourceNode = sceneGraph_.getNode(node)->sourceNodeIndex;
               GltfNodeFlagEdit edit;
@@ -705,6 +707,7 @@ uint32_t RendererFrontend::addScenePrimitive(ScenePrimitiveKind kind,std::string
 }
 
 bool RendererFrontend::reparentSceneNode(uint32_t node,std::optional<uint32_t> parent) {
+  if (renderSetupPreview_) throw std::invalid_argument("Deactivate the render setup before moving nodes in the hierarchy");
   requireEditableSceneNode(node);
   if (parent) requireEditableSceneNode(*parent);
   finishEditGestures();
