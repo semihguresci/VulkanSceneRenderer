@@ -87,6 +87,7 @@ void RendererFrontend::ensureReferencePathResources() {
         subs_.sceneManager->descriptorSetLayout(), subs_.lightingManager->lightDescriptorSetLayout(),
         kDefaultReferenceImageBudgetBytes, oidn);
     subs_.referencePathTracePass = std::move(pass);
+    ++referenceTimingGeneration_;
     referenceDiagnosticSeen_.assign(svc_.swapChainManager.imageCount(), 0);
     referenceDiagnosticEpoch_ = referenceUnsupported_ = referenceRejected_ = 0;
     referenceExperimentalMaterialFallbacks_ = 0;
@@ -278,15 +279,13 @@ void RendererFrontend::collectReferenceDiagnostics(uint32_t image) {
         static_cast<unsigned long long>(epoch), static_cast<unsigned long long>(serial));
 }
 
-void RendererFrontend::updateReferenceSampleBudget(float lightingMs) {
+void RendererFrontend::updateReferenceSampleBudget(float lightingMs, uint32_t samples,
+                                                    uint64_t generation, uint64_t epoch) {
   const auto* path = subs_.referencePathTracePass.get();
   const float targetMs = svc_.config.pathTargetMs;
-  if (!referencePathActive() || !referenceRecorded_ || !path ||
-      referenceTimedSubmission_ == frame_.submittedFrameCount)
-    return;
-  referenceTimedSubmission_ = frame_.submittedFrameCount;
-  const uint32_t submitted = path->lastSubmittedSamples();
-  if (submitted == 0 || path->attemptedSamples() == svc_.config.pathSampleLimit)
+  if (!referencePathActive() || !path || generation != referenceTimingGeneration_ ||
+      epoch != path->historyResets() || samples == 0 ||
+      path->attemptedSamples() == svc_.config.pathSampleLimit)
     return;
 
   referenceAdaptiveBatch_.reset();
@@ -296,9 +295,9 @@ void RendererFrontend::updateReferenceSampleBudget(float lightingMs) {
 
   // Fit the next batch to the retired Lighting pass, changing by at most 2x.
   referenceTimedLightingMs_ = lightingMs;
-  const double estimate = std::floor(double(submitted) * targetMs / lightingMs);
-  const double lower = double((submitted + 1u) / 2u);
-  const double upper = double(std::min(64u, submitted * 2u));
+  const double estimate = std::floor(double(samples) * targetMs / lightingMs);
+  const double lower = double((samples + 1u) / 2u);
+  const double upper = double(std::min(64u, samples * 2u));
   referenceAdaptiveBatch_ = static_cast<uint32_t>(std::clamp(estimate, lower, upper));
 }
 

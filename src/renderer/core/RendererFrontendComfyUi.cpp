@@ -5,6 +5,7 @@
 #include "Container/renderer/lighting/EnvironmentManager.h"
 #include "Container/renderer/temporal/TemporalCapture.h"
 #include "Container/utility/AtomicFile.h"
+#include "Container/utility/FrameSyncManager.h"
 #include "Container/utility/Platform.h"
 
 #include <imgui.h>
@@ -154,7 +155,9 @@ void RendererFrontend::processComfyUi() {
   const bool previewInvalid = state.previewDescriptor != VK_NULL_HANDLE &&
       !svc_.allocationManager.textureImageMatches(state.preview);
   if (result || previewInvalid) {
-    // drawFrame has retired all graphics frames that could sample the ImGui preview.
+    // Older ImGui draws can still sample the published preview.
+    if (state.previewDescriptor != VK_NULL_HANDLE)
+      subs_.frameSyncManager->waitForAllFrames();
     removePreview(state);
     state.uploadedId.clear();
     if (result) {

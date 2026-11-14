@@ -1783,7 +1783,7 @@ void RendererFrontend::initialize() {
       svc_.ctx.deviceWrapper->device(), svc_.ctx.instance,
       svc_.ctx.deviceWrapper->physicalDevice(),
       svc_.ctx.deviceWrapper->queueFamilyIndices().graphicsFamily.value(),
-      static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
+      svc_.config.maxFramesInFlight);
   container::log::ContainerLogger::instance().renderer()->info(
       "GPU pass profiler: {}", subs_.renderPassGpuProfiler->backendStatus());
   subs_.rendererTelemetry = std::make_unique<RendererTelemetry>();
@@ -1907,11 +1907,13 @@ void RendererFrontend::applyPendingRenderTechniqueChange() {
   }
 
   const RenderTechniqueId requested = *pendingRenderTechniqueChange_;
+  subs_.frameSyncManager->waitForAllFrames();
   pendingRenderTechniqueChange_.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->reset("render technique changed");
   if (subs_.referencePathTracePass)
     subs_.referencePathTracePass->invalidateHistory();
+  ++referenceTimingGeneration_;
   referenceAdaptiveBatch_.reset();
   referenceTimedLightingMs_.reset();
   referenceStatus_.clear();
@@ -1939,8 +1941,10 @@ void RendererFrontend::processEnvironmentLoad(bool wait) {
           throw std::runtime_error("Failed to retire environment readers");
         if (subs_.ddgiManager)
           subs_.ddgiManager->resetSceneHistory();
-        if (subs_.referencePathTracePass)
+        if (subs_.referencePathTracePass) {
           subs_.referencePathTracePass->invalidateHistory();
+          ++referenceTimingGeneration_;
+        }
       })) {
     if (subs_.ddgiManager)
       subs_.ddgiManager->replaceEnvironment(environment->prefilteredView(), environment->envSampler());
@@ -2046,6 +2050,38 @@ void RendererFrontend::processMcpRequests() {
 }
 #endif
 
+FrameConcurrencyPolicy RendererFrontend::graphicsConcurrencyPolicy() const {
+  if (svc_.config.serializeGraphics)
+    return FrameConcurrencyPolicy::serializedGpuResources("forced serialized graphics");
+  if (referencePathActive())
+    return FrameConcurrencyPolicy::serializedGpuResources("reference path tracing");
+  if (subs_.temporalManager && subs_.temporalManager->upscalingActive())
+    return FrameConcurrencyPolicy::serializedGpuResources("vendor upscaler");
+  if (subs_.renderPassGpuProfiler &&
+      subs_.renderPassGpuProfiler->usesPerformanceQueries())
+    return FrameConcurrencyPolicy::serializedGpuResources("hardware performance queries");
+  if (subs_.gltfDeformationPass ||
+      (subs_.sceneManager && subs_.sceneManager->deformationData()))
+    return FrameConcurrencyPolicy::serializedGpuResources("glTF deformation resources");
+  return FrameConcurrencyPolicy::currentFrameFence();
+}
+
+VkFence RendererFrontend::resetRetiredFrameFence() {
+  const VkFence fence = subs_.frameSyncManager->fence(frame_.currentFrame);
+  // The caller has waited for the previous submission. Remove its references
+  // before the fence starts tracking a different submission.
+  std::replace(frame_.imagesInFlight.begin(), frame_.imagesInFlight.end(),
+               fence, VkFence{VK_NULL_HANDLE});
+  for (auto &slot : depthVisibility_.slots) {
+    if (slot.renderFence == fence)
+      slot.renderFence = VK_NULL_HANDLE;
+  }
+  if (subs_.renderPassGpuProfiler)
+    subs_.renderPassGpuProfiler->markFenceComplete(frame_.currentFrame);
+  subs_.frameSyncManager->resetFence(frame_.currentFrame);
+  return fence;
+}
+
 bool RendererFrontend::drawFrame(bool &framebufferResized) {
   // Commit outside the ImGui frame and before acquiring a swapchain image:
   // cooperative loading frames must own their acquire/submit/present cycle.
@@ -2059,20 +2095,22 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   if (modelLoad_ && modelLoad_->request && !modelLoad_->committing)
     ++modelLoad_->preparationFrames;
   const auto frameStart = TelemetryClock::now();
-  const auto concurrencyPolicy = FrameConcurrencyPolicy::serializedGpuResources(
-      "shared BIM resources and clustered lighting");
+  applyPendingRenderTechniqueChange();
+  const auto concurrencyPolicy = graphicsConcurrencyPolicy();
+  const bool serializedGraphics =
+      concurrencyPolicy.mode() == FrameConcurrencyMode::SerializedGpuResources;
   auto *telemetry = subs_.rendererTelemetry.get();
   if (telemetry) {
     telemetry->beginFrame(frame_.submittedFrameCount, frame_.currentFrame,
-                          svc_.config.maxFramesInFlight,
-                          concurrencyPolicy.mode() ==
-                              FrameConcurrencyMode::SerializedGpuResources,
+                          svc_.config.maxFramesInFlight, serializedGraphics,
                           concurrencyPolicy.reason());
   }
 
-  auto phaseStart = TelemetryClock::now();
+  auto phaseStart = frameStart;
   concurrencyPolicy.waitBeforeAcquire(*subs_.frameSyncManager,
                                       frame_.currentFrame);
+  if (subs_.renderPassGpuProfiler)
+    subs_.renderPassGpuProfiler->markFenceComplete(frame_.currentFrame);
   processEnvironmentLoad();
   if (subs_.guiManager && subs_.environmentManager) {
     auto sky = subs_.guiManager->consumeSkyRequest();
@@ -2095,38 +2133,54 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       subs_.guiManager->setEnvironmentLoading(subs_.environmentManager->environmentLoading());
     }
   }
-  if (telemetry) {
-    telemetry->setCpuPhase(RendererTelemetryPhase::WaitForFrame,
-                           elapsedMilliseconds(phaseStart));
+  const auto collectGpuTimings = [&](bool publishLiveTimings) {
     if (subs_.renderPassGpuProfiler) {
-      const auto gpuTimings = subs_.renderPassGpuProfiler->collectLatest();
+      auto& profiler = *subs_.renderPassGpuProfiler;
+      const auto timingSource = profiler.timingSource();
+      const auto retiredFrames = profiler.collectRetired();
+      for (const auto& retired : retiredFrames) {
 #ifdef CONTAINER_ENABLE_RENDERER_MCP
-      if (subs_.mcpServer)
-        subs_.mcpServer->observeGpuTimings(subs_.renderPassGpuProfiler->latestRecordingSerial(),
-            rendererGpuTimingSourceName(subs_.renderPassGpuProfiler->timingSource()), gpuTimings);
+        if (subs_.mcpServer)
+          subs_.mcpServer->observeGpuTimings(retired.serial,
+              rendererGpuTimingSourceName(timingSource), retired.timings);
 #endif
-      if (svc_.config.pathTargetMs > 0.0f) {
-        const auto lighting = std::ranges::find(gpuTimings, RenderPassId::Lighting, &RendererPassGpuTiming::id);
-        updateReferenceSampleBudget(lighting == gpuTimings.end() ? 0.0f : lighting->milliseconds);
+        if (svc_.config.pathTargetMs > 0.0f && retired.referenceBatch) {
+          const auto& batch = *retired.referenceBatch;
+          const auto lighting = std::ranges::find(retired.timings, RenderPassId::Lighting, &RendererPassGpuTiming::id);
+          updateReferenceSampleBudget(lighting == retired.timings.end() ? 0.0f : lighting->milliseconds,
+                                      batch.samples, batch.generation, batch.epoch);
+        }
+        if (telemetry) {
+          std::optional<float> passSum;
+          if (!retired.timings.empty()) {
+            passSum = 0.0f;
+            for (const auto& pass : retired.timings) *passSum += pass.milliseconds;
+          }
+          telemetry->recordSubmittedGraphicsTiming({retired.frameIndex, retired.serial,
+              frame_.submittedFrameCount - retired.frameIndex, passSum, retired.graphicsMilliseconds});
+        }
       }
-      telemetry->setPassGpuTimings(gpuTimings,
-                                   subs_.renderPassGpuProfiler->timingSource());
+      if (!telemetry || !publishLiveTimings) return;
+      const auto* latest = retiredFrames.empty() ? nullptr : &retiredFrames.back();
+      if (latest && !latest->timings.empty())
+        telemetry->setPassGpuTimings(latest->timings, timingSource);
       telemetry->setGpuProfilerStatus(RendererGpuProfilerTelemetry{
-          .source = subs_.renderPassGpuProfiler->timingSource(),
-          .available = subs_.renderPassGpuProfiler->isReady(),
-          .resultLatencyFrames =
-              subs_.renderPassGpuProfiler->resultLatencyFrames(),
-          .recordingSerial = subs_.renderPassGpuProfiler->latestRecordingSerial(),
-          .status = std::string(subs_.renderPassGpuProfiler->backendStatus()),
+          .source = timingSource,
+          .available = profiler.isReady(),
+          .resultLatencyFrames = latest ? static_cast<uint32_t>(frame_.submittedFrameCount - latest->frameIndex) : 0u,
+          .recordingSerial = latest ? latest->serial : 0u,
+          .status = std::string(profiler.backendStatus()),
       });
     }
-  }
+  };
+  if (telemetry)
+    telemetry->setCpuPhase(RendererTelemetryPhase::WaitForFrame, elapsedMilliseconds(phaseStart));
+  collectGpuTimings(true);
 
 #ifdef CONTAINER_ENABLE_RENDERER_MCP
   processMcpRequests();
 #endif
   processComfyUi();
-  applyPendingRenderTechniqueChange();
   updateOpenVdbSequence();
 
   if (pendingMsaaSampleCount_) {
@@ -2162,7 +2216,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                              elapsedMilliseconds(phaseStart));
       telemetry->setCpuPhase(RendererTelemetryPhase::Frame,
                              elapsedMilliseconds(frameStart));
-      telemetry->endFrame();
+      telemetry->endFrame(false);
     }
     framebufferResized = false;
     return false;
@@ -2308,6 +2362,18 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       temporal.settings(), static_cast<uint32_t>(msaaSampleCount_));
   updateCameraBuffer(imageIndex);
   reconcileUpscaleResources();
+  if (!serializedGraphics) {
+    const auto recordingPolicy = graphicsConcurrencyPolicy();
+    if (recordingPolicy.mode() == FrameConcurrencyMode::SerializedGpuResources) {
+      const auto waitStart = TelemetryClock::now();
+      recordingPolicy.waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
+      if (telemetry) {
+        telemetry->setConcurrency(true, recordingPolicy.reason());
+        telemetry->addCpuPhase(RendererTelemetryPhase::WaitForFrame,
+                               elapsedMilliseconds(waitStart));
+      }
+    }
+  }
   const auto temporalExtent = sceneRenderExtent();
   if ((temporal.settings().enabled || temporal.upscalingActive()) && !referencePathActive()) {
     temporal.createPipelines(activeShaderReload_ ? activeShaderReload_->directory
@@ -2529,9 +2595,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   submitInfo.pSignalSemaphoreInfos = frameSignals.data();
 
   phaseStart = TelemetryClock::now();
-  subs_.frameSyncManager->resetFence(frame_.currentFrame);
-  const VkFence submittedFrameFence =
-      subs_.frameSyncManager->fence(frame_.currentFrame);
+  const VkFence submittedFrameFence = resetRetiredFrameFence();
   if (vkQueueSubmit2(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submitInfo,
                     submittedFrameFence) != VK_SUCCESS) {
     throw std::runtime_error("failed to submit draw command buffer!");
@@ -2551,15 +2615,25 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     subs_.gpuHierarchyPass->commitFrame(imageIndex);
   commitGltfDeformationFrame();
   subs_.rayShadowManager->commit();
+  std::optional<RenderPassGpuProfiler::ReferenceBatch> referenceBatch;
   if (referenceRecorded_ && subs_.referencePathTracePass) {
     auto& path = *subs_.referencePathTracePass;
     const uint64_t epoch = path.historyResets();
+    const uint64_t previousSubmission = path.diagnosticSubmission(imageIndex);
     path.commitFrame(imageIndex);
+    if (path.diagnosticSubmission(imageIndex) != previousSubmission) {
+      referenceBatch = RenderPassGpuProfiler::ReferenceBatch{
+          referenceTimingGeneration_, path.historyResets(), path.lastSubmittedSamples()};
+    }
     if (path.historyResets() != epoch) {
       referenceAdaptiveBatch_.reset();
       referenceTimedLightingMs_.reset();
     }
   }
+  if (subs_.renderPassGpuProfiler)
+    subs_.renderPassGpuProfiler->onSubmitted(submittedFrameFence, frame_.submittedFrameCount, referenceBatch);
+  if (telemetry && subs_.renderPassGpuProfiler && subs_.renderPassGpuProfiler->isReady())
+    telemetry->setGraphicsFramesInFlight(subs_.renderPassGpuProfiler->pendingFrames());
   if (subs_.ddgiManager)
     subs_.ddgiManager->commit(imageIndex);
   gfxJournal_.submitted();
@@ -2589,6 +2663,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                         UINT64_MAX) != VK_SUCCESS) {
       throw std::runtime_error("failed to wait for screenshot frame");
     }
+    if (subs_.renderPassGpuProfiler)
+      subs_.renderPassGpuProfiler->markFenceComplete(frame_.currentFrame);
+    collectGpuTimings(false);
     if (frameRecordParams.screenshot.sceneLinear)
       subs_.frameResourceManager->setLinearCaptureTarget(imageIndex);
     if (subs_.exposureManager)
@@ -2698,11 +2775,12 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
 
 void RendererFrontend::applyTemporalCapture(
     const container::temporal::CaptureSample &sample) {
-  // Capture events can replace shared scene/provider buffers. Retire submitted
-  // readers with the existing frame-fence policy before changing those buffers.
-  FrameConcurrencyPolicy::serializedGpuResources("capture scene mutation")
-      .waitBeforeAcquire(*subs_.frameSyncManager, frame_.currentFrame);
   const auto &event = sample.event;
+  // Scripted events and object tracks may mutate shared providers. A camera
+  // track only updates CPU state and the acquired image's later upload.
+  if (event.frame != 0 || sample.objectTranslation || sample.objectScale ||
+      sample.bimTranslation)
+    subs_.frameSyncManager->waitForAllFrames();
   if (event.gpuTransforms) {
     gpuHierarchyEnabled_ = *event.gpuTransforms;
     if (subs_.guiManager) subs_.guiManager->setGpuHierarchyTransforms(gpuHierarchyEnabled_);
@@ -3310,8 +3388,15 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   VkPhysicalDeviceProperties gpu{};
   vkGetPhysicalDeviceProperties(svc_.ctx.deviceWrapper->physicalDevice(), &gpu);
   const auto owned = container::gpu::ownedVulkanObjectCounts(svc_.ctx.deviceWrapper->device());
+  const auto allocator = svc_.allocationManager.memoryManager()->allocator();
   VmaTotalStatistics allocationStats{};
-  vmaCalculateStatistics(svc_.allocationManager.memoryManager()->allocator(), &allocationStats);
+  vmaCalculateStatistics(allocator, &allocationStats);
+  const VkPhysicalDeviceMemoryProperties* memoryProperties = nullptr;
+  vmaGetMemoryProperties(allocator, &memoryProperties);
+  VkDeviceSize deviceLocalBytes = 0;
+  for (uint32_t heap = 0; heap < memoryProperties->memoryHeapCount; ++heap)
+    if (memoryProperties->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+      deviceLocalBytes += allocationStats.memoryHeap[heap].statistics.allocationBytes;
   nlohmann::json json{
       {"schemaVersion", 1},
       {"swapchainFormat", static_cast<int32_t>(surfaceFormat.format)},
@@ -3340,7 +3425,8 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
                             {"descriptorSetLayouts", owned.descriptorSetLayouts}, {"imageViews", owned.imageViews},
                             {"samplers", owned.samplers}, {"shaderModules", owned.shaderModules}}},
           {"vmaAllocations", allocationStats.total.statistics.allocationCount},
-          {"vmaBytes", allocationStats.total.statistics.allocationBytes}}},
+          {"vmaBytes", allocationStats.total.statistics.allocationBytes},
+          {"vmaDeviceLocalBytes", deviceLocalBytes}}},
       {"resolution", {extent.width, extent.height}},
       {"msaaSamples", sampleCountToSamples(msaaSampleCount_)},
       {"supportedMsaaSamples", supportedMsaaSamples_},
@@ -3621,9 +3707,21 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
       for (size_t phase = 0; phase < sample.cpuPhasesMs.size(); ++phase)
         phases[std::string(rendererTelemetryPhaseName(
             static_cast<RendererTelemetryPhase>(phase)))] = sample.cpuPhasesMs[phase];
+      const auto& retired = sample.submittedGraphicsTiming;
+      const auto optional = [](const auto& value) {
+        return value ? nlohmann::json(*value) : nlohmann::json(nullptr);
+      };
+      const nlohmann::json unavailable = nullptr;
       json["frameHistory"].push_back({{"frameIndex", sample.frameIndex},
-                                       {"cpuPhasesMs", std::move(phases)},
-                                       {"gpuKnownMs", sample.gpuKnownMs}});
+          {"cpuPhasesMs", std::move(phases)}, {"gpuKnownMs", sample.gpuKnownMs},
+          {"gpuPassSumMs", retired ? optional(retired->gpuPassSumMs) : unavailable},
+          {"gpuGraphicsMs", retired ? optional(retired->gpuGraphicsMs) : unavailable},
+          {"gpuFrameIndex", retired ? nlohmann::json(retired->frameIndex) : unavailable},
+          {"gpuRecordingSerial", retired ? nlohmann::json(retired->recordingSerial) : unavailable},
+          {"gpuResultLatencyFrames", retired ? nlohmann::json(retired->resultLatencyFrames) : unavailable},
+          {"serializedConcurrency", sample.serializedConcurrency},
+          {"concurrencyReason", sample.concurrencyReason},
+          {"graphicsFramesInFlight", optional(sample.graphicsFramesInFlight)}});
     }
     json["passes"] = nlohmann::json::array();
     for (const auto &pass : snapshot.passes)
@@ -3637,6 +3735,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
     json["deviceIdleWaits"] = snapshot.sync.deviceWaitIdleCount;
     json["framesInFlight"] = snapshot.sync.maxFramesInFlight;
     json["serializedConcurrency"] = snapshot.sync.serializedConcurrency;
+    json["concurrencyReason"] = snapshot.sync.concurrencyReason;
     json["swapchainImages"] = svc_.swapChainManager.imageCount();
     json["taa"]["imageAllocationCount"] = temporal.memoryBytes() == 0 ? 0 : 6 + 5 * svc_.swapChainManager.imageCount();
     bool temporalWrites = false;
@@ -4022,8 +4121,6 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
   if (subs_.bloomManager)
     subs_.bloomManager->createTextures(extent.width, extent.height, imageCount);
   svc_.commandBufferManager.reallocate(imageCount);
-  if (subs_.renderPassGpuProfiler)
-    subs_.renderPassGpuProfiler->recreate(imageCount);
 
   for (uint32_t imageIndex = 0;
        imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
@@ -4041,11 +4138,12 @@ void RendererFrontend::updateOpenVdbSequence() {
   if (!vdbPlayback_ || !subs_.openVdbVolumeRenderer) return;
   const auto index = vdbPlayback_->frameIndex();
   if (vdbAsyncSequence_) {
-    // drawFrame retires all graphics readers before this call. Capture settling
-    // performs the same retirement before polling or publishing an upload.
     if (vdbUploadingFrame_) {
       if (!subs_.openVdbVolumeRenderer->volumeReplacementReady()) return;
       if (*vdbUploadingFrame_ == index) {
+        // The upload fence proves the new medium is ready. Later frame
+        // submissions can still read the old medium and descriptor sets.
+        subs_.frameSyncManager->waitForAllFrames();
         if (!subs_.openVdbVolumeRenderer->publishVolumeReplacement())
           throw std::logic_error("OpenVDB upload became unavailable before publication");
         vdbLoadedFrame_ = index;
@@ -4084,8 +4182,7 @@ void RendererFrontend::updateOpenVdbSequence() {
   }
   if (!vdbSequence_) return;
   if (vdbLoadedFrame_ && *vdbLoadedFrame_ == index) return;
-  // Called after in-flight frame retirement and before swapchain acquisition.
-  // The renderer also retires graphics readers before replacing one medium.
+  // The synchronous replacement retires its graphics readers before swapping.
   const auto& volume = vdbSequence_->frame(index);
   subs_.openVdbVolumeRenderer->replaceVolume(0, volume);
   vdbLoadedFrame_ = index;
@@ -4108,9 +4205,8 @@ void RendererFrontend::processInput(float deltaTime, bool useViewportInput) {
     return;
   }
 
-  // Input updates the CPU camera object only. GPU camera buffers are uploaded
-  // in drawFrame() after all in-flight work has completed, so culling, depth,
-  // and G-buffer passes cannot race a previous frame still reading them.
+  // Input updates the CPU camera object only. drawFrame uploads the camera
+  // buffer after retiring the acquired swapchain image.
   syncCameraSelectionPivotOverride();
   subs_.cameraController->updateViewAnimation(deltaTime);
   if (!useViewportInput) {
@@ -5496,13 +5592,10 @@ void RendererFrontend::settlePendingModelLoads() {
   if (!vdbAsyncSequence_ || !vdbPlayback_ ||
       (svc_.config.screenshotCapturePath.empty() && svc_.config.temporalCaptureSequencePath.empty()))
     return;
-  // Capture polling runs outside drawFrame's normal before-acquire retirement.
-  // No frame submissions occur during this loop, so one retirement covers every
-  // descriptor publication until the requested sequence frame is settled.
-  subs_.frameSyncManager->waitForAllFrames();
+  // updateOpenVdbSequence retires graphics readers when the target upload
+  // is ready to publish.
   const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
   while (!vdbLoadedFrame_ || *vdbLoadedFrame_ != vdbPlayback_->frameIndex()) {
-    // All graphics readers were retired before entering this polling loop.
     updateOpenVdbSequence();
     if (vdbLoadedFrame_ && *vdbLoadedFrame_ == vdbPlayback_->frameIndex()) break;
     if (svc_.nativeWindow) {
@@ -5598,8 +5691,7 @@ void RendererFrontend::drawModelLoadProgressFrame() {
   submit.pCommandBufferInfos = &commandInfo;
   submit.signalSemaphoreInfoCount = 1;
   submit.pSignalSemaphoreInfos = &signal;
-  subs_.frameSyncManager->resetFence(frame_.currentFrame);
-  const auto fence = subs_.frameSyncManager->fence(frame_.currentFrame);
+  const VkFence fence = resetRetiredFrameFence();
   if (vkQueueSubmit2(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &submit, fence) != VK_SUCCESS)
     throw std::runtime_error("Failed to submit loading view");
   frame_.imagesInFlight[imageIndex] = fence;
@@ -5930,7 +6022,8 @@ void RendererFrontend::recreateMsaaResources(
     return;
   }
 
-  vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+  if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to retire frames before changing MSAA");
   destroyGBufferResources();
   svc_.swapChainManager.destroyFramebuffers();
   destroyGraphicsPipelines();
@@ -6403,15 +6496,24 @@ void RendererFrontend::createFrameResources() {
 // Per-frame helpers
 // ---------------------------------------------------------------------------
 
-void RendererFrontend::updateCameraBuffer(uint32_t imageIndex) {
-  if (!subs_.cameraController || imageIndex >= buffers_.cameras.size())
+void RendererFrontend::refreshCameraData() {
+  if (!subs_.cameraController)
     return;
-  subs_.cameraController->updateCameraBuffer(buffers_.cameraData,
-                                             buffers_.cameras[imageIndex]);
-  (void)applyGltfAnimationCamera(imageIndex);
+  // UI actions, viewpoint snapshots and the active ECS camera need the CPU
+  // view immediately. The image fence owns publication to the GPU buffer.
+  subs_.cameraController->updateCameraBuffer(buffers_.cameraData, {});
+  (void)applyGltfAnimationCamera();
   // Keep weak viewport intent initialized in headless captures as well as the
   // editor. Failed writes then do not create a view revision by lazy setup.
   (void)refreshCameraViewPoseViewRevision();
+}
+
+void RendererFrontend::updateCameraBuffer(uint32_t imageIndex) {
+  if (!subs_.cameraController || imageIndex >= buffers_.cameras.size())
+    return;
+  refreshCameraData();
+  SceneController::writeToBuffer(svc_.allocationManager, buffers_.cameras[imageIndex],
+                                 &buffers_.cameraData, sizeof(buffers_.cameraData));
 }
 
 void RendererFrontend::refreshSceneObjectData() {
@@ -7398,14 +7500,8 @@ bool RendererFrontend::restoreViewpointSnapshot(
   finishEditGestures();
 
   subs_.cameraController->applyCameraTransform(
-      snapshot.camera, buffers_.cameraData,
-      buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
-                               : buffers_.cameras.front());
-  for (uint32_t imageIndex = 1;
-       imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
-       ++imageIndex) {
-    updateCameraBuffer(imageIndex);
-  }
+      snapshot.camera, buffers_.cameraData, {});
+  refreshCameraData();
 
   auto clearSelectionState = [this]() {
     sceneState_.selectedMeshNode = container::scene::SceneGraph::kInvalidNode;
@@ -8406,13 +8502,6 @@ void RendererFrontend::presentSceneControls() {
   }
   const container::ui::ViewpointSnapshotState currentViewpoint =
       currentViewpointSnapshot();
-  const auto uploadCameraBuffers = [this]() {
-    for (uint32_t imageIndex = 0;
-         imageIndex < static_cast<uint32_t>(buffers_.cameras.size());
-         ++imageIndex) {
-      updateCameraBuffer(imageIndex);
-    }
-  };
   const std::function<void(container::renderer::ScenePrimitiveKind)>
       addScenePrimitive = [this](container::renderer::ScenePrimitiveKind kind) {
         (void)this->addScenePrimitive(kind);
@@ -8427,14 +8516,10 @@ void RendererFrontend::presentSceneControls() {
       addScenePrimitive,
       subs_.cameraController ? subs_.cameraController->cameraTransformControls()
                              : container::ui::TransformControls{},
-      [this,
-       uploadCameraBuffers](const container::ui::TransformControls &controls) {
-        if (subs_.cameraController)
-          subs_.cameraController->applyCameraTransform(
-              controls, buffers_.cameraData,
-              buffers_.cameras.empty() ? container::gpu::AllocatedBuffer{}
-                                       : buffers_.cameras.front());
-        uploadCameraBuffers();
+      [this](const container::ui::TransformControls &controls) {
+        if (!subs_.cameraController) return;
+        subs_.cameraController->applyCameraTransform(controls, buffers_.cameraData, {});
+        refreshCameraData();
       },
       subs_.cameraController
           ? subs_.cameraController->nodeTransformControls(sceneState_.rootNode)
@@ -8486,7 +8571,7 @@ void RendererFrontend::presentSceneControls() {
           }
         }
       },
-      [this, uploadCameraBuffers](uint32_t nodeIndex) {
+      [this](uint32_t nodeIndex) {
         if (nodeIndex == container::scene::SceneGraph::kInvalidNode ||
             sceneGraph_.getNode(nodeIndex) == nullptr) {
           return;
@@ -8496,7 +8581,7 @@ void RendererFrontend::presentSceneControls() {
           subs_.cameraController->selectMeshNode(nodeIndex,
                                                  sceneState_.selectedMeshNode);
           subs_.cameraController->frameNodeOrScene(nodeIndex);
-          uploadCameraBuffers();
+          refreshCameraData();
         } else {
           sceneState_.selectedMeshNode = nodeIndex;
         }
@@ -8612,7 +8697,7 @@ void RendererFrontend::presentSceneControls() {
     if (subs_.cameraController) {
       subs_.cameraController->setBimElevationView(sceneState_.selectedMeshNode,
                                                   *elevationRequest);
-      uploadCameraBuffers();
+      refreshCameraData();
     }
   }
 
@@ -8718,37 +8803,37 @@ void RendererFrontend::presentSceneControls() {
   }
   subs_.guiManager->drawViewportNavigationOverlay(
       navigationState,
-      [this, uploadCameraBuffers](container::ui::CameraViewPreset preset) {
+      [this](container::ui::CameraViewPreset preset) {
         if (!subs_.cameraController) {
           return;
         }
         subs_.cameraController->setViewPreset(sceneState_.selectedMeshNode,
                                               preset);
-        uploadCameraBuffers();
+        refreshCameraData();
       },
-      [this, uploadCameraBuffers](float deltaX, float deltaY) {
+      [this](float deltaX, float deltaY) {
         if (!subs_.cameraController) {
           return;
         }
         subs_.cameraController->orbit(sceneState_.selectedMeshNode, deltaX,
                                       deltaY, 1.0f);
-        uploadCameraBuffers();
+        refreshCameraData();
       },
-      [this, uploadCameraBuffers](float deltaX, float deltaY) {
+      [this](float deltaX, float deltaY) {
         if (!subs_.cameraController) {
           return;
         }
         subs_.cameraController->pan(sceneState_.selectedMeshNode, deltaX,
                                     -deltaY, 2.0f);
-        uploadCameraBuffers();
+        refreshCameraData();
       },
-      [this, uploadCameraBuffers]() {
+      [this]() {
         if (!subs_.cameraController) {
           return;
         }
         subs_.cameraController->toggleProjectionMode(
             sceneState_.selectedMeshNode);
-        uploadCameraBuffers();
+        refreshCameraData();
       });
 
   // Sync freeze-culling: pull GUI state back into debug state (checkbox may

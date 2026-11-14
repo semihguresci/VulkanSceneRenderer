@@ -1979,7 +1979,8 @@ bool SceneController::reloadSceneModel(
     uint32_t&                               outSelectedMeshNode,
     uint32_t&                               outCubeNode,
     container::geometry::GltfLoadResult*      prepared) {
-  vkDeviceWaitIdle(device_->device());
+  if (vkDeviceWaitIdle(device_->device()) != VK_SUCCESS)
+    throw std::runtime_error("Failed to retire GPU readers before replacing the scene");
   const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
       cameraBuffer};
   const uint64_t previousGeometryRevision = sceneManager_.geometryRevision();

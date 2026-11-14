@@ -8,6 +8,7 @@
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/renderer/platform/VulkanContext.h"
+#include "Container/utility/FrameSyncManager.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 #include "Container/utility/GuiManager.h"
 #include "Container/utility/SceneManager.h"
@@ -762,8 +763,10 @@ void RendererFrontend::validateSceneNodeReparent(uint32_t node,
 }
 
 void RendererFrontend::publishSceneEdit() {
-  // Edits and playback run before recording a frame, after graphics readers
-  // retire. Probe work can still be using scene buffers asynchronously.
+  // A pending subtree retirement can invalidate shader inputs before the
+  // scene's ordinary per-image uploads. Pure visibility/selection changes
+  // only refresh CPU-side scene metadata here.
+  if (pendingSceneRetirement_) subs_.frameSyncManager->waitForAllFrames();
   if (subs_.ddgiManager)
     subs_.ddgiManager->synchronizeAsync();
   const auto& pendingLight = pendingVisibilityLightSelection_;

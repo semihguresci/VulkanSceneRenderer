@@ -23,6 +23,7 @@
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -2220,30 +2221,84 @@ TEST(TechniqueRegistryGuardrails,
 }
 
 TEST(TechniqueRegistryGuardrails,
-     RendererFrontendResetsFrameFenceOnlyAfterCommandRecording) {
+     RendererFrontendClearsRetiredFenceReferencesBeforeReusingFrameSlot) {
   const std::string rendererFrontend =
       readRepoTextFile("src/renderer/core/RendererFrontend.cpp");
 
-  const size_t drawFrame =
-      rendererFrontend.find("bool RendererFrontend::drawFrame");
-  ASSERT_NE(drawFrame, std::string::npos);
-  const size_t record =
-      rendererFrontend.find("recordCommandBuffer(svc_.commandBufferManager."
-                            "buffer(imageIndex), imageIndex",
-                            drawFrame);
-  const size_t reset = rendererFrontend.find(
-      "subs_.frameSyncManager->resetFence(frame_.currentFrame)", drawFrame);
-  const size_t assign =
-      rendererFrontend.find("frame_.imagesInFlight[imageIndex] =", drawFrame);
-  const size_t submit = rendererFrontend.find("vkQueueSubmit2(", drawFrame);
-
-  ASSERT_NE(record, std::string::npos);
+  const auto helper = functionDefinitionBlocks(
+      rendererFrontend, "VkFence RendererFrontend::resetRetiredFrameFence(");
+  const size_t detachImage =
+      helper.find("std::replace(frame_.imagesInFlight.begin()");
+  const size_t detachVisibility =
+      helper.find("slot.renderFence = VK_NULL_HANDLE");
+  const size_t completeQueries =
+      helper.find("markFenceComplete(frame_.currentFrame)");
+  const size_t reset = helper.find("resetFence(frame_.currentFrame)");
   ASSERT_NE(reset, std::string::npos);
-  ASSERT_NE(assign, std::string::npos);
-  ASSERT_NE(submit, std::string::npos);
-  EXPECT_LT(record, reset);
-  EXPECT_LT(reset, submit);
-  EXPECT_LT(submit, assign);
+  EXPECT_LT(detachImage, reset);
+  EXPECT_LT(detachVisibility, reset);
+  EXPECT_LT(completeQueries, reset);
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      helper, "std::replace(frame_.imagesInFlight.begin(), frame_.imagesInFlight.end(),"
+              "fence, VkFence{VK_NULL_HANDLE});"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      helper, "if (slot.renderFence == fence) slot.renderFence = VK_NULL_HANDLE;"));
+  EXPECT_FALSE(contains(helper, "slot.valid"));
+
+  struct FramePath {
+    const char *entryPoint;
+    std::string_view wait;
+    std::string_view record;
+  };
+  const std::array<FramePath, 2> paths{{
+      {"bool RendererFrontend::drawFrame", "concurrencyPolicy.waitBeforeAcquire(",
+       "recordCommandBuffer(svc_.commandBufferManager."},
+      {"void RendererFrontend::drawModelLoadProgressFrame", "waitForAllFrames();",
+       "vkEndCommandBuffer(command)"},
+  }};
+  for (const auto &path : paths) {
+    SCOPED_TRACE(path.entryPoint);
+    const auto frame = functionDefinitionBlocks(rendererFrontend, path.entryPoint);
+    const auto wait = frame.find(path.wait);
+    const auto record = frame.find(path.record);
+    const auto prepareFence = frame.find("= resetRetiredFrameFence();");
+    const auto submit = frame.find("vkQueueSubmit2(");
+    const auto assign = frame.find("frame_.imagesInFlight[imageIndex] =");
+    ASSERT_NE(assign, std::string::npos);
+    EXPECT_FALSE(contains(frame, "resetFence(frame_.currentFrame)"));
+    EXPECT_LT(wait, record);
+    EXPECT_LT(record, prepareFence);
+    EXPECT_LT(prepareFence, submit);
+    EXPECT_LT(submit, assign);
+  }
+}
+
+TEST(TechniqueRegistryGuardrails,
+     RendererFrontendCollectsTimingsAfterMatchingFenceCompletion) {
+  const auto frame = functionDefinitionBlocks(
+      readRepoTextFile("src/renderer/core/RendererFrontend.cpp"),
+      "bool RendererFrontend::drawFrame(");
+  const auto ownerWait = frame.find("concurrencyPolicy.waitBeforeAcquire(");
+  const auto ownerComplete =
+      frame.find("markFenceComplete(frame_.currentFrame)", ownerWait);
+  const auto firstCollect = frame.find("collectGpuTimings(true);");
+  ASSERT_NE(firstCollect, std::string::npos);
+  EXPECT_LT(ownerWait, ownerComplete);
+  EXPECT_LT(ownerComplete, firstCollect);
+
+  const auto submit = frame.find("vkQueueSubmit2(");
+  const auto submitted = frame.find("renderPassGpuProfiler->onSubmitted(");
+  const auto screenshot = frame.find("if (screenshotThisFrame)", submit);
+  const auto screenshotWait = frame.find("vkWaitForFences(", screenshot);
+  const auto screenshotComplete =
+      frame.find("markFenceComplete(frame_.currentFrame)", screenshotWait);
+  const auto screenshotCollect = frame.find("collectGpuTimings(false);");
+  ASSERT_NE(screenshotCollect, std::string::npos);
+  EXPECT_LT(submit, submitted);
+  EXPECT_LT(submitted, screenshot);
+  EXPECT_LT(screenshot, screenshotWait);
+  EXPECT_LT(screenshotWait, screenshotComplete);
+  EXPECT_LT(screenshotComplete, screenshotCollect);
 }
 
 TEST(TechniqueRegistryGuardrails,

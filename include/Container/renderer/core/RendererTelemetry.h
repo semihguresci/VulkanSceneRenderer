@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -101,6 +102,14 @@ struct RendererGpuProfilerTelemetry {
   std::string status{};
 };
 
+struct RendererSubmittedGraphicsTiming {
+  uint64_t frameIndex{0};
+  uint64_t recordingSerial{0};
+  uint64_t resultLatencyFrames{0};
+  std::optional<float> gpuPassSumMs;
+  std::optional<float> gpuGraphicsMs;
+};
+
 struct RendererPassTelemetry {
   std::string name{};
   bool enabled{false};
@@ -130,6 +139,8 @@ struct RendererTelemetrySnapshot {
   RendererSyncTelemetry sync{};
   RendererGraphTelemetry graph{};
   RendererGpuProfilerTelemetry gpuProfiler{};
+  std::optional<RendererSubmittedGraphicsTiming> submittedGraphicsTiming;
+  std::optional<uint32_t> graphicsFramesInFlight;
   std::vector<RendererPassTelemetry> passes{};
 };
 
@@ -142,6 +153,10 @@ struct RendererTelemetryHistorySample {
   // Retain the phase breakdown so diagnostics can distinguish CPU work,
   // synchronization and capture overhead across completed frames.
   std::array<float, kRendererTelemetryPhaseCount> cpuPhasesMs{};
+  bool serializedConcurrency{false};
+  std::string concurrencyReason;
+  std::optional<RendererSubmittedGraphicsTiming> submittedGraphicsTiming;
+  std::optional<uint32_t> graphicsFramesInFlight;
 };
 
 struct RendererTelemetrySummary {
@@ -168,6 +183,7 @@ class RendererTelemetry {
                   uint32_t maxFramesInFlight,
                   bool serializedConcurrency,
                   std::string_view concurrencyReason);
+  void setConcurrency(bool serialized, std::string_view reason);
   void setImageIndex(uint32_t imageIndex);
   void setCpuPhase(RendererTelemetryPhase phase, float milliseconds);
   void addCpuPhase(RendererTelemetryPhase phase, float milliseconds);
@@ -178,12 +194,14 @@ class RendererTelemetry {
   void setPassGpuTimings(std::span<const RendererPassGpuTiming> timings,
                          RendererGpuTimingSource source);
   void setGpuProfilerStatus(RendererGpuProfilerTelemetry status);
+  void recordSubmittedGraphicsTiming(RendererSubmittedGraphicsTiming timing);
+  void setGraphicsFramesInFlight(uint32_t count);
   void setWorkload(RendererWorkloadTelemetry workload);
   void setResources(RendererResourceTelemetry resources);
   void setRenderGraph(const RenderGraph& graph);
   void noteSwapchainRecreate();
   void noteDeviceWaitIdle();
-  void endFrame();
+  void endFrame(bool submitted = true);
 
   [[nodiscard]] RendererTelemetryView view() const;
   [[nodiscard]] const RendererTelemetrySnapshot& latest() const {

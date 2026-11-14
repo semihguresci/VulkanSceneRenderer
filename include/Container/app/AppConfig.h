@@ -61,6 +61,7 @@ struct AppConfig {
   uint32_t windowWidth{800};
   uint32_t windowHeight{600};
   uint32_t maxFramesInFlight{2};
+  bool serializeGraphics{false};
   // Upper bound for the per-object SSBO. This is scene capacity, not a
   // draw-call budget.
   uint32_t maxSceneObjects{4096};

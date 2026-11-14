@@ -100,6 +100,7 @@ class ExposureManager;
 class DeferredRasterFrameGraphContext;
 class FrameResourceRegistry;
 class FrameRecorder;
+class FrameConcurrencyPolicy;
 struct FrameRecordParams;
 class FrameResourceManager;
 class GraphicsPipelineBuilder;
@@ -424,7 +425,8 @@ private:
   bool recordReferencePathTrace(VkCommandBuffer, const FrameRecordParams&);
   void finishReferencePathTrace(VkCommandBuffer);
   void collectReferenceDiagnostics(uint32_t imageIndex);
-  void updateReferenceSampleBudget(float lightingMs);
+  void updateReferenceSampleBudget(float lightingMs, uint32_t samples,
+                                   uint64_t generation, uint64_t epoch);
   void updateReferenceColorSource(uint32_t imageIndex, bool sceneLinear);
   void publishReferenceColorBinding(uint32_t imageIndex);
   std::vector<bool> referenceColorBound_;
@@ -432,7 +434,7 @@ private:
   uint64_t referenceDiagnosticEpoch_{}, referenceUnsupported_{}, referenceRejected_{};
   uint32_t referenceExperimentalMaterialFallbacks_{};
   bool referenceRecorded_{};
-  uint64_t referenceTimedSubmission_{};
+  uint64_t referenceTimingGeneration_{};
   std::optional<uint32_t> referenceAdaptiveBatch_;
   std::optional<float> referenceTimedLightingMs_;
   std::optional<float> referenceFocusDistanceOverride_;
@@ -597,7 +599,7 @@ private:
   void queueCaptureLightEvent(const container::temporal::CaptureEvent&);
   void processCaptureLightEvent();
   [[nodiscard]] EditableLightId resolveCaptureLightTarget(const container::temporal::CaptureLightTarget&) const;
-  bool applyGltfAnimationCamera(uint32_t imageIndex);
+  bool applyGltfAnimationCamera();
   void updateGltfDeformation();
   void prepareGltfDeformationFrame(uint32_t imageIndex);
   void commitGltfDeformationFrame();
@@ -758,6 +760,7 @@ private:
     uint64_t submittedFrameCount{0};
   };
   FrameState frame_{};
+  VkFence resetRetiredFrameFence();
 
   struct HostReadbackSlot {
     container::gpu::AllocatedBuffer readbackBuffer{};
@@ -899,6 +902,7 @@ private:
 
   // ---- per-frame helpers
   // ------------------------------------------------------
+  void refreshCameraData();
   void updateCameraBuffer(uint32_t imageIndex);
   void refreshSceneObjectData();
   bool updateObjectBuffer(uint32_t imageIndex, bool deferUploadToGpu = false);
@@ -987,6 +991,7 @@ private:
                                  std::string_view requestLabel);
   void requestRenderTechnique(RenderTechniqueId requested);
   void applyPendingRenderTechniqueChange();
+  [[nodiscard]] FrameConcurrencyPolicy graphicsConcurrencyPolicy() const;
   void syncGuiRenderEngineOptions();
 
   // ---- scene helpers

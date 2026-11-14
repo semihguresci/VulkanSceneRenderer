@@ -102,6 +102,41 @@ TEST(RendererTelemetryTests, BuildsSummaryFromHistory) {
   EXPECT_FLOAT_EQ(summary.maxGpuKnownMs, 3.0f);
 }
 
+TEST(RendererTelemetryTests, MatchesRetiredGraphicsDataToSubmittedFrames) {
+  RendererTelemetry telemetry{4};
+  telemetry.beginFrame(10u, 0u, 2u, false, "per-frame resources");
+  telemetry.setGraphicsFramesInFlight(2u);
+  telemetry.endFrame();
+
+  telemetry.beginFrame(11u, 1u, 2u, false, "per-frame resources");
+  telemetry.recordSubmittedGraphicsTiming({10u, 3u, 1u, 2.0f, 3.0f});
+  telemetry.endFrame(false);
+
+  telemetry.beginFrame(11u, 1u, 2u, false, "per-frame resources");
+  telemetry.setConcurrency(true, "vendor upscaler");
+  telemetry.setGraphicsFramesInFlight(1u);
+  telemetry.recordSubmittedGraphicsTiming({11u, 4u, 0u, 2.5f, 4.0f});
+  telemetry.endFrame();
+
+  const auto history = telemetry.view().history;
+  ASSERT_EQ(history.size(), 2u);
+  EXPECT_EQ(history[0].frameIndex, 10u);
+  ASSERT_TRUE(history[0].submittedGraphicsTiming);
+  EXPECT_EQ(history[0].submittedGraphicsTiming->frameIndex, 10u);
+  EXPECT_EQ(history[0].submittedGraphicsTiming->resultLatencyFrames, 1u);
+  EXPECT_EQ(history[0].submittedGraphicsTiming->gpuGraphicsMs, 3.0f);
+  EXPECT_EQ(history[0].graphicsFramesInFlight, 2u);
+  EXPECT_FALSE(history[0].serializedConcurrency);
+
+  EXPECT_EQ(history[1].frameIndex, 11u);
+  ASSERT_TRUE(history[1].submittedGraphicsTiming);
+  EXPECT_EQ(history[1].submittedGraphicsTiming->frameIndex, 11u);
+  EXPECT_EQ(history[1].submittedGraphicsTiming->gpuPassSumMs, 2.5f);
+  EXPECT_EQ(history[1].graphicsFramesInFlight, 1u);
+  EXPECT_TRUE(history[1].serializedConcurrency);
+  EXPECT_EQ(history[1].concurrencyReason, "vendor upscaler");
+}
+
 TEST(RendererTelemetryTests, AttachesPassCpuAndKnownGpuTimings) {
   RendererTelemetry telemetry{8};
   RenderGraph graph;
