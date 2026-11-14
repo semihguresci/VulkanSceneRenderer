@@ -168,7 +168,7 @@ bool FrameResourceManager::publishAuxiliaryBindings(PreparedAuxiliaryBindings& v
     }
     vkUpdateDescriptorSets(device_->device(),static_cast<uint32_t>(writes.size()),writes.data(),0,nullptr);
   }
-  descriptorUpdateKeyValid_=false;
+  std::fill(descriptorUpdateKeys_.begin(), descriptorUpdateKeys_.end(), std::nullopt);
   ++descriptorBindingEpoch_;
   value.state_->owner=nullptr; // Keep prepared storage for destruction outside publication.
   return true;
@@ -528,6 +528,7 @@ void FrameResourceManager::create(
 
   // --- Per-frame attachments, buffers, framebuffers ---
   frames_.resize(n);
+  descriptorUpdateKeys_.resize(n);
   const VkExtent2D ext = sceneExtent_;
   const bool useMsaa = sampleCount_ != VK_SAMPLE_COUNT_1_BIT;
 
@@ -914,8 +915,7 @@ void FrameResourceManager::destroy() {
   }
   frames_.clear();
   resourceRegistry_.clearBindings();
-  descriptorUpdateKey_      = {};
-  descriptorUpdateKeyValid_ = false;
+  descriptorUpdateKeys_.clear();
 
   auto destroyPool = [&](VkDescriptorPool& p) {
     if (p != VK_NULL_HANDLE) { destroyOwnedDescriptorPool(dev, p, nullptr); p = VK_NULL_HANDLE; }
@@ -1028,32 +1028,21 @@ void FrameResourceManager::updateDescriptorSets(
     VkImageView brdfLutView,
     VkSampler   envSampler,
     VkSampler   brdfLutSampler,
-    VkImageView aoTextureView,
+    std::span<const VkImageView> aoTextureViews,
     VkSampler   aoSampler,
-    VkImageView bloomTextureView,
+    std::span<const VkImageView> bloomTextureViews,
     VkSampler   bloomSampler,
     VkBuffer    tileGridBuffer,
     VkDeviceSize tileGridBufferSize,
     std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers,
     VkDeviceSize exposureStateBufferSize,
     std::span<const VkImageView> anisotropyViews,
-    std::span<const VkImageView> diffuseTransmissionViews) {
+    std::span<const VkImageView> diffuseTransmissionViews,
+    std::optional<uint32_t> retiredImage) {
   (void)objectBuffer;  // reserved for future per-frame object buffer binding
   if (cameraBuffers.empty()) return;
 
   DescriptorUpdateKey nextKey{};
-  nextKey.cameraBuffers.reserve(cameraBuffers.size());
-  for (const auto& cameraBuffer : cameraBuffers) {
-    nextKey.cameraBuffers.push_back(cameraBuffer.buffer);
-  }
-  nextKey.shadowUboBuffers.reserve(shadowUbos.size());
-  for (const auto& shadowUbo : shadowUbos) {
-    nextKey.shadowUboBuffers.push_back(shadowUbo.buffer);
-  }
-  nextKey.localShadowUboBuffers.reserve(localShadowUbos.size());
-  for (const auto& localShadowUbo : localShadowUbos) {
-    nextKey.localShadowUboBuffers.push_back(localShadowUbo.buffer);
-  }
   nextKey.shadowAtlasView   = shadowAtlasView;
   nextKey.shadowSampler     = shadowSampler;
   nextKey.localShadowAtlasView = localShadowAtlasView;
@@ -1063,35 +1052,38 @@ void FrameResourceManager::updateDescriptorSets(
   nextKey.brdfLutView       = brdfLutView;
   nextKey.envSampler        = envSampler;
   nextKey.brdfLutSampler    = brdfLutSampler;
-  nextKey.aoTextureView     = aoTextureView;
   nextKey.aoSampler         = aoSampler;
-  nextKey.bloomTextureView  = bloomTextureView;
   nextKey.bloomSampler      = bloomSampler;
   nextKey.tileGridBuffer    = tileGridBuffer;
   nextKey.tileGridBufferSize = tileGridBufferSize;
-  nextKey.exposureStateBuffers.reserve(exposureStateBuffers.size());
-  for (const auto& exposureStateBuffer : exposureStateBuffers) {
-    nextKey.exposureStateBuffers.push_back(exposureStateBuffer.buffer);
-  }
   nextKey.exposureStateBufferSize = exposureStateBufferSize;
-  nextKey.anisotropyViews.assign(anisotropyViews.begin(), anisotropyViews.end());
-  nextKey.diffuseTransmissionViews.assign(diffuseTransmissionViews.begin(),
-                                          diffuseTransmissionViews.end());
-
-  if (descriptorUpdateKeyValid_ && nextKey == descriptorUpdateKey_) {
-    return;
-  }
-  if(descriptorBindingEpoch_!=UINT64_MAX) ++descriptorBindingEpoch_;
-  descriptorUpdateKey_      = std::move(nextKey);
-  descriptorUpdateKeyValid_ = true;
 
   VkDevice dev = device_->device();
-
-  for (size_t frameIndex = 0; frameIndex < frames_.size(); ++frameIndex) {
+  const size_t begin = retiredImage.value_or(0);
+  const size_t end = retiredImage ? std::min(begin + 1, frames_.size()) : frames_.size();
+  for (size_t frameIndex = begin; frameIndex < end; ++frameIndex) {
+    auto& previousKey = descriptorUpdateKeys_[frameIndex];
     auto& f = frames_[frameIndex];
     const auto& cameraBuffer =
         cameraBuffers[std::min(frameIndex, cameraBuffers.size() - 1)];
     if (cameraBuffer.buffer == VK_NULL_HANDLE) continue;
+    const auto bufferAt = [frameIndex](std::span<const container::gpu::AllocatedBuffer> buffers) {
+      return buffers.empty() ? VK_NULL_HANDLE : buffers[std::min(frameIndex, buffers.size() - 1)].buffer;
+    };
+    const auto viewAt = [frameIndex](std::span<const VkImageView> views, VkImageView fallback = VK_NULL_HANDLE) {
+      return frameIndex < views.size() ? views[frameIndex] : fallback;
+    };
+    nextKey.cameraBuffer = cameraBuffer.buffer;
+    nextKey.shadowUboBuffer = bufferAt(shadowUbos);
+    nextKey.localShadowUboBuffer = bufferAt(localShadowUbos);
+    nextKey.aoTextureView = viewAt(aoTextureViews);
+    nextKey.bloomTextureView = viewAt(bloomTextureViews);
+    nextKey.exposureStateBuffer = bufferAt(exposureStateBuffers);
+    nextKey.anisotropyView = viewAt(anisotropyViews, f.normal.view);
+    nextKey.diffuseTransmissionView = viewAt(diffuseTransmissionViews, f.normal.view);
+    if (previousKey == nextKey) continue;
+    previousKey = nextKey;
+    if (descriptorBindingEpoch_ != UINT64_MAX) ++descriptorBindingEpoch_;
 
     VkDescriptorBufferInfo camInfo{cameraBuffer.buffer, 0, sizeof(container::gpu::CameraData)};
     VkDescriptorImageInfo  sampInfo{};
@@ -1109,13 +1101,10 @@ void FrameResourceManager::updateDescriptorSets(
     auto materialSheen = imgInfo(f.materialSheen.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     // Inactive materials never read these fallbacks. Keep all bindings valid
     // without allocating full-resolution outputs for ordinary scenes.
-    auto anisotropy = imgInfo(frameIndex < anisotropyViews.size()
-                                 ? anisotropyViews[frameIndex] : f.normal.view,
+    auto anisotropy = imgInfo(nextKey.anisotropyView,
                              VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-    auto diffuseTransmission = imgInfo(
-        frameIndex < diffuseTransmissionViews.size()
-            ? diffuseTransmissionViews[frameIndex] : f.normal.view,
-        VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+    auto diffuseTransmission = imgInfo(nextKey.diffuseTransmissionView,
+                                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
     auto depthImg = imgInfo(f.depthSamplingView,
                             VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL);
     auto scColor  = imgInfo(f.sceneColor.view,VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
@@ -1148,11 +1137,8 @@ void FrameResourceManager::updateDescriptorSets(
 
       // Shadow bindings (7=UBO, 8=atlas, 9=sampler)
       VkDescriptorBufferInfo shadowUboInfo{};
-      const auto& shadowUbo = shadowUbos.empty()
-                                  ? container::gpu::AllocatedBuffer{}
-                                  : shadowUbos[std::min(frameIndex, shadowUbos.size() - 1)];
-      if (shadowUbo.buffer != VK_NULL_HANDLE) {
-        shadowUboInfo = {shadowUbo.buffer, 0, sizeof(container::gpu::ShadowData)};
+      if (nextKey.shadowUboBuffer != VK_NULL_HANDLE) {
+        shadowUboInfo = {nextKey.shadowUboBuffer, 0, sizeof(container::gpu::ShadowData)};
       } else {
         shadowUboInfo = {fallbackShadowDataBuffer_.buffer, 0,
                          sizeof(container::gpu::ShadowData)};
@@ -1176,13 +1162,8 @@ void FrameResourceManager::updateDescriptorSets(
       img(9, VK_DESCRIPTOR_TYPE_SAMPLER, &shadowSamplerInfo);
 
       VkDescriptorBufferInfo localShadowUboInfo{};
-      const auto& localShadowUbo = localShadowUbos.empty()
-                                       ? container::gpu::AllocatedBuffer{}
-                                       : localShadowUbos[std::min(
-                                             frameIndex,
-                                             localShadowUbos.size() - 1)];
-      if (localShadowUbo.buffer != VK_NULL_HANDLE) {
-        localShadowUboInfo = {localShadowUbo.buffer, 0,
+      if (nextKey.localShadowUboBuffer != VK_NULL_HANDLE) {
+        localShadowUboInfo = {nextKey.localShadowUboBuffer, 0,
                               sizeof(container::gpu::LocalShadowData)};
       } else {
         localShadowUboInfo = {fallbackLocalShadowDataBuffer_.buffer, 0,
@@ -1249,9 +1230,9 @@ void FrameResourceManager::updateDescriptorSets(
 
       // AO bindings (15-16)
       VkDescriptorImageInfo aoInfo{};
-      aoInfo.imageView   = aoTextureView;
+      aoInfo.imageView   = nextKey.aoTextureView;
       aoInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-      if (aoTextureView == VK_NULL_HANDLE) {
+      if (aoInfo.imageView == VK_NULL_HANDLE) {
         aoInfo = albedo;  // fallback (will produce 0 but shader defaults to 1.0)
       }
       img(15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &aoInfo);
@@ -1297,9 +1278,9 @@ void FrameResourceManager::updateDescriptorSets(
 
       // Bloom bindings (7-8)
       VkDescriptorImageInfo bloomInfo{};
-      bloomInfo.imageView   = bloomTextureView;
+      bloomInfo.imageView   = nextKey.bloomTextureView;
       bloomInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-      if (bloomTextureView == VK_NULL_HANDLE) {
+      if (bloomInfo.imageView == VK_NULL_HANDLE) {
         bloomInfo = albedo;  // fallback to avoid null descriptor
       }
       img(7, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &bloomInfo);
@@ -1327,11 +1308,8 @@ void FrameResourceManager::updateDescriptorSets(
       buf(10, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, &camInfo);
 
       VkDescriptorBufferInfo postShadowUboInfo{};
-      const auto& postShadowUbo = shadowUbos.empty()
-                                      ? container::gpu::AllocatedBuffer{}
-                                      : shadowUbos[std::min(frameIndex, shadowUbos.size() - 1)];
-      if (postShadowUbo.buffer != VK_NULL_HANDLE) {
-        postShadowUboInfo = {postShadowUbo.buffer, 0, sizeof(container::gpu::ShadowData)};
+      if (nextKey.shadowUboBuffer != VK_NULL_HANDLE) {
+        postShadowUboInfo = {nextKey.shadowUboBuffer, 0, sizeof(container::gpu::ShadowData)};
       } else {
         postShadowUboInfo = {fallbackShadowDataBuffer_.buffer, 0,
                              sizeof(container::gpu::ShadowData)};
@@ -1349,13 +1327,8 @@ void FrameResourceManager::updateDescriptorSets(
       img(12, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &postShadowAtlasInfo);
 
       VkDescriptorBufferInfo exposureStateInfo{};
-      if (!exposureStateBuffers.empty() && exposureStateBufferSize > 0) {
-        const auto& exposureStateBuffer = exposureStateBuffers[std::min(
-            frameIndex, exposureStateBuffers.size() - 1u)];
-        if (exposureStateBuffer.buffer != VK_NULL_HANDLE) {
-          exposureStateInfo = {exposureStateBuffer.buffer, 0,
-                               exposureStateBufferSize};
-        }
+      if (nextKey.exposureStateBuffer != VK_NULL_HANDLE && exposureStateBufferSize > 0) {
+        exposureStateInfo = {nextKey.exposureStateBuffer, 0, exposureStateBufferSize};
       }
       if (exposureStateInfo.buffer == VK_NULL_HANDLE) {
         exposureStateInfo = {fallbackExposureStateBuffer_.buffer, 0,

@@ -3760,7 +3760,9 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(containsIgnoringWhitespace(exposureHeader,
                        "std::vector<VkDescriptorSet> descriptorSets_"));
 
-  EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "resizeFrameResources(imageCount)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "resizeFrameResources(descriptorSetCount)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "readbacks_[imageIndex]"));
+  EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "vkCmdUpdateBuffer(cmd, exposureStateBuffer_.buffer"));
   EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "histogramBuffers_[imageIndex]"));
   EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "exposureStateBuffer_"));
   EXPECT_TRUE(containsIgnoringWhitespace(exposureManager, "descriptorSets_[imageIndex]"));
@@ -6206,11 +6208,10 @@ TEST(RenderingConventionTests, AutoExposurePercentileMeteringRejectsOutliers) {
   EXPECT_NEAR(percentileWindow, std::exp2(histogramBinCenterLog2Luminance(20)),
               1e-4f);
 
-  const std::string exposureManager =
-      readRepoTextFile("src/renderer/effects/ExposureManager.cpp");
-  EXPECT_TRUE(contains(exposureManager, "lowerSample"));
-  EXPECT_TRUE(contains(exposureManager, "upperSample"));
-  EXPECT_TRUE(contains(exposureManager, "includedSamples"));
+  const std::string adaptShader = readRepoTextFile("shaders/exposure_adapt.slang");
+  EXPECT_TRUE(contains(adaptShader, "lowerSample"));
+  EXPECT_TRUE(contains(adaptShader, "upperSample"));
+  EXPECT_TRUE(contains(adaptShader, "includedSamples"));
 }
 
 TEST(RenderingConventionTests, ManualExposureScalesSceneLinearLuminance) {

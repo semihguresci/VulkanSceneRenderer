@@ -172,7 +172,7 @@ class GpuCullManager {
                                   VkBuffer objectBuffer,
                                   VkDeviceSize objectBufferSize);
 
-  // Retrieve culling statistics from the previous frame (1-frame latency).
+  // Retrieve culling statistics from the last retired image with a readback.
   // Returns all zeros until the first readback completes.
   CullStats cullStats() const { return lastStats_; }
 
@@ -180,9 +180,8 @@ class GpuCullManager {
   // Call once per frame after all cull dispatches complete.
   void scheduleStatsReadback(VkCommandBuffer cmd, uint32_t imageIndex);
 
-  // Read back the staged data into lastStats_.  Call at the start of
-  // the next frame (after the fence for the previous frame has signaled).
-  void collectStats();
+  // Collect only the acquired image's readback after its graphics fence.
+  void collectStats(uint32_t imageIndex);
 
   // Freeze the culling camera: subsequent cull dispatches will use a
   // snapshot of the current camera data instead of the live camera.
@@ -283,9 +282,10 @@ class GpuCullManager {
   VkDescriptorPool     occlusionCullPool_{VK_NULL_HANDLE};
   std::vector<VkDescriptorSet> occlusionCullSets_{};
 
-  // Stats readback (1-frame latency).
+  // Stats readback belongs to the swapchain image that produced it.
   std::vector<container::gpu::AllocatedBuffer> statsReadbackBuffers_{};  // 2 x uint32_t, HOST_VISIBLE
   std::vector<bool> statsReadbackSubmitted_{};
+  std::vector<uint32_t> statsInputCounts_{};
   CullStats lastStats_{};
 
   // Freeze-culling: snapshot of camera data used for cull dispatches.

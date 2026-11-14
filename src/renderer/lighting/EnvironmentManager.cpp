@@ -1,4 +1,5 @@
 #include "Container/renderer/lighting/EnvironmentManager.h"
+#include "Container/renderer/lighting/SubmittedUploadWait.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/PipelineManager.h"
@@ -18,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
 #include <print>
 #include <span>
 #include <stdexcept>
@@ -90,6 +92,39 @@ struct EnvironmentManager::EnvironmentGeneration {
   }
 };
 
+struct EnvironmentManager::GtaoResources {
+  struct Image {
+    VkImage image{};
+    VmaAllocation allocation{};
+    VkImageView view{};
+  };
+  struct Frame {
+    Image raw, blurred;
+    VkDescriptorSet set{}, blurSet{};
+  };
+
+  EnvironmentManager& owner;
+  VkExtent2D extent;
+  std::vector<Frame> frames;
+  std::vector<VkImageView> blurredViews;
+  VkDescriptorPool pool{};
+
+  GtaoResources(EnvironmentManager& owner, VkExtent2D extent, uint32_t imageCount)
+      : owner(owner), extent(extent), frames(imageCount), blurredViews(imageCount) {}
+
+  ~GtaoResources() {
+    owner.pipelineManager_.destroyDescriptorPool(pool);
+    const auto device = owner.device_->device();
+    const auto allocator = owner.allocationManager_.memoryManager()->allocator();
+    for (const auto& frame : frames) {
+      for (const auto* image : {&frame.raw, &frame.blurred}) {
+        if (image->view) destroyVulkanImageView(device, image->view, nullptr);
+        if (image->image) vmaDestroyImage(allocator, image->image, image->allocation);
+      }
+    }
+  }
+};
+
 struct EnvironmentManager::PreparedShaderBake::State {
   container::gpu::PipelineManager pipelines;
   EnvironmentManager baked;
@@ -139,18 +174,15 @@ void EnvironmentManager::createResources(const std::filesystem::path& shaderDir)
 
 void EnvironmentManager::createGtaoResources(
     const std::filesystem::path& shaderDir,
-    uint32_t fullWidth, uint32_t fullHeight) {
+    uint32_t fullWidth, uint32_t fullHeight, uint32_t imageCount) {
   createGtaoPipelines(shaderDir);
   gtaoFormat_ = selectGtaoStorageFormat();
-  createGtaoTextures(fullWidth / 2, fullHeight / 2);
+  recreateGtaoTextures(fullWidth, fullHeight, imageCount);
 }
 
-void EnvironmentManager::recreateGtaoTextures(uint32_t fullWidth,
-                                               uint32_t fullHeight) {
-  destroyGtaoTextures();
-  if (gtaoPipeline_ != VK_NULL_HANDLE) {
-    createGtaoTextures(fullWidth / 2, fullHeight / 2);
-  }
+std::span<const VkImageView> EnvironmentManager::aoTextureViews() const {
+  return gtaoResources_ ? std::span<const VkImageView>(gtaoResources_->blurredViews)
+                        : std::span<const VkImageView>{};
 }
 
 void EnvironmentManager::destroy() {
@@ -163,17 +195,14 @@ void EnvironmentManager::destroy() {
   usingPlaceholderEnvironment_ = true;
   environmentStatus_ = "Environment: destroyed";
 
-  destroyGtaoTextures();
+  gtaoResources_.reset();
 
   pipelineManager_.destroyPipeline(gtaoPipeline_);
   pipelineManager_.destroyPipeline(gtaoBlurPipeline_);
   pipelineManager_.destroyPipelineLayout(gtaoPipelineLayout_);
   pipelineManager_.destroyPipelineLayout(gtaoBlurPipelineLayout_);
-  pipelineManager_.destroyDescriptorPool(gtaoDescriptorPool_);
-  pipelineManager_.destroyDescriptorPool(gtaoBlurDescriptorPool_);
   pipelineManager_.destroyDescriptorSetLayout(gtaoSetLayout_);
   pipelineManager_.destroyDescriptorSetLayout(gtaoBlurSetLayout_);
-  gtaoSet_ = gtaoBlurSet_ = VK_NULL_HANDLE;
 
   auto destroyView = [&](VkImageView& v) {
     if (v != VK_NULL_HANDLE) { destroyVulkanImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
@@ -1441,8 +1470,6 @@ void EnvironmentManager::createSamplers() {
 // ---------------------------------------------------------------------------
 
 void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shaderDir) {
-  VkDevice dev = device_->device();
-
   // GTAO compute pipeline.
   {
     const std::array<VkDescriptorSetLayoutBinding, 6> bindings = {{
@@ -1493,36 +1520,6 @@ void EnvironmentManager::createGtaoPipelines(const std::filesystem::path& shader
     gtaoBlurPipeline_ = pipelineManager_.createComputePipeline(
         spvPath, gtaoBlurPipelineLayout_, "gtao_blur");
   }
-
-  // Descriptor pools.
-  gtaoDescriptorPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2},
-       {VK_DESCRIPTOR_TYPE_SAMPLER, 2},
-       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}},
-      1, 0);
-  {
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool     = gtaoDescriptorPool_;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts        = &gtaoSetLayout_;
-    if (vkAllocateDescriptorSets(dev, &ai, &gtaoSet_) != VK_SUCCESS)
-      throw std::runtime_error("failed to allocate GTAO descriptor set");
-  }
-
-  gtaoBlurDescriptorPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 2},
-       {VK_DESCRIPTOR_TYPE_SAMPLER, 2},
-       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1}},
-      1, 0);
-  {
-    VkDescriptorSetAllocateInfo ai{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool     = gtaoBlurDescriptorPool_;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts        = &gtaoBlurSetLayout_;
-    if (vkAllocateDescriptorSets(dev, &ai, &gtaoBlurSet_) != VK_SUCCESS)
-      throw std::runtime_error("failed to allocate GTAO blur descriptor set");
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1554,21 +1551,42 @@ VkFormat EnvironmentManager::selectGtaoStorageFormat() const {
       "GPU does not support a sampled storage image format for GTAO");
 }
 
-void EnvironmentManager::createGtaoTextures(uint32_t halfWidth,
-                                             uint32_t halfHeight) {
-  VkDevice dev = device_->device();
-  if (gtaoFormat_ == VK_FORMAT_UNDEFINED) {
-    gtaoFormat_ = selectGtaoStorageFormat();
-  }
-  gtaoWidth_  = std::max(halfWidth, 1u);
-  gtaoHeight_ = std::max(halfHeight, 1u);
+void EnvironmentManager::recreateGtaoTextures(uint32_t fullWidth,
+                                              uint32_t fullHeight,
+                                              uint32_t imageCount) {
+  const VkExtent2D extent{std::max(fullWidth / 2, 1u), std::max(fullHeight / 2, 1u)};
+  if (!gtaoPipeline_ || !gtaoBlurPipeline_) return;
+  if (imageCount == 0 || imageCount > std::numeric_limits<uint32_t>::max() / 4)
+    throw std::invalid_argument("invalid GTAO frame count");
+  if (gtaoResources_ && gtaoResources_->extent.width == extent.width &&
+      gtaoResources_->extent.height == extent.height &&
+      gtaoResources_->frames.size() == imageCount) return;
 
-  auto createAoImage = [&](VkImage& image, VmaAllocation& alloc,
-                           VkImageView& view) {
+  const VkDevice dev = device_->device();
+  const auto allocator = allocationManager_.memoryManager()->allocator();
+  auto next = std::make_unique<GtaoResources>(*this, extent, imageCount);
+  next->pool = pipelineManager_.createDescriptorPool(
+      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount},
+       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 4 * imageCount},
+       {VK_DESCRIPTOR_TYPE_SAMPLER, 4 * imageCount},
+       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 2 * imageCount}},
+      2 * imageCount, 0);
+  std::vector<VkDescriptorSetLayout> layouts(2 * imageCount, gtaoSetLayout_);
+  std::fill(layouts.begin() + imageCount, layouts.end(), gtaoBlurSetLayout_);
+  std::vector<VkDescriptorSet> sets(layouts.size());
+  const VkDescriptorSetAllocateInfo descriptorInfo{
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+      .descriptorPool = next->pool,
+      .descriptorSetCount = static_cast<uint32_t>(layouts.size()),
+      .pSetLayouts = layouts.data()};
+  if (vkAllocateDescriptorSets(dev, &descriptorInfo, sets.data()) != VK_SUCCESS)
+    throw std::runtime_error("failed to allocate GTAO frame descriptor sets");
+
+  const auto createAoImage = [&](GtaoResources::Image& image) {
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ii.imageType   = VK_IMAGE_TYPE_2D;
     ii.format      = gtaoFormat_;
-    ii.extent      = {gtaoWidth_, gtaoHeight_, 1};
+    ii.extent      = {extent.width, extent.height, 1};
     ii.mipLevels   = 1;
     ii.arrayLayers = 1;
     ii.samples     = VK_SAMPLE_COUNT_1_BIT;
@@ -1580,127 +1598,84 @@ void EnvironmentManager::createGtaoTextures(uint32_t halfWidth,
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
 
-    if (vmaCreateImage(allocationManager_.memoryManager()->allocator(),
-                       &ii, &ai, &image, &alloc, nullptr) != VK_SUCCESS)
+    if (vmaCreateImage(allocator, &ii, &ai, &image.image, &image.allocation,
+                       nullptr) != VK_SUCCESS)
       throw std::runtime_error("failed to create GTAO texture");
 
     VkImageViewCreateInfo vi{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
-    vi.image    = image;
+    vi.image    = image.image;
     vi.viewType = VK_IMAGE_VIEW_TYPE_2D;
     vi.format   = gtaoFormat_;
     vi.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    if (createVulkanImageView(dev, &vi, nullptr, &view) != VK_SUCCESS)
+    if (createVulkanImageView(dev, &vi, nullptr, &image.view) != VK_SUCCESS)
       throw std::runtime_error("failed to create GTAO texture view");
   };
 
-  createAoImage(gtaoImage_, gtaoAlloc_, gtaoView_);
-  createAoImage(gtaoBlurredImage_, gtaoBlurredAlloc_, gtaoBlurredView_);
+  for (uint32_t index = 0; index < imageCount; ++index) {
+    auto& frame = next->frames[index];
+    createAoImage(frame.raw);
+    createAoImage(frame.blurred);
+    frame.set = sets[index];
+    frame.blurSet = sets[index + imageCount];
+    next->blurredViews[index] = frame.blurred.view;
 
-  // Transition both to GENERAL for compute write.
-  VkCommandBuffer cmd = VK_NULL_HANDLE;
-  {
-    VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
-    ai.commandPool        = commandPool_;
-    ai.level              = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    ai.commandBufferCount = 1;
-    if (vkAllocateCommandBuffers(dev, &ai, &cmd) != VK_SUCCESS)
-      throw std::runtime_error("failed to allocate GTAO texture command buffer");
-  }
-  VkCommandBufferBeginInfo beginInfo{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
-  beginInfo.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-  if (vkBeginCommandBuffer(cmd, &beginInfo) != VK_SUCCESS) {
-    vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
-    throw std::runtime_error("failed to begin GTAO texture command buffer");
+    // Other descriptors refer to the acquired camera, depth and normal view.
+    const VkDescriptorImageInfo aoInInfo{VK_NULL_HANDLE, frame.raw.view, VK_IMAGE_LAYOUT_GENERAL};
+    const VkDescriptorImageInfo aoSampInfo{gtaoSampler_};
+    const VkDescriptorImageInfo outInfo{VK_NULL_HANDLE, frame.blurred.view, VK_IMAGE_LAYOUT_GENERAL};
+    const std::array<VkWriteDescriptorSet, 3> writes{{
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+         .dstSet = frame.blurSet, .dstBinding = 0, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, .pImageInfo = &aoInInfo},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+         .dstSet = frame.blurSet, .dstBinding = 1, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER, .pImageInfo = &aoSampInfo},
+        {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+         .dstSet = frame.blurSet, .dstBinding = 4, .descriptorCount = 1,
+         .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, .pImageInfo = &outInfo},
+    }};
+    vkUpdateDescriptorSets(dev, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
   }
 
-  auto transition = [&](VkImage img) {
-    VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
-    barrier.oldLayout     = VK_IMAGE_LAYOUT_UNDEFINED;
-    barrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.image         = img;
-    barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    barrier.srcAccessMask = 0;
-    barrier.dstAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    vkCmdPipelineBarrier(cmd,
-        VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-        0, 0, nullptr, 0, nullptr, 1, &barrier);
+  const auto& device = device_->raii();
+  const auto commands = device.allocateCommandBuffers(vk::CommandBufferAllocateInfo(
+      commandPool_, vk::CommandBufferLevel::ePrimary, 1));
+  const auto& command = commands.front();
+  command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  const auto recordTransition = [&](VkImage image) {
+    vk::ImageMemoryBarrier2 barrier{};
+    barrier.dstStageMask = vk::PipelineStageFlagBits2::eComputeShader;
+    barrier.dstAccessMask = vk::AccessFlagBits2::eShaderStorageWrite;
+    barrier.oldLayout = vk::ImageLayout::eUndefined;
+    barrier.newLayout = vk::ImageLayout::eGeneral;
+    barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    barrier.image = image;
+    barrier.subresourceRange = {vk::ImageAspectFlagBits::eColor, 0, 1, 0, 1};
+    vk::DependencyInfo dependency{};
+    dependency.imageMemoryBarrierCount = 1;
+    dependency.pImageMemoryBarriers = &barrier;
+    command.pipelineBarrier2(dependency);
   };
-  transition(gtaoImage_);
-  transition(gtaoBlurredImage_);
-
-  if (vkEndCommandBuffer(cmd) != VK_SUCCESS) {
-    vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
-    throw std::runtime_error("failed to end GTAO texture command buffer");
+  for (const auto& frame : next->frames) {
+    recordTransition(frame.raw.image);
+    recordTransition(frame.blurred.image);
   }
-  VkSubmitInfo submitInfo{VK_STRUCTURE_TYPE_SUBMIT_INFO};
-  submitInfo.commandBufferCount = 1;
-  submitInfo.pCommandBuffers    = &cmd;
-  if (vkQueueSubmit(device_->graphicsQueue(), 1, &submitInfo, VK_NULL_HANDLE) != VK_SUCCESS) {
-    vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
-    throw std::runtime_error("failed to submit GTAO texture command buffer");
-  }
-  vkQueueWaitIdle(device_->graphicsQueue());
-  vkFreeCommandBuffers(dev, commandPool_, 1, &cmd);
+  command.end();
 
-  // Write blur set descriptors (inAO = gtaoView_, outAO = gtaoBlurredView_).
-  // The GTAO main set is written per-frame in dispatchGtao.
-  {
-    VkDescriptorImageInfo aoInInfo{};
-    aoInInfo.imageView   = gtaoView_;
-    aoInInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-    VkDescriptorImageInfo aoSampInfo{};
-    aoSampInfo.sampler = gtaoSampler_;
-
-    VkDescriptorImageInfo outInfo{};
-    outInfo.imageView   = gtaoBlurredView_;
-    outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
-
-    std::array<VkWriteDescriptorSet, 3> w{};
-    w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[0].dstSet = gtaoBlurSet_; w[0].dstBinding = 0;
-    w[0].descriptorCount = 1;
-    w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
-    w[0].pImageInfo = &aoInInfo;
-
-    w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[1].dstSet = gtaoBlurSet_; w[1].dstBinding = 1;
-    w[1].descriptorCount = 1;
-    w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
-    w[1].pImageInfo = &aoSampInfo;
-
-    w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[2].dstSet = gtaoBlurSet_; w[2].dstBinding = 4;
-    w[2].descriptorCount = 1;
-    w[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
-    w[2].pImageInfo = &outInfo;
-
-    vkUpdateDescriptorSets(dev, static_cast<uint32_t>(w.size()), w.data(), 0, nullptr);
-  }
-}
-
-void EnvironmentManager::destroyGtaoTextures() {
-  VkDevice dev = device_->device();
-
-  auto destroyView = [&](VkImageView& v) {
-    if (v != VK_NULL_HANDLE) { destroyVulkanImageView(dev, v, nullptr); v = VK_NULL_HANDLE; }
-  };
-  auto destroyImage = [&](VkImage& img, VmaAllocation& alloc) {
-    if (img != VK_NULL_HANDLE && alloc != nullptr) {
-      vmaDestroyImage(allocationManager_.memoryManager()->allocator(), img, alloc);
-    }
-    img = VK_NULL_HANDLE; alloc = nullptr;
-  };
-
-  destroyView(gtaoView_);
-  destroyImage(gtaoImage_, gtaoAlloc_);
-  destroyView(gtaoBlurredView_);
-  destroyImage(gtaoBlurredImage_, gtaoBlurredAlloc_);
-
-  gtaoWidth_ = 0;
-  gtaoHeight_ = 0;
+  const vk::raii::Fence fence(device, vk::FenceCreateInfo{});
+  const vk::raii::Queue queue(device, device_->graphicsQueue());
+  const vk::CommandBufferSubmitInfo commandInfo(*command);
+  vk::SubmitInfo2 submit{};
+  submit.commandBufferInfoCount = 1;
+  submit.pCommandBufferInfos = &commandInfo;
+  queue.submit2(submit, *fence);
+  detail::waitForSubmittedUpload(
+      [&] {
+        if (device.waitForFences(*fence, true, UINT64_MAX) != vk::Result::eSuccess)
+          throw std::runtime_error("failed to wait for GTAO texture initialization");
+      },
+      [&] { queue.waitIdle(); });
+  gtaoResources_ = std::move(next);
 }
 
 // ---------------------------------------------------------------------------
@@ -1708,14 +1683,16 @@ void EnvironmentManager::destroyGtaoTextures() {
 // ---------------------------------------------------------------------------
 
 void EnvironmentManager::dispatchGtao(
-    VkCommandBuffer cmd,
+    VkCommandBuffer cmd, uint32_t imageIndex,
     uint32_t fullWidth, uint32_t fullHeight,
     VkBuffer cameraBuffer, VkDeviceSize cameraBufferSize,
     VkImageView depthView, VkSampler depthSampler,
     VkImageView normalView, VkSampler normalSampler) const {
-  if (gtaoPipeline_ == VK_NULL_HANDLE || !aoEnabled_) return;
-  if (gtaoView_ == VK_NULL_HANDLE) return;
+  if (gtaoPipeline_ == VK_NULL_HANDLE || !aoEnabled_ || !gtaoResources_ ||
+      imageIndex >= gtaoResources_->frames.size()) return;
 
+  const auto& frame = gtaoResources_->frames[imageIndex];
+  const auto [width, height] = gtaoResources_->extent;
   VkDevice dev = device_->device();
 
   // Update GTAO descriptor set with per-frame resources.
@@ -1732,42 +1709,42 @@ void EnvironmentManager::dispatchGtao(
     VkDescriptorImageInfo normalSampInfo{};
     normalSampInfo.sampler = normalSampler;
     VkDescriptorImageInfo outInfo{};
-    outInfo.imageView   = gtaoView_;
+    outInfo.imageView   = frame.raw.view;
     outInfo.imageLayout = VK_IMAGE_LAYOUT_GENERAL;
 
     std::array<VkWriteDescriptorSet, 6> w{};
     w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[0].dstSet = gtaoSet_; w[0].dstBinding = 0;
+    w[0].dstSet = frame.set; w[0].dstBinding = 0;
     w[0].descriptorCount = 1;
     w[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     w[0].pBufferInfo = &camInfo;
 
     w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[1].dstSet = gtaoSet_; w[1].dstBinding = 1;
+    w[1].dstSet = frame.set; w[1].dstBinding = 1;
     w[1].descriptorCount = 1;
     w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     w[1].pImageInfo = &depthInfo;
 
     w[2] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[2].dstSet = gtaoSet_; w[2].dstBinding = 2;
+    w[2].dstSet = frame.set; w[2].dstBinding = 2;
     w[2].descriptorCount = 1;
     w[2].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     w[2].pImageInfo = &depthSampInfo;
 
     w[3] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[3].dstSet = gtaoSet_; w[3].dstBinding = 3;
+    w[3].dstSet = frame.set; w[3].dstBinding = 3;
     w[3].descriptorCount = 1;
     w[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     w[3].pImageInfo = &normalInfo;
 
     w[4] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[4].dstSet = gtaoSet_; w[4].dstBinding = 4;
+    w[4].dstSet = frame.set; w[4].dstBinding = 4;
     w[4].descriptorCount = 1;
     w[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     w[4].pImageInfo = &normalSampInfo;
 
     w[5] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[5].dstSet = gtaoSet_; w[5].dstBinding = 5;
+    w[5].dstSet = frame.set; w[5].dstBinding = 5;
     w[5].descriptorCount = 1;
     w[5].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
     w[5].pImageInfo = &outInfo;
@@ -1784,12 +1761,12 @@ void EnvironmentManager::dispatchGtao(
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gtaoPipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gtaoPipelineLayout_,
-                          0, 1, &gtaoSet_, 0, nullptr);
+                          0, 1, &frame.set, 0, nullptr);
   vkCmdPushConstants(cmd, gtaoPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                      0, sizeof(GtaoPushConstants), &pc);
 
-  uint32_t dispatchX = (gtaoWidth_ + 7) / 8;
-  uint32_t dispatchY = (gtaoHeight_ + 7) / 8;
+  uint32_t dispatchX = (width + 7) / 8;
+  uint32_t dispatchY = (height + 7) / 8;
   vkCmdDispatch(cmd, dispatchX, dispatchY, 1);
 
   // Barrier: GTAO write → blur read.
@@ -1797,7 +1774,7 @@ void EnvironmentManager::dispatchGtao(
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     barrier.oldLayout     = VK_IMAGE_LAYOUT_GENERAL;
     barrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.image         = gtaoImage_;
+    barrier.image         = frame.raw.image;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -1809,15 +1786,17 @@ void EnvironmentManager::dispatchGtao(
   }
 }
 
-void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
+void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd, uint32_t imageIndex,
                                           VkImageView depthView,
                                           VkSampler depthSampler,
                                           float cameraNear,
                                           float cameraFar,
                                           bool orthographicDepth) const {
-  if (gtaoBlurPipeline_ == VK_NULL_HANDLE || !aoEnabled_) return;
-  if (gtaoBlurredView_ == VK_NULL_HANDLE) return;
+  if (gtaoBlurPipeline_ == VK_NULL_HANDLE || !aoEnabled_ || !gtaoResources_ ||
+      imageIndex >= gtaoResources_->frames.size()) return;
   if (depthView == VK_NULL_HANDLE || depthSampler == VK_NULL_HANDLE) return;
+  const auto& frame = gtaoResources_->frames[imageIndex];
+  const auto [width, height] = gtaoResources_->extent;
 
   // Update blur depth descriptors (bindings 2,3) at dispatch time.
   {
@@ -1829,13 +1808,13 @@ void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
 
     std::array<VkWriteDescriptorSet, 2> w{};
     w[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[0].dstSet = gtaoBlurSet_; w[0].dstBinding = 2;
+    w[0].dstSet = frame.blurSet; w[0].dstBinding = 2;
     w[0].descriptorCount = 1;
     w[0].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
     w[0].pImageInfo = &depthInfo;
 
     w[1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-    w[1].dstSet = gtaoBlurSet_; w[1].dstBinding = 3;
+    w[1].dstSet = frame.blurSet; w[1].dstBinding = 3;
     w[1].descriptorCount = 1;
     w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER;
     w[1].pImageInfo = &depthSampInfo;
@@ -1845,8 +1824,8 @@ void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
   }
 
   BlurPushConstants pc{};
-  pc.width          = gtaoWidth_;
-  pc.height         = gtaoHeight_;
+  pc.width          = width;
+  pc.height         = height;
   pc.depthThreshold = 0.08f;
   pc.cameraNear     = cameraNear;
   pc.cameraFar      = cameraFar;
@@ -1854,12 +1833,12 @@ void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gtaoBlurPipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, gtaoBlurPipelineLayout_,
-                          0, 1, &gtaoBlurSet_, 0, nullptr);
+                          0, 1, &frame.blurSet, 0, nullptr);
   vkCmdPushConstants(cmd, gtaoBlurPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                      0, sizeof(BlurPushConstants), &pc);
 
-  uint32_t dispatchX = (gtaoWidth_ + 7) / 8;
-  uint32_t dispatchY = (gtaoHeight_ + 7) / 8;
+  uint32_t dispatchX = (width + 7) / 8;
+  uint32_t dispatchY = (height + 7) / 8;
   vkCmdDispatch(cmd, dispatchX, dispatchY, 1);
 
   // Barrier: blur write → fragment read in lighting.
@@ -1867,7 +1846,7 @@ void EnvironmentManager::dispatchGtaoBlur(VkCommandBuffer cmd,
     VkImageMemoryBarrier barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     barrier.oldLayout     = VK_IMAGE_LAYOUT_GENERAL;
     barrier.newLayout     = VK_IMAGE_LAYOUT_GENERAL;
-    barrier.image         = gtaoBlurredImage_;
+    barrier.image         = frame.blurred.image;
     barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
     barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;

@@ -46,7 +46,13 @@ class ExposureManager {
                 uint32_t sceneWidth,
                 uint32_t sceneHeight,
                 const container::gpu::ExposureSettings& settings,
-      VkImageLayout sourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+                VkImageLayout sourceLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  void recordManualExposure(VkCommandBuffer cmd,
+                            const container::gpu::ExposureSettings& settings);
+  void beginFrame() { recordedWrite_ = {}; }
+  // Publish readback ownership and the history-mode change after queue submit succeeds.
+  void onSubmitted();
+  // The caller retires the image's graphics fence before collecting its copy.
   void collectReadback(uint32_t imageIndex,
                        const container::gpu::ExposureSettings& settings);
   void destroy();
@@ -56,6 +62,7 @@ class ExposureManager {
            adaptPipeline_ != VK_NULL_HANDLE &&
            !descriptorSets_.empty() &&
            !histogramBuffers_.empty() &&
+           !readbacks_.empty() &&
            exposureStateBuffer_.buffer != VK_NULL_HANDLE;
   }
 
@@ -78,6 +85,7 @@ class ExposureManager {
  private:
   void createPipeline(const std::filesystem::path& shaderDir);
   void createExposureStateBuffer(container::gpu::AllocatedBuffer& buffer);
+  void recordReadback(uint32_t imageIndex, VkCommandBuffer cmd);
   void destroyFrameResources();
   void updateDescriptorSet(uint32_t imageIndex, VkImageView sceneColorView,
                            VkImageLayout sourceLayout);
@@ -87,8 +95,25 @@ class ExposureManager {
   container::gpu::PipelineManager& pipelineManager_;
 
   std::vector<container::gpu::AllocatedBuffer> histogramBuffers_{};
-  // Temporal adaptation must be shared across swapchain images; per-image
-  // exposure history presents as brightness flicker in static scenes.
+  struct ReadbackSlot {
+    container::gpu::AllocatedBuffer buffer;
+    uint64_t serial{0};
+  };
+  std::vector<ReadbackSlot> readbacks_{};
+  enum class HistoryWrite { None, Automatic, Manual };
+  struct RecordedHistoryWrite {
+    HistoryWrite mode{HistoryWrite::None};
+    uint32_t imageIndex{0};
+    float exposure{0.0f};
+    float luminance{0.0f};
+  } recordedWrite_{};
+  uint64_t nextReadbackSerial_{0};
+  uint64_t latestReadbackSerial_{0};
+  float manualSeedExposure_{0.0f};
+  float manualSeedLuminance_{0.0f};
+  bool hasManualSeed_{false};
+  // Tone mapping and adaptation share one queue-ordered history.
+  // Fenced host reads use the per-image snapshots above.
   container::gpu::AllocatedBuffer exposureStateBuffer_{};
   VkDescriptorSetLayout setLayout_{VK_NULL_HANDLE};
   VkDescriptorPool descriptorPool_{VK_NULL_HANDLE};

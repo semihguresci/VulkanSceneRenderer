@@ -1,11 +1,8 @@
 #include "Container/renderer/effects/ExposureManager.h"
 
-#include "Container/renderer/scene/SceneController.h"
 #include "Container/utility/AllocationManager.h"
-#include "Container/utility/FileLoader.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneData.h"
-#include "Container/utility/ShaderModule.h"
 #include "Container/utility/VulkanDevice.h"
 
 #include <algorithm>
@@ -28,6 +25,33 @@ namespace {
 constexpr float kMinHistogramLog2Luminance = -12.0f;
 constexpr float kMaxHistogramLog2Luminance = 12.0f;
 constexpr float kAssumedFrameDeltaSeconds = 1.0f / 60.0f;
+constexpr VkPipelineStageFlags2 kExposureHistoryStages =
+    VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+    VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
+constexpr VkAccessFlags2 kExposureHistoryWrites =
+    VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT;
+constexpr VkAccessFlags2 kExposureHistoryAccess = kExposureHistoryWrites |
+    VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT;
+
+void exposureBufferBarrier(VkCommandBuffer cmd, VkBuffer buffer,
+                           VkPipelineStageFlags2 srcStage, VkAccessFlags2 srcAccess,
+                           VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
+  const VkBufferMemoryBarrier2 barrier{
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = srcStage,
+      .srcAccessMask = srcAccess,
+      .dstStageMask = dstStage,
+      .dstAccessMask = dstAccess,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = buffer,
+      .size = VK_WHOLE_SIZE};
+  const VkDependencyInfo dependency{
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1,
+      .pBufferMemoryBarriers = &barrier};
+  vkCmdPipelineBarrier2(cmd, &dependency);
+}
 
 float finiteOr(float value, float fallback) {
   return std::isfinite(value) ? value : fallback;
@@ -97,35 +121,28 @@ void ExposureManager::dispatch(
     uint32_t sceneWidth,
     uint32_t sceneHeight,
     const ExposureSettings& rawSettings,
-                               VkImageLayout sourceLayout) {
+    VkImageLayout sourceLayout) {
   if (!isReady() || cmd == VK_NULL_HANDLE ||
       sceneColorView == VK_NULL_HANDLE || sceneWidth == 0u ||
-      sceneHeight == 0u || imageIndex >= descriptorSets_.size() ||
-      imageIndex >= histogramBuffers_.size()) {
+      sceneHeight == 0u || imageIndex >= descriptorSets_.size()) {
     return;
   }
 
   const ExposureSettings settings = sanitizeExposureSettings(rawSettings);
-  auto& histogramBuffer = histogramBuffers_[imageIndex];
-  auto& exposureStateBuffer = exposureStateBuffer_;
-  const VkDescriptorSet descriptorSet = descriptorSets_[imageIndex];
-  if (histogramBuffer.buffer == VK_NULL_HANDLE ||
-      exposureStateBuffer.buffer == VK_NULL_HANDLE ||
-      descriptorSet == VK_NULL_HANDLE) {
+  if (settings.mode == container::gpu::kExposureModeManual) {
+    recordManualExposure(cmd, settings);
     return;
   }
+  auto& histogramBuffer = histogramBuffers_[imageIndex];
+  const VkDescriptorSet descriptorSet = descriptorSets_[imageIndex];
 
   constexpr VkDeviceSize kHistogramBufferSize =
       sizeof(uint32_t) * (kHistogramBinCount + 1u);
   vkCmdFillBuffer(cmd, histogramBuffer.buffer, 0, kHistogramBufferSize, 0);
 
-  VkMemoryBarrier fillBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  fillBarrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-  fillBarrier.dstAccessMask =
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
-                       &fillBarrier, 0, nullptr, 0, nullptr);
+  exposureBufferBarrier(cmd, histogramBuffer.buffer, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
   updateDescriptorSet(imageIndex, sceneColorView, sourceLayout);
 
@@ -143,13 +160,9 @@ void ExposureManager::dispatch(
                      sizeof(histogramPc), &histogramPc);
   vkCmdDispatch(cmd, (sceneWidth + 15u) / 16u, (sceneHeight + 15u) / 16u, 1);
 
-  VkMemoryBarrier adaptInputBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
-  adaptInputBarrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
-  adaptInputBarrier.dstAccessMask =
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
-  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                       VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
-                       &adaptInputBarrier, 0, nullptr, 0, nullptr);
+  exposureBufferBarrier(cmd, histogramBuffer.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
 
   ExposureAdaptPushConstants adaptPc{};
   adaptPc.binCount = kHistogramBinCount;
@@ -165,67 +178,95 @@ void ExposureManager::dispatch(
   adaptPc.deltaSeconds = kAssumedFrameDeltaSeconds;
   adaptPc.manualExposure = settings.manualExposure;
 
-  // The adapt shader owns percentile integration now. Keep the historical
-  // lowerSample/upperSample/includedSamples naming visible here so convention
-  // tests and future readers can find the CPU-to-GPU migration point.
+  // Wait for the preceding frame's tone mapper and snapshot transfer as well
+  // as its adaptation. This is GPU queue ordering across swapchain images.
+  exposureBufferBarrier(cmd, exposureStateBuffer_.buffer, kExposureHistoryStages,
+                       kExposureHistoryAccess, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, adaptPipeline_);
   vkCmdPushConstants(cmd, pipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                      sizeof(adaptPc), &adaptPc);
   vkCmdDispatch(cmd, 1, 1, 1);
 
-  // The tone mapper, the next adaptation dispatch and the fenced CPU readback
-  // all consume this shared state.
-  const VkBufferMemoryBarrier2 exposureStateReady{
-      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
-      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
-      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
-      .dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-                      VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-                      VK_PIPELINE_STAGE_2_HOST_BIT,
-      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT |
-                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
-                       VK_ACCESS_2_HOST_READ_BIT,
-      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-      .buffer = exposureStateBuffer.buffer,
-      .size = sizeof(ExposureStateData)};
-  const VkDependencyInfo exposureDependency{
-      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
-      .bufferMemoryBarrierCount = 1,
-      .pBufferMemoryBarriers = &exposureStateReady};
-  vkCmdPipelineBarrier2(cmd, &exposureDependency);
+  recordReadback(imageIndex, cmd);
+}
+
+void ExposureManager::recordManualExposure(VkCommandBuffer cmd,
+                                           const ExposureSettings& rawSettings) {
+  const ExposureSettings settings = sanitizeExposureSettings(rawSettings);
+  if (!isReady() || cmd == VK_NULL_HANDLE ||
+      settings.mode != container::gpu::kExposureModeManual) {
+    return;
+  }
+  const float seed = clampExposure(settings.manualExposure, settings);
+  if (hasManualSeed_ && manualSeedExposure_ == seed &&
+      manualSeedLuminance_ == settings.targetLuminance) {
+    return;
+  }
+  const ExposureStateData state{.exposure = seed,
+                                .averageLuminance = settings.targetLuminance,
+                                .targetExposure = seed,
+                                .initialized = 1.0f};
+  exposureBufferBarrier(cmd, exposureStateBuffer_.buffer, kExposureHistoryStages,
+                       kExposureHistoryAccess, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT);
+  vkCmdUpdateBuffer(cmd, exposureStateBuffer_.buffer, 0, sizeof(state), &state);
+  exposureBufferBarrier(cmd, exposureStateBuffer_.buffer, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT, kExposureHistoryStages,
+                       kExposureHistoryAccess);
+  recordedWrite_ = {.mode = HistoryWrite::Manual, .exposure = seed,
+                    .luminance = settings.targetLuminance};
+}
+
+void ExposureManager::recordReadback(uint32_t imageIndex, VkCommandBuffer cmd) {
+  auto& slot = readbacks_[imageIndex];
+  exposureBufferBarrier(cmd, exposureStateBuffer_.buffer, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+                       VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_TRANSFER_READ_BIT);
+  const VkBufferCopy copy{.size = sizeof(ExposureStateData)};
+  vkCmdCopyBuffer(cmd, exposureStateBuffer_.buffer, slot.buffer.buffer, 1, &copy);
+  exposureBufferBarrier(cmd, slot.buffer.buffer, VK_PIPELINE_STAGE_2_COPY_BIT,
+                       VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_HOST_BIT,
+                       VK_ACCESS_2_HOST_READ_BIT);
+  recordedWrite_ = {.mode = HistoryWrite::Automatic, .imageIndex = imageIndex};
+}
+
+void ExposureManager::onSubmitted() {
+  if (recordedWrite_.mode == HistoryWrite::Automatic) {
+    readbacks_[recordedWrite_.imageIndex].serial = ++nextReadbackSerial_;
+    hasManualSeed_ = false;
+  } else if (recordedWrite_.mode == HistoryWrite::Manual) {
+    hasManualSeed_ = true;
+    manualSeedExposure_ = recordedWrite_.exposure;
+    manualSeedLuminance_ = recordedWrite_.luminance;
+    // Copies taken before this manual seed no longer describe active exposure.
+    latestReadbackSerial_ = nextReadbackSerial_;
+  }
+  recordedWrite_ = {};
 }
 
 void ExposureManager::collectReadback(uint32_t imageIndex,
                                       const ExposureSettings& rawSettings) {
-  (void)imageIndex;
   const ExposureSettings settings = sanitizeExposureSettings(rawSettings);
   if (settings.mode == container::gpu::kExposureModeManual) {
     currentExposure_ = settings.manualExposure;
     averageLuminance_ = settings.targetLuminance;
     hasCurrentExposure_ = true;
-    ExposureStateData state{};
-    state.exposure = clampExposure(settings.manualExposure, settings);
-    state.averageLuminance = settings.targetLuminance;
-    state.targetExposure = state.exposure;
-    state.initialized = 1.0f;
-    if (exposureStateBuffer_.buffer != VK_NULL_HANDLE) {
-      SceneController::writeToBuffer(allocationManager_, exposureStateBuffer_,
-                                     &state, sizeof(state));
-    }
     return;
   }
 
-  if (exposureStateBuffer_.buffer != VK_NULL_HANDLE &&
-      exposureStateBuffer_.allocation != nullptr) {
+  if (imageIndex < readbacks_.size() && readbacks_[imageIndex].serial > latestReadbackSerial_) {
+    const auto& slot = readbacks_[imageIndex];
     if (vmaInvalidateAllocation(allocationManager_.memoryManager()->allocator(),
-                                exposureStateBuffer_.allocation, 0,
+                                slot.buffer.allocation, 0,
                                 sizeof(ExposureStateData)) != VK_SUCCESS) {
-      throw std::runtime_error("failed to invalidate exposure state buffer");
+      throw std::runtime_error("failed to invalidate exposure readback buffer");
     }
 
     const auto* state = static_cast<const ExposureStateData*>(
-        exposureStateBuffer_.allocation_info.pMappedData);
+        slot.buffer.allocation_info.pMappedData);
+    latestReadbackSerial_ = slot.serial;
     if (state != nullptr && state->initialized > 0.5f &&
         std::isfinite(state->exposure) &&
         std::isfinite(state->averageLuminance)) {
@@ -264,6 +305,8 @@ void ExposureManager::destroy() {
   pipelineManager_.destroyPipelineLayout(pipelineLayout_);
   pipelineManager_.destroyDescriptorSetLayout(setLayout_);
   hasCurrentExposure_ = false;
+  hasManualSeed_ = false;
+  recordedWrite_ = {};
 }
 
 void ExposureManager::createPipeline(const std::filesystem::path& shaderDir) {
@@ -305,6 +348,7 @@ void ExposureManager::resizeFrameResources(uint32_t descriptorSetCount) {
   std::vector<VkDescriptorSetLayout> layouts(imageCount, setLayout_);
   std::vector<VkDescriptorSet> sets(imageCount, VK_NULL_HANDLE);
   std::vector<container::gpu::AllocatedBuffer> histograms(imageCount);
+  std::vector<ReadbackSlot> readbacks(imageCount);
   VkDescriptorPool pool = pipelineManager_.createDescriptorPool(
       {{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount},
        {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2u}}, imageCount);
@@ -324,9 +368,18 @@ void ExposureManager::resizeFrameResources(uint32_t descriptorSetCount) {
           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
           VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
     }
+    for (auto& readback : readbacks) {
+      readback.buffer = allocationManager_.createBuffer(
+          sizeof(ExposureStateData), VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+          VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+          VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
+              VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    }
   } catch (...) {
     for (auto& histogram : histograms)
       destroyBufferIfAllocated(allocationManager_, histogram);
+    for (auto& readback : readbacks)
+      destroyBufferIfAllocated(allocationManager_, readback.buffer);
     pipelineManager_.destroyDescriptorPool(pool);
     throw;
   }
@@ -335,6 +388,7 @@ void ExposureManager::resizeFrameResources(uint32_t descriptorSetCount) {
   descriptorPool_ = pool;
   descriptorSets_.swap(sets);
   histogramBuffers_.swap(histograms);
+  readbacks_.swap(readbacks);
 }
 
 void ExposureManager::destroyFrameResources() {
@@ -344,6 +398,9 @@ void ExposureManager::destroyFrameResources() {
     destroyBufferIfAllocated(allocationManager_, histogramBuffer);
   }
   histogramBuffers_.clear();
+  for (auto& readback : readbacks_)
+    destroyBufferIfAllocated(allocationManager_, readback.buffer);
+  readbacks_.clear();
 }
 
 void ExposureManager::createExposureStateBuffer(
@@ -351,18 +408,21 @@ void ExposureManager::createExposureStateBuffer(
   destroyBufferIfAllocated(allocationManager_, buffer);
 
   buffer = allocationManager_.createBuffer(
-      sizeof(ExposureStateData), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-          VMA_ALLOCATION_CREATE_MAPPED_BIT);
+      sizeof(ExposureStateData), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+          VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 
   ExposureStateData initialState{};
   initialState.exposure = currentExposure_;
   initialState.averageLuminance = averageLuminance_;
   initialState.targetExposure = currentExposure_;
   initialState.initialized = 0.0f;
-  SceneController::writeToBuffer(allocationManager_, buffer,
-                                 &initialState, sizeof(initialState));
+  allocationManager_.executeStagedCommands([&](VkCommandBuffer cmd) {
+    vkCmdUpdateBuffer(cmd, buffer.buffer, 0, sizeof(initialState), &initialState);
+    exposureBufferBarrier(cmd, buffer.buffer, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT,
+                         VK_ACCESS_2_TRANSFER_WRITE_BIT, kExposureHistoryStages,
+                         kExposureHistoryAccess);
+  });
 }
 
 void ExposureManager::updateDescriptorSet(uint32_t imageIndex,

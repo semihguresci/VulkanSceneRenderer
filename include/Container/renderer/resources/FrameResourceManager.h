@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 #include <vector>
 
@@ -134,6 +135,8 @@ class FrameResourceManager {
   void destroy();
   void ensureTemporalAttachments();
 
+  // Supply the retired image for ordinary rendering. Omit it only when all
+  // descriptor readers have been retired or the sets have just been created.
   void updateDescriptorSets(std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
                             const container::gpu::AllocatedBuffer& objectBuffer,
                             VkImageView shadowAtlasView = VK_NULL_HANDLE,
@@ -147,16 +150,17 @@ class FrameResourceManager {
                             VkImageView brdfLutView       = VK_NULL_HANDLE,
                             VkSampler   envSampler        = VK_NULL_HANDLE,
                             VkSampler   brdfLutSampler    = VK_NULL_HANDLE,
-                            VkImageView aoTextureView     = VK_NULL_HANDLE,
+                            std::span<const VkImageView> aoTextureViews = {},
                             VkSampler   aoSampler         = VK_NULL_HANDLE,
-                            VkImageView bloomTextureView  = VK_NULL_HANDLE,
+                            std::span<const VkImageView> bloomTextureViews = {},
                             VkSampler   bloomSampler      = VK_NULL_HANDLE,
                             VkBuffer    tileGridBuffer    = VK_NULL_HANDLE,
                             VkDeviceSize tileGridBufferSize = 0,
                             std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers = {},
                             VkDeviceSize exposureStateBufferSize = 0,
                             std::span<const VkImageView> anisotropyViews = {},
-                            std::span<const VkImageView> diffuseTransmissionViews = {});
+                            std::span<const VkImageView> diffuseTransmissionViews = {},
+                            std::optional<uint32_t> retiredImage = std::nullopt);
 
   // Detached CPU preparation for deferred lighting bindings 23/24. Each span
   // is empty (the current normal-view fallback) or covers every frame. Views
@@ -216,9 +220,9 @@ class FrameResourceManager {
   void            ensureFallbackLocalShadowResources();
 
   struct DescriptorUpdateKey {
-    std::vector<VkBuffer> cameraBuffers{};
-    std::vector<VkBuffer> shadowUboBuffers{};
-    std::vector<VkBuffer> localShadowUboBuffers{};
+    VkBuffer cameraBuffer{VK_NULL_HANDLE};
+    VkBuffer shadowUboBuffer{VK_NULL_HANDLE};
+    VkBuffer localShadowUboBuffer{VK_NULL_HANDLE};
     VkImageView shadowAtlasView{VK_NULL_HANDLE};
     VkSampler   shadowSampler{VK_NULL_HANDLE};
     VkImageView localShadowAtlasView{VK_NULL_HANDLE};
@@ -234,10 +238,10 @@ class FrameResourceManager {
     VkSampler   bloomSampler{VK_NULL_HANDLE};
     VkBuffer    tileGridBuffer{VK_NULL_HANDLE};
     VkDeviceSize tileGridBufferSize{0};
-    std::vector<VkBuffer> exposureStateBuffers{};
+    VkBuffer exposureStateBuffer{VK_NULL_HANDLE};
     VkDeviceSize exposureStateBufferSize{0};
-    std::vector<VkImageView> anisotropyViews{};
-    std::vector<VkImageView> diffuseTransmissionViews{};
+    VkImageView anisotropyView{VK_NULL_HANDLE};
+    VkImageView diffuseTransmissionView{VK_NULL_HANDLE};
 
     bool operator==(const DescriptorUpdateKey&) const = default;
   };
@@ -279,8 +283,7 @@ class FrameResourceManager {
 
   std::vector<FrameResources> frames_;
   FrameResourceRegistry resourceRegistry_{};
-  DescriptorUpdateKey descriptorUpdateKey_{};
-  bool descriptorUpdateKeyValid_{false};
+  std::vector<std::optional<DescriptorUpdateKey>> descriptorUpdateKeys_{};
   // A retained token keeps this identity alive, preventing owner-address ABA.
   std::shared_ptr<const uint8_t> descriptorBindingOwner_{std::make_shared<const uint8_t>(0)};
   uint64_t descriptorBindingEpoch_{1};

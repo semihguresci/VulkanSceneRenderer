@@ -398,7 +398,7 @@ class CullGenerationGpu : public ::testing::Test {
       primary->scheduleStatsReadback(command, imageIndex);
     });
     ASSERT_TRUE(primary->occlusionDrawsValid(imageIndex));
-    primary->collectStats();
+    primary->collectStats(imageIndex);
     const auto stats = primary->cullStats();
     std::printf("OCCLUSION_SPHERE case=%s frustum=%u occlusion=%u expected=%u\n", name,
                 stats.frustumPassedCount, stats.occlusionPassedCount, uint32_t(visible));
@@ -529,6 +529,24 @@ TEST_F(CullGenerationGpu, SphereOcclusionKeepsPerspectiveExtremesAndNearPlaneInt
   ASSERT_NO_FATAL_FAILURE(generateHiZ(small, depth));
   checkOcclusion("orthographic-visible", orthographic, {.7f, 0, -1.f, .05f}, true);
   checkOcclusion("orthographic-occluded", orthographic, {.7f, 0, -2.f, .05f}, false);
+}
+
+TEST_F(CullGenerationGpu, StatsConsumeOnlyTheRetiredImage) {
+  allocation->executeStagedCommands([&](VkCommandBuffer command) {
+    primary->dispatchFrustumCull(command, 0, cameras[0].buffer, sizeof(CameraData),
+                                 uint32_t(oldCommands.size()));
+    primary->scheduleStatsReadback(command, 0);
+    primary->dispatchFrustumCull(command, 1, cameras[1].buffer, sizeof(CameraData), 0);
+    primary->scheduleStatsReadback(command, 1);
+  });
+  primary->collectStats(0);
+  EXPECT_EQ(primary->cullStats().totalInputCount, oldCommands.size());
+  EXPECT_EQ(primary->cullStats().frustumPassedCount, 1u);
+  primary->collectStats(1);
+  EXPECT_EQ(primary->cullStats().totalInputCount, 0u);
+  EXPECT_EQ(primary->cullStats().frustumPassedCount, 0u);
+  primary->collectStats(0);
+  EXPECT_EQ(primary->cullStats().frustumPassedCount, 0u);
 }
 
 TEST_F(CullGenerationGpu,PrimaryStagesRealOutputsAndPublishesWithoutCapacityGrowth) {
