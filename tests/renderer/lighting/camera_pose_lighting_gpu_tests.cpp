@@ -1,7 +1,17 @@
 #include "../scene/camera_generation_test_support.h"
 
 #include <Container/ecs/World.h>
+#include <Container/renderer/bim/BimManager.h>
 #include <Container/renderer/lighting/LightingManager.h>
+#include <fstream>
+
+namespace container::renderer {
+struct BimVisibilityGpuTestAccess {
+  static const auto& opaqueDraws(const BimManager& bim, uint32_t image) {
+    return bim.visibilityFrames_.at(image).draws[static_cast<size_t>(BimDrawCompactionSlot::OpaqueSingleSided)];
+  }
+};
+}
 
 namespace {
 using namespace container::renderer;
@@ -64,6 +74,216 @@ protected:
   }
   container::ecs::World world;uint32_t root{SceneGraph::kInvalidNode};std::unique_ptr<LightingManager> lighting;
 };
+
+class BimCompactionGpu : public CameraPoseLightingGpu {
+ protected:
+  void configureIndirectDraws(DeviceCreateInfo& create, VkPhysicalDeviceVulkan12Features& core) const override {
+    create.enabledFeatures.multiDrawIndirect = VK_TRUE;
+    create.enabledFeatures.drawIndirectFirstInstance = VK_TRUE;
+    core.drawIndirectCount = VK_TRUE;
+  }
+};
+
+TEST_F(CameraPoseLightingGpu, BimObjectUploadsPreserveOtherImageAndRestoreCanonicalTemporalState) {
+  BimManager bim(device, *allocation, *pipelines);
+  bim.resizeObjectFrames(2);
+  bim.loadModel((temp / "camera.glb").string(), 1.0f, *manager);
+  ASSERT_TRUE(bim.hasScene());
+  ASSERT_EQ(bim.objectBuffers().size(), 2u);
+  ASSERT_EQ(bim.objectData().size(), 1u);
+  EXPECT_NE(bim.objectBuffer(0), bim.objectBuffer(1));
+  const auto readObject = [&](uint32_t image) {
+    ObjectData result{};
+    const auto& buffer = bim.objectBuffers()[image];
+    EXPECT_NE(buffer.allocation_info.pMappedData, nullptr);
+    if (buffer.allocation_info.pMappedData)
+      std::memcpy(&result, buffer.allocation_info.pMappedData, sizeof(result));
+    return result;
+  };
+
+  const auto original = readObject(0);
+  auto translated = original.model;
+  translated[3].x += 2.0f;
+  const std::array updates{ObjectTransformUpdate{0, translated}};
+  ASSERT_TRUE(bim.setObjectTransforms(updates));
+  EXPECT_EQ(readObject(0).model, original.model);
+  bim.uploadObjectFrame(1);
+  EXPECT_EQ(readObject(0).model, original.model);
+  EXPECT_EQ(readObject(1).model, translated);
+
+  auto temporal = bim.objectData();
+  temporal[0].temporalInfo.x ^= 1u;
+  bim.uploadObjectFrame(1, temporal);
+  EXPECT_EQ(readObject(1).temporalInfo, temporal[0].temporalInfo);
+  bim.uploadObjectFrame(1);
+  EXPECT_EQ(readObject(1).temporalInfo, bim.objectData()[0].temporalInfo);
+  bim.uploadObjectFrame(0);
+  EXPECT_EQ(readObject(0).model, translated);
+
+  bim.resizeObjectFrames(3);
+  ASSERT_EQ(bim.objectBuffers().size(), 3u);
+  EXPECT_NE(bim.objectBuffer(1), bim.objectBuffer(2));
+  EXPECT_EQ(readObject(2).model, translated);
+}
+
+TEST_F(CameraPoseLightingGpu, BimOverlayGeometryRetiresReadersOnlyWhenReplacingLiveBuffers) {
+  BimManager bim(device, *allocation, *pipelines);
+  bim.loadModel((temp / "camera.glb").string(), 1.0f, *manager);
+  ASSERT_TRUE(bim.hasScene());
+
+  unsigned retirements = 0;
+  const BimManager::RetireOverlayReaders retireReaders = [&] { ++retirements; };
+  bim.clearSectionPlaneVisualGeometry(retireReaders);
+  bim.clearCoordinationMarkerGeometry(retireReaders);
+  bim.clearSectionClipCapGeometry(retireReaders);
+  EXPECT_EQ(retirements, 0u);
+
+  constexpr glm::vec4 plane{0, 1, 0, 0};
+  constexpr glm::vec3 color{0.1f, 0.2f, 0.3f};
+  ASSERT_TRUE(bim.rebuildSectionPlaneVisualGeometry(plane, 5.0f, color, retireReaders));
+  const auto planeBuffer = bim.sectionPlaneVisualDrawData().vertexSlice.buffer;
+
+  BimCoordinationOverlayResult markers;
+  markers.markers.push_back({.position = {0, 1, 1}, .primaryObjectIndex = 0});
+  ASSERT_TRUE(bim.rebuildCoordinationMarkerGeometry(markers, retireReaders));
+  const auto markerBuffer = bim.coordinationMarkerDrawData().indexSlice.buffer;
+  ASSERT_TRUE(bim.rebuildSectionPlaneVisualGeometry(plane, 5.0f, color, retireReaders));
+  ASSERT_TRUE(bim.rebuildCoordinationMarkerGeometry(markers, retireReaders));
+  EXPECT_EQ(bim.sectionPlaneVisualDrawData().vertexSlice.buffer, planeBuffer);
+  EXPECT_EQ(bim.coordinationMarkerDrawData().indexSlice.buffer, markerBuffer);
+  EXPECT_EQ(retirements, 0u);
+
+  const BimManager::RetireOverlayReaders fail = [] { throw std::runtime_error("retirement failed"); };
+  EXPECT_THROW(bim.rebuildSectionPlaneVisualGeometry(plane, 6.0f, color, fail), std::runtime_error);
+  EXPECT_EQ(bim.sectionPlaneVisualDrawData().vertexSlice.buffer, planeBuffer);
+  EXPECT_THROW(bim.clearCoordinationMarkerGeometry(fail), std::runtime_error);
+  EXPECT_EQ(bim.coordinationMarkerDrawData().indexSlice.buffer, markerBuffer);
+
+  ASSERT_TRUE(bim.rebuildSectionPlaneVisualGeometry(plane, 6.0f, color, retireReaders));
+  bim.clearCoordinationMarkerGeometry(retireReaders);
+  bim.clearCoordinationMarkerGeometry(retireReaders);
+  bim.clearSectionPlaneVisualGeometry(retireReaders);
+  EXPECT_EQ(retirements, 3u);
+}
+
+TEST_F(BimCompactionGpu, KeepsImageOutputsAndPausedResidency) {
+  if (!device->enabledFeatures().multiDrawIndirect ||
+      !device->enabledFeatures().drawIndirectFirstInstance ||
+      !device->enabledVulkan12Features().drawIndirectCount)
+    GTEST_SKIP() << "BIM compaction requires indirect counts and first instances";
+
+  const auto path = temp / "two-elements.bim";
+  std::ofstream fixture(path);
+  fixture << R"json({"schema_version":"1.1.0",
+    "meshes":[{"mesh_id":1,"coordinates":[0,0,0, 2,0,0, 0,0,2],"indices":[0,1,2]}],
+    "elements":[{"mesh_id":1,"guid":"wall","type":"IfcWall"},
+                {"mesh_id":1,"guid":"slab","type":"IfcSlab","vector":{"x":3,"y":0,"z":0}}]})json";
+  fixture.close();
+  ASSERT_TRUE(fixture);
+  BimManager bim(device, *allocation, *pipelines);
+  bim.resizeObjectFrames(2);
+  bim.createMeshletResidencyResources(CONTAINER_LIGHTING_SHADER_ROOT);
+  bim.loadModel(path.string(), 1.0f, *manager);
+  ASSERT_TRUE(bim.hasScene());
+  ASSERT_GE(bim.objectData().size(), 2u);
+  ASSERT_TRUE(bim.meshletResidencyStats().computeReady);
+
+  using Indirect = container::gpu::GpuDrawIndexedIndirectCommand;
+  constexpr auto stride = sizeof(uint32_t) + 2 * sizeof(Indirect);
+  constexpr size_t resultCount = 6;
+  auto readback = allocation->createBuffer(resultCount * stride, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+      VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  struct ReadbackCleanup {
+    AllocationManager& allocation;
+    AllocatedBuffer& buffer;
+    ~ReadbackCleanup() { allocation.destroyBuffer(buffer); }
+  } cleanup{*allocation, readback};
+  const auto allocator = allocation->memoryManager()->allocator();
+  auto commands = device->raii().allocateCommandBuffers(
+      vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, 2));
+  const std::vector<DrawCommand> draws{{.objectIndex = 0, .indexCount = 3},
+                                       {.objectIndex = 1, .indexCount = 3}};
+  const auto readDraws = [&](const vk::raii::CommandBuffer& cmd, uint32_t image, size_t result) {
+    const auto& slot = BimVisibilityGpuTestAccess::opaqueDraws(bim, image);
+    const vk::MemoryBarrier2 toCopy(vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eClear,
+        vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eTransferWrite,
+        vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead);
+    vk::DependencyInfo dependency;
+    dependency.setMemoryBarriers(toCopy);
+    cmd.pipelineBarrier2(dependency);
+    cmd.copyBuffer(slot.countBuffer.buffer, readback.buffer, vk::BufferCopy(0, result * stride, sizeof(uint32_t)));
+    cmd.copyBuffer(slot.indirectBuffer.buffer, readback.buffer,
+        vk::BufferCopy(0, result * stride + sizeof(uint32_t), 2 * sizeof(Indirect)));
+    const vk::MemoryBarrier2 toHost(vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferWrite,
+        vk::PipelineStageFlagBits2::eHost, vk::AccessFlagBits2::eHostRead);
+    dependency.setMemoryBarriers(toHost);
+    cmd.pipelineBarrier2(dependency);
+  };
+  const auto record = [&](uint32_t image, const BimDrawFilter& filter,
+                         const BimMeshletResidencySettings& residency, size_t result) {
+    constexpr auto slot = BimDrawCompactionSlot::OpaqueSingleSided;
+    bim.updateMeshletResidencySettings(residency);
+    bim.updateVisibilityFilterSettings(filter, image);
+    auto& cmd = commands[image];
+    cmd.reset();
+    cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    bim.prepareDrawCompaction(slot, draws);
+    bim.recordMeshletResidencyUpdate(*cmd, cameras[image].buffer, sizeof(CameraData),
+                                   bim.objectBuffer(image), bim.objectBufferSize());
+    bim.recordVisibilityFilterUpdate(*cmd);
+    bim.recordDrawCompactionUpdate(*cmd);
+    EXPECT_TRUE(bim.drawCompactionReady(slot, image));
+    readDraws(cmd, image, result);
+    cmd.end();
+  };
+  const auto submit = [&](std::span<const vk::CommandBuffer> handles) {
+    const vk::raii::Queue queue(device->raii(), device->graphicsQueue());
+    vk::SubmitInfo submitInfo;
+    submitInfo.setCommandBuffers(handles);
+    queue.submit(submitInfo, nullptr);
+    queue.waitIdle();
+  };
+  const auto check = [&](size_t index, uint32_t expectedCount, uint32_t expectedObject) {
+    ASSERT_EQ(vmaInvalidateAllocation(allocator, readback.allocation, 0, resultCount * stride), VK_SUCCESS);
+    ASSERT_NE(readback.allocation_info.pMappedData, nullptr);
+    const auto* bytes = static_cast<const std::byte*>(readback.allocation_info.pMappedData) + index * stride;
+    uint32_t count{};
+    Indirect draw{};
+    std::memcpy(&count, bytes, sizeof(count));
+    std::memcpy(&draw, bytes + sizeof(count), sizeof(draw));
+    EXPECT_EQ(count, expectedCount);
+    if (expectedCount == 1) EXPECT_EQ(draw.firstInstance, expectedObject);
+  };
+
+  BimDrawFilter isolateSlab{};
+  isolateSlab.isolateSelection = true;
+  isolateSlab.selectedObjectIndex = 1;
+  const BimMeshletResidencySettings forceResident{.autoLod = false, .forceResident = true};
+  const BimMeshletResidencySettings paused{.autoLod = false, .pauseStreaming = true};
+  const BimMeshletResidencySettings budgetOne{.autoLod = false, .drawBudgetEnabled = true,
+      .keepSelectedResident = false, .drawBudgetMaxObjects = 1};
+  record(0, isolateSlab, forceResident, 0);
+  record(1, {}, paused, 1);
+  const std::array both{*commands[0], *commands[1]};
+  submit(both);
+  check(0, 1, 1);
+  check(1, 2, 0);
+  record(0, {}, budgetOne, 2);
+  // The other image must consume the latest residency result while paused.
+  record(1, {}, paused, 3);
+  submit(both);
+  check(2, 1, 0);
+  check(3, 1, 0);
+
+  // The second residency dispatch must wait for the first image's compaction
+  // to read the shared table before replacing it with the new budget result.
+  record(0, isolateSlab, forceResident, 4);
+  record(1, {}, budgetOne, 5);
+  submit(both);
+  check(4, 1, 1);
+  check(5, 1, 0);
+}
 
 TEST_F(CameraPoseLightingGpu, CandidateLightsBoundsAndMappedFramesAreIsolatedThenCommitInExactProspectivePhase) {
   ASSERT_EQ(manager->authoredPointLights().size(),2u);ASSERT_EQ(manager->authoredDirectionalLights().size(),1u);ASSERT_EQ(manager->authoredAreaLights().size(),1u);

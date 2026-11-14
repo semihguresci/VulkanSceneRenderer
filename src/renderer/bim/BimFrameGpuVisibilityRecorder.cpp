@@ -6,14 +6,16 @@
 namespace container::renderer {
 
 void prepareBimFrameGpuVisibility(BimManager *manager) {
-  prepareBimFrameGpuVisibility(manager, FrameBimResources{});
+  prepareBimFrameGpuVisibility(manager, FrameBimResources{}, 0);
 }
 
 void prepareBimFrameGpuVisibility(BimManager *manager,
-                                  const FrameBimResources &bim) {
+                                  const FrameBimResources &bim,
+                                  uint32_t imageIndex) {
   if (manager == nullptr) {
     return;
   }
+  manager->beginVisibilityFrame(imageIndex);
 
   BimDrawCompactionPlanInputs inputs =
       makeBimDrawCompactionPlanInputs(*manager);

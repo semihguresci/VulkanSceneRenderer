@@ -133,7 +133,7 @@ bool drawShadowList(VkCommandBuffer cmd, VkPipelineLayout layout,
     if (inputs.bimManager != nullptr &&
         pipelineForShadowPassRoute(route.pipeline, inputs.pipelines) !=
             VK_NULL_HANDLE &&
-        inputs.bimManager->drawCompactionReady(slot)) {
+        inputs.bimManager->drawCompactionReady(slot, inputs.imageIndex)) {
       return true;
     }
   }
@@ -211,14 +211,14 @@ bool recordBimGpuRoutes(VkCommandBuffer cmd,
     const VkPipeline pipeline =
         pipelineForShadowPassRoute(route.pipeline, inputs.pipelines);
     if (inputs.bimManager == nullptr || pipeline == VK_NULL_HANDLE ||
-        !inputs.bimManager->drawCompactionReady(slot)) {
+        !inputs.bimManager->drawCompactionReady(slot, inputs.imageIndex)) {
       continue;
     }
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
     pushConstants.objectIndex = kIndirectObjectIndex;
     pushShadowConstants(cmd, inputs.pipelineLayout, pushConstants);
-    inputs.bimManager->drawCompacted(slot, cmd);
+    inputs.bimManager->drawCompacted(slot, cmd, inputs.imageIndex);
     recorded = true;
   }
   return recorded;
@@ -263,7 +263,8 @@ bool recordShadowCascadePassBodyCommands(
             .rasterConstantBias = inputs.rasterConstantBias,
             .rasterSlopeBias = inputs.rasterSlopeBias,
             .sceneGpuIndirect = inputs.sceneGpuIndirect,
-            .bimManager = inputs.bimManager});
+            .bimManager = inputs.bimManager,
+            .imageIndex = inputs.imageIndex});
 }
 
 } // namespace

@@ -432,6 +432,7 @@ ShadowCascadeFramePassRecorder::cascadePassRecordInputs(
   inputs.rasterSlopeBias = params.shadows.shadowSettings.rasterSlopeBias;
   inputs.sceneGpuIndirect = shadowPassGpuIndirectBuffers(params, cascadeIndex);
   inputs.bimManager = params.services.bimManager;
+  inputs.imageIndex = params.runtime.imageIndex;
 
   if (cascadeIndex >= kShadowCascadeCount) {
     return inputs;

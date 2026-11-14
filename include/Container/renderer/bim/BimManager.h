@@ -616,9 +616,10 @@ public:
   void setLoadProgressCallback(std::function<void(std::string_view)> callback);
   void clear();
   void createMeshletResidencyResources(const std::filesystem::path &shaderDir);
+  void beginVisibilityFrame(uint32_t imageIndex);
   void
   updateMeshletResidencySettings(const BimMeshletResidencySettings &settings);
-  void updateVisibilityFilterSettings(const BimDrawFilter &filter);
+  void updateVisibilityFilterSettings(const BimDrawFilter &filter, uint32_t imageIndex);
   void prepareDrawCompaction(BimDrawCompactionSlot slot,
                              const std::vector<DrawCommand> &commands);
   void prepareDrawCompaction(const std::vector<DrawCommand> &commands);
@@ -629,6 +630,7 @@ public:
   void recordVisibilityFilterUpdate(VkCommandBuffer cmd);
   void recordDrawCompactionUpdate(VkCommandBuffer cmd);
   void drawCompacted(BimDrawCompactionSlot slot, VkCommandBuffer cmd) const;
+  void drawCompacted(BimDrawCompactionSlot slot, VkCommandBuffer cmd, uint32_t imageIndex) const;
   void drawCompactedOpaqueSingleSided(VkCommandBuffer cmd) const;
 
   [[nodiscard]] bool hasScene() const;
@@ -667,16 +669,21 @@ public:
       const BimCoordinationOverlayBuildOptions &options,
       std::span<const BimCoordinationOverlayClashPair> clashPairs = {},
       std::span<const BimCoordinationOverlayIssuePin> issuePins = {}) const;
+  // A live overlay may be referenced by older graphics submissions. The
+  // callback retires those readers before replacing a published buffer.
+  // An empty callback is valid when the caller already retired all readers.
+  using RetireOverlayReaders = std::function<void()>;
   bool rebuildCoordinationMarkerGeometry(
-      const BimCoordinationOverlayResult &overlay, float markerRadius = 0.35f);
-  void clearCoordinationMarkerGeometry();
+      const BimCoordinationOverlayResult &overlay,
+      const RetireOverlayReaders& retireReaders, float markerRadius = 0.35f);
+  void clearCoordinationMarkerGeometry(const RetireOverlayReaders& retireReaders);
   [[nodiscard]] const BimCoordinationMarkerDrawData &
   coordinationMarkerDrawData() const {
     return coordinationMarkerDrawData_;
   }
   bool rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
-                                         glm::vec3 color);
-  void clearSectionPlaneVisualGeometry();
+                                         glm::vec3 color, const RetireOverlayReaders& retireReaders);
+  void clearSectionPlaneVisualGeometry(const RetireOverlayReaders& retireReaders);
   [[nodiscard]] const BimSectionPlaneVisualDrawData &
   sectionPlaneVisualDrawData() const {
     return sectionPlaneVisualDrawData_;
@@ -753,14 +760,14 @@ public:
   }
   [[nodiscard]] const container::gpu::AllocatedBuffer &
   visibilityMaskBuffer() const {
-    return visibilityMaskBuffer_;
+    return visibilityFrame().mask;
   }
   [[nodiscard]] const BimVisibilityFilterStats &visibilityFilterStats() const {
     return visibilityFilterStats_;
   }
   [[nodiscard]] bool visibilityMaskReadyForDrawCompaction() const;
   [[nodiscard]] const BimDrawCompactionStats &drawCompactionStats() const {
-    return drawCompactionSlots_[static_cast<size_t>(
+    return visibilityFrame().draws[static_cast<size_t>(
                                     BimDrawCompactionSlot::OpaqueSingleSided)]
         .stats;
   }
@@ -770,6 +777,7 @@ public:
     return drawCompactionReady(BimDrawCompactionSlot::OpaqueSingleSided);
   }
   [[nodiscard]] bool drawCompactionReady(BimDrawCompactionSlot slot) const;
+  [[nodiscard]] bool drawCompactionReady(BimDrawCompactionSlot slot, uint32_t imageIndex) const;
   [[nodiscard]] BimDrawBudgetLodStats
   drawBudgetLodStats(const BimDrawFilter &filter) const;
   [[nodiscard]] bool objectMatchesFilter(uint32_t objectIndex,
@@ -779,12 +787,17 @@ public:
   [[nodiscard]] uint64_t objectDataRevision() const {
     return objectDataRevision_;
   }
-  [[nodiscard]] VkBuffer objectBuffer() const { return objectBuffer_.buffer; }
+  // Resize after retiring every reader. An upload only changes the retired
+  // swapchain image selected by the caller.
+  void resizeObjectFrames(uint32_t imageCount);
+  void uploadObjectFrame(uint32_t imageIndex,
+      std::span<const container::gpu::ObjectData> temporalObjects = {});
+  [[nodiscard]] VkBuffer objectBuffer(uint32_t imageIndex) const {
+    return imageIndex < objectBuffers_.size() ? objectBuffers_[imageIndex].buffer : VK_NULL_HANDLE;
+  }
   [[nodiscard]] VkDeviceSize objectBufferSize() const;
-
-  [[nodiscard]] const container::gpu::AllocatedBuffer &
-  objectAllocatedBuffer() const {
-    return objectBuffer_;
+  [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> objectBuffers() const {
+    return objectBuffers_;
   }
 
   [[nodiscard]] const std::vector<DrawCommand> &opaqueDrawCommands() const {
@@ -847,8 +860,9 @@ public:
   [[nodiscard]] bool hasFloorPlanOverlay() const {
     return floorPlanGround_.valid() || floorPlanSourceElevation_.valid();
   }
-  bool rebuildSectionClipCapGeometry(const BimSectionCapBuildOptions &options);
-  void clearSectionClipCapGeometry();
+  bool rebuildSectionClipCapGeometry(const BimSectionCapBuildOptions &options,
+                                     const RetireOverlayReaders& retireReaders);
+  void clearSectionClipCapGeometry(const RetireOverlayReaders& retireReaders);
   [[nodiscard]] const BimSectionClipCapDrawData &
   sectionClipCapDrawData() const {
     return sectionClipCapDrawData_;
@@ -871,6 +885,7 @@ public:
       uint32_t objectIndex, std::vector<DrawCommand> &outCommands) const;
 
 private:
+  friend struct BimVisibilityGpuTestAccess;
   [[nodiscard]] std::vector<uint32_t> changedTransformObjects(
       std::span<const container::gpu::ObjectTransformUpdate> updates) const;
   struct MeshRange {
@@ -915,7 +930,6 @@ private:
       glm::vec4 sectionPlane) const;
   void uploadGeometry(std::span<const container::geometry::Vertex> vertices,
                       std::span<const uint32_t> indices);
-  void uploadObjects();
   void uploadMeshletResidencyBuffers();
   void uploadVisibilityFilterBuffers();
   void destroyMeshletResidencyBuffers();
@@ -929,11 +943,13 @@ private:
   void createVisibilityFilterResources(const std::filesystem::path &shaderDir);
   void destroyVisibilityFilterComputeResources();
   void writeVisibilityFilterDescriptorSet();
+  void resizeVisibilityFrames(uint32_t imageCount);
   void createDrawCompactionResources(const std::filesystem::path &shaderDir);
   void destroyDrawCompactionBuffers();
   void destroyDrawCompactionComputeResources();
   void destroyDrawCompactionBuffers(BimDrawCompactionSlotResources &slot);
   [[nodiscard]] bool drawCompactionSupported() const;
+  [[nodiscard]] bool visibilityMaskReadyForDrawCompaction(uint32_t imageIndex) const;
   void invalidateDrawCompactionOutputs(bool requestDispatch);
   void ensureDrawCompactionCapacity(BimDrawCompactionSlot slot,
                                     size_t inputDrawCount,
@@ -957,9 +973,17 @@ private:
   container::gpu::BufferSlice indexSlice_{};
   container::gpu::AllocatedBuffer vertexBuffer_{};
   container::gpu::AllocatedBuffer indexBuffer_{};
-  container::gpu::AllocatedBuffer objectBuffer_{};
+  struct ObjectSnapshot {
+    uint64_t revision{};
+    bool temporal{};
+  };
+  std::vector<container::gpu::AllocatedBuffer> objectBuffers_;
+  std::vector<ObjectSnapshot> objectSnapshots_;
+  std::vector<uint64_t> objectRowRevisions_;
+  uint32_t objectFrameCount_{1};
   size_t objectBufferCapacity_{0};
   uint64_t objectDataRevision_{0};
+  uint64_t fullObjectRevision_{0};
   std::unique_ptr<BimMetadataCatalog> metadataCatalog_{};
   std::unique_ptr<BimMetadataIndex> metadataIndex_{};
   std::unique_ptr<BimDrawFilterState> drawFilterState_{};
@@ -1002,39 +1026,48 @@ private:
   container::gpu::AllocatedBuffer meshletResidencyBuffer_{};
   BimMeshletResidencyStats meshletResidencyStats_{};
   VkDescriptorSetLayout meshletResidencySetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool meshletResidencyDescriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet meshletResidencyDescriptorSet_{VK_NULL_HANDLE};
   VkPipelineLayout meshletResidencyPipelineLayout_{VK_NULL_HANDLE};
   container::gpu::ComputePipeline meshletResidencyPipeline_{};
   BimMeshletResidencySettings meshletResidencySettings_{};
-  VkBuffer meshletResidencyCameraBuffer_{VK_NULL_HANDLE};
-  VkDeviceSize meshletResidencyCameraBufferSize_{0};
-  VkBuffer meshletResidencyObjectBuffer_{VK_NULL_HANDLE};
-  VkDeviceSize meshletResidencyObjectBufferSize_{0};
-  bool meshletResidencyDescriptorsDirty_{false};
   bool meshletResidencyDispatchPending_{false};
+  uint64_t meshletResidencyRevision_{};
   std::vector<BimVisibilityGpuObjectMetadata> visibilityFilterMetadata_{};
   container::gpu::AllocatedBuffer visibilityFilterMetadataBuffer_{};
-  container::gpu::AllocatedBuffer visibilityMaskBuffer_{};
   BimVisibilityFilterPushConstants visibilityFilterSettings_{};
   BimVisibilityFilterStats visibilityFilterStats_{};
   VkDescriptorSetLayout visibilityFilterSetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool visibilityFilterDescriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet visibilityFilterDescriptorSet_{VK_NULL_HANDLE};
   VkPipelineLayout visibilityFilterPipelineLayout_{VK_NULL_HANDLE};
   container::gpu::ComputePipeline visibilityFilterPipeline_{};
-  bool visibilityFilterDescriptorsDirty_{false};
-  bool visibilityFilterDispatchPending_{false};
-  bool visibilityFilterMaskCurrent_{false};
-  bool visibilityFilterMaskAllVisible_{false};
-  std::array<BimDrawCompactionSlotResources, kBimDrawCompactionSlotCount>
-      drawCompactionSlots_{};
   VkDescriptorSetLayout drawCompactionSetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool drawCompactionDescriptorPool_{VK_NULL_HANDLE};
-  std::array<VkDescriptorSet, kBimDrawCompactionSlotCount>
-      drawCompactionDescriptorSets_{};
   VkPipelineLayout drawCompactionPipelineLayout_{VK_NULL_HANDLE};
   container::gpu::ComputePipeline drawCompactionPipeline_{};
+  struct VisibilityFrame {
+    VkDescriptorSet residencySet{};
+    VkDescriptorSet filterSet{};
+    std::array<VkDescriptorSet, kBimDrawCompactionSlotCount> drawSets{};
+    std::array<BimDrawCompactionSlotResources, kBimDrawCompactionSlotCount> draws{};
+    container::gpu::AllocatedBuffer mask{};
+    VkBuffer camera{};
+    VkBuffer objects{};
+    VkDeviceSize cameraBytes{};
+    VkDeviceSize objectBytes{};
+    uint64_t maskRevision{};
+    uint64_t compactionResidencyRevision{};
+    bool residencyDescriptorsDirty{true};
+    bool filterDescriptorsDirty{true};
+    bool filterDispatchPending{};
+    bool maskCurrent{};
+    bool maskAllVisible{};
+  };
+  // The frame recorder selects one row before recording starts and joins
+  // secondary workers before advancing this CPU-only recording index.
+  VisibilityFrame& visibilityFrame() noexcept { return visibilityFrames_[visibilityImage_]; }
+  const VisibilityFrame& visibilityFrame() const noexcept { return visibilityFrames_[visibilityImage_]; }
+  void destroyVisibilityFrames() noexcept;
+  void releaseVisibilityFrames(std::vector<VisibilityFrame>& frames) noexcept;
+  std::vector<VisibilityFrame> visibilityFrames_{1};
+  uint32_t visibilityImage_{};
+  VkDescriptorPool visibilityDescriptorPool_{};
   BimFloorPlanOverlayData floorPlanGround_{};
   BimFloorPlanOverlayData floorPlanSourceElevation_{};
   BimSectionClipCapDrawData sectionClipCapDrawData_{};

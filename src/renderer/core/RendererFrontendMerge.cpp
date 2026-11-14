@@ -379,7 +379,7 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
       sceneState_.rootNode,nextImported->merge(manager.publishedAuthoredSceneLights(),state.lightEdits),imageCount);
   manager.updateDescriptorSets(buffers_.cameras,controller.objectBuffers());
   if(subs_.bimManager && subs_.bimManager->hasScene())
-    manager.updateAuxiliaryDescriptorSets(buffers_.cameras,subs_.bimManager->objectAllocatedBuffer());
+    manager.updateAuxiliaryDescriptorSets(buffers_.cameras,subs_.bimManager->objectBuffers());
 
   std::unique_ptr<GltfDeformationPass> deformation;
   const auto* deformed=controller.deformationScene();

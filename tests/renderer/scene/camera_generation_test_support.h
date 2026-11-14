@@ -67,6 +67,7 @@ GltfCameraProjectionPatch perspective(double fov=.95,double near=.25) {
 class CameraProjectionGenerationGpu:public ::testing::Test {
  protected:
   virtual const char* gpuEnvironment() const noexcept { return "CONTAINER_RUN_GPU_CAMERA_PROJECTIONS"; }
+  virtual void configureIndirectDraws(DeviceCreateInfo&, VkPhysicalDeviceVulkan12Features&) const {}
   static VKAPI_ATTR VkBool32 VKAPI_CALL debugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity,
       VkDebugUtilsMessageTypeFlagsEXT,const VkDebugUtilsMessengerCallbackDataEXT* data,void* user) {
     if(severity&VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT) {++static_cast<CameraProjectionGenerationGpu*>(user)->errors;std::fprintf(stderr,"%s\n",data->pMessage);}return VK_FALSE;
@@ -88,6 +89,7 @@ class CameraProjectionGenerationGpu:public ::testing::Test {
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};v12.bufferDeviceAddress=VK_TRUE;v12.runtimeDescriptorArray=VK_TRUE;
     v12.descriptorBindingPartiallyBound=VK_TRUE;v12.shaderSampledImageArrayNonUniformIndexing=VK_TRUE;
     v12.shaderStorageBufferArrayNonUniformIndexing=VK_TRUE;
+    configureIndirectDraws(info, v12);
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     v13.synchronization2=VK_TRUE;v13.pNext=&v12;info.next=&v13;
     device=std::make_shared<VulkanDevice>(*instance,raw,info);pool=vk::raii::CommandPool(device->raii(),vk::CommandPoolCreateInfo(

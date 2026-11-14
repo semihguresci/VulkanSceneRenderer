@@ -300,8 +300,8 @@ bool RendererFrontend::publishCameraViewPose(CameraViewPosePublication& publicat
   sceneLightEdits[manager.selectedScene()]=std::make_shared<SceneLightEdits>(edits);
   auto sceneBindings=manager.prepareSceneBindings();
   if(subs_.bimManager && subs_.bimManager->hasScene()) {
-    const auto object=subs_.bimManager->objectAllocatedBuffer();
-    sceneBindings.prepareDescriptorFrames(buffers_.cameras,nextController.objectBuffers(),std::span(&object,1));
+    sceneBindings.prepareDescriptorFrames(buffers_.cameras,nextController.objectBuffers(),
+        subs_.bimManager->objectBuffers());
   } else sceneBindings.prepareDescriptorFrames(buffers_.cameras,nextController.objectBuffers());
 
   std::unique_ptr<GltfDeformationPass> deformation;

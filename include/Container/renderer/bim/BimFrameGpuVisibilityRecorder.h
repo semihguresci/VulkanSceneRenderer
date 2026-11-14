@@ -18,7 +18,8 @@ struct BimFrameGpuVisibilityRecordInputs {
 
 void prepareBimFrameGpuVisibility(BimManager *manager);
 void prepareBimFrameGpuVisibility(BimManager *manager,
-                                  const FrameBimResources &bim);
+                                  const FrameBimResources &bim,
+                                  uint32_t imageIndex);
 
 [[nodiscard]] bool recordBimFrameGpuVisibilityCommands(
     const BimFrameGpuVisibilityRecordInputs &inputs);

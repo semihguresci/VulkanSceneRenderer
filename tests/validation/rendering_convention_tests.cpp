@@ -9439,7 +9439,7 @@ TEST(RenderingConventionTests, BimMeshletLodStreamingMetadataIsSurfaced) {
   EXPECT_TRUE(contains(bimManagerHeader, "OpaqueDoubleSided"));
   EXPECT_TRUE(contains(bimManagerHeader, "NativePointOpaque"));
   EXPECT_TRUE(contains(bimManagerHeader, "NativeCurveTransparent"));
-  EXPECT_TRUE(contains(bimManagerHeader, "drawCompactionSlots_"));
+  EXPECT_TRUE(contains(bimManagerHeader, "struct VisibilityFrame"));
   EXPECT_TRUE(contains(bimManagerHeader, "computeReady"));
   EXPECT_TRUE(contains(bimManagerHeader, "dispatchPending"));
   EXPECT_TRUE(contains(bimManagerHeader, "createMeshletResidencyResources"));
@@ -9477,7 +9477,7 @@ TEST(RenderingConventionTests, BimMeshletLodStreamingMetadataIsSurfaced) {
   EXPECT_TRUE(contains(bimManager, "createVisibilityFilterResources"));
   EXPECT_TRUE(contains(bimManager, "writeVisibilityFilterDescriptorSet"));
   EXPECT_TRUE(contains(bimManager, "sameVisibilityFilterSettings"));
-  EXPECT_TRUE(contains(bimManager, "visibilityFilterMaskCurrent_"));
+  EXPECT_TRUE(contains(bimManager, "maskRevision"));
   EXPECT_TRUE(contains(bimManager, "invalidateDrawCompactionOutputs"));
   EXPECT_TRUE(contains(bimManager, "writeMeshletResidencyDescriptorSet"));
   EXPECT_TRUE(contains(bimManager, "createDrawCompactionResources"));
@@ -9485,9 +9485,9 @@ TEST(RenderingConventionTests, BimMeshletLodStreamingMetadataIsSurfaced) {
   EXPECT_TRUE(contains(bimManager, "createComputePipeline"));
   EXPECT_TRUE(contains(bimManager, "vkCmdDispatch"));
   EXPECT_TRUE(contains(bimManager, "vkCmdDrawIndexedIndirectCount"));
-  EXPECT_TRUE(contains(bimManager, "drawCompactionSlots_"));
-  EXPECT_TRUE(contains(bimManager, "drawCompactionDescriptorSets_"));
-  EXPECT_TRUE(contains(bimManager, "visibilityMaskBuffer_"));
+  EXPECT_TRUE(contains(bimManager, "frame.draws"));
+  EXPECT_TRUE(contains(bimManager, "frame.drawSets"));
+  EXPECT_TRUE(contains(bimManager, "frame.mask"));
   EXPECT_TRUE(contains(bimManager, "visibilityFilterSettings_"));
   EXPECT_TRUE(contains(bimManager, "cameraBuffer"));
   EXPECT_TRUE(contains(bimManager, "objectBuffer"));
@@ -9549,7 +9549,7 @@ TEST(RenderingConventionTests, BimMeshletLodStreamingMetadataIsSurfaced) {
   EXPECT_TRUE(
       contains(shadowFramePassRecorder, "usesGpuFilteredBimMeshShadowPath"));
   EXPECT_TRUE(contains(shadowPassRecorder, "recordBimGpuRoutes"));
-  EXPECT_TRUE(contains(shadowPassRecorder, "drawCompactionReady(slot)"));
+  EXPECT_TRUE(contains(shadowPassRecorder, "drawCompactionReady(slot, inputs.imageIndex)"));
   EXPECT_TRUE(contains(shadowPassRecorder,
                        "BimDrawCompactionSlot::OpaqueWindingFlipped"));
   EXPECT_TRUE(
@@ -9700,8 +9700,8 @@ TEST(RenderingConventionTests, BimGpuVisibilityFeedsShadowCasterSlots) {
 
   EXPECT_TRUE(
       contains(shadowPassRecorder, "bimDrawCompactionSlot(route.slot)"));
-  EXPECT_TRUE(contains(shadowPassRecorder, "drawCompactionReady(slot)"));
-  EXPECT_TRUE(contains(shadowPassRecorder, "drawCompacted(slot, cmd)"));
+  EXPECT_TRUE(contains(shadowPassRecorder, "drawCompactionReady(slot, inputs.imageIndex)"));
+  EXPECT_TRUE(contains(shadowPassRecorder, "drawCompacted(slot, cmd, inputs.imageIndex)"));
   EXPECT_TRUE(
       contains(shadowPassRecorder, "BimDrawCompactionSlot::OpaqueSingleSided"));
   EXPECT_TRUE(contains(shadowPassRecorder,

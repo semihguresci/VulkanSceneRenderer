@@ -743,8 +743,7 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
   const auto descriptorSet=[&](uint32_t image) {return material?material->descriptorSet(image):sceneBindings->descriptorSet(image);};
   const auto auxiliaryDescriptorSet=[&](uint32_t image) {return material?material->auxiliaryDescriptorSet(image):sceneBindings->auxiliaryDescriptorSet(image);};
   if(subs_.bimManager && subs_.bimManager->hasScene()) {
-    const auto& bimObject=subs_.bimManager->objectAllocatedBuffer();
-    prepareDescriptors(std::span(&bimObject,1));
+    prepareDescriptors(subs_.bimManager->objectBuffers());
   } else prepareDescriptors();
 
   std::unique_ptr<PbrAuxiliaryPass> auxiliary;
