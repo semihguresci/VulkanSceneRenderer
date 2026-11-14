@@ -5,6 +5,7 @@
 #include "Container/geometry/SweptDiskGeometry.h"
 #include "Container/utility/Platform.h"
 #include "BimImportInput.h"
+#include "IfcAreaProfileGeometry.h"
 #include "IfcBrepFaceGeometry.h"
 #include "IfcCurveReader.h"
 
@@ -763,13 +764,18 @@ private:
     return true;
   }
 
-  std::vector<glm::vec3> readPolylinePoints(uint32_t ref,
-                                            bool renderCurve = false) const {
+  enum class PolylineUse { ClosedProfile, Drawable, CenterLine };
+
+  std::vector<glm::vec3> readPolylinePoints(
+      uint32_t ref, PolylineUse use = PolylineUse::ClosedProfile) const {
     const Entity *polyline = entity(ref);
     if (polyline == nullptr) {
       return {};
     }
 
+    const bool centerLine = use == PolylineUse::CenterLine;
+    const bool renderCurve = use == PolylineUse::Drawable;
+    const size_t limit = centerLine ? detail::kMaxIfcCenterLinePoints : 65536;
     std::vector<glm::vec3> points;
     if (polyline->type == "IFCINDEXEDPOLYCURVE") {
       // Omitted Segments means consecutive straight segments. Preserve typed
@@ -784,7 +790,10 @@ private:
         return {};
       const size_t dimension =
           pointList->type == "IFCCARTESIANPOINTLIST2D" ? 2u : 3u;
-      for (const auto &tuple : asList(argAt(*pointList, 0))) {
+      const auto tuples = asList(argAt(*pointList, 0));
+      if (centerLine && (dimension != 2 || tuples.size() > limit))
+        return {};
+      for (const auto &tuple : tuples) {
         const auto coords = readNumberList(&tuple);
         if (coords.size() != dimension || asList(&tuple).size() != dimension)
           return {};
@@ -797,7 +806,7 @@ private:
       if (segments->kind != StepValue::Kind::Omitted) {
         if (segments->kind != StepValue::Kind::List || segments->list.empty())
           return {};
-        if (renderCurve && segments->list.size() > 65536)
+        if ((renderCurve || centerLine) && segments->list.size() > limit)
           return {};
         std::vector<glm::vec3> selected;
         uint32_t lastIndex = 0;
@@ -805,6 +814,8 @@ private:
           const bool arc = renderCurve && segment.text == "IFCARCINDEX";
           if ((!arc && segment.text != "IFCLINEINDEX") ||
               segment.list.size() != 1u)
+            return {};
+          if (centerLine && asList(&segment.list.front()).size() > limit)
             return {};
           const auto indices = readPositiveIndexList(&segment.list.front());
           if (indices.size() < 2u || (arc && indices.size() != 3u) ||
@@ -833,12 +844,14 @@ private:
             selected.push_back(points[indices[i] - 1u]);
           }
           lastIndex = indices.back();
-          if (renderCurve && selected.size() > 65536)
+          if ((renderCurve || centerLine) && selected.size() > limit)
             return {};
         }
         points = std::move(selected);
       }
     } else if (polyline->type == "IFCPOLYLINE") {
+      if (centerLine && asList(argAt(*polyline, 0)).size() > limit)
+        return {};
       const auto pointRefs = refList(argAt(*polyline, 0));
       if (renderCurve && pointRefs.size() > 65536)
         return {};
@@ -850,12 +863,15 @@ private:
           return {};
         const auto coords = readNumberList(argAt(*point, 0));
         if (coords.size() < 2u || coords.size() > 3u ||
-            coords.size() != asList(argAt(*point, 0)).size())
+            coords.size() != asList(argAt(*point, 0)).size() ||
+            (centerLine && coords.size() != 2u))
           return {};
         points.push_back(readPoint(pointRef, glm::vec3(0.0f)));
       }
     } else
       return {};
+    if (centerLine)
+      return points;
     if (!renderCurve && points.size() > 2u &&
         glm::length(points.front() - points.back()) <= 1.0e-5f) {
       points.pop_back();
@@ -864,17 +880,72 @@ private:
     return points;
   }
 
-  std::vector<std::vector<glm::vec3>>
-  readProfileLoops(uint32_t ref, std::string &error, size_t depth = 0,
-                   double samplingScale = 1) const {
+  using ProfileLoops = std::vector<std::vector<glm::vec3>>;
+
+  struct ProfileRegion {
+    uint32_t sourceId;
+    ProfileLoops loops;
+  };
+
+  static std::string profileLabel(const Entity &profile) {
+    return profile.type + " #" + std::to_string(profile.id) + ": ";
+  }
+
+  std::vector<ProfileRegion>
+  readProfileRegions(uint32_t ref, std::string &error, size_t depth = 0,
+                     double samplingScale = 1, bool compositeMember = false) const {
     if (depth >= 64 || !std::isfinite(samplingScale) || samplingScale <= 0) {
-      error =
-          "Cyclic/excessive profile references or invalid accumulated scale";
+      error = "Profile #" + std::to_string(ref) +
+              ": cyclic/excessive profile references or invalid accumulated scale";
       return {};
     }
     const Entity *profile = entity(ref);
     if (profile == nullptr) {
+      error = "Missing profile #" + std::to_string(ref);
       return {};
+    }
+    if (compositeMember && enumValue(argAt(*profile, 0)) != "AREA") {
+      error = profileLabel(*profile) + "a composite area member must have AREA type";
+      return {};
+    }
+    if (profile->type == "IFCCOMPOSITEPROFILEDEF") {
+      if (compositeMember || enumValue(argAt(*profile, 0)) != "AREA") {
+        error = profileLabel(*profile) + "expected a nonrecursive AREA composite profile";
+        return {};
+      }
+      const auto entries = asList(argAt(*profile, 2));
+      constexpr size_t maxMembers = 64;
+      if (entries.size() < 2 || entries.size() > maxMembers) {
+        error = profileLabel(*profile) + "expected 2 to 64 distinct area members";
+        return {};
+      }
+      std::vector<ProfileRegion> regions;
+      regions.reserve(entries.size());
+      std::unordered_set<uint32_t> seen;
+      size_t vertices = 0;
+      for (const auto &entry : entries) {
+        checkCancellation();
+        const auto child = refValue(&entry);
+        if (!child || !seen.insert(*child).second) {
+          error = profileLabel(*profile) + "expected distinct area member references";
+          return {};
+        }
+        auto region = readProfileRegions(*child, error, depth + 1, samplingScale, true);
+        if (region.empty()) {
+          error = profileLabel(*profile) + "member #" + std::to_string(*child) + " failed: " + error;
+          return {};
+        }
+        for (const auto &loop : region.front().loops) {
+          constexpr size_t maxVertices = 16384;
+          if (loop.size() > maxVertices - vertices) {
+            error = profileLabel(*profile) + "composite exceeds the 16384 profile vertex limit";
+            return {};
+          }
+          vertices += loop.size();
+        }
+        regions.push_back(std::move(region.front()));
+      }
+      return regions;
     }
     if (profile->type == "IFCDERIVEDPROFILEDEF" ||
         profile->type == "IFCMIRROREDPROFILEDEF") {
@@ -886,23 +957,61 @@ private:
         error = "Extruded profile must have AREA type";
         return {};
       }
-      auto loops = readProfileLoops(transform->parent, error, depth + 1,
-                                    samplingScale * transform->maxScale);
-      for (auto &loop : loops)
-        for (auto &p : loop) {
-          const glm::vec3 q(glm::dvec3(transform->origin +
-                                           transform->x * double(p.x) +
-                                           transform->y * double(p.y),
-                                       double(p.z)));
-          if (!std::isfinite(q.x) || !std::isfinite(q.y) ||
-              !std::isfinite(q.z)) {
-            error =
-                "Derived profile point exceeds renderer coordinate precision";
-            return {};
+      auto regions = readProfileRegions(transform->parent, error, depth + 1,
+                                        samplingScale * transform->maxScale, compositeMember);
+      for (auto &region : regions)
+        for (auto &loop : region.loops)
+          for (auto &p : loop) {
+            const glm::vec3 q(glm::dvec3(transform->origin +
+                                             transform->x * double(p.x) +
+                                             transform->y * double(p.y),
+                                         double(p.z)));
+            if (!std::isfinite(q.x) || !std::isfinite(q.y) ||
+                !std::isfinite(q.z)) {
+              error = profileLabel(*profile) + "derived point exceeds renderer coordinate precision";
+              return {};
+            }
+            p = q;
           }
-          p = q;
-        }
-      return loops;
+      return regions;
+    }
+    auto loops = readProfileLoops(*profile, error, samplingScale);
+    if (loops.empty()) {
+      error = profileLabel(*profile) + (error.empty() ? "unsupported or invalid area profile" : error);
+      return {};
+    }
+    return {{ref, std::move(loops)}};
+  }
+
+  ProfileLoops readProfileLoops(const Entity &source, std::string &error,
+                                 double samplingScale) const {
+    const auto *profile = &source;
+    if (profile->type == "IFCCENTERLINEPROFILEDEF") {
+      if (enumValue(argAt(*profile, 0)) != "AREA") {
+        error = "expected an AREA centerline profile";
+        return {};
+      }
+      const auto thickness = numberValue(argAt(*profile, 3));
+      if (!thickness || !std::isfinite(*thickness) || *thickness <= 0) {
+        error = "centerline thickness must be finite and positive";
+        return {};
+      }
+      const auto curve = firstRef(*profile, 2);
+      const auto points = curve ? readPolylinePoints(*curve, PolylineUse::CenterLine) : std::vector<glm::vec3>{};
+      if (points.size() < 2) {
+        error = std::string("centerline requires one connected 2D polyline or indexed straight-line curve") +
+                (curve ? " (#" + std::to_string(*curve) + ")" : "") +
+                " with 2 to " + std::to_string(detail::kMaxIfcCenterLinePoints) + " points";
+        return {};
+      }
+      auto loop = detail::makeIfcCenterLineAreaLoop(points, *thickness, error, stop_);
+      return loop.empty() ? ProfileLoops{} : ProfileLoops{std::move(loop)};
+    }
+    if (profile->type == "IFCRECTANGLEHOLLOWPROFILEDEF" ||
+        profile->type == "IFCROUNDEDRECTANGLEPROFILEDEF" ||
+        profile->type == "IFCELLIPSEPROFILEDEF" ||
+        profile->type == "IFCTRAPEZIUMPROFILEDEF") {
+      return readExtendedAreaProfile(*profile, error, samplingScale);
     }
     if (profile->type == "IFCRECTANGLEPROFILEDEF" ||
         profile->type == "IFCCIRCLEPROFILEDEF" ||
@@ -978,6 +1087,151 @@ private:
       return loops;
     }
     return {};
+  }
+
+  ProfileLoops readExtendedAreaProfile(const Entity &profile, std::string &error,
+                                       double samplingScale) const {
+    if (enumValue(argAt(profile, 0)) != "AREA") {
+      error = "expected an AREA profile";
+      return {};
+    }
+    const auto first = numberValue(argAt(profile, 3));
+    const auto second = numberValue(argAt(profile, 4));
+    const auto positive = [](const std::optional<double> &value) {
+      return value && std::isfinite(*value) && *value > 0;
+    };
+    if (!positive(first) || !positive(second)) {
+      error = "profile dimensions must be finite and positive";
+      return {};
+    }
+    ProfileLoops loops;
+    if (profile.type == "IFCELLIPSEPROFILEDEF") {
+      // Linear scaling of a sampled unit circle bounds the chord error by
+      // the corresponding circular error on the largest semiaxis.
+      const auto count = circleSegmentCount(std::max(*first, *second), samplingScale);
+      if (!count) {
+        error = "ellipse exceeds the profile tessellation budget";
+        return {};
+      }
+      auto &loop = loops.emplace_back();
+      loop.reserve(*count);
+      for (size_t i = 0; i < *count; ++i) {
+        const double angle = 2 * std::acos(-1.0) * double(i) / double(*count);
+        loop.emplace_back(float(*first * std::cos(angle)), float(*second * std::sin(angle)), 0);
+      }
+    } else if (profile.type == "IFCTRAPEZIUMPROFILEDEF") {
+      const auto height = numberValue(argAt(profile, 5));
+      const auto offset = numberValue(argAt(profile, 6));
+      if (!positive(height) || !offset || !std::isfinite(*offset)) {
+        error = "trapezium requires positive YDim and finite TopXOffset";
+        return {};
+      }
+      const auto bottomHalf = *first * .5, topLeft = -bottomHalf + *offset;
+      const auto halfHeight = *height * .5;
+      loops = {{{float(-bottomHalf), float(-halfHeight), 0},
+                {float(bottomHalf), float(-halfHeight), 0},
+                {float(topLeft + *second), float(halfHeight), 0},
+                {float(topLeft), float(halfHeight), 0}}};
+    } else {
+      const auto appendRounded = [&](double width, double height, double radius) {
+        if (!std::isfinite(radius) || radius < 0 || radius > .5 * std::min(width, height)) {
+          error = "corner radius must be finite and within the profile half-extents";
+          return false;
+        }
+        const auto count = radius > 0 ? circleSegmentCount(radius, samplingScale) : std::optional<size_t>(0);
+        if (!count) {
+          error = "corner radius exceeds the profile tessellation budget";
+          return false;
+        }
+        auto loop = detail::makeIfcRoundedRectangleLoop(width, height, radius, *count / 4, error);
+        if (loop.empty())
+          return false;
+        loops.push_back(std::move(loop));
+        return true;
+      };
+      if (profile.type == "IFCROUNDEDRECTANGLEPROFILEDEF") {
+        const auto radius = numberValue(argAt(profile, 5));
+        if (!positive(radius)) {
+          error = "RoundingRadius must be finite and positive";
+          return {};
+        }
+        if (!appendRounded(*first, *second, *radius))
+          return {};
+      } else {
+        const auto wall = numberValue(argAt(profile, 5));
+        if (!positive(wall) || *wall >= .5 * std::min(*first, *second)) {
+          error = "wall thickness must be positive and less than both half-extents";
+          return {};
+        }
+        const auto optionalRadius = [&](size_t index) -> std::optional<double> {
+          const auto *arg = argAt(profile, index);
+          return !arg || arg->kind == StepValue::Kind::Omitted ? std::optional<double>(0) : numberValue(arg);
+        };
+        const auto inner = optionalRadius(6), outer = optionalRadius(7);
+        if (!inner || !outer) {
+          error = "invalid inner or outer fillet radius";
+          return {};
+        }
+        // Both rings are convex. Their smallest support gap is attained
+        // along an axis or the 45-degree diagonal. Check the analytic
+        // boundaries before sampling so tangency between samples is rejected.
+        const double diagonal = std::sqrt(2.0);
+        if (diagonal * *wall <= (diagonal - 1) * (*outer - *inner)) {
+          error = "inner profile touches or crosses the rounded exterior";
+          return {};
+        }
+        if (!appendRounded(*first, *second, *outer) ||
+            !appendRounded(*first - 2 * *wall, *second - 2 * *wall, *inner))
+          return {};
+      }
+    }
+    glm::dvec2 origin(0), xAxis(1, 0);
+    if (const auto *arg = argAt(profile, 2); arg && arg->kind != StepValue::Kind::Omitted) {
+      const auto positionRef = refValue(arg);
+      const auto *position = positionRef ? entity(*positionRef) : nullptr;
+      if (!position || position->type != "IFCAXIS2PLACEMENT2D" ||
+          !readProfilePosition(*position, origin, xAxis)) {
+        error = "invalid profile placement, expected a finite 2D origin and nonzero 2D direction";
+        return {};
+      }
+    }
+    const glm::dvec2 yAxis(-xAxis.y, xAxis.x);
+    for (auto &loop : loops) {
+      for (auto &point : loop) {
+        const auto placed = origin + xAxis * double(point.x) + yAxis * double(point.y);
+        point = {float(placed.x), float(placed.y), 0};
+        if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
+          error = "profile exceeds renderer coordinate precision";
+          return {};
+        }
+      }
+    }
+    return loops;
+  }
+
+  bool readProfilePosition(const Entity &position, glm::dvec2 &origin, glm::dvec2 &xAxis) const {
+    const auto readPair = [&](size_t index, std::string_view type) -> std::optional<glm::dvec2> {
+      const auto ref = firstRef(position, index);
+      const auto *node = ref ? entity(*ref) : nullptr;
+      if (!node || node->type != type || asList(argAt(*node, 0)).size() != 2)
+        return std::nullopt;
+      const auto values = readNumberList(argAt(*node, 0));
+      if (values.size() != 2 || !std::isfinite(values[0]) || !std::isfinite(values[1]))
+        return std::nullopt;
+      return glm::dvec2(values[0], values[1]);
+    };
+    const auto point = readPair(0, "IFCCARTESIANPOINT");
+    if (!point)
+      return false;
+    origin = *point;
+    if (const auto *arg = argAt(position, 1); arg && arg->kind != StepValue::Kind::Omitted) {
+      const auto direction = readPair(1, "IFCDIRECTION");
+      const auto length = direction ? std::hypot(direction->x, direction->y) : 0;
+      if (!(length > 0) || !std::isfinite(length))
+        return false;
+      xAxis = *direction / length;
+    }
+    return true;
   }
 
   std::optional<size_t> circleSegmentCount(double radius,
@@ -3996,7 +4250,7 @@ private:
         (source->type == "IFCPOLYLINE" ||
          source->type == "IFCINDEXEDPOLYCURVE") &&
         !scaledArcs) {
-      auto points = readPolylinePoints(ref, true);
+      auto points = readPolylinePoints(ref, PolylineUse::Drawable);
       if (points.size() > limit)
         return {};
       return points;
@@ -4254,113 +4508,121 @@ private:
   std::optional<MeshGroup>
   appendExtrudedAreaSolidGeometry(const Entity &solid) {
     const auto profileRef = firstRef(solid, 0);
-    if (!profileRef.has_value()) {
+    if (!profileRef)
       return std::nullopt;
-    }
 
-    std::string profileError;
-    auto profileLoops = readProfileLoops(*profileRef, profileError);
-    if (!profileError.empty())
-      conversionErrors_[solid.id] = std::move(profileError);
-    auto capTriangles = triangulatePlanarLoops(profileLoops);
-    if (!capTriangles)
+    const auto fail = [&](std::string error) -> std::optional<MeshGroup> {
+      conversionErrors_[solid.id] = std::move(error);
       return std::nullopt;
-    // IFC profiles lie in XY. Normalize ring winding so sides face outwards,
-    // including the inside walls of voids, regardless of the authored winding.
-    for (size_t ring = 0; ring < profileLoops.size(); ++ring) {
-      auto &loop = profileLoops[ring];
-      double signedArea = 0.0;
-      for (size_t i = 0; i < loop.size(); ++i) {
-        const auto &a = loop[i], &b = loop[(i + 1u) % loop.size()];
-        if (std::abs(a.z) > 1e-7f)
-          return std::nullopt;
-        signedArea += double(a.x) * b.y - double(b.x) * a.y;
-      }
-      if ((signedArea > 0) != (ring == 0))
-        std::ranges::reverse(loop);
-    }
-    const auto &profilePoints = profileLoops.front();
+    };
+    const auto profileDescription = [&](uint32_t ref) {
+      const auto *profile = entity(ref);
+      return profile ? profileLabel(*profile) : "Profile #" + std::to_string(ref) + ": ";
+    };
+    std::string error;
+    auto regions = readProfileRegions(*profileRef, error);
+    if (regions.empty())
+      return fail(std::move(error));
 
     const auto depth = numberValue(argAt(solid, 3));
-    if (!depth.has_value() || !std::isfinite(*depth) || *depth <= 0.0) {
-      return std::nullopt;
+    if (!depth || !std::isfinite(*depth) || *depth <= 0.0)
+      return fail("Extrusion depth must be finite and positive");
+    glm::mat4 placement(1.0f);
+    if (const auto position = firstRef(solid, 1))
+      placement = axis2Placement3D(*position);
+    glm::vec3 direction(0, 0, 1);
+    if (const auto ref = firstRef(solid, 2))
+      direction = readDirection(*ref, direction);
+    const glm::vec3 extrusion = direction * float(*depth);
+    if (!std::isfinite(extrusion.x) || !std::isfinite(extrusion.y) ||
+        !std::isfinite(extrusion.z) || std::abs(extrusion.z) <= 1e-7f)
+      return fail("Extrusion direction and depth must produce a finite, nonzero normal component");
+    const glm::vec3 capNormal = (extrusion.z < 0 ? -1.f : 1.f) * glm::vec3(placement[2]);
+
+    std::vector<std::vector<TriangleVertices>> caps;
+    std::vector<std::span<const std::vector<glm::vec3>>> boundaries;
+    caps.reserve(regions.size());
+    boundaries.reserve(regions.size());
+    for (auto &region : regions) {
+      for (auto &loop : region.loops)
+        if (loop.size() > 3 && glm::length(loop.front() - loop.back()) < 1e-7f)
+          loop.pop_back();
+      auto cap = triangulatePlanarLoops(region.loops);
+      if (!cap)
+        return fail(profileDescription(region.sourceId) +
+                    "could not triangulate the area; check for collapsed, intersecting or invalid outer and inner boundaries");
+      caps.push_back(std::move(*cap));
+      boundaries.emplace_back(region.loops);
+    }
+    if (regions.size() > 1 && !detail::validateIfcCompositeAreaRegions(boundaries, error, stop_)) {
+      std::string members;
+      for (const auto &region : regions)
+        members += " #" + std::to_string(region.sourceId);
+      return fail(profileDescription(*profileRef) + error + " (area members" + members + ")");
     }
 
-    glm::mat4 solidPlacement(1.0f);
-    if (const auto positionRef = firstRef(solid, 1); positionRef.has_value()) {
-      solidPlacement = axis2Placement3D(*positionRef);
-    }
-
-    glm::vec3 direction(0.0f, 0.0f, 1.0f);
-    if (const auto directionRef = firstRef(solid, 2);
-        directionRef.has_value()) {
-      direction = readDirection(*directionRef, direction);
-    }
-    const glm::vec3 extrusionVector = direction * static_cast<float>(*depth);
-    if (!std::isfinite(extrusionVector.x) ||
-        !std::isfinite(extrusionVector.y) ||
-        !std::isfinite(extrusionVector.z) ||
-        std::abs(extrusionVector.z) <= 1e-7f)
-      return std::nullopt;
-    if (extrusionVector.z < 0)
-      for (auto &loop : profileLoops)
-        std::ranges::reverse(loop);
-
-    std::vector<glm::vec3> bottom;
-    std::vector<glm::vec3> top;
-    bottom.reserve(profilePoints.size());
-    top.reserve(profilePoints.size());
-    for (const auto &point : profilePoints) {
-      const glm::vec3 base = glm::vec3(solidPlacement * glm::vec4(point, 1.0f));
-      const glm::vec3 cap =
-          glm::vec3(solidPlacement * glm::vec4(point + extrusionVector, 1.0f));
-      bottom.push_back(base);
-      top.push_back(cap);
-    }
-
-    glm::vec3 extrusionWorld = top.front() - bottom.front();
-    if (glm::dot(extrusionWorld, extrusionWorld) <= 1.0e-12f) {
-      return std::nullopt;
-    }
-    extrusionWorld = glm::normalize(extrusionWorld);
-
+    const auto placed = [&](glm::vec3 point) {
+      return glm::vec3(placement * glm::vec4(point, 1));
+    };
     std::vector<TriangleVertices> triangles;
-    triangles.reserve((profilePoints.size() - 2u) * 2u +
-                      profilePoints.size() * 2u);
-
-    for (const auto &cap : *capTriangles) {
-      std::array<glm::vec3, 3> base{}, end{};
-      for (size_t i = 0; i < 3u; ++i) {
-        base[i] = glm::vec3(solidPlacement * glm::vec4(cap.positions[i], 1.0f));
-        end[i] = glm::vec3(solidPlacement *
-                           glm::vec4(cap.positions[i] + extrusionVector, 1.0f));
+    for (size_t component = 0; component < regions.size(); ++component) {
+      checkCancellation();
+      auto &region = regions[component];
+      for (const auto &cap : caps[component]) {
+        std::array<glm::vec3, 3> base{}, end{};
+        for (size_t i = 0; i < base.size(); ++i) {
+          base[i] = placed(cap.positions[i]);
+          end[i] = placed(cap.positions[i] + extrusion);
+        }
+        appendCapTriangle(triangles, base, -capNormal);
+        appendCapTriangle(triangles, end, capNormal);
       }
-      appendCapTriangle(triangles, base, -extrusionWorld);
-      appendCapTriangle(triangles, end, extrusionWorld);
-    }
 
-    for (const auto &loop : profileLoops) {
-      for (size_t i = 0; i < loop.size(); ++i) {
-        const size_t next = (i + 1u) % loop.size();
-        const auto a = glm::vec3(solidPlacement * glm::vec4(loop[i], 1.0f));
-        const auto b = glm::vec3(solidPlacement * glm::vec4(loop[next], 1.0f));
-        const auto c = glm::vec3(solidPlacement *
-                                 glm::vec4(loop[next] + extrusionVector, 1.0f));
-        const auto d = glm::vec3(solidPlacement *
-                                 glm::vec4(loop[i] + extrusionVector, 1.0f));
-        triangles.push_back({{a, b, c}});
-        triangles.push_back({{a, c, d}});
+      // Normalize the outer and hole side winding after all profile
+      // transforms. Reversing the extrusion reverses both wall directions.
+      for (size_t ring = 0; ring < region.loops.size(); ++ring) {
+        auto &loop = region.loops[ring];
+        double signedArea = 0.0;
+        const glm::dvec3 origin(loop.front());
+        for (size_t i = 0; i < loop.size(); ++i) {
+          const auto a = glm::dvec3(loop[i]) - origin;
+          const auto b = glm::dvec3(loop[(i + 1) % loop.size()]) - origin;
+          if (std::abs(loop[i].z) > 1e-7f)
+            return fail(profileDescription(region.sourceId) + "area boundary is outside the profile XY plane");
+          signedArea += a.x * b.y - b.x * a.y;
+        }
+        const bool exteriorCcw = extrusion.z > 0;
+        if ((signedArea > 0) != ((ring == 0) == exteriorCcw))
+          std::ranges::reverse(loop);
+        for (size_t i = 0; i < loop.size(); ++i) {
+          const size_t next = (i + 1) % loop.size();
+          const auto a = placed(loop[i]), b = placed(loop[next]);
+          const auto c = placed(loop[next] + extrusion), d = placed(loop[i] + extrusion);
+          triangles.push_back({{a, b, c}});
+          triangles.push_back({{a, c, d}});
+        }
       }
     }
 
     const glm::vec4 color = styleColorByItem_.contains(solid.id)
                                 ? styleColorByItem_.at(solid.id)
                                 : defaultColor();
-    if (auto boxSolid = makeBoxSolid(bottom, top, color);
-        profileLoops.size() == 1u && boxSolid.has_value()) {
-      boxSolidsByItem_[solid.id] = *boxSolid;
+    auto group = appendTriangleMesh(triangles, color);
+    if (!group)
+      return fail(profileDescription(*profileRef) + "extrusion produced nonfinite or collapsed triangles");
+    if (regions.size() == 1 && regions.front().loops.size() == 1) {
+      const auto &loop = regions.front().loops.front();
+      if (loop.size() == 4) {
+        std::array<glm::vec3, 4> bottom{}, top{};
+        for (size_t i = 0; i < loop.size(); ++i) {
+          bottom[i] = placed(loop[i]);
+          top[i] = placed(loop[i] + extrusion);
+        }
+        if (auto box = makeBoxSolid(bottom, top, color))
+          boxSolidsByItem_[solid.id] = *box;
+      }
     }
-    return appendTriangleMesh(triangles, color);
+    return group;
   }
 
   static void appendCapTriangle(std::vector<TriangleVertices> &triangles,

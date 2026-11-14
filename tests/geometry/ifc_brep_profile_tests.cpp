@@ -13,6 +13,7 @@
 #include <limits>
 #include <map>
 #include <numbers>
+#include <set>
 #include <sstream>
 
 namespace {
@@ -408,6 +409,318 @@ TEST(IfcStructuralProfiles, CollapsedAndAmbiguousSlopesRejectAtomically) {
               "#74=IFCPROJECT('project',$,$,$,$,$,$,(),#73);"));
   EXPECT_EQ(invalidUnits.importReport.completeness, ImportCompleteness::Failed);
   EXPECT_TRUE(invalidUnits.vertices.empty());
+}
+
+TEST(IfcStructuralProfiles, RoundedAndHollowRectanglesPreserveIndependentCornerRadii) {
+  const auto roundedArea = [](double width, double height, double radius) {
+    return width * height - (4 - pi) * radius * radius;
+  };
+  for (bool hollow : {false, true}) {
+    SCOPED_TRACE(hollow);
+    const auto source = fixture(std::string(hollow
+        ? "#5=IFCRECTANGLEHOLLOWPROFILEDEF(.AREA.,$,$,8.,6.,1.,0.25,1.25);"
+        : "#5=IFCROUNDEDRECTANGLEPROFILEDEF(.AREA.,$,$,8.,6.,1.);") +
+        "#10=IFCEXTRUDEDAREASOLID(#5,$,$,2.);");
+    const auto model = LoadFromStep(source);
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    const double area = hollow ? roundedArea(8, 6, 1.25) - roundedArea(6, 4, .25)
+                               : roundedArea(8, 6, 1);
+    EXPECT_NEAR(volume(model), area * 2, .03);
+    glm::vec3 minimum(std::numeric_limits<float>::infinity());
+    glm::vec3 maximum(-minimum);
+    for (const auto &vertex : model.vertices) {
+      minimum = glm::min(minimum, vertex.position);
+      maximum = glm::max(maximum, vertex.position);
+    }
+    EXPECT_EQ(minimum, glm::vec3(-4, -3, 0));
+    EXPECT_EQ(maximum, glm::vec3(4, 3, 2));
+
+    // Every side vertex belongs to one prescribed rounded rectangle. Using
+    // the analytic signed distance checks straight/arc joins and both radii.
+    const auto distance = [](glm::dvec2 p, glm::dvec2 halfExtent, double radius) {
+      const auto q = glm::abs(p) - halfExtent + radius;
+      return glm::length(glm::max(q, glm::dvec2(0))) +
+             std::min(std::max(q.x, q.y), 0.) - radius;
+    };
+    size_t cavityFaces = 0;
+    for (size_t i = 0; i < model.indices.size(); i += 3) {
+      const glm::dvec3 a = model.vertices.at(model.indices.at(i)).position;
+      const glm::dvec3 b = model.vertices.at(model.indices.at(i + 1)).position;
+      const glm::dvec3 c = model.vertices.at(model.indices.at(i + 2)).position;
+      if (a.z == b.z && b.z == c.z) continue;
+      const auto radius = hollow ? 1.25 : 1.;
+      const bool cavity = hollow && std::abs(distance(glm::dvec2(a), {3, 2}, .25)) < 1e-5;
+      for (const auto &point : {a, b, c}) {
+        EXPECT_NEAR(distance(glm::dvec2(point), cavity ? glm::dvec2(3, 2) : glm::dvec2(4, 3),
+                             cavity ? .25 : radius), 0, 1e-5);
+      }
+      const auto normal = glm::cross(b - a, c - a);
+      const auto center = (a + b + c) / 3.;
+      EXPECT_GT(glm::dot(glm::dvec2(normal), glm::dvec2(center)) * (cavity ? -1 : 1), 0);
+      cavityFaces += cavity;
+    }
+    if (hollow) EXPECT_GT(cavityFaces, 0u);
+    exportProfileFixture(hollow ? "area-hollow-rectangle" : "area-rounded-rectangle", source);
+  }
+}
+
+TEST(IfcStructuralProfiles, EllipseTessellationRetainsPhysicalChordErrorWithPlacedMillimetreProfile) {
+  const auto source = fixture(
+      "#2=IFCCARTESIANPOINT((9000.,-7000.)); #3=IFCDIRECTION((0.,1.));"
+      "#4=IFCAXIS2PLACEMENT2D(#2,#3); #5=IFCELLIPSEPROFILEDEF(.AREA.,$,#4,3000.,2000.);"
+      "#7=IFCCARTESIANPOINT((0.,0.));"
+      "#8=IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM($,$,#7,2.,0.5);"
+      "#9=IFCDERIVEDPROFILEDEF(.AREA.,$,#5,#8,$);"
+      "#11=IFCMIRROREDPROFILEDEF(.AREA.,$,#9,*,$);"
+      "#10=IFCEXTRUDEDAREASOLID(#11,$,$,3000.);");
+  auto mmSource = source;
+  const auto metres = mmSource.find(".LENGTHUNIT.,$,.METRE.");
+  ASSERT_NE(metres, std::string::npos);
+  mmSource.replace(metres, std::string(".LENGTHUNIT.,$,.METRE.").size(),
+                   ".LENGTHUNIT.,.MILLI.,.METRE.");
+  const auto model = LoadFromStep(mmSource);
+  complete(model);
+  ASSERT_FALSE(model.indices.empty());
+  watertight(model);
+  EXPECT_NEAR(volume(model) * 1e-9, 18 * pi, .04);
+  ASSERT_TRUE(model.unitMetadata.hasMetersPerUnit);
+  EXPECT_FLOAT_EQ(model.unitMetadata.metersPerUnit, .001f);
+  std::map<double, glm::dvec2> contour;
+  glm::dvec3 minimum(std::numeric_limits<double>::infinity());
+  glm::dvec3 maximum(-minimum);
+  // The placed and derived ellipse has centre (-18,-3.5) and semiaxes
+  // (4,1.5). Check each generated chord against the actual ellipse.
+  const glm::dvec2 center(-18, -3.5);
+  const glm::dvec2 axes(4, 1.5);
+  for (const auto &vertex : model.vertices) {
+    const glm::dvec3 p = glm::dvec3(vertex.position) / 1000.;
+    minimum = glm::min(minimum, p);
+    maximum = glm::max(maximum, p);
+    const auto local = (glm::dvec2(p) - center) / axes;
+    EXPECT_NEAR(glm::dot(local, local), 1, 2e-6);
+    if (p.z == 0) contour[std::atan2(local.y, local.x)] = glm::dvec2(p);
+  }
+  EXPECT_EQ(minimum, glm::dvec3(-22, -5, 0));
+  EXPECT_EQ(maximum, glm::dvec3(-14, -2, 3));
+  ASSERT_GT(contour.size(), 16u);
+  for (auto a = contour.begin(); a != contour.end(); ++a) {
+    auto b = std::next(a);
+    const bool seam = b == contour.end();
+    if (seam) b = contour.begin();
+    const double angle = (a->first + b->first + (seam ? 2 * pi : 0)) * .5;
+    const auto exact = center + axes * glm::dvec2(std::cos(angle), std::sin(angle));
+    const auto d = b->second - a->second;
+    const auto nearest = a->second + d * std::clamp(glm::dot(exact - a->second, d) / glm::dot(d, d), 0., 1.);
+    EXPECT_LE(glm::length(exact - nearest), .00102);
+  }
+  exportProfileFixture("area-derived-ellipse-mm", mmSource);
+}
+
+TEST(IfcStructuralProfiles, TrapeziumUsesSignedTopOffsetFromBottomLeft) {
+  for (double offset : {-1., 5.}) {
+    SCOPED_TRACE(offset);
+    const auto source = fixture("#5=IFCTRAPEZIUMPROFILEDEF(.AREA.,$,$,4.,2.,3.," + number(offset) +
+                                "); #10=IFCEXTRUDEDAREASOLID(#5,$,$,2.);");
+    const auto model = LoadFromStep(source);
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    EXPECT_NEAR(volume(model), 18, 1e-5);
+    std::set<std::array<float, 2>> corners;
+    for (const auto &vertex : model.vertices) {
+      if (vertex.position.z == 0) corners.insert({vertex.position.x, vertex.position.y});
+    }
+    const auto topLeft = static_cast<float>(offset - 2);
+    const std::set<std::array<float, 2>> expected{{{-2, -1.5f}, {2, -1.5f},
+                                                     {topLeft, 1.5f}, {topLeft + 2, 1.5f}}};
+    EXPECT_EQ(corners, expected);
+    if (offset > 0) exportProfileFixture("area-trapezium", source);
+  }
+}
+
+TEST(IfcStructuralProfiles, LinearCenterlineExtrusionsUseMiterCornersAndButtEnds) {
+  for (bool segmented : {false, true}) {
+    const std::string curves = segmented
+        ? "#2=IFCCARTESIANPOINTLIST2D(((0.,0.),(4.,0.),(4.,3.)));"
+          "#4=IFCINDEXEDPOLYCURVE(#2,(IFCLINEINDEX((1,2)),IFCLINEINDEX((2,3))),.F.);"
+        : "#2=IFCCARTESIANPOINT((0.,0.)); #3=IFCCARTESIANPOINT((4.,0.));"
+          "#6=IFCCARTESIANPOINT((4.,3.)); #4=IFCPOLYLINE((#2,#3,#6));";
+    const auto source = fixture(curves + "#5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"
+                                         "#10=IFCEXTRUDEDAREASOLID(#5,$,$,2.);");
+    const auto model = LoadFromStep(source);
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    EXPECT_NEAR(volume(model), 14, 1e-5);
+    std::set<std::array<float, 2>> corners;
+    for (const auto &vertex : model.vertices) {
+      if (vertex.position.z == 0) corners.insert({vertex.position.x, vertex.position.y});
+    }
+    const std::set<std::array<float, 2>> expected{{{0, -.5f}, {4.5f, -.5f}, {4.5f, 3},
+                                                     {3.5f, 3}, {3.5f, .5f}, {0, .5f}}};
+    EXPECT_EQ(corners, expected);
+    if (segmented) exportProfileFixture("area-centerline", source);
+  }
+}
+
+TEST(IfcStructuralProfiles, CompositeRegionsPreserveMirrorsAndNestedIslands) {
+  for (bool islandInsideVoid : {false, true}) {
+    SCOPED_TRACE(islandInsideVoid);
+    const std::string definitions =
+        "#2=IFCCARTESIANPOINT((5.,0.)); #3=IFCAXIS2PLACEMENT2D(#2,$);"
+        "#5=IFCRECTANGLEHOLLOWPROFILEDEF(.AREA.,$,#3,6.,4.,1.,$,$);"
+        "#20=IFCMIRROREDPROFILEDEF(.AREA.,$,#5,*,$);"
+        "#21=IFCRECTANGLEPROFILEDEF(.AREA.,$,#3,2.,1.);"
+        "#22=IFCCOMPOSITEPROFILEDEF(.AREA.,$,(#5,#20" +
+        std::string(islandInsideVoid ? ",#21" : "") + "),$);"
+        "#10=IFCEXTRUDEDAREASOLID(#22,$,$,2.);";
+    const auto source = fixture(definitions);
+    const auto model = LoadFromStep(source);
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    EXPECT_NEAR(volume(model), islandInsideVoid ? 68 : 64, 1e-5);
+    EXPECT_NEAR(model.meshRanges.front().boundsCenter.x, 0, 1e-6);
+    // Separate connected regions should never triangulate a cap across the
+    // central gap. Island triangles stay entirely inside the right void.
+    size_t cavityWalls = 0, islandWalls = 0;
+    for (size_t i = 0; i < model.indices.size(); i += 3) {
+      const glm::dvec3 a = model.vertices.at(model.indices.at(i)).position;
+      const glm::dvec3 b = model.vertices.at(model.indices.at(i + 1)).position;
+      const glm::dvec3 c = model.vertices.at(model.indices.at(i + 2)).position;
+      const auto low = glm::min(a, glm::min(b, c));
+      const auto high = glm::max(a, glm::max(b, c));
+      EXPECT_TRUE(high.x <= -2. || low.x >= 2.);
+      if (a.z == b.z && b.z == c.z) continue;
+      const auto normal = glm::cross(b - a, c - a);
+      const auto center = (a + b + c) / 3.;
+      const glm::dvec2 radial(center.x > 0 ? center.x - 5 : center.x + 5, center.y);
+      const bool cavity = high.y <= 1. && low.y >= -1. &&
+          (low.x >= 3. && high.x <= 7. || low.x >= -7. && high.x <= -3.);
+      const bool island = low.x >= 4. && high.x <= 6. && low.y >= -.5 && high.y <= .5;
+      EXPECT_GT(glm::dot(glm::dvec2(normal), radial) * (cavity && !island ? -1 : 1), 0);
+      cavityWalls += cavity && !island;
+      islandWalls += island;
+    }
+    EXPECT_EQ(cavityWalls, 16u);
+    EXPECT_EQ(islandWalls, islandInsideVoid ? 8u : 0u);
+    if (islandInsideVoid) exportProfileFixture("area-composite-void-island", source);
+  }
+}
+
+TEST(IfcStructuralProfiles, MappedCompositeExtrusionsRetainWorldBoundsAndVolume) {
+  auto source = fixture(
+      "#2=IFCCARTESIANPOINT((5000.,0.)); #3=IFCAXIS2PLACEMENT2D(#2,$);"
+      "#5=IFCRECTANGLEHOLLOWPROFILEDEF(.AREA.,$,#3,6000.,4000.,1000.,$,$);"
+      "#20=IFCMIRROREDPROFILEDEF(.AREA.,$,#5,*,$);"
+      "#22=IFCCOMPOSITEPROFILEDEF(.AREA.,$,(#5,#20),$);"
+      "#10=IFCEXTRUDEDAREASOLID(#22,$,$,2000.);"
+      "#31=IFCSHAPEREPRESENTATION($,'Body','SweptSolid',(#10));"
+      "#32=IFCREPRESENTATIONMAP($,#31);"
+      "#33=IFCCARTESIANPOINT((12000.,5000.,3000.));"
+      "#34=IFCDIRECTION((0.,1.,0.)); #35=IFCDIRECTION((-1.,0.,0.));"
+      "#36=IFCDIRECTION((0.,0.,1.));"
+      "#37=IFCCARTESIANTRANSFORMATIONOPERATOR3DNONUNIFORM(#34,#35,#33,2.,#36,0.5,3.);"
+      "#38=IFCMAPPEDITEM(#32,#37);", "#38");
+  const auto metres = source.find(".LENGTHUNIT.,$,.METRE.");
+  ASSERT_NE(metres, std::string::npos);
+  source.replace(metres, std::string(".LENGTHUNIT.,$,.METRE.").size(),
+                 ".LENGTHUNIT.,.MILLI.,.METRE.");
+  const auto model = LoadFromStep(source, .5f);
+  complete(model);
+  ASSERT_EQ(model.elements.size(), 1u);
+  ASSERT_FALSE(model.indices.empty());
+  watertight(model);
+  const auto &element = model.elements.front();
+  glm::dvec3 minimum(std::numeric_limits<double>::infinity()), maximum(-minimum);
+  double transformedVolume = 0;
+  for (size_t i = 0; i < model.indices.size(); i += 3) {
+    std::array<glm::dvec3, 3> points;
+    for (size_t corner = 0; corner < 3; ++corner) {
+      const auto p = model.vertices.at(model.indices.at(i + corner)).position;
+      points[corner] = glm::dvec3(glm::dmat4(element.transform) * glm::dvec4(p, 1));
+      minimum = glm::min(minimum, points[corner]);
+      maximum = glm::max(maximum, points[corner]);
+    }
+    transformedVolume += glm::dot(points[0], glm::cross(points[1], points[2])) / 6.;
+  }
+  // Source rotation sends x to +Y and y to -X; source axes map as
+  // (X,Y,Z) -> (X,Z,-Y). The independent affine determinant is 3 / 8.
+  EXPECT_LT(glm::length(minimum - glm::dvec3(5.5, 1.5, -10.5)), 1e-5);
+  EXPECT_LT(glm::length(maximum - glm::dvec3(6.5, 4.5, 5.5)), 1e-5);
+  EXPECT_NEAR(transformedVolume, 64 * 3. / 8, 1e-5);
+  exportProfileFixture("area-composite-mapped-mm", source);
+}
+
+TEST(IfcStructuralProfiles, InvalidExtendedProfilesRetireEveryFragmentAndKeepFallback) {
+  struct Case {
+    const char *profileType;
+    const char *definition;
+  };
+  const std::array cases{
+      Case{"IFCELLIPSEPROFILEDEF", "#5=IFCELLIPSEPROFILEDEF(.AREA.,$,$,3.,0.);"},
+      Case{"IFCTRAPEZIUMPROFILEDEF", "#5=IFCTRAPEZIUMPROFILEDEF(.AREA.,$,$,0.,3.,4.,1.);"},
+      Case{"IFCROUNDEDRECTANGLEPROFILEDEF", "#5=IFCROUNDEDRECTANGLEPROFILEDEF(.AREA.,$,$,8.,6.,3.5);"},
+      Case{"IFCRECTANGLEHOLLOWPROFILEDEF", "#5=IFCRECTANGLEHOLLOWPROFILEDEF(.AREA.,$,$,8.,6.,3.,$,$);"},
+      Case{"IFCRECTANGLEHOLLOWPROFILEDEF", "#5=IFCRECTANGLEHOLLOWPROFILEDEF(.AREA.,$,$,8.,6.,1.,3.,1.25);"},
+      Case{"IFCRECTANGLEHOLLOWPROFILEDEF", "#5=IFCRECTANGLEHOLLOWPROFILEDEF(.AREA.,$,$,8.,6.,0.25,0.,2.);"},
+      Case{"IFCCENTERLINEPROFILEDEF",
+           "#2=IFCCARTESIANPOINTLIST2D(((0.,0.),(4.,0.),(4.,3.),(0.,0.)));"
+           "#4=IFCINDEXEDPOLYCURVE(#2,$,.F.); #5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"},
+      Case{"IFCCENTERLINEPROFILEDEF",
+           "#2=IFCCARTESIANPOINTLIST2D(((0.,0.),(4.,0.),(0.2,0.1)));"
+           "#4=IFCINDEXEDPOLYCURVE(#2,$,.F.); #5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"},
+      Case{"IFCCENTERLINEPROFILEDEF",
+           "#2=IFCCARTESIANPOINTLIST2D(((0.,0.),(2.,2.),(4.,0.)));"
+           "#4=IFCINDEXEDPOLYCURVE(#2,(IFCARCINDEX((1,2,3))),.F.);"
+           "#5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"}};
+  constexpr std::string_view sweep = "#10=IFCEXTRUDEDAREASOLID(#5,$,$,2.);";
+  constexpr std::string_view fallback =
+      "#40=IFCCARTESIANPOINTLIST3D(((0.,0.,0.),(4.,0.,0.),(0.,5.,0.)));"
+      "#41=IFCTRIANGULATEDFACESET(#40,$,.F.,((1,2,3)),$);";
+  const auto validate = [&](std::string definitions, std::string_view type) {
+    SCOPED_TRACE(definitions);
+    definitions += sweep;
+    const auto failed = LoadFromStep(fixture(definitions));
+    EXPECT_EQ(failed.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(failed.vertices.empty());
+    EXPECT_TRUE(failed.indices.empty());
+    EXPECT_TRUE(failed.meshRanges.empty());
+    EXPECT_TRUE(failed.elements.empty());
+    definitions += fallback;
+    const auto partial = LoadFromStep(fixture(definitions, "#10,#41"));
+    EXPECT_EQ(partial.importReport.completeness, ImportCompleteness::Partial);
+    EXPECT_EQ(partial.importReport.importedProductCount, 1u);
+    EXPECT_EQ(partial.importReport.partialProductCount, 1u);
+    ASSERT_EQ(partial.importReport.diagnostics.size(), 1u);
+    const auto &diagnostic = partial.importReport.diagnostics.front();
+    EXPECT_EQ(diagnostic.entityId, 10u);
+    EXPECT_EQ(diagnostic.productId, 900003u);
+    EXPECT_EQ(diagnostic.productGuid, "brep-profile");
+    EXPECT_NE(diagnostic.reason.find(std::string(type) + " #5"), std::string::npos);
+    EXPECT_EQ(diagnostic.reason.find("Invalid or unsupported shape data"), std::string::npos);
+    ASSERT_EQ(partial.elements.size(), 1u);
+    EXPECT_EQ(partial.elements.front().guid, "brep-profile");
+    EXPECT_EQ(partial.meshRanges.size(), 1u);
+    EXPECT_EQ(partial.indices.size(), 3u);
+    EXPECT_EQ(partial.vertices.size(), 3u);
+  };
+  for (const auto &[type, definitions] : cases) validate(definitions, type);
+
+  constexpr std::string_view first =
+      "#20=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,4.,4.);"
+      "#5=IFCCOMPOSITEPROFILEDEF(.AREA.,$,(#20,#21),$);";
+  for (const auto *second : {
+           "#21=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,2.,2.);", // contained
+           "#2=IFCCARTESIANPOINT((3.,0.)); #3=IFCAXIS2PLACEMENT2D(#2,$);"
+           "#21=IFCRECTANGLEPROFILEDEF(.AREA.,$,#3,2.,2.);", // touching
+           "#21=IFCRECTANGLEPROFILEDEF(.AREA.,$,$,6.,2.);", // crossing
+           "#21=IFCRECTANGLEPROFILEDEF(.CURVE.,$,$,2.,2.);", // mixed
+           "#21=IFCCOMPOSITEPROFILEDEF(.AREA.,$,(#5,#20),$);"}) { // recursive
+    validate(std::string(first) + second, "IFCCOMPOSITEPROFILEDEF");
+  }
 }
 
 struct StepBuilder {
