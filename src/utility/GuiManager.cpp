@@ -3625,6 +3625,251 @@ void GuiManager::setBimHardClashState(BimHardClashUiState state) {
   bimHardClashState_ = std::move(state);
 }
 
+namespace {
+
+void FitSunHoursGrid(container::renderer::BimSunHoursSettings &settings,
+                     const container::renderer::BimElementBounds &bounds) {
+  settings.minX = bounds.min.x;
+  settings.maxX = bounds.max.x;
+  settings.minZ = bounds.min.z;
+  settings.maxZ = bounds.max.z;
+  settings.elevation = bounds.min.y;
+  if (settings.minX == settings.maxX) {
+    settings.minX -= 0.5;
+    settings.maxX += 0.5;
+  }
+  if (settings.minZ == settings.maxZ) {
+    settings.minZ -= 0.5;
+    settings.maxZ += 0.5;
+  }
+}
+
+ImU32 SunHoursColor(double hours, double windowHours) {
+  const auto color = container::renderer::BimSunHoursColor(hours, windowHours);
+  return ImGui::ColorConvertFloat4ToU32(ImVec4(color.r, color.g, color.b, 1.0f));
+}
+
+void DrawSunHoursHeatmap(const container::renderer::BimSunHoursResult &result,
+                         std::optional<size_t> &selectedCell) {
+  const auto &settings = result.settings;
+  const double windowHours = (settings.endMinute - settings.startMinute) / 60.0;
+  const float width = std::max(1.0f, std::min(ImGui::GetContentRegionAvail().x, 440.0f));
+  const float height = std::clamp(width * settings.rows / settings.columns, 128.0f, 264.0f);
+  const float cellWidth = width / settings.columns;
+  const float cellHeight = height / settings.rows;
+  const ImVec2 origin = ImGui::GetCursorScreenPos();
+  const bool clicked = ImGui::InvisibleButton("##SunHoursHeatmap", ImVec2(width, height));
+  auto *draw = ImGui::GetWindowDrawList();
+  const auto cellCorners = [&](size_t index) {
+    const size_t column = index % settings.columns;
+    const size_t screenRow = settings.rows - 1 - index / settings.columns;
+    return std::array{
+        ImVec2(origin.x + column * cellWidth, origin.y + screenRow * cellHeight),
+        ImVec2(origin.x + (column + 1) * cellWidth,
+               origin.y + (screenRow + 1) * cellHeight)};
+  };
+  if (ImGui::IsItemVisible()) {
+    for (size_t i = 0; i < result.hours.size(); ++i) {
+      const auto corners = cellCorners(i);
+      draw->AddRectFilled(corners[0], corners[1], SunHoursColor(result.hours[i], windowHours));
+    }
+  }
+  const auto outline = [&](size_t index) {
+    const auto corners = cellCorners(index);
+    draw->AddRect(corners[0], corners[1], IM_COL32(0, 0, 0, 255), 0.0f, 0, 3.0f);
+    draw->AddRect(corners[0], corners[1], IM_COL32(255, 255, 255, 255));
+  };
+  if (ImGui::IsItemHovered() || clicked) {
+    const ImVec2 mouse = ImGui::GetMousePos();
+    const auto column = static_cast<size_t>(std::clamp(
+        (mouse.x - origin.x) / cellWidth, 0.0f, float(settings.columns - 1)));
+    const auto screenRow = static_cast<size_t>(std::clamp(
+        (mouse.y - origin.y) / cellHeight, 0.0f, float(settings.rows - 1)));
+    const size_t row = settings.rows - 1 - screenRow;
+    const size_t index = row * settings.columns + column;
+    if (clicked) {
+      selectedCell = index;
+    }
+    outline(index);
+    if (ImGui::BeginTooltip()) {
+      const auto center = container::renderer::BimSunHoursCellCenter(settings, index);
+      ImGui::Text("%.6g h at X %.9g, Y %.9g, Z %.9g", result.hours[index],
+                  center.x, center.y, center.z);
+      ImGui::EndTooltip();
+    }
+  }
+  if (selectedCell && ImGui::IsItemVisible()) {
+    outline(*selectedCell);
+  }
+
+  constexpr int segments = 24;
+  constexpr float legendHeight = 12.0f;
+  const ImVec2 legend = ImGui::GetCursorScreenPos();
+  for (int i = 0; i < segments; ++i) {
+    const float x0 = legend.x + width * i / segments;
+    const float x1 = legend.x + width * (i + 1) / segments;
+    const auto low = SunHoursColor(windowHours * i / segments, windowHours);
+    const auto high = SunHoursColor(windowHours * (i + 1) / segments, windowHours);
+    draw->AddRectFilledMultiColor(ImVec2(x0, legend.y),
+                                  ImVec2(x1, legend.y + legendHeight),
+                                  low, high, high, low);
+  }
+  ImGui::Dummy(ImVec2(width, legendHeight));
+  std::array<char, 32> endLabel{};
+  std::snprintf(endLabel.data(), endLabel.size(), "%.3g h", windowHours);
+  const float endLabelX = ImGui::GetCursorPosX() + width - ImGui::CalcTextSize(endLabel.data()).x;
+  ImGui::TextUnformatted("0 h");
+  ImGui::SameLine(endLabelX);
+  ImGui::TextUnformatted(endLabel.data());
+  ImGui::TextDisabled("Plan view (+X right, +Z up)");
+}
+
+} // namespace
+
+void GuiManager::drawBimSunHoursPanel(const BimInspectionState &inspection) {
+  if (!ImGui::TreeNode("Sun Hours")) {
+    return;
+  }
+  const auto &bounds = inspection.sunHoursModelBounds;
+  if (!bimSunHoursDraft_) {
+    auto &settings = bimSunHoursDraft_.emplace();
+    const auto &skySolar = skyDraft_.atmosphere.localSun;
+    if (container::renderer::validSolarTime(skySolar)) {
+      settings.solar = skySolar;
+    }
+    if (bounds.valid) {
+      FitSunHoursGrid(settings, bounds);
+    }
+  }
+  auto &draft = *bimSunHoursDraft_;
+  const auto &state = bimSunHoursState_;
+  ImGui::BeginDisabled(state.running);
+  ImGui::SeparatorText("Location and time");
+  ImGui::InputFloat("Latitude (deg)", &draft.solar.latitudeDegrees, 0, 0, "%.5f");
+  ImGui::InputFloat("Longitude (deg)", &draft.solar.longitudeDegrees, 0, 0, "%.5f");
+  ImGui::InputDouble("Model north (deg)", &draft.northDegrees, 0, 0, "%.6g");
+  ImGui::SetItemTooltip("Positive angles rotate north from world +Z toward +X.");
+  int date[]{draft.solar.year, draft.solar.month, draft.solar.day};
+  if (ImGui::InputInt3("Local date (Y/M/D)", date)) {
+    draft.solar.year = date[0];
+    draft.solar.month = date[1];
+    draft.solar.day = date[2];
+  }
+  ImGui::InputInt("UTC offset (minutes)", &draft.solar.utcOffsetMinutes);
+  const auto drawMinute = [](const char *label, uint32_t &minute) {
+    ImGui::InputScalar(label, ImGuiDataType_U32, &minute);
+    if (ImGui::IsItemHovered()) {
+      ImGui::SetTooltip("%02u:%02u local time, from 0 to 1440 minutes after midnight",
+                        minute / 60, minute % 60);
+    }
+  };
+  drawMinute("Local start (minutes)", draft.startMinute);
+  drawMinute("Local end (minutes)", draft.endMinute);
+  ImGui::InputScalar("Sample interval (minutes)", ImGuiDataType_U32, &draft.stepMinutes);
+
+  ImGui::SeparatorText("Study grid");
+  ImGui::TextDisabled("Coordinates in world units");
+  ImGui::BeginDisabled(!bounds.valid);
+  if (ImGui::Button("Fit grid to BIM model")) {
+    FitSunHoursGrid(draft, bounds);
+  }
+  ImGui::EndDisabled();
+  ImGui::SetItemTooltip("Fit X and Z to the model bounds and set elevation to its lowest point.");
+  double minimum[]{draft.minX, draft.minZ};
+  if (ImGui::InputScalarN("Minimum X/Z", ImGuiDataType_Double, minimum, 2,
+                          nullptr, nullptr, "%.9g")) {
+    draft.minX = minimum[0];
+    draft.minZ = minimum[1];
+  }
+  double maximum[]{draft.maxX, draft.maxZ};
+  if (ImGui::InputScalarN("Maximum X/Z", ImGuiDataType_Double, maximum, 2,
+                          nullptr, nullptr, "%.9g")) {
+    draft.maxX = maximum[0];
+    draft.maxZ = maximum[1];
+  }
+  ImGui::InputDouble("Elevation Y", &draft.elevation, 0, 0, "%.9g");
+  uint32_t dimensions[]{draft.columns, draft.rows};
+  if (ImGui::InputScalarN("Columns / rows", ImGuiDataType_U32, dimensions, 2)) {
+    draft.columns = dimensions[0];
+    draft.rows = dimensions[1];
+  }
+
+  std::string validationError;
+  try {
+    container::renderer::ValidateBimSunHoursSettings(draft);
+  } catch (const std::logic_error &error) {
+    validationError = error.what();
+  }
+  ImGui::BeginDisabled(!validationError.empty());
+  if (ImGui::Button("Run sun hours")) {
+    bimSunHoursRunRequest_ = draft;
+  }
+  ImGui::EndDisabled();
+  ImGui::EndDisabled();
+  if (state.running) {
+    ImGui::SameLine();
+    if (ImGui::Button("Cancel")) {
+      bimSunHoursCancelRequest_ = true;
+    }
+  } else if (!validationError.empty()) {
+    ImGui::TextWrapped("%s", validationError.c_str());
+  }
+  if (!state.status.empty()) {
+    ImGui::TextWrapped("%s", state.status.c_str());
+  }
+  if (state.result && !state.result->hours.empty()) {
+    const auto &result = *state.result;
+    const auto &used = result.settings;
+    ImGui::SeparatorText("Direct sun hours");
+    ImGui::Checkbox("Show in viewport", &bimSunHoursViewportVisible_);
+    DrawSunHoursHeatmap(result, bimSunHoursSelectedCell_);
+    if (bimSunHoursSelectedCell_) {
+      const size_t index = *bimSunHoursSelectedCell_;
+      const auto center = container::renderer::BimSunHoursCellCenter(used, index);
+      ImGui::TextWrapped("Selected %.6g h at X %.9g, Y %.9g, Z %.9g",
+                         result.hours[index], center.x, center.y, center.z);
+    }
+    if (ImGui::TreeNode("Study settings used")) {
+      ImGui::TextWrapped("%04d-%02d-%02d, UTC offset %+d minutes",
+                        used.solar.year, used.solar.month, used.solar.day,
+                        used.solar.utcOffsetMinutes);
+      ImGui::TextWrapped("Latitude %.8g, longitude %.8g, model north %.9g deg",
+                        used.solar.latitudeDegrees, used.solar.longitudeDegrees,
+                        used.northDegrees);
+      ImGui::TextWrapped("%02u:%02u to %02u:%02u local, sampled every %u minutes",
+                        used.startMinute / 60, used.startMinute % 60,
+                        used.endMinute / 60, used.endMinute % 60, used.stepMinutes);
+      ImGui::TextWrapped("%u by %u cells, Y %.9g", used.columns, used.rows,
+                        used.elevation);
+      ImGui::TextWrapped("X %.9g to %.9g, Z %.9g to %.9g", used.minX, used.maxX,
+                        used.minZ, used.maxZ);
+      ImGui::TextWrapped("%zu of %zu samples above the horizon (%.6g h)",
+                        result.daylightSampleCount, result.sampleCount,
+                        result.daylightHours);
+      if (result.skippedTriangles != 0) {
+        ImGui::Text("Invalid triangles skipped %zu", result.skippedTriangles);
+      }
+      ImGui::TreePop();
+    }
+    ImGui::InputText("CSV file", &bimSunHoursCsvPath_);
+    const std::string path = TrimAscii(bimSunHoursCsvPath_);
+    ImGui::BeginDisabled(path.empty() || state.running);
+    if (ImGui::Button("Export CSV")) {
+      bimSunHoursExportRequest_ = path;
+    }
+    ImGui::EndDisabled();
+  }
+  ImGui::TreePop();
+}
+
+void GuiManager::setBimSunHoursState(BimSunHoursUiState state) {
+  if (state.result != bimSunHoursState_.result) {
+    bimSunHoursSelectedCell_.reset();
+    bimSunHoursExportRequest_.reset();
+  }
+  bimSunHoursState_ = std::move(state);
+}
+
 std::optional<BimMeasurementCapturedPoint>
 CaptureBimMeasurementPointFromSelection(
     const BimInspectionState &inspection,
@@ -3947,6 +4192,10 @@ void GuiManager::resetModelInspectionState() {
   bimHardClashRunRequest_.reset();
   bimHardClashCancelRequest_ = false;
   setBimHardClashState({});
+  bimSunHoursDraft_.reset();
+  bimSunHoursRunRequest_.reset();
+  bimSunHoursCancelRequest_ = false;
+  setBimSunHoursState({});
   bcfIssueOverlayPins_.clear();
   sceneHierarchyParentCandidateCache_ = {};
   sceneHierarchyCache_.clear();
@@ -4754,6 +5003,9 @@ void GuiManager::drawSceneControls(
     bimHardClashSecondGroup_ = {};
     bimHardClashRunRequest_.reset();
     bimHardClashCancelRequest_ = false;
+    bimSunHoursDraft_.reset();
+    bimSunHoursRunRequest_.reset();
+    bimSunHoursCancelRequest_ = false;
   }
   bimElementSearchCache_.invalidateIfStale(
       metadataSource, bimInspection.metadataRevision, bimInspection.elements);
@@ -6301,6 +6553,7 @@ void GuiManager::drawSceneControls(
       }
 
       drawBimHardClashPanel(bimInspection);
+      drawBimSunHoursPanel(bimInspection);
 
       if (ImGui::TreeNode("Property Browser")) {
         if (bimInspection.hasSelection) {

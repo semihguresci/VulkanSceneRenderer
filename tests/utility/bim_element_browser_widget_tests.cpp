@@ -6,8 +6,10 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -61,16 +63,25 @@ protected:
   void frame() {
     ImGui::NewFrame();
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
-    ImGui::SetNextWindowSize(ImVec2(1080.0f, 660.0f));
+    ImGui::SetNextWindowSize(ImVec2(drawSunHours_ ? 500.0f : 1080.0f,
+                                  ImGui::GetIO().DisplaySize.y - 40.0f));
     ImGui::Begin("BIM browser widget test", nullptr,
                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
     const auto origin = ImGui::GetCursorScreenPos();
     searchPosition_ = ImVec2(origin.x + ImGui::GetStyle().IndentSpacing + 40.0f,
                              origin.y + ImGui::GetTextLineHeightWithSpacing() +
                                  ImGui::GetFrameHeight() * 0.5f);
-    if (inspection_.hasScene)
-      ImGui::SetNextItemOpen(browserOpen_, ImGuiCond_Always);
-    gui_.drawBimElementBrowser(inspection_);
+    if (drawSunHours_) {
+      ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+      gui_.drawBimSunHoursPanel(inspection_);
+      const auto min = ImGui::GetItemRectMin();
+      const auto max = ImGui::GetItemRectMax();
+      lastItemCenter_ = ImVec2((min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f);
+    } else {
+      if (inspection_.hasScene)
+        ImGui::SetNextItemOpen(browserOpen_, ImGuiCond_Always);
+      gui_.drawBimElementBrowser(inspection_);
+    }
     ImGui::End();
     ImGui::Render();
   }
@@ -149,14 +160,38 @@ protected:
     EXPECT_EQ(focused_, inspection_.selectedObjectIndex);
   }
 
+  ImVec2 sunHoursCellPosition(double hours, double windowHours) {
+    const auto color = container::renderer::BimSunHoursColor(hours, windowHours);
+    const auto packed = ImGui::ColorConvertFloat4ToU32(
+        ImVec4(color.r, color.g, color.b, 1.0f));
+    ImVec2 low(std::numeric_limits<float>::max(), std::numeric_limits<float>::max());
+    ImVec2 high(0.0f, 0.0f);
+    int vertices = 0;
+    for (const auto *list : ImGui::GetDrawData()->CmdLists) {
+      for (const auto &vertex : list->VtxBuffer) {
+        if (vertex.col == packed) {
+          low.x = std::min(low.x, vertex.pos.x);
+          low.y = std::min(low.y, vertex.pos.y);
+          high.x = std::max(high.x, vertex.pos.x);
+          high.y = std::max(high.y, vertex.pos.y);
+          ++vertices;
+        }
+      }
+    }
+    EXPECT_EQ(vertices, 4);
+    return ImVec2((low.x + high.x) * 0.5f, (low.y + high.y) * 0.5f);
+  }
+
   container::ui::GuiManager gui_{};
   container::ui::BimInspectionState inspection_{};
   std::vector<container::renderer::BimElementMetadata> elements_{};
   ImGuiContext *previousContext_{};
   ImGuiContext *context_{};
   ImVec2 searchPosition_{};
+  ImVec2 lastItemCenter_{};
   int firstModel_{}, secondModel_{};
   bool browserOpen_{true};
+  bool drawSunHours_{};
   uint32_t selected_{std::numeric_limits<uint32_t>::max()};
   uint32_t focused_{std::numeric_limits<uint32_t>::max()};
 };
@@ -461,6 +496,49 @@ TEST_F(BimElementBrowserWidgetTests, OriginalSecondRowFocusDoesNotShareTheColumn
   EXPECT_EQ(selected_, elements_[1].objectIndex);
   focusLastVisibleRow();
   EXPECT_EQ(focused_, elements_[1].objectIndex);
+}
+
+TEST_F(BimElementBrowserWidgetTests, SunHoursRunsCancelsSelectsAndExports) {
+  drawSunHours_ = true;
+  ImGui::GetIO().DisplaySize = ImVec2(1920.0f, 1080.0f);
+  inspection_.sunHoursModelBounds.valid = true;
+  inspection_.sunHoursModelBounds.min = {-25.0f, 4.0f, -11.0f};
+  inspection_.sunHoursModelBounds.max = {33.0f, 24.0f, 60.0f};
+  settle();
+  click(lastItemCenter_);
+  auto request = gui_.consumeBimSunHoursRunRequest();
+  ASSERT_TRUE(request);
+  EXPECT_DOUBLE_EQ(request->minX, -25.0);
+  EXPECT_DOUBLE_EQ(request->maxZ, 60.0);
+  EXPECT_DOUBLE_EQ(request->elevation, 4.0);
+
+  gui_.setBimSunHoursState({.running = true});
+  settle();
+  click(lastItemCenter_);
+  EXPECT_TRUE(gui_.consumeBimSunHoursCancelRequest());
+  EXPECT_FALSE(gui_.consumeBimSunHoursCancelRequest());
+
+  auto result = std::make_shared<container::renderer::BimSunHoursResult>();
+  result->settings = *request;
+  result->settings.rows = 2;
+  result->settings.columns = 2;
+  result->hours = {1.23, 2.34, 3.45, 6.15};
+  gui_.setBimSunHoursState({.result = result});
+  settle();
+  const ImVec2 bottomLeft = sunHoursCellPosition(1.23, 10.0);
+  const ImVec2 topRight = sunHoursCellPosition(6.15, 10.0);
+  EXPECT_LT(bottomLeft.x, topRight.x);
+  EXPECT_GT(bottomLeft.y, topRight.y);
+  EXPECT_FALSE(gui_.bimSunHoursSelectedCell());
+  click(bottomLeft);
+  EXPECT_EQ(gui_.bimSunHoursSelectedCell(), 0u);
+  click(topRight);
+  EXPECT_EQ(gui_.bimSunHoursSelectedCell(), 3u);
+  click(lastItemCenter_);
+  EXPECT_EQ(gui_.consumeBimSunHoursExportRequest(), "bim-sun-hours.csv");
+
+  gui_.setBimSunHoursState({});
+  EXPECT_FALSE(gui_.bimSunHoursSelectedCell());
 }
 
 } // namespace

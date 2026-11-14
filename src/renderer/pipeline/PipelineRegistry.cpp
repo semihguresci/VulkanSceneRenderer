@@ -1,4 +1,5 @@
 #include "Container/renderer/pipeline/PipelineRegistry.h"
+#include "Container/renderer/bim/BimSunHoursOverlay.h"
 #include "Container/renderer/pipeline/PipelineTypes.h"
 
 #include <algorithm>
@@ -279,6 +280,7 @@ buildGraphicsPipelineHandleRegistry(const GraphicsPipelines &pipelines) {
   registerIfPresent(*registry, "selection-outline", pipelines.selectionOutline);
   registerIfPresent(*registry, "bim-floor-plan-depth",
                     pipelines.bimFloorPlanDepth);
+  registerIfPresent(*registry, kBimSunHoursPipeline, pipelines.bimSunHours);
   registerIfPresent(*registry, "bim-floor-plan-no-depth",
                     pipelines.bimFloorPlanNoDepth);
   registerIfPresent(*registry, "bim-point-cloud-depth",
@@ -418,6 +420,7 @@ buildGraphicsPipelineLayoutRegistry(const PipelineLayouts &layouts) {
   registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                           "post-process", layouts.postProcess);
   registerLayoutIfPresent(*registry, "wireframe", layouts.wireframe);
+  registerLayoutIfPresent(*registry, kBimSunHoursPipeline, layouts.bimSunHours);
   registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                           "wireframe", layouts.wireframe);
   registerLayoutIfPresent(*registry, "normal-validation",

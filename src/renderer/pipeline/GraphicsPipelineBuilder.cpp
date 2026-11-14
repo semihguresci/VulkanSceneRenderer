@@ -1,5 +1,6 @@
 #include "Container/renderer/pipeline/GraphicsPipelineBuilder.h"
 #include "Container/geometry/Model.h"
+#include "Container/renderer/bim/BimSunHoursOverlay.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/lighting/LightPushConstants.h"
@@ -137,6 +138,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       loadModule("spv_shaders/transparent_pick.frag.spv");
   VkShaderModule postVert = loadModule("spv_shaders/post_process.vert.spv");
   VkShaderModule postFrag = loadModule("spv_shaders/post_process.frag.spv");
+  const auto sunHoursVert = loadModule("spv_shaders/bim_sun_hours.vert.spv");
+  const auto sunHoursFrag = loadModule("spv_shaders/bim_sun_hours.frag.spv");
   VkShaderModule dbgVert = loadModule("spv_shaders/geometry_debug.vert.spv");
   VkShaderModule dbgFrag = loadModule("spv_shaders/geometry_debug.frag.spv");
   VkShaderModule nvVert = loadModule("spv_shaders/normal_validation.vert.spv");
@@ -667,6 +670,9 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       {descriptorLayouts.scene, descriptorLayouts.shadow}, {shadowPCR});
   layouts.postProcess = pipelineManager_.createPipelineLayout(
       {descriptorLayouts.postProcess, descriptorLayouts.oit}, {postPCR});
+  const VkPushConstantRange sunHoursPCR{VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT,
+      0, static_cast<uint32_t>(offsetof(BimSunHoursOverlayPushConstants, encodeSrgb) + sizeof(uint32_t))};
+  layouts.bimSunHours = pipelineManager_.createPipelineLayout({}, {sunHoursPCR});
   layouts.wireframe =
       pipelineManager_.createPipelineLayout({descriptorLayouts.scene}, {wfPCR});
   const VkPipelineLayout floorPlanDisplayLayout =
@@ -1016,6 +1022,29 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   postPCI.renderPass = renderPasses.postProcess;
   pipelines.postProcess =
       pipelineManager_.createGraphicsPipeline(postPCI, "post_process_pipeline");
+
+  const std::array sunHoursStages{makeStage(sunHoursVert, VK_SHADER_STAGE_VERTEX_BIT),
+                                  makeStage(sunHoursFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
+  const VkVertexInputBindingDescription sunHoursBinding{0, sizeof(BimSunHoursVertex), VK_VERTEX_INPUT_RATE_VERTEX};
+  const std::array<VkVertexInputAttributeDescription, 2> sunHoursAttributes{{
+      {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BimSunHoursVertex, position)},
+      {1, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(BimSunHoursVertex, color)}}};
+  VkPipelineVertexInputStateCreateInfo sunHoursInput{VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO};
+  sunHoursInput.vertexBindingDescriptionCount = 1;
+  sunHoursInput.pVertexBindingDescriptions = &sunHoursBinding;
+  sunHoursInput.vertexAttributeDescriptionCount = static_cast<uint32_t>(sunHoursAttributes.size());
+  sunHoursInput.pVertexAttributeDescriptions = sunHoursAttributes.data();
+  auto sunHoursAttachment = overlayAttach;
+  sunHoursAttachment.colorWriteMask &= ~VK_COLOR_COMPONENT_A_BIT;
+  const auto sunHoursBlend = makeBlend(&sunHoursAttachment, 1);
+  auto sunHoursPCI = postPCI;
+  sunHoursPCI.stageCount = static_cast<uint32_t>(sunHoursStages.size());
+  sunHoursPCI.pStages = sunHoursStages.data();
+  sunHoursPCI.pVertexInputState = &sunHoursInput;
+  sunHoursPCI.pRasterizationState = &noCullRaster;
+  sunHoursPCI.pColorBlendState = &sunHoursBlend;
+  sunHoursPCI.layout = layouts.bimSunHours;
+  pipelines.bimSunHours = pipelineManager_.createGraphicsPipeline(sunHoursPCI, kBimSunHoursPipeline);
 
   // Geometry debug
   const float vertexMarkerSize = device_->enabledFeatures().largePoints == VK_TRUE
@@ -1371,6 +1400,7 @@ void GraphicsPipelineBuilder::destroy(PipelineBuildResult& result) const noexcep
   destroyPipeline(pipelines.transparentPickFrontCull);
   destroyPipeline(pipelines.transparentPickNoCull);
   destroyPipeline(pipelines.postProcess);
+  destroyPipeline(pipelines.bimSunHours);
   destroyPipeline(pipelines.geometryDebug);
   destroyPipeline(pipelines.normalValidation);
   destroyPipeline(pipelines.normalValidationFrontCull);
@@ -1417,6 +1447,7 @@ void GraphicsPipelineBuilder::destroy(PipelineBuildResult& result) const noexcep
   destroyLayout(layouts.tiledLighting);
   destroyLayout(layouts.shadow);
   destroyLayout(layouts.postProcess);
+  destroyLayout(layouts.bimSunHours);
   destroyLayout(layouts.wireframe);
   destroyLayout(layouts.normalValidation);
   destroyLayout(layouts.surfaceNormal);

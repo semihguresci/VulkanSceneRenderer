@@ -21,6 +21,7 @@ struct PipelineLayouts {
   VkPipelineLayout shadow{VK_NULL_HANDLE};
   VkPipelineLayout postProcess{VK_NULL_HANDLE};
   VkPipelineLayout wireframe{VK_NULL_HANDLE};
+  VkPipelineLayout bimSunHours{VK_NULL_HANDLE};
   VkPipelineLayout normalValidation{VK_NULL_HANDLE};
   VkPipelineLayout surfaceNormal{VK_NULL_HANDLE};
   VkPipelineLayout transformGizmo{VK_NULL_HANDLE};
@@ -68,6 +69,7 @@ struct GraphicsPipelines {
   VkPipeline transparentPickFrontCull{VK_NULL_HANDLE};
   VkPipeline transparentPickNoCull{VK_NULL_HANDLE};
   VkPipeline postProcess{VK_NULL_HANDLE};
+  VkPipeline bimSunHours{VK_NULL_HANDLE};
   VkPipeline geometryDebug{VK_NULL_HANDLE};
   VkPipeline normalValidation{VK_NULL_HANDLE};
   VkPipeline normalValidationFrontCull{VK_NULL_HANDLE};

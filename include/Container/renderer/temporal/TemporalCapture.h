@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/renderer/bim/BimSunHours.h"
+
 #include "Container/renderer/temporal/UpscaleMode.h"
 
 #include "Container/physics/PhysicsWorld.h"
@@ -205,6 +207,14 @@ struct CaptureBimClash {
   size_t result{};
   bool wait{};
 };
+struct CaptureBimSunHours {
+  enum class Action { Start, Cancel, Wait, Select, Export, Overlay };
+  Action action{};
+  container::renderer::BimSunHoursSettings settings;
+  std::string path;
+  uint32_t column{}, row{};
+  bool wait{}, visible{};
+};
 
 struct CaptureEditorDiagnostics {
   bool vertices{};
@@ -236,6 +246,7 @@ struct CaptureEvent {
   std::optional<CaptureBimFloorPlan> bimFloorPlan;
   std::optional<CaptureBimAnnotations> bimAnnotations;
   std::optional<CaptureBimClash> bimClash;
+  std::optional<CaptureBimSunHours> bimSunHours;
   std::optional<CaptureWireframe> wireframe;
   std::optional<CaptureEditorDiagnostics> editorDiagnostics;
   std::optional<glm::vec4> sectionPlane;
@@ -595,6 +606,8 @@ public:
         event.bimAnnotations = bimAnnotations(value.at("bimAnnotations"));
       if (value.contains("bimClash"))
         event.bimClash = bimClash(value.at("bimClash"));
+      if (value.contains("bimSunHours"))
+        event.bimSunHours = bimSunHours(value.at("bimSunHours"));
       if (value.contains("wireframe"))
         event.wireframe = wireframe(value.at("wireframe"));
       if (value.contains("editorDiagnostics")) {
@@ -975,6 +988,67 @@ public:
   std::vector<uint32_t> sampleFrames;
 
 private:
+  static CaptureBimSunHours bimSunHours(const nlohmann::json& value) {
+    using Action = CaptureBimSunHours::Action;
+    nodeFields(value, {"action", "settings", "wait", "column", "row", "path", "visible"}, "bimSunHours");
+    const auto action = value.at("action").get<std::string>();
+    const auto integer = [](const nlohmann::json& number, int lower, int upper) {
+      if (!number.is_number_integer() || (number.is_number_unsigned() && number.get<uint64_t>() > uint64_t(upper)) ||
+          number.get<int64_t>() < lower || number.get<int64_t>() > upper)
+        throw std::invalid_argument("Capture BIM sun hours integer is outside its range");
+      return number.get<int>();
+    };
+    CaptureBimSunHours request;
+    if (action == "start") {
+      nodeFields(value, {"action", "settings", "wait"}, "bimSunHours start");
+      request.action = Action::Start;
+      request.wait = value.value("wait", false);
+      const auto& fields = value.at("settings");
+      nodeFields(fields, {"minX", "maxX", "minZ", "maxZ", "height", "columns", "rows", "latitude", "longitude",
+                          "year", "month", "day", "utcOffsetMinutes", "startMinute", "endMinute", "intervalMinutes",
+                          "modelNorthDegrees"}, "bimSunHours settings");
+      auto& s = request.settings;
+      s.minX = fields.at("minX").get<double>();
+      s.maxX = fields.at("maxX").get<double>();
+      s.minZ = fields.at("minZ").get<double>();
+      s.maxZ = fields.at("maxZ").get<double>();
+      s.elevation = fields.at("height").get<double>();
+      s.northDegrees = fields.at("modelNorthDegrees").get<double>();
+      s.columns = integer(fields.at("columns"), 1, container::renderer::kMaxBimSunHoursGridDimension);
+      s.rows = integer(fields.at("rows"), 1, container::renderer::kMaxBimSunHoursGridDimension);
+      s.startMinute = integer(fields.at("startMinute"), 0, 1439);
+      s.endMinute = integer(fields.at("endMinute"), 1, 1440);
+      s.stepMinutes = integer(fields.at("intervalMinutes"), 1, 1440);
+      s.solar.latitudeDegrees = fields.at("latitude").get<float>();
+      s.solar.longitudeDegrees = fields.at("longitude").get<float>();
+      s.solar.year = integer(fields.at("year"), 1901, 2099);
+      s.solar.month = integer(fields.at("month"), 1, 12);
+      s.solar.day = integer(fields.at("day"), 1, 31);
+      s.solar.utcOffsetMinutes = integer(fields.at("utcOffsetMinutes"), -720, 840);
+      container::renderer::ValidateBimSunHoursSettings(s);
+    } else if (action == "select") {
+      nodeFields(value, {"action", "column", "row"}, "bimSunHours select");
+      request.action = Action::Select;
+      request.column = integer(value.at("column"), 0, container::renderer::kMaxBimSunHoursGridDimension - 1);
+      request.row = integer(value.at("row"), 0, container::renderer::kMaxBimSunHoursGridDimension - 1);
+    } else if (action == "export") {
+      nodeFields(value, {"action", "path"}, "bimSunHours export");
+      request.action = Action::Export;
+      request.path = value.at("path").get<std::string>();
+      if (request.path.empty()) throw std::invalid_argument("Capture BIM sun hours export requires a path");
+    } else if (action == "overlay") {
+      nodeFields(value, {"action", "visible"}, "bimSunHours overlay");
+      request.action = Action::Overlay;
+      request.visible = value.at("visible").get<bool>();
+    } else if (action == "cancel" || action == "wait") {
+      nodeFields(value, {"action"}, "bimSunHours job control");
+      request.action = action == "wait" ? Action::Wait : Action::Cancel;
+    } else {
+      throw std::invalid_argument("Unknown capture BIM sun hours action");
+    }
+    return request;
+  }
+
   static CaptureBimClash bimClash(const nlohmann::json& value) {
     using Action = CaptureBimClash::Action;
     nodeFields(value, {"action", "categoryA", "categoryB", "guidsA", "guidsB", "wait", "result", "path"}, "bimClash");

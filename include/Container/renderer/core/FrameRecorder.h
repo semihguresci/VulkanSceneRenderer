@@ -6,6 +6,7 @@
 #include "Container/renderer/effects/DisplayGrade.h"
 
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/bim/BimSunHoursOverlay.h"
 #include "Container/renderer/core/RenderExtraction.h"
 #include "Container/renderer/core/RenderGraph.h"
 #include "Container/renderer/core/RenderTechnique.h"
@@ -262,6 +263,7 @@ struct FrameBimResources {
   FrameSectionClipCapStyleState sectionClipCaps{};
   FrameSectionClipCapGeometry sectionClipCapGeometry{};
   FrameBimTechnicalElevationState technicalElevation{};
+  BimSunHoursOverlay sunHours{};
   uint32_t semanticColorMode{0};
   bool opaqueMeshDrawsUseGpuVisibility{false};
   bool transparentMeshDrawsUseGpuVisibility{false};
