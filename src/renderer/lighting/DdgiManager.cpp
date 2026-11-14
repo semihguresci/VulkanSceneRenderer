@@ -35,7 +35,8 @@ struct Buffer {
   container::gpu::AllocatedBuffer value;
   VkDeviceSize size;
   Buffer(container::gpu::VulkanMemoryManager &m, VkDeviceSize bytes,
-         VkBufferUsageFlags usage, bool upload = false)
+         VkBufferUsageFlags usage, bool upload = false,
+         std::span<const uint32_t> families = {})
       : memory(m),
         value(m.createBuffer(
             std::max<VkDeviceSize>(bytes, 16), usage,
@@ -43,7 +44,9 @@ struct Buffer {
                    : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
             upload ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                          VMA_ALLOCATION_CREATE_MAPPED_BIT
-                   : 0)),
+                   : 0,
+            families.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
+            families)),
         size(std::max<VkDeviceSize>(bytes, 16)) {}
   ~Buffer() { memory.destroyBuffer(value); }
   void write(const void *data, size_t bytes) {
@@ -65,7 +68,7 @@ struct Image {
   VkExtent2D extent{};
   bool initialized = false;
   Image(const vk::raii::Device &device, container::gpu::VulkanMemoryManager &m,
-        VkExtent2D e, VkFormat format)
+        VkExtent2D e, VkFormat format, std::span<const uint32_t> families)
       : memory(m), extent(e) {
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
@@ -78,6 +81,11 @@ struct Image {
     info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                  VK_IMAGE_USAGE_TRANSFER_SRC_BIT |
                  VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    if (!families.empty()) {
+      info.sharingMode = VK_SHARING_MODE_CONCURRENT;
+      info.queueFamilyIndexCount = uint32_t(families.size());
+      info.pQueueFamilyIndices = families.data();
+    }
     VmaAllocationCreateInfo alloc{};
     alloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     if (vmaCreateImage(m.allocator(), &info, &alloc, &value, &allocation,
@@ -202,6 +210,8 @@ struct DdgiManager::Impl {
   vk::raii::Semaphore graphicsTimeline{nullptr}, computeTimeline{nullptr};
   vk::raii::CommandPool asyncPool{nullptr};
   std::vector<vk::raii::CommandBuffer> asyncCommands;
+  vk::raii::QueryPool asyncTimestamps{nullptr};
+  std::optional<double> asyncGpuMs;
   DdgiPriorityPlan submittedAsyncPlan;
   uint32_t submittedAsyncEpoch = 0;
   uint64_t expectedGraphicsSignal = 0;
@@ -215,6 +225,20 @@ struct DdgiManager::Impl {
     if (!asyncEnabled)
       return;
     if (asyncHistory.publish(completedCompute())) {
+      if (*asyncTimestamps) {
+        std::array<uint64_t, 2> ticks{};
+        const auto status = vkGetQueryPoolResults(device->device(), *asyncTimestamps,
+            0, uint32_t(ticks.size()), sizeof(ticks), ticks.data(),
+            sizeof(ticks.front()), VK_QUERY_RESULT_64_BIT);
+        if (status == VK_SUCCESS) {
+          const auto bits = device->asyncComputeQueueSelection()->timestampValidBits;
+          const auto mask = UINT64_MAX >> (64 - bits);
+          asyncGpuMs = double((ticks[1] - ticks[0]) & mask) *
+                       properties.limits.timestampPeriod / 1e6;
+        } else {
+          asyncGpuMs.reset();
+        }
+      }
       history = asyncHistory.history();
       historyValid = true;
       if (submittedAsyncEpoch == contentEpoch)
@@ -357,6 +381,12 @@ DdgiManager::~DdgiManager() {
   try { synchronizeAsync(); } catch (const std::exception &) {}
 }
 bool DdgiManager::asyncActive() const { return impl_->asyncEnabled; }
+std::optional<uint32_t> DdgiManager::asyncQueueFamily() const {
+  return impl_->asyncEnabled
+      ? std::optional(impl_->device->asyncComputeQueueSelection()->familyIndex)
+      : std::nullopt;
+}
+std::optional<double> DdgiManager::lastAsyncGpuMs() const { return impl_->asyncGpuMs; }
 uint64_t DdgiManager::asyncSubmittedUpdates() const {
   return impl_->asyncEnabled ? impl_->asyncHistory.lastCompute() : 0;
 }
@@ -841,6 +871,8 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
   p.asyncPool = vk::raii::CommandPool(nullptr);
   p.graphicsTimeline = vk::raii::Semaphore(nullptr);
   p.computeTimeline = vk::raii::Semaphore(nullptr);
+  p.asyncTimestamps = vk::raii::QueryPool(nullptr);
+  p.asyncGpuMs.reset();
   p.asyncHistory.reset(imageCount);
   p.asyncEnabled = p.settings.asyncCompute && p.device->asyncComputeQueue() &&
       p.device->enabledVulkan12Features().timelineSemaphore;
@@ -892,6 +924,11 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
       p.status = std::string("DDGI fallback: ") + e.what();
     }
   }
+  // Both queues read the published field. The writer updates the alternate
+  // field, and graphics also initializes and scrolls both copies. Slot-local
+  // inputs used by just one queue and the writer scratch stay exclusive.
+  const auto families = p.asyncEnabled ? p.device->asyncComputeSharingFamilies()
+                                       : std::span<const uint32_t>{};
   // Even the disabled path has initialized descriptors; no optional bindings
   // are left null on raster-only devices.
   auto allocate = [&] {
@@ -904,20 +941,22 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
     for (uint32_t i = 0; i < 2; ++i) {
       p.irradiance[i] = std::make_unique<Image>(
           vk, p.memory, ir,
-          p.ready ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM);
+          p.ready ? VK_FORMAT_R16G16B16A16_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM,
+          families);
       p.visibility[i] = std::make_unique<Image>(
           vk, p.memory, vis,
-          p.ready ? VK_FORMAT_R32G32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM);
+          p.ready ? VK_FORMAT_R32G32_SFLOAT : VK_FORMAT_R8G8B8A8_UNORM,
+          families);
     }
     p.states = std::make_unique<Buffer>(
         p.memory, p.ready ? p.plan.probeStateBytes : 32,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-        VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false, families);
     if (p.asyncEnabled || p.settings.cameraFollow)
       p.alternateStates = std::make_unique<Buffer>(
           p.memory, p.ready ? p.plan.probeStateBytes : 32,
           VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
-          VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+          VK_BUFFER_USAGE_TRANSFER_SRC_BIT, false, families);
     p.rays = std::make_unique<Buffer>(p.memory,
                                       p.ready ? p.plan.rayScratchBytes : 32,
                                       VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
@@ -933,7 +972,7 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
     for (auto &s : p.slots) {
       s.positionSnapshot = std::make_unique<Buffer>(
           p.memory, p.ready ? p.plan.probePositionBytes : 16,
-          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true);
+          VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, families);
       s.positionSnapshot->write(positions.data(), positions.size() * sizeof(glm::vec4));
       s.positionRevision = p.positionRevision;
       s.read = std::make_unique<Buffer>(
@@ -1022,6 +1061,7 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
   if (p.ready)
     p.status = "DDGI ready: bounded world-space probe volumes";
   if (p.asyncEnabled) {
+    const auto selection = *p.device->asyncComputeQueueSelection();
     const vk::SemaphoreTypeCreateInfo timeline(vk::SemaphoreType::eTimeline, 0);
     vk::SemaphoreCreateInfo info;
     info.pNext = &timeline;
@@ -1029,9 +1069,17 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
     p.computeTimeline = vk::raii::Semaphore(vk, info);
     p.asyncPool = vk::raii::CommandPool(vk, vk::CommandPoolCreateInfo(
         vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
-        p.device->queueFamilyIndices().graphicsFamily.value()));
+        selection.familyIndex));
     p.asyncCommands = vk.allocateCommandBuffers(vk::CommandBufferAllocateInfo(
         *p.asyncPool, vk::CommandBufferLevel::ePrimary, imageCount));
+    if (selection.timestampValidBits) {
+      try {
+        p.asyncTimestamps = vk::raii::QueryPool(
+            vk, vk::QueryPoolCreateInfo({}, vk::QueryType::eTimestamp, 2));
+      } catch (const vk::SystemError &) {
+        // Timing is optional even when asynchronous updates are available.
+      }
+    }
   }
 }
 
@@ -1137,7 +1185,7 @@ void DdgiManager::update(uint32_t image, VkDescriptorSet scene,
     s.positionRevision = p.positionRevision;
   }
   if (wantsScene() && !receiverCompatible)
-    p.status = "DDGI fallback: BIM semantic colors use raster lighting";
+    p.status = "DDGI unavailable for the current view";
   // Local-light counts affect revision identity but not transport outside their
   // influence regions. Compare the remaining global lighting state separately.
   auto globalLighting = lighting;
@@ -1220,6 +1268,7 @@ void DdgiManager::update(uint32_t image, VkDescriptorSet scene,
     p.refreshRemaining = p.volumes.probeCount();
     std::fill(p.epochFresh.begin(), p.epochFresh.end(), false);
     if (++p.contentEpoch == 0) {
+      synchronizeAsync();
       ++p.contentEpoch;
       p.resetPending = true;
       p.historyValid = false;
@@ -1277,16 +1326,16 @@ void DdgiManager::recordTrace(VkCommandBuffer cmd, uint32_t image) {
               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
           VK_ACCESS_2_TRANSFER_READ_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT |
               VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
-  for (auto *array : {&p.irradiance, &p.visibility})
-    for (auto &i : *array)
-      initialize(cmd, *i);
-  if (p.resetPending || !p.initialized) {
+  if (!p.recordingAsync && (p.resetPending || !p.initialized)) {
     VkClearColorValue zero{};
     VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-    for (auto *array : {&p.irradiance, &p.visibility})
-      for (auto &i : *array)
+    for (auto *array : {&p.irradiance, &p.visibility}) {
+      for (auto &i : *array) {
+        initialize(cmd, *i);
         vkCmdClearColorImage(cmd, i->value, VK_IMAGE_LAYOUT_GENERAL, &zero, 1,
                              &range);
+      }
+    }
     vkCmdFillBuffer(cmd, p.states->value.buffer, 0, p.states->size, 0);
     if (p.alternateStates)
       vkCmdFillBuffer(cmd, p.alternateStates->value.buffer, 0, p.alternateStates->size, 0);
@@ -1371,6 +1420,12 @@ void DdgiManager::recordTrace(VkCommandBuffer cmd, uint32_t image) {
   if (!p.scrollError.empty()) p.status += "; " + p.scrollError;
   if (!p.batch.probeCount)
     return;
+  if (p.asyncEnabled && !p.recordingAsync) {
+    p.status = p.historyValid ? "DDGI active: asynchronous probe updates"
+                             : "DDGI waiting: asynchronous probe history";
+    if (!p.scrollError.empty()) p.status += "; " + p.scrollError;
+    return;
+  }
   s.sceneData.limits.x = bindings.instanceCount;
   s.sceneData.limits.y = bindings.triangleCount;
   s.scene->write(&s.sceneData, sizeof(s.sceneData));
@@ -1393,12 +1448,6 @@ void DdgiManager::recordTrace(VkCommandBuffer cmd, uint32_t image) {
                              vk::DescriptorType::eStorageBuffer, nullptr,
                              &info);
     p.device->raii().updateDescriptorSets(w, {});
-  }
-  if (p.asyncEnabled && !p.recordingAsync) {
-    p.status = p.historyValid ? "DDGI active: asynchronous probe updates"
-                             : "DDGI waiting: asynchronous probe history";
-    if (!p.scrollError.empty()) p.status += "; " + p.scrollError;
-    return;
   }
   if (p.alternateStates) {
     barrier(cmd, VK_PIPELINE_STAGE_2_TRANSFER_BIT,
@@ -1444,11 +1493,14 @@ void DdgiManager::recordUpdate(VkCommandBuffer cmd, uint32_t image) {
                           static_cast<VkPipelineLayout>(*p.updateLayout), 0, 1,
                           &s.computeSet, 0, nullptr);
   vkCmdDispatch(cmd, p.batch.probeCount, 1, 1);
-  barrier(cmd,
-          VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
-              VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
-              VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
-          VK_ACCESS_2_SHADER_READ_BIT);
+  // Async publication uses the compute timeline. Graphics stages are only
+  // valid in a barrier recorded for the graphics queue.
+  if (!p.recordingAsync)
+    barrier(cmd,
+            VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT,
+            VK_ACCESS_2_SHADER_READ_BIT);
   p.updated = true;
 }
 void DdgiManager::recordDebug(VkCommandBuffer cmd, uint32_t image,
@@ -1461,13 +1513,14 @@ void DdgiManager::recordDebug(VkCommandBuffer cmd, uint32_t image,
                           p.volumes.probeCount(), p.settings.debugView,
                           p.settings.debugProbeRadius);
 }
-void DdgiManager::commit() {
+void DdgiManager::commit(uint32_t image) {
   auto &p = *impl_;
   if (p.asyncEnabled && p.expectedGraphicsSignal) {
     p.asyncHistory.commitGraphics(p.expectedGraphicsSignal);
     p.expectedGraphicsSignal = 0;
   }
-  if (p.recorded) {
+  const bool prepared = p.recorded;
+  if (prepared) {
     p.initialized = true;
     p.resetPending = false;
     p.scrollMapping.clear();
@@ -1488,6 +1541,10 @@ void DdgiManager::commit() {
     ++p.frame;
   }
   p.recorded = p.traced = p.updated = false;
+  // A technique that skips DdgiTrace has not recorded the atlas preparation
+  // and must not start an async writer, even when a probe batch was planned.
+  if (prepared)
+    submitAsync(image);
 }
 void DdgiManager::submitAsync(uint32_t image) {
   auto &p = *impl_;
@@ -1500,8 +1557,14 @@ void DdgiManager::submitAsync(uint32_t image) {
   cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
   p.recordingAsync = true;
   try {
+    if (*p.asyncTimestamps) {
+      cmd.resetQueryPool(*p.asyncTimestamps, 0, 2);
+      cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eTopOfPipe, *p.asyncTimestamps, 0);
+    }
     recordTrace(static_cast<VkCommandBuffer>(*cmd), image);
     recordUpdate(static_cast<VkCommandBuffer>(*cmd), image);
+    if (*p.asyncTimestamps)
+      cmd.writeTimestamp2(vk::PipelineStageFlagBits2::eBottomOfPipe, *p.asyncTimestamps, 1);
     cmd.end();
     p.recordingAsync = false;
   } catch (...) {
@@ -1518,8 +1581,9 @@ void DdgiManager::submitAsync(uint32_t image) {
                                        vk::PipelineStageFlagBits2::eAllCommands);
   const vk::CommandBufferSubmitInfo command(*cmd);
   const vk::SubmitInfo2 submit({}, wait, command, signal);
-  vk::raii::Queue queue(p.device->raii(),
-      p.device->queueFamilyIndices().graphicsFamily.value(), 1);
+  const auto selection = *p.device->asyncComputeQueueSelection();
+  vk::raii::Queue queue(p.device->raii(), selection.familyIndex,
+                       selection.queueIndex);
   queue.submit2(submit, nullptr);
   p.asyncHistory.commit(work);
   p.submittedAsyncPlan = p.priorityPlan;

@@ -978,7 +978,7 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
   auto batch=allocationManager_->beginTextureAllocationBatch();
   auto textureResources=container::material::UploadPreparedGltfTextures(
       preparedTextures,candidate.textureManager_,[&](const auto& name,const auto& image) {
-        return allocationManager_->createTextureFromImageData(name,image);
+        return allocationManager_->createTextureFromImageData(name,image,materialQueueFamilies());
       });
   validateGltfTextureResourceTable(textureResources,incoming.gltfModel.textures.size(),candidate.textureManager_.textureCount());
   for(size_t texture=0;texture<plan.imported.textures.size();++texture) {

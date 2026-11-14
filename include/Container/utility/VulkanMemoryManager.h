@@ -67,7 +67,8 @@ class VulkanMemoryManager {
   [[nodiscard]] AllocatedBuffer createBuffer(
       VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memory_usage,
       VmaAllocationCreateFlags allocation_flags = 0,
-      VkSharingMode sharing_mode = VK_SHARING_MODE_EXCLUSIVE);
+      VkSharingMode sharing_mode = VK_SHARING_MODE_EXCLUSIVE,
+      std::span<const uint32_t> queue_families = {});
 
   void destroyBuffer(AllocatedBuffer& buffer);
 

@@ -1883,8 +1883,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialGeneration
   }
   s.routing=append || !sameRouting(materialRenderProperties(runtime),s.renderProperties[runtime]);
   const auto bytes=VkDeviceSize(s.gpu.size()*sizeof(container::gpu::GpuMaterial));
-  s.buffer=allocationManager_->createBuffer(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  s.buffer=createMaterialStorageBuffer(bytes);
   s.capacity=s.gpu.size();
   if(!s.buffer.allocation_info.pMappedData) invalid("Detached material buffer is not mapped");
   std::memcpy(s.buffer.allocation_info.pMappedData,s.gpu.data(),size_t(bytes));
@@ -2094,8 +2093,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialTailChange
   if(s.dependencyChange->ownedBytes()>dependencyBytesBefore) budget.add(s.dependencyChange->ownedBytes()-dependencyBytesBefore);
   s.routing=true;s.descriptorCpuAvailable=budget.available;
   const auto bytes=VkDeviceSize(futureCount*sizeof(container::gpu::GpuMaterial));
-  s.buffer=allocationManager_->createBuffer(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT);s.capacity=futureCount;
+  s.buffer=createMaterialStorageBuffer(bytes);s.capacity=futureCount;
   if(!s.buffer.allocation_info.pMappedData) invalid("Detached tail material buffer is not mapped");
   std::memcpy(s.buffer.allocation_info.pMappedData,s.gpu.data(),size_t(bytes));
   if(vmaFlushAllocation(allocationManager_->memoryManager()->allocator(),s.buffer.allocation,0,bytes)!=VK_SUCCESS)
@@ -2331,8 +2329,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialRetirement
   if(s.dependencyChange->ownedBytes()>dependencyBytesBefore) budget.add(s.dependencyChange->ownedBytes()-dependencyBytesBefore);
   s.descriptorCpuAvailable=budget.available;
   const auto bytes=VkDeviceSize(count*sizeof(container::gpu::GpuMaterial));
-  s.buffer=allocationManager_->createBuffer(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT);s.capacity=count;
+  s.buffer=createMaterialStorageBuffer(bytes);s.capacity=count;
   if(!s.buffer.allocation_info.pMappedData) invalid("Detached retirement material buffer is not mapped");
   std::memcpy(s.buffer.allocation_info.pMappedData,s.gpu.data(),size_t(bytes));
   if(vmaFlushAllocation(allocationManager_->memoryManager()->allocator(),s.buffer.allocation,0,bytes)!=VK_SUCCESS)

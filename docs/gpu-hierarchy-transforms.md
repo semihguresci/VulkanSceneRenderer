@@ -70,7 +70,8 @@ The generation owns the packed input and descriptor pool; a retained producer
 state keeps its pipeline layout alive. Source object buffers are needed through
 the graphics submission only. Later ray queries and asynchronous DDGI read
 private generation outputs. The existing graphics-timeline wait makes them
-visible to DDGI's second queue in the same graphics queue family.
+visible to DDGI's compute queue. A dedicated queue family shares the surface
+output and acceleration storage with graphics.
 
 GPU path selection and shader-generation changes invalidate the ray-instance
 generation without invalidating unchanged BLAS geometry. Light-only animation

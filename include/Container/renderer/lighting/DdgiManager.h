@@ -125,19 +125,19 @@ public:
   // draws.
   void recordDebug(VkCommandBuffer cmd, uint32_t image,
                    VkDescriptorSet postProcess);
-  void commit();
+  // Commit a successful graphics submission and launch any prepared writer.
+  void commit(uint32_t image);
   // Retire an image before replacing any borrowed scene/light descriptor or AS
   // generation. Its graphics fence alone does not cover the async writer.
   void retireImage(uint32_t image);
   void synchronizeAsync();
   [[nodiscard]] bool asyncActive() const;
+  [[nodiscard]] std::optional<uint32_t> asyncQueueFamily() const;
+  [[nodiscard]] std::optional<double> lastAsyncGpuMs() const;
   [[nodiscard]] uint64_t asyncSubmittedUpdates() const;
   [[nodiscard]] uint64_t asyncPublishedUpdates() const;
   [[nodiscard]] std::optional<VkSemaphoreSubmitInfo> graphicsWait() const;
   [[nodiscard]] std::optional<VkSemaphoreSubmitInfo> graphicsSignal() const;
-  // Call after a successful graphics submission and commit. That submission
-  // publishes scene-build and input-upload dependencies to the compute queue.
-  void submitAsync(uint32_t image);
   [[nodiscard]] bool wantsScene() const;
   [[nodiscard]] bool supported() const;
   [[nodiscard]] bool active() const;
@@ -159,6 +159,7 @@ public:
   [[nodiscard]] const std::string &status() const;
 
 private:
+  void submitAsync(uint32_t image);
   struct Impl;
   std::unique_ptr<Impl> impl_;
 };

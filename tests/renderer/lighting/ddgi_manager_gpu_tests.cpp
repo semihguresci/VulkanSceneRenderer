@@ -25,11 +25,14 @@ struct UploadBuffer {
   VulkanMemoryManager &memory;
   AllocatedBuffer value;
   size_t size;
-  UploadBuffer(VulkanMemoryManager &m, size_t bytes, VkBufferUsageFlags usage)
+  UploadBuffer(VulkanMemoryManager &m, size_t bytes, VkBufferUsageFlags usage,
+               std::span<const uint32_t> families = {})
       : memory(m), value(m.createBuffer(
                        bytes, usage, VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
                        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                           VMA_ALLOCATION_CREATE_MAPPED_BIT)),
+                           VMA_ALLOCATION_CREATE_MAPPED_BIT,
+                       families.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
+                       families)),
         size(bytes) {}
   ~UploadBuffer() { memory.destroyBuffer(value); }
   void write(const void *source, size_t bytes) {
@@ -102,6 +105,11 @@ protected:
     DeviceCreateInfo deviceInfo;
     deviceInfo.requiredExtensions = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     deviceInfo.enableRayQueries = true;
+    if (const char* requested = std::getenv("CONTAINER_DDGI_ASYNC_QUEUE")) {
+      const auto preference = parseAsyncComputeQueuePreference(requested);
+      ASSERT_TRUE(preference) << requested;
+      deviceInfo.asyncComputeQueuePreference = *preference;
+    }
     deviceInfo.enabledFeatures.shaderSampledImageArrayDynamicIndexing = VK_TRUE;
     deviceInfo.enabledFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
     deviceInfo.enabledFeatures.shaderStorageImageReadWithoutFormat = VK_TRUE;
@@ -181,6 +189,12 @@ protected:
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+    const auto families = device->asyncComputeSharingFamilies();
+    if (!families.empty()) {
+      info.sharingMode = VK_SHARING_MODE_CONCURRENT;
+      info.queueFamilyIndexCount = uint32_t(families.size());
+      info.pQueueFamilyIndices = families.data();
+    }
     VmaAllocationCreateInfo alloc{};
     alloc.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
     ASSERT_EQ(vmaCreateImage(memory->allocator(), &info, &alloc, &environment,
@@ -228,6 +242,9 @@ protected:
     command.pipelineBarrier2(dependency);
     submit();
     info.flags = 0;
+    info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    info.queueFamilyIndexCount = 0;
+    info.pQueueFamilyIndices = nullptr;
     info.format = VK_FORMAT_D32_SFLOAT;
     info.extent = {32, 32, 1};
     info.arrayLayers = 1;
@@ -283,16 +300,18 @@ protected:
     const GpuTextureMetadata metadata;
     const PointLightData point;
     const AreaLightData area;
-    auto makeBuffer = [&](const auto &data, bool uniform = false) {
+    auto makeBuffer = [&](const auto &data, bool uniform = false,
+                          std::span<const uint32_t> families = {}) {
       auto buffer = std::make_unique<UploadBuffer>(
           *memory, sizeof(data),
           uniform ? VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT
-                  : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+                  : VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+          families);
       buffer->write(&data, sizeof(data));
       return buffer;
     };
-    uploads.push_back(makeBuffer(material));
-    uploads.push_back(makeBuffer(metadata));
+    uploads.push_back(makeBuffer(material, false, device->asyncComputeSharingFamilies()));
+    uploads.push_back(makeBuffer(metadata, false, device->asyncComputeSharingFamilies()));
     uploads.push_back(makeBuffer(lighting, true));
     uploads.push_back(makeBuffer(point));
     uploads.push_back(makeBuffer(area));
@@ -358,7 +377,8 @@ protected:
       queue.waitIdle();
   }
 
-  void run(uint32_t image, bool wait = true, const DdgiSchedulingHints &hints = {}) {
+  void run(uint32_t image, bool wait = true, const DdgiSchedulingHints &hints = {},
+           bool recordDdgiPasses = true) {
     manager->retireImage(image);
     rayScene->requestSurfaceScene(manager->wantsScene(),
                                   manager->settings().surfaceBudgetBytes);
@@ -373,12 +393,13 @@ protected:
     command.begin(vk::CommandBufferBeginInfo(
         vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
     rayScene->recordBuild(*command, image);
-    manager->recordTrace(*command, image);
-    manager->recordUpdate(*command, image);
+    if (recordDdgiPasses) {
+      manager->recordTrace(*command, image);
+      manager->recordUpdate(*command, image);
+    }
     submit(wait, true);
     rayScene->commit();
-    manager->commit();
-    manager->submitAsync(image);
+    manager->commit(image);
   }
 
   void enable() {
@@ -1023,19 +1044,23 @@ TEST_F(DdgiManagerGpu, AdditionalVolumesShareCapacityAndRefreshAllPackedProbes) 
 TEST_F(DdgiManagerGpu, AsyncWriterDoesNotBlockGraphicsOrPublishUnfinishedHistory) {
   config.asyncCompute = true;
   enable();
-  if (!device->asyncComputeQueue()) {
+  const auto route = device->asyncComputeQueueSelection();
+  if (!route) {
     EXPECT_FALSE(manager->asyncActive());
+    EXPECT_FALSE(manager->asyncQueueFamily());
     ASSERT_NO_THROW(run(0));
     EXPECT_EQ(manager->frameNumber(), 1u);
     return;
   }
   ASSERT_TRUE(manager->asyncActive());
+  EXPECT_EQ(manager->asyncQueueFamily(), route->familyIndex);
+  std::printf("DDGI queue route: graphics family %u, writer family %u queue %u\n",
+              *device->queueFamilyIndices().graphicsFamily, route->familyIndex, route->queueIndex);
   vk::SemaphoreTypeCreateInfo type(vk::SemaphoreType::eTimeline, 0);
   vk::SemaphoreCreateInfo info;
   info.pNext = &type;
   vk::raii::Semaphore gate(device->raii(), info);
-  vk::raii::Queue compute(device->raii(),
-      device->queueFamilyIndices().graphicsFamily.value(), 1);
+  vk::raii::Queue compute(device->raii(), route->familyIndex, route->queueIndex);
   struct ReleaseGate {
     const vk::raii::Device &device;
     const vk::raii::Semaphore &gate;
@@ -1068,10 +1093,29 @@ TEST_F(DdgiManagerGpu, AsyncWriterDoesNotBlockGraphicsOrPublishUnfinishedHistory
   ASSERT_NO_THROW(manager->retireImage(0));
   ASSERT_TRUE(manager->graphicsWait());
   EXPECT_EQ(manager->graphicsWait()->value, 1u);
+  if (route->timestampValidBits) {
+    ASSERT_TRUE(manager->lastAsyncGpuMs());
+    EXPECT_GT(*manager->lastAsyncGpuMs(), 0.0);
+  }
   EXPECT_EQ(manager->refreshRemainingProbes(), 4u); // New lighting epoch.
   ASSERT_NO_THROW(run(0));
   EXPECT_EQ(manager->frameNumber(), 2u);
   ASSERT_NO_THROW(manager->synchronizeAsync());
+}
+
+TEST_F(DdgiManagerGpu, SkippedGraphicsPreparationDoesNotLaunchWriter) {
+  config.asyncCompute = true;
+  enable();
+  ASSERT_NO_THROW(run(0, true, {}, false));
+  ASSERT_GT(manager->lastBatch().probeCount, 0u);
+  EXPECT_EQ(manager->frameNumber(), 0u);
+  EXPECT_EQ(manager->asyncSubmittedUpdates(), 0u);
+  EXPECT_FALSE(manager->graphicsWait());
+
+  ASSERT_NO_THROW(run(1));
+  ASSERT_NO_THROW(manager->synchronizeAsync());
+  EXPECT_EQ(manager->frameNumber(), 1u);
+  EXPECT_EQ(manager->asyncPublishedUpdates(), manager->asyncActive() ? 1u : 0u);
 }
 
 TEST_F(DdgiManagerGpu, AsyncPauseRetainsPublishedSnapshotAndResumeCursor) {

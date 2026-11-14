@@ -129,7 +129,8 @@ class AllocationManager {
   [[nodiscard]] AllocatedBuffer createBuffer(
       VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage,
       VmaAllocationCreateFlags allocationFlags = 0,
-      VkSharingMode sharingMode = VK_SHARING_MODE_EXCLUSIVE);
+      VkSharingMode sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+      std::span<const uint32_t> queueFamilies = {});
 
   void destroyBuffer(AllocatedBuffer& buffer);
 
@@ -147,13 +148,17 @@ class AllocationManager {
   }
   [[nodiscard]] container::material::TextureDecodeOptions textureDecodeOptions(
       bool isSrgb, bool strictKhrBasisu = false) const;
+  // A nonempty family list includes the graphics upload queue and the other
+  // consumers. It must contain at least two distinct queue families.
   container::material::TextureResource createTextureFromImageData(
       const std::string& textureName,
-      const container::material::TextureImageData& image);
+      const container::material::TextureImageData& image,
+      std::span<const uint32_t> queueFamilies = {});
   container::material::TextureResource
   createTextureFromRgbaPixels(const std::string &textureName,
                               std::span<const std::byte> rgbaPixels,
-                              uint32_t width, uint32_t height, VkFormat format);
+                              uint32_t width, uint32_t height, VkFormat format,
+                              std::span<const uint32_t> queueFamilies = {});
   container::material::TextureArrayResource createTexture2DArrayFromRgbaPixels(
       const std::string& textureName,
       std::span<const std::byte> rgbaPixels,

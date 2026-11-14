@@ -21,7 +21,8 @@ struct OwnedBuffer {
   container::gpu::AllocatedBuffer buffer{};
   VkDeviceSize size{};
   OwnedBuffer(container::gpu::VulkanMemoryManager &allocator,
-              VkDeviceSize bytes, VkBufferUsageFlags usage, bool upload = false)
+              VkDeviceSize bytes, VkBufferUsageFlags usage, bool upload = false,
+              std::span<const uint32_t> queueFamilies = {})
       : memory(allocator), size(bytes) {
     buffer = memory.createBuffer(
         std::max<VkDeviceSize>(bytes, 1), usage,
@@ -29,7 +30,9 @@ struct OwnedBuffer {
                : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
         upload ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                      VMA_ALLOCATION_CREATE_MAPPED_BIT
-               : 0);
+               : 0,
+        queueFamilies.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
+        queueFamilies);
   }
   ~OwnedBuffer() { memory.destroyBuffer(buffer); }
   OwnedBuffer(const OwnedBuffer &) = delete;
@@ -171,7 +174,7 @@ struct Micromap {
 // or allocation can then fall back without leaving dangling command inputs.
 std::shared_ptr<Micromap> prepareMicromap(const vk::raii::Device& device,
     container::gpu::VulkanMemoryManager& memory, std::shared_ptr<const GltfOpacityMicromap> source,
-    VkDeviceSize scratchAlignment) {
+    VkDeviceSize scratchAlignment, std::span<const uint32_t> queueFamilies) {
   auto result = std::make_shared<Micromap>();
   result->source = std::move(source);
   result->usage = vulkanUsage(result->source->usage);
@@ -183,7 +186,9 @@ std::shared_ptr<Micromap> prepareMicromap(const vk::raii::Device& device,
                                256, result->dataAddress);
   result->triangles = micromapInput(device, memory, result->source->triangles.data(),
       result->source->triangles.size() * sizeof(GltfOpacityMicromapTriangle), 256, result->triangleAddress);
-  result->storage = std::make_unique<OwnedBuffer>(memory, sizes.micromapSize, VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT);
+  result->storage = std::make_unique<OwnedBuffer>(
+      memory, sizes.micromapSize, VK_BUFFER_USAGE_MICROMAP_STORAGE_BIT_EXT,
+      false, queueFamilies);
   if (sizes.buildScratchSize) {
     result->scratch = std::make_unique<OwnedBuffer>(memory, sizes.buildScratchSize + scratchAlignment - 1,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
@@ -239,7 +244,7 @@ void buildStructure(const vk::raii::Device &device,
                     vk::AccelerationStructureTypeKHR type,
                     const vk::AccelerationStructureGeometryKHR &geometry,
                     uint32_t primitiveCount, uint32_t alignment,
-                    Structure &result) {
+                    Structure &result, std::span<const uint32_t> queueFamilies) {
   vk::AccelerationStructureBuildGeometryInfoKHR build{};
   build.type = type;
   build.flags = vk::BuildAccelerationStructureFlagBitsKHR::ePreferFastTrace;
@@ -251,7 +256,8 @@ void buildStructure(const vk::raii::Device &device,
   result.storage = std::make_unique<OwnedBuffer>(
       memory, sizes.accelerationStructureSize,
       VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_STORAGE_BIT_KHR |
-          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT);
+          VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
+      false, queueFamilies);
   vk::AccelerationStructureCreateInfoKHR create{};
   create.buffer = result.storage->buffer.buffer;
   create.size = sizes.accelerationStructureSize;
@@ -385,6 +391,11 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
       std::shared_ptr<RaySceneGeneration>(new RaySceneGeneration());
   auto &state = *generation->impl_;
   state.device = &device_.raii();
+  // DDGI can trace both AS levels and their attached micromaps from its
+  // compute family. Keep sharing invariant across generations so an existing
+  // BLAS is reusable when DDGI becomes active. Build inputs and scratch are
+  // only accessed on the graphics family.
+  const auto queueFamilies = device_.asyncComputeSharingFamilies();
   std::map<std::pair<std::string, uint64_t>, std::shared_ptr<Blas>> reusable;
   std::unordered_map<const GltfOpacityMicromap*, std::shared_ptr<Micromap>> maps;
   std::unordered_map<const GltfOpacityMicromap*, bool> mapValidity;
@@ -471,7 +482,7 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
           const auto& mapSource = attachment->map;
           auto [loaded, inserted] = maps.try_emplace(mapSource.get());
           if (inserted) loaded->second = prepareMicromap(device_.raii(), memory_, mapSource,
-              properties_.minAccelerationStructureScratchOffsetAlignment);
+              properties_.minAccelerationStructureScratchOffsetAlignment, queueFamilies);
           if (loaded->second) {
             opacityUsage = vulkanUsage(attachment->usage);
             VkDeviceAddress address{};
@@ -501,7 +512,7 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
                      vk::AccelerationStructureTypeKHR::eBottomLevel, geometry,
                      primitiveCount,
                      properties_.minAccelerationStructureScratchOffsetAlignment,
-                     bottom->structure);
+                     bottom->structure, queueFamilies);
       ++state.stats.blasBuilt;
     }
     state.stats.accelerationBytes += bottom->structure.storage->size;
@@ -559,7 +570,7 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
                  vk::AccelerationStructureTypeKHR::eTopLevel, geometry,
                  static_cast<uint32_t>(instances.size()),
                  properties_.minAccelerationStructureScratchOffsetAlignment,
-                 state.top);
+                 state.top, queueFamilies);
   buildBarrier(command, true);
   state.stats.instanceCount = static_cast<uint32_t>(instances.size());
   state.stats.accelerationBytes += state.top.storage->size;

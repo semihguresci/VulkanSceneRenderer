@@ -887,7 +887,7 @@ struct SceneManager::IesGpuProfileCache {
     for (auto& [key, entry] : entries) allocator.destroyBuffer(entry.buffer);
   }
 
-  VkDeviceAddress address(const std::string& uri, VkDevice device) {
+  VkDeviceAddress address(const std::string& uri, const container::gpu::VulkanDevice& device) {
     if (const auto found = entries.find(uri); found != entries.end()) return found->second.address;
     const auto data = container::geometry::gltf::ParseIesProfile(
         container::geometry::gltf::DecodeGltfIesProfileUri(uri)).packedForGpu();
@@ -895,16 +895,19 @@ struct SceneManager::IesGpuProfileCache {
     constexpr size_t capacity = 32 * 1024 * 1024;
     if (entries.size() >= 256 || uri.size() + bytes > capacity - usedBytes)
       throw std::length_error("IES profile cache exceeded its resident budget");
+    // Point-light snapshots carry this address into DDGI hit shading.
+    const auto families = device.asyncComputeSharingFamilies();
     Entry entry;
     entry.buffer = allocator.createBuffer(bytes,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
+        families.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT, families);
     try {
       writeHostVisibleBuffer(allocator, entry.buffer, data.data(), bytes);
       VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
       info.buffer = entry.buffer.buffer;
-      entry.address = vkGetBufferDeviceAddress(device, &info);
+      entry.address = vkGetBufferDeviceAddress(device.device(), &info);
       if (!entry.address) throw std::runtime_error("IES profile buffer has no device address");
       entries.emplace(uri, entry);
     } catch (...) {
@@ -2886,7 +2889,7 @@ void SceneManager::ensureTextureSamplingFallback() {
   auto batch=allocationManager_->beginTextureAllocationBatch();
   constexpr std::array rgba{std::byte{255},std::byte{255},std::byte{255},std::byte{255}};
   fallback->resource=allocationManager_->createTextureFromRgbaPixels(
-      "__private_scene_texture_fallback",rgba,1,1,VK_FORMAT_R8G8B8A8_UNORM);
+      "__private_scene_texture_fallback",rgba,1,1,VK_FORMAT_R8G8B8A8_UNORM,materialQueueFamilies());
   fallback->resource.samplerIndex=0;
   fallback->lease=batch.commit();
   textureSamplingFallback_=std::move(fallback);
@@ -3043,7 +3046,7 @@ void SceneManager::loadGltfAssets(int requestedScene,
         throw std::runtime_error("Prepared glTF texture identity table differs from the source");
       auto imageToTexture = container::material::UploadPreparedGltfTextures(
           *preparedTextures, textureManager_, [this](const auto& name, const auto& image) {
-            return allocationManager_->createTextureFromImageData(name, image);
+            return allocationManager_->createTextureFromImageData(name, image, materialQueueFamilies());
           });
       validateGltfTextureResourceTable(imageToTexture,gltfModel_.textures.size(),textureManager_.textureCount());
 
@@ -3152,7 +3155,7 @@ void SceneManager::appendSceneAsset(
       allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB), experimental);
   const auto imageToTexture = container::material::UploadPreparedGltfTextures(
       preparedTextures, textureManager_, [this](const auto& name, const auto& image) {
-        return allocationManager_->createTextureFromImageData(name, image);
+        return allocationManager_->createTextureFromImageData(name, image, materialQueueFamilies());
       });
 
   const uint32_t fallbackMaterialIndex = defaultMaterialIndex_;
@@ -3236,7 +3239,7 @@ void SceneManager::prepareIesProfileAddresses() {
   for (size_t index = 0; const auto* uri = GltfIesEmbeddedProfileUri(gltfModel_, index); ++index) {
     VkDeviceAddress address{};
     try {
-      address = iesProfileCache_->address(*uri, deviceWrapper_->device());
+      address = iesProfileCache_->address(*uri, *deviceWrapper_);
     } catch (const std::exception& error) {
       std::println(stderr, "EXT_lights_ies profile {} uses punctual fallback: {}", index, error.what());
       if (std::ranges::find(gltfModel_.extensionsRequired, container::geometry::gltf::kGltfIesExtension) !=
@@ -3475,6 +3478,19 @@ void SceneManager::publishAnimationChanges(
   if(!dirty.cameras.empty()) ++cameraEvaluationRevision_;
 }
 
+std::span<const uint32_t> SceneManager::materialQueueFamilies() const noexcept {
+  // DDGI traces use the same material descriptors as raster and ray shading.
+  return deviceWrapper_ ? deviceWrapper_->asyncComputeSharingFamilies() : std::span<const uint32_t>{};
+}
+
+container::gpu::AllocatedBuffer SceneManager::createMaterialStorageBuffer(VkDeviceSize bytes) const {
+  const auto families = materialQueueFamilies();
+  return allocationManager_->createBuffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+      VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                VMA_ALLOCATION_CREATE_MAPPED_BIT,
+      families.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT, families);
+}
+
 void SceneManager::uploadMaterialBuffer() {
   // Uploads publish imported or edited material classification as well as color.
   ++materialRevision_;
@@ -3515,11 +3531,7 @@ void SceneManager::uploadMaterialBuffer() {
       allocationManager_->destroyBuffer(materialBuffer_);
       materialBufferCapacity_ = 0;
     }
-    materialBuffer_ = allocationManager_->createBuffer(
-        requiredSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VMA_MEMORY_USAGE_AUTO,
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-            VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    materialBuffer_ = createMaterialStorageBuffer(requiredSize);
     materialBufferCapacity_ = requiredCount;
   }
 
@@ -3579,11 +3591,7 @@ void SceneManager::uploadTextureMetadataBuffer(uint64_t maxLogicalCpuBytes) {
       allocationManager_->destroyBuffer(textureMetadataBuffer_);
       textureMetadataBufferCapacity_ = 0;
     }
-    textureMetadataBuffer_ = allocationManager_->createBuffer(
-        requiredSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-        VMA_MEMORY_USAGE_AUTO,
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-            VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    textureMetadataBuffer_ = createMaterialStorageBuffer(requiredSize);
     textureMetadataBufferCapacity_ = requiredCount;
   }
 
