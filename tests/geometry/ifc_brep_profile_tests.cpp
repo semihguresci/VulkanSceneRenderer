@@ -2663,6 +2663,448 @@ TEST(IfcCurvedBrep,
   }
 }
 
+struct SplineAxis {
+  double low, high;
+  bool periodic;
+
+  std::string knots() const {
+    std::string result = "(" + number(low);
+    if (periodic)
+      for (int i = 1; i < 4; ++i)
+        result += "," + number(low + (high - low) * i / 4);
+    return result + "," + number(high) + ")";
+  }
+
+  const char *multiplicities() const {
+    return periodic ? "(3,2,2,2,3)" : "(2,2)";
+  }
+
+  double weight(size_t control) const {
+    return periodic && control % 2 != 0 ? std::sqrt(.5) : 1.;
+  }
+
+  size_t controls() const { return periodic ? 9u : 2u; }
+  const char *degree() const { return periodic ? "2" : "1"; }
+  const char *closed() const { return periodic ? ".T." : ".F."; }
+};
+
+// Four exact quadratic rational quarter circles. Odd indices are tangent
+// intersections, rather than points lying on the circle.
+const std::array<glm::dvec2, 9> circleControls{{{1, 0},
+                                                {1, 1},
+                                                {0, 1},
+                                                {-1, 1},
+                                                {-1, 0},
+                                                {-1, -1},
+                                                {0, -1},
+                                                {1, -1},
+                                                {1, 0}}};
+
+enum class SplineLift {
+  Valid,
+  WrongRing,
+  AmbiguousRing,
+  DuplicateSeam,
+  TwiceSeam
+};
+
+struct PeriodicSplineBuilder : CurvedBuilder {
+  static constexpr SplineAxis torusU{2.75, 8.75, true};
+  static constexpr SplineAxis torusV{-4.125, -1.125, true};
+
+  std::string surface(const SplineAxis &u, const SplineAxis &v,
+                      const std::vector<std::vector<std::string>> &control) {
+    std::vector<std::string> rows, weightRows;
+    for (size_t i = 0; i < u.controls(); ++i) {
+      std::vector<std::string> weights;
+      for (size_t j = 0; j < v.controls(); ++j)
+        weights.push_back(number(u.weight(i) * v.weight(j)));
+      rows.push_back("(" + refs(control[i]) + ")");
+      weightRows.push_back("(" + refs(weights) + ")");
+    }
+    return add(std::string("IFCRATIONALBSPLINESURFACEWITHKNOTS(") + u.degree() +
+               "," + v.degree() + ",(" + refs(rows) + "),.UNSPECIFIED.," +
+               u.closed() + "," + v.closed() + ",.F.," + u.multiplicities() +
+               "," + v.multiplicities() + "," + u.knots() + "," + v.knots() +
+               ",.UNSPECIFIED.,(" + refs(weightRows) + "))");
+  }
+
+  std::string ring(const std::vector<std::string> &control,
+                   const SplineAxis &axis) {
+    std::vector<std::string> weights;
+    for (size_t i = 0; i < control.size(); ++i)
+      weights.push_back(number(axis.weight(i)));
+    return add("IFCRATIONALBSPLINECURVEWITHKNOTS(2,(" + refs(control) +
+               "),.UNSPECIFIED.,.T.,.F.," + axis.multiplicities() + "," +
+               axis.knots() + ",.UNSPECIFIED.,(" + refs(weights) + "))");
+  }
+
+  std::string pcurve(const std::string &basis, glm::dvec2 a, glm::dvec2 b) {
+    const auto uv = [&](glm::dvec2 p) {
+      return add("IFCCARTESIANPOINT((" + number(p.x) + "," + number(p.y) +
+                 "))");
+    };
+    const auto start = uv(a), end = uv(b);
+    const auto line = add("IFCPOLYLINE((" + start + "," + end + "))");
+    const auto definition =
+        add("IFCDEFINITIONALREPRESENTATION($,$,'Curve2D',(" + line + "))");
+    return add("IFCPCURVE(" + basis + "," + definition + ")");
+  }
+
+  std::string associated(std::string_view type, const std::string &curve,
+                         const std::vector<std::string> &lifts,
+                         std::string_view master = ".CURVE3D.") {
+    return add(std::string(type) + "(" + curve + ",(" + refs(lifts) + ")," +
+               std::string(master) + ")");
+  }
+
+  std::string cylinder(bool swapped, SplineLift lift) {
+    const SplineAxis angle{2.75, 8.75, true}, height{-2.125, 4.875, false};
+    std::vector<std::vector<std::string>> grid(swapped ? height.controls()
+                                                       : angle.controls());
+    std::vector<std::string> lower, upper;
+    for (const auto &control : circleControls) {
+      const auto low = point({2 * control.x, 2 * control.y, 0});
+      const auto high = point({2 * control.x, 2 * control.y, 3});
+      lower.push_back(low);
+      upper.push_back(high);
+      if (swapped) {
+        grid[0].push_back(low);
+        grid[1].push_back(high);
+      } else
+        grid[lower.size() - 1] = {low, high};
+    }
+    const auto sheet =
+        swapped ? surface(height, angle, grid) : surface(angle, height, grid);
+    const auto liftAt = [&](glm::dvec2 a, glm::dvec2 b) {
+      return pcurve(sheet, swapped ? glm::dvec2(a.y, a.x) : a,
+                    swapped ? glm::dvec2(b.y, b.x) : b);
+    };
+    const auto ringEdge = [&](const std::vector<std::string> &controls,
+                              double z, double shift, bool ambiguous) {
+      std::vector lifts{
+          liftAt({angle.low + shift, z}, {angle.high + shift, z})};
+      if (ambiguous)
+        lifts.push_back(
+            liftAt({angle.high, z}, {2 * angle.high - angle.low, z}));
+      return edge(controls.front(), controls.front(),
+                  associated("IFCSURFACECURVE", ring(controls, angle), lifts));
+    };
+    const auto bottom = ringEdge(lower, height.low, 0., false);
+    const double period = angle.high - angle.low;
+    const auto top = ringEdge(upper, height.high,
+                              lift == SplineLift::WrongRing ? period / 2 : 0.,
+                              lift == SplineLift::AmbiguousRing);
+    const double second = lift == SplineLift::DuplicateSeam ? angle.low
+                          : lift == SplineLift::TwiceSeam ? angle.high + period
+                                                          : angle.high;
+    const auto seam3d =
+        add("IFCPOLYLINE((" + lower.front() + "," + upper.front() + "))");
+    const auto seam = edge(
+        lower.front(), upper.front(),
+        associated("IFCSEAMCURVE", seam3d,
+                   {liftAt({angle.low, height.low}, {angle.low, height.high}),
+                    liftAt({second, height.low}, {second, height.high})}));
+    face({bound({{bottom, true}, {seam, true}, {top, false}, {seam, false}},
+                true, !swapped)},
+         sheet, !swapped);
+    plane({{bottom, false}}, {0, 0, 0}, {0, 0, -1});
+    plane({{top, true}}, {0, 0, 3}, {0, 0, 1});
+    return finish();
+  }
+
+  std::vector<std::vector<std::string>> torusGrid() {
+    std::vector<std::vector<std::string>> grid;
+    for (const auto &around : circleControls) {
+      std::vector<std::string> meridian;
+      for (const auto &across : circleControls) {
+        const double radius = 3 + across.x;
+        meridian.push_back(
+            point({radius * around.x, radius * around.y, across.y}));
+      }
+      grid.push_back(std::move(meridian));
+    }
+    return grid;
+  }
+
+  std::string torus() {
+    const auto u = torusU, v = torusV;
+    const auto grid = torusGrid();
+    std::vector<std::string> outerRing;
+    for (const auto &meridian : grid)
+      outerRing.push_back(meridian.front());
+    const auto sheet = surface(u, v, grid);
+    const auto corner = outerRing.front();
+    const auto seam = [&](const std::string &curve, glm::dvec2 a0,
+                          glm::dvec2 b0, glm::dvec2 a1, glm::dvec2 b1) {
+      return edge(corner, corner,
+                  associated("IFCSEAMCURVE", curve,
+                             {pcurve(sheet, a0, b0), pcurve(sheet, a1, b1)}));
+    };
+    const glm::dvec2 a{u.low, v.low}, b{u.high, v.low}, c{u.high, v.high},
+        d{u.low, v.high};
+    const auto ringSeam = seam(ring(outerRing, u), a, b, d, c);
+    const auto meridianSeam = seam(ring(grid.front(), v), a, d, b, c);
+    face({bound({{ringSeam, true},
+                 {meridianSeam, true},
+                 {ringSeam, false},
+                 {meridianSeam, false}})},
+         sheet);
+    return finish();
+  }
+
+  // One U quadrant and half a V quadrant in each of eight Bezier spans.
+  // Multiplying their homogeneous quadratic polynomials yields an exact
+  // quartic witness for the linear (2,1) lift through the tensor surface.
+  std::pair<std::string, std::string> torusHelix(unsigned vQuarterOffset) {
+    const auto quadrant = [](unsigned quarter) {
+      std::array<glm::dvec3, 3> h;
+      for (unsigned i = 0; i < h.size(); ++i) {
+        const double w = torusU.weight(i);
+        h[i] = {w * circleControls[2 * (quarter % 4) + i], w};
+      }
+      return h;
+    };
+    constexpr std::array<double, 3> quadratic{1, 2, 1};
+    constexpr std::array<double, 5> quartic{1, 4, 6, 4, 1};
+    std::vector<std::string> controls, weights, knots;
+    for (unsigned span = 0; span < 8; ++span) {
+      auto v = quadrant(span / 2 + vQuarterOffset);
+      const auto left = (v[0] + v[1]) / 2.;
+      const auto right = (v[1] + v[2]) / 2.;
+      const auto middle = (left + right) / 2.;
+      v = span % 2 == 0 ? std::array{v[0], left, middle}
+                        : std::array{middle, right, v[2]};
+      const auto u = quadrant(span);
+      std::array<glm::dvec4, 5> product;
+      product.fill(glm::dvec4(0.));
+      for (unsigned i = 0; i < u.size(); ++i)
+        for (unsigned j = 0; j < v.size(); ++j) {
+          const auto a = u[i], b = v[j];
+          const double r = 3. * b.z + b.x;
+          product[i + j] += glm::dvec4(r * a.x, r * a.y, a.z * b.y, a.z * b.z) *
+                            (quadratic[i] * quadratic[j] / quartic[i + j]);
+        }
+      for (unsigned i = span == 0 ? 0 : 1; i < product.size(); ++i) {
+        const auto h = product[i];
+        controls.push_back(point(glm::dvec3(h) / h.w));
+        weights.push_back(number(h.w));
+      }
+      knots.push_back(number(span + 1));
+    }
+    knots.push_back("9.");
+    return {controls.front(),
+            add("IFCRATIONALBSPLINECURVEWITHKNOTS(4,(" + refs(controls) +
+                "),.UNSPECIFIED.,.T.,.F.,(5,4,4,4,4,4,4,4,5),(" + refs(knots) +
+                "),.UNSPECIFIED.,(" + refs(weights) + "))")};
+  }
+
+  std::string torusBands(bool coincident = false) {
+    const auto grid = torusGrid();
+    const auto lower = surface(torusU, torusV, grid);
+    const auto upper = surface(torusU, torusV, grid);
+    const double turn = torusV.high - torusV.low;
+    const glm::dvec2 winding{2 * (torusU.high - torusU.low), turn};
+    const auto boundary = [&](unsigned quarter, glm::dvec2 shift) {
+      const auto [corner, curve] = torusHelix(quarter);
+      const glm::dvec2 start{torusU.low, torusV.low + quarter * turn / 4};
+      const glm::dvec2 translated = start + shift;
+      return edge(corner, corner,
+                  associated("IFCSURFACECURVE", curve,
+                             {pcurve(lower, start, start + winding),
+                              pcurve(upper, translated, translated + winding)},
+                             ".PCURVE_S1."));
+    };
+    // Shifting A back one U period advances half a V period at a fixed U.
+    // B lies midway between those adjacent lifts of A.
+    const auto a = boundary(0, {torusU.low - torusU.high, 0.});
+    const auto b = boundary(coincident ? 2 : 1, {0., 0.});
+    face({bound({{a, true}}, false), bound({{b, false}}, false)}, lower);
+    face({bound({{b, true}}, false), bound({{a, false}}, false)}, upper);
+    return finish();
+  }
+};
+
+template <typename OnSeam>
+size_t countSeamEdges(const Model &model, OnSeam onSeam) {
+  using Point = std::array<float, 3>;
+  std::set<std::pair<Point, Point>> edges;
+  for (size_t i = 0; i < model.indices.size(); i += 3)
+    for (size_t j = 0; j < 3; ++j) {
+      const auto a = model.vertices[model.indices[i + j]].position;
+      const auto b = model.vertices[model.indices[i + (j + 1) % 3]].position;
+      if (onSeam(a) && onSeam(b)) {
+        const Point x{a.x, a.y, a.z}, y{b.x, b.y, b.z};
+        edges.insert(std::minmax(x, y));
+      }
+    }
+  return edges.size();
+}
+
+TEST(IfcCurvedBrep,
+     PeriodicSplineCylinderAcceptsNativePcurveLiftsInEitherAxis) {
+  for (bool swapped : {false, true}) {
+    SCOPED_TRACE(swapped ? "periodic V" : "periodic U");
+    PeriodicSplineBuilder step;
+    const auto brep = step.cylinder(swapped, SplineLift::Valid);
+    const auto source = fixture(step.definitions, brep);
+    exportCurvedFixture(swapped ? "periodic-spline-cylinder-v"
+                                : "periodic-spline-cylinder-u",
+                        source);
+    const auto model = LoadFromStep(source);
+    ASSERT_NO_FATAL_FAILURE(complete(model));
+    watertight(model);
+    EXPECT_NEAR(volume(model), 12 * pi, .045);
+    expectProfileBounds(model, {-2, -2, 0}, {2, 2, 3});
+    const auto onSeam = [](glm::vec3 p) {
+      return std::abs(p.x - 2.) < 1e-6 && std::abs(p.y) < 1e-6;
+    };
+    EXPECT_GT(countSeamEdges(model, onSeam), 0u);
+    size_t seamNormals = 0;
+    double agreement = 1.;
+    for (const auto &vertex : model.vertices) {
+      if (std::abs(vertex.normal.z) > .9)
+        continue;
+      const glm::dvec2 xy(vertex.position);
+      agreement = std::min(
+          agreement, glm::dot(glm::normalize(xy), glm::dvec2(vertex.normal)));
+      seamNormals += onSeam(vertex.position);
+    }
+    EXPECT_GT(agreement, .998);
+    EXPECT_GE(seamNormals, 2u);
+  }
+}
+
+TEST(IfcCurvedBrep, AuthoredSplineChartChecksTranslatedInteriorOverlap) {
+  using namespace container::geometry::ifc::detail;
+  ParametricSurface surface;
+  surface.spline = true;
+  surface.uDomain = {{0., 2 * pi}};
+  surface.vDomain = {{0., 4.}};
+  surface.periods = {2 * pi, 0.};
+  surface.point = [](double u, double v) -> std::optional<glm::dvec3> {
+    return glm::dvec3(std::cos(u), std::sin(u), v);
+  };
+  surface.derivatives =
+      [](double u, double) -> std::optional<std::pair<glm::dvec3, glm::dvec3>> {
+    return std::pair(glm::dvec3(-std::sin(u), std::cos(u), 0),
+                     glm::dvec3(0, 0, 1));
+  };
+  for (const double slope : {0., .25}) {
+    constexpr unsigned steps = 128;
+    const double end = 2 * pi + .5;
+    CurvedFaceChartLoop chart;
+    for (unsigned i = 0; i <= steps; ++i) {
+      const double u = end * i / steps;
+      chart.vertices.emplace_back(u, slope * u);
+    }
+    for (unsigned i = 0; i <= steps; ++i) {
+      const double u = end * (steps - i) / steps;
+      chart.vertices.emplace_back(u, slope * u + .7);
+    }
+    chart.closure = chart.vertices.front();
+    auto boundaries = std::vector<std::vector<glm::vec3>>(1);
+    for (const auto &uv : chart.vertices)
+      boundaries.front().emplace_back(*surface.point(uv.x, uv.y));
+    std::string error;
+    const auto mesh = meshIfcCurvedFace(surface, boundaries, true, true, 1,
+                                        error, {}, std::span(&chart, 1));
+    if (slope > 0) {
+      ASSERT_TRUE(mesh) << error;
+      EXPECT_FALSE(mesh->empty());
+    } else {
+      EXPECT_FALSE(mesh);
+      EXPECT_EQ(error, "Spline chart overlaps a periodic image");
+    }
+  }
+}
+
+TEST(IfcCurvedBrep, DoublyPeriodicSplineTorusPairsBothAuthoredSeams) {
+  PeriodicSplineBuilder step;
+  const auto brep = step.torus();
+  const auto source = fixture(step.definitions, brep);
+  exportCurvedFixture("periodic-spline-torus", source);
+  const auto model = LoadFromStep(source);
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  watertight(model);
+  EXPECT_NEAR(volume(model), 6 * pi * pi, .15);
+  expectProfileBounds(model, {-4, -4, -1}, {4, 4, 1});
+  EXPECT_GT(countSeamEdges(model,
+                           [](glm::vec3 p) {
+                             return std::abs(p.z) < 1e-6 &&
+                                    std::abs(std::hypot(p.x, p.y) - 4.) < 1e-6;
+                           }),
+            32u);
+  EXPECT_GT(
+      countSeamEdges(
+          model, [](glm::vec3 p) { return std::abs(p.y) < 1e-6 && p.x > 0.; }),
+      16u);
+  double agreement = 1., radialError = 0.;
+  for (const auto &vertex : model.vertices) {
+    const glm::dvec3 p(vertex.position);
+    const glm::dvec3 center = 3. * glm::normalize(glm::dvec3(p.x, p.y, 0));
+    const auto outward = p - center;
+    radialError = std::max(radialError, std::abs(glm::length(outward) - 1.));
+    agreement = std::min(agreement, glm::dot(glm::normalize(outward),
+                                             glm::dvec3(vertex.normal)));
+  }
+  EXPECT_LT(radialError, 1e-5);
+  EXPECT_GT(agreement, .998);
+}
+
+TEST(IfcCurvedBrep, DoublyPeriodicSplineTorusPairsOppositeMixedWindingBands) {
+  PeriodicSplineBuilder step;
+  const auto brep = step.torusBands();
+  const auto source = fixture(step.definitions, brep);
+  exportCurvedFixture("periodic-spline-torus-mixed-bands", source);
+  const auto model = LoadFromStep(source);
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  watertight(model);
+  EXPECT_NEAR(volume(model), 6 * pi * pi, .15);
+  double radialError = 0.;
+  for (const auto &vertex : model.vertices) {
+    const auto &p = vertex.position;
+    radialError =
+        std::max(radialError,
+                 std::abs(std::hypot(std::hypot(double(p.x), double(p.y)) - 3.,
+                                     double(p.z)) -
+                          1.));
+  }
+  EXPECT_LT(radialError, 1e-5);
+}
+
+TEST(IfcCurvedBrep,
+     PeriodicSplineRejectsCoincidentMixedWindingBandsAtomically) {
+  PeriodicSplineBuilder step;
+  const auto brep = step.torusBands(true);
+  const auto model = LoadFromStep(fixture(step.definitions, brep));
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+  EXPECT_TRUE(model.elements.empty());
+  EXPECT_TRUE(model.indices.empty());
+  EXPECT_TRUE(model.vertices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  const auto &reason = model.importReport.diagnostics.front().reason;
+  EXPECT_NE(reason.find("bounds intersect a periodic image"), std::string::npos)
+      << reason;
+}
+
+TEST(IfcCurvedBrep, PeriodicSplineRejectsWrongAmbiguousAndMultipleLifts) {
+  for (const auto lift : {SplineLift::WrongRing, SplineLift::AmbiguousRing,
+                          SplineLift::DuplicateSeam, SplineLift::TwiceSeam}) {
+    SCOPED_TRACE(static_cast<int>(lift));
+    PeriodicSplineBuilder step;
+    const auto brep = step.cylinder(false, lift);
+    const auto model = LoadFromStep(fixture(step.definitions, brep));
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(model.elements.empty());
+    EXPECT_TRUE(model.indices.empty());
+    EXPECT_TRUE(model.vertices.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    const auto &reason = model.importReport.diagnostics.front().reason;
+    EXPECT_NE(reason.find("Face #"), std::string::npos) << reason;
+  }
+}
+
 TEST(IfcCurvedBrep, InvalidSurfacesAndOrientationRejectAtomically) {
   for (unsigned invalid = 0; invalid < 3; ++invalid) {
     CurvedBuilder step;

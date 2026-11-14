@@ -7,6 +7,7 @@
 #include "Container/utility/Platform.h"
 #include "IfcAreaProfileGeometry.h"
 #include "IfcBrepFaceGeometry.h"
+#include "IfcBrepPcurveLift.h"
 #include "IfcCurveReader.h"
 #include "IfcStructuralAreaShapes.h"
 #include "IfcSweptSurfaceMesh.h"
@@ -3471,6 +3472,18 @@ private:
     size_t firstSample, sampleCount, boundUseCount;
   };
 
+  struct BrepChartUse {
+    uint32_t edge;
+    bool forward;
+  };
+  struct BrepChartBound {
+    std::vector<BrepChartUse> uses;
+    bool reversed = false;
+  };
+
+  using BrepEdges = std::unordered_map<uint32_t, BrepEdge>;
+  using BrepChartLifts = std::vector<std::vector<glm::dvec2>>;
+
   using BrepEdgePoles = std::unordered_map<uint32_t, std::vector<glm::dvec3>>;
 
   std::optional<double> findBrepEdgePole(const ParametricCurve &curve,
@@ -3727,9 +3740,9 @@ private:
     return true;
   }
 
-  std::optional<ParametricCurve> readBrepSeamPcurve(uint32_t pcRef,
-                                                    uint32_t surfaceRef,
-                                                    double radians) const {
+  std::optional<ParametricCurve>
+  readBrepPcurve(uint32_t pcRef, uint32_t surfaceRef,
+                std::optional<double> radians) const {
     const auto *pc = entity(pcRef);
     const auto representationRef = pc ? firstRef(*pc, 1) : std::nullopt;
     const auto *representation =
@@ -3750,6 +3763,199 @@ private:
                                       radians, error, {}, stop_);
     return curve && curve->domain && curve->dimension == 2 ? std::move(curve)
                                                            : std::nullopt;
+  }
+
+  std::optional<BrepChartLifts>
+  readBrepChartLifts(const BrepEdge &edge, uint32_t surfaceRef,
+                     const detail::ParametricSurface &surface,
+                     std::optional<double> angle, std::string &error) const {
+    const auto *geometry = entity(edge.geometry);
+    if (!geometry) {
+      error = "Missing edge geometry";
+      return std::nullopt;
+    }
+    auto references = std::vector<uint32_t>{};
+    if (geometry->type == "IFCPCURVE")
+      references.push_back(geometry->id);
+    else if (geometry->type == "IFCSURFACECURVE" ||
+             geometry->type == "IFCINTERSECTIONCURVE" ||
+             geometry->type == "IFCSEAMCURVE")
+      references = refList(argAt(*geometry, 1));
+    std::erase_if(references, [&](uint32_t ref) {
+      const auto *pc = entity(ref);
+      return !pc || pc->type != "IFCPCURVE" || firstRef(*pc, 0) != surfaceRef;
+    });
+    const size_t required = geometry->type == "IFCSEAMCURVE" ? 2 : 1;
+    if (!references.empty() && references.size() != required) {
+      error = required == 2 ? "Seam curve requires two pcurves on its face basis"
+                            : "Ambiguous pcurves on the face basis";
+      return std::nullopt;
+    }
+    BrepChartLifts lifts;
+    for (uint32_t ref : references) {
+      const auto curve = readBrepPcurve(ref, surfaceRef, angle);
+      if (!curve) {
+        error = "Expected a bounded 2D curve for pcurve #" + std::to_string(ref);
+        return std::nullopt;
+      }
+      try {
+        lifts.push_back(detail::liftIfcBrepPcurve(surface, *curve, edge.points,
+                                                edge.sameSense, unitScale_,
+                                                stop_));
+      } catch (const std::runtime_error &failure) {
+        error = "Pcurve #" + std::to_string(ref) + ": " + failure.what();
+        return std::nullopt;
+      }
+    }
+    return lifts;
+  }
+
+  bool buildSplineBrepChart(uint32_t surfaceRef,
+                            const detail::ParametricSurface &surface,
+                            const BrepEdges &edgeCache,
+                            const std::vector<BrepChartBound> &bounds,
+                            std::optional<double> angle,
+                            std::vector<std::vector<glm::vec3>> &loops,
+                            std::vector<detail::CurvedFaceChartLoop> &charts,
+                            std::string &error) const {
+    struct EdgeLifts {
+      BrepChartLifts lifts;
+      size_t bound = 0;
+      bool forward = false;
+      unsigned uses = 0;
+    };
+    std::unordered_map<uint32_t, EdgeLifts> edges;
+    bool authored = false;
+    for (size_t i = 0; i < bounds.size(); ++i)
+      for (const auto &use : bounds[i].uses) {
+        checkCancellation();
+        auto [entry, inserted] = edges.try_emplace(use.edge);
+        auto &data = entry->second;
+        if (inserted) {
+          auto lifts = readBrepChartLifts(edgeCache.at(use.edge), surfaceRef,
+                                         surface, angle, error);
+          if (!lifts) {
+            error = "Edge #" + std::to_string(use.edge) + ": " + error;
+            return false;
+          }
+          authored |= !lifts->empty();
+          data = {std::move(*lifts), i, use.forward, 0};
+        } else if (data.lifts.size() == 2 &&
+                   (data.bound != i || data.forward == use.forward)) {
+          error = "Spline seam requires opposite edge uses in the same bound";
+          return false;
+        }
+        ++data.uses;
+      }
+    if (!authored)
+      return true;
+
+    const glm::dvec2 periods = surface.periods;
+    const glm::dvec2 spans{surface.uDomain->second - surface.uDomain->first,
+                           surface.vDomain->second - surface.vDomain->first};
+    const auto sameParameter = [&](glm::dvec2 a, glm::dvec2 b) {
+      for (unsigned axis = 0; axis < 2; ++axis) {
+        if (!std::isfinite(a[axis]) || !std::isfinite(b[axis]))
+          return false;
+        const double tolerance =
+            spans[axis] * 1e-7 +
+            std::max(std::abs(a[axis]), std::abs(b[axis])) *
+                (8 * std::numeric_limits<double>::epsilon());
+        if (!(std::abs(a[axis] - b[axis]) <= tolerance))
+          return false;
+      }
+      return true;
+    };
+    for (const auto &[ref, data] : edges) {
+      if (data.lifts.empty() || data.lifts.size() != data.uses) {
+        error = "Edge #" + std::to_string(ref) +
+                " requires one pcurve per edge use in the authored chart";
+        return false;
+      }
+      if (data.lifts.size() != 2)
+        continue;
+      const auto &a = data.lifts[0], &b = data.lifts[1];
+      const auto delta = b.front() - a.front();
+      std::optional<glm::dvec2> translation;
+      for (unsigned axis = 0; axis < 2; ++axis) {
+        glm::dvec2 candidate(0);
+        candidate[axis] = std::copysign(periods[axis], delta[axis]);
+        if (periods[axis] > 0 && sameParameter(delta, candidate))
+          translation = candidate;
+      }
+      if (!translation) {
+        error = "Seam pcurves must differ by exactly one certified period";
+        return false;
+      }
+      for (size_t k = 0; k < a.size(); ++k)
+        if (!sameParameter(b[k], a[k] + *translation)) {
+          error = "Seam pcurves disagree along their shared edge";
+          return false;
+        }
+    }
+
+    for (size_t i = 0; i < bounds.size(); ++i) {
+      const auto &uses = bounds[i].uses;
+      if (uses.empty()) {
+        error = "Authored spline chart requires edge-loop bounds";
+        return false;
+      }
+      std::optional<detail::CurvedFaceChartLoop> selected;
+      const auto &initial = edges.at(uses.front().edge).lifts;
+      for (size_t first = 0; first < initial.size(); ++first) {
+        detail::CurvedFaceChartLoop candidate;
+        candidate.vertices.reserve(loops[i].size());
+        std::unordered_map<uint32_t, size_t> usedLifts;
+        const auto endpoint = [](const auto &lift, bool forward) {
+          return forward ? lift.front() : lift.back();
+        };
+        glm::dvec2 last = endpoint(initial[first], uses.front().forward);
+        for (const auto &use : uses) {
+          const auto &lifts = edges.at(use.edge).lifts;
+          const auto match = std::ranges::find_if(lifts, [&](const auto &lift) {
+            return sameParameter(last, endpoint(lift, use.forward));
+          });
+          if (match == lifts.end())
+            break;
+          if (lifts.size() == 2) {
+            const auto liftIndex = static_cast<size_t>(match - lifts.begin());
+            const auto [prior, inserted] = usedLifts.try_emplace(use.edge, liftIndex);
+            if (!inserted && prior->second == liftIndex)
+              break;
+          }
+          if (use.forward)
+            candidate.vertices.insert(candidate.vertices.end(), match->begin(),
+                                      match->end() - 1);
+          else
+            candidate.vertices.insert(candidate.vertices.end(), match->rbegin(),
+                                      match->rend() - 1);
+          last = endpoint(*match, !use.forward);
+        }
+        if (candidate.vertices.size() != loops[i].size())
+          continue;
+        candidate.closure = candidate.vertices.front();
+        for (unsigned axis = 0; axis < 2; ++axis)
+          if (periods[axis] > 0)
+            candidate.closure[axis] +=
+                std::round((last[axis] - candidate.closure[axis]) / periods[axis]) *
+                periods[axis];
+        if (!sameParameter(last, candidate.closure))
+          continue;
+        if (selected) {
+          error = "Ambiguous continuous pcurve chart for spline bound";
+          return false;
+        }
+        selected = std::move(candidate);
+      }
+      if (!selected) {
+        error = "Pcurve lifts do not connect in the spline chart";
+        return false;
+      }
+      charts.push_back(std::move(*selected));
+      if (bounds[i].reversed)
+        std::rotate(loops[i].begin(), loops[i].end() - 1, loops[i].end());
+    }
+    return true;
   }
 
   bool validateSphericalBrepSeam(const BrepEdge &edge, uint32_t surfaceRef,
@@ -3811,7 +4017,7 @@ private:
     std::array<bool, 2> meridianSides{};
     for (const uint32_t pcRef : pcurves) {
       checkCancellation();
-      const auto curve = readBrepSeamPcurve(pcRef, surfaceRef, radians);
+      const auto curve = readBrepPcurve(pcRef, surfaceRef, radians);
       if (!curve)
         return fail("pcurve #" + std::to_string(pcRef) +
                     " requires a bounded 2D meridian");
@@ -3892,7 +4098,7 @@ private:
     std::array<bool, 2> sides{};
     for (const auto pcRef : pcurves) {
       checkCancellation();
-      const auto curve = readBrepSeamPcurve(pcRef, surfaceRef, radians);
+      const auto curve = readBrepPcurve(pcRef, surfaceRef, radians);
       if (!curve)
         return fail("invalid bounded 2D pcurve #" + std::to_string(pcRef));
       const auto [first, last] = *curve->domain;
@@ -3952,7 +4158,7 @@ private:
       std::vector<TriangleVertices> triangles;
     };
     std::map<uint32_t, FaceGroup> groups;
-    std::unordered_map<uint32_t, BrepEdge> edgeCache;
+    BrepEdges edgeCache;
     BrepPolarCharts polarCharts;
     std::unordered_set<uint32_t> shellIds, faceIds;
     std::vector<manifold::Manifold> solids;
@@ -3990,8 +4196,12 @@ private:
         const auto *basis = basisRef ? entity(*basisRef) : nullptr;
         const bool spherical = basis && basis->type == "IFCSPHERICALSURFACE";
         const bool revolved = basis && basis->type == "IFCSURFACEOFREVOLUTION";
+        const bool spline = basis &&
+                            (basis->type == "IFCBSPLINESURFACEWITHKNOTS" ||
+                             basis->type == "IFCRATIONALBSPLINESURFACEWITHKNOTS");
         std::vector<std::vector<glm::vec3>> loops;
         std::vector<BrepSeamUse> seamUses;
+        std::vector<BrepChartBound> chartBounds;
         const auto bounds = refList(argAt(*face, 0));
         if (bounds.empty() || bounds.size() > 4096 ||
             bounds.size() != asList(argAt(*face, 0)).size())
@@ -4037,6 +4247,7 @@ private:
               refs.size() != asList(argAt(*poly, 0)).size())
             return faceFail("Invalid or excessive loop entries");
           std::vector<glm::vec3> loop;
+          BrepChartBound chartBound{.reversed = orientation == "F"};
           const auto firstSeamUse = seamUses.size();
           uint32_t firstVertex = 0, lastVertex = 0;
           for (uint32_t entry : refs) {
@@ -4074,6 +4285,8 @@ private:
               edgeCache.emplace(*edgeRef, std::move(*edge));
             }
             const auto &edge = edgeCache.at(*edgeRef);
+            if (spline)
+              chartBound.uses.push_back({*edgeRef, sense == orientation});
             if (spherical || revolved) {
               const auto *geometry = entity(edge.geometry);
               if (geometry && geometry->type == "IFCSEAMCURVE")
@@ -4110,13 +4323,20 @@ private:
             return faceFail("Face exceeds its boundary vertex budget");
           if (orientation == "F")
             std::ranges::reverse(loop);
+          if (chartBound.reversed)
+            std::ranges::reverse(chartBound.uses);
           if (bound->type == "IFCFACEOUTERBOUND") {
             if (hasOuterBound)
               return faceFail("Multiple outer bounds");
             hasOuterBound = true;
             loops.insert(loops.begin(), std::move(loop));
-          } else
+            if (spline)
+              chartBounds.insert(chartBounds.begin(), std::move(chartBound));
+          } else {
             loops.push_back(std::move(loop));
+            if (spline)
+              chartBounds.push_back(std::move(chartBound));
+          }
         }
         if (!hasOuterBound && !advanced && loops.size() > 1) {
           // IfcFace.Bounds is an unordered set. Without an explicit outer
@@ -4153,8 +4373,7 @@ private:
             if (surface->type != "IFCCYLINDRICALSURFACE" &&
                 surface->type != "IFCSPHERICALSURFACE" &&
                 surface->type != "IFCTOROIDALSURFACE" &&
-                surface->type != "IFCBSPLINESURFACEWITHKNOTS" &&
-                surface->type != "IFCRATIONALBSPLINESURFACEWITHKNOTS" &&
+                !spline &&
                 surface->type != "IFCSURFACEOFLINEAREXTRUSION" &&
                 surface->type != "IFCSURFACEOFREVOLUTION")
               return faceFail("Unsupported advanced face surface " +
@@ -4278,9 +4497,14 @@ private:
                 }
               }
             }
+            std::vector<detail::CurvedFaceChartLoop> authoredChart;
+            if (spline && !buildSplineBrepChart(*surfaceRef, *descriptor,
+                                                edgeCache, chartBounds, angle,
+                                                loops, authoredChart, error))
+              return faceFail(error);
             const auto mesh = detail::meshIfcCurvedFace(
                 *descriptor, loops, hasOuterBound, sameSense == "T", unitScale_,
-                error, polarSeam);
+                error, polarSeam, authoredChart);
             if (!mesh)
               return faceFail(error);
             triangles.emplace();

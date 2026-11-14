@@ -85,6 +85,208 @@ struct Measure {
 };
 using Surface = ParametricSurface;
 std::string chartProfiles(const std::vector<Surface> &charts);
+
+struct SplineSurfaceControl {
+  glm::dvec3 point;
+  double weight;
+};
+
+struct SplineSurfaceAxis {
+  unsigned degree;
+  size_t count;
+  std::pair<double, double> domain;
+  std::vector<double> knots;
+  double period = 0;
+  std::vector<double> meshKnots, creases;
+};
+
+using SplineSurfaceGrid = std::vector<std::vector<SplineSurfaceControl>>;
+
+template <class ControlAt>
+bool splineTracesAreSmooth(const ControlAt &control, size_t transverseCount,
+                           unsigned degree, size_t incoming, double before,
+                           size_t outgoing, double after, double tolerance) {
+  // Normalize homogeneous derivatives by each endpoint weight. A
+  // transverse-constant difference of the remaining logarithmic weight
+  // derivatives adds only a multiple of the shared homogeneous trace.
+  if (!(before > 0) || !(after > 0))
+    return false;
+  const double inScale = degree / before, outScale = degree / after;
+  std::optional<double> gauge;
+  for (size_t j = 0; j < transverseCount; ++j) {
+    const auto &a = control(incoming, j), &previous = control(incoming - 1, j),
+               &b = control(outgoing, j), &next = control(outgoing + 1, j);
+    const double ar = previous.weight / a.weight, br = next.weight / b.weight;
+    const auto da = (inScale * ar) * (a.point - previous.point);
+    const auto db = (outScale * br) * (next.point - b.point);
+    const double wa = inScale * (1 - ar), wb = outScale * (br - 1);
+    const double difference = wb - wa;
+    if (!gauge)
+      gauge = difference;
+    if (!finite(da) || !finite(db) || !std::isfinite(difference) ||
+        glm::length(da - db) >
+            std::max(tolerance / std::min(before, after),
+                     1e-10 * std::max(glm::length(da), glm::length(db))) ||
+        std::abs(difference - *gauge) >
+            1e-10 * std::max({1., std::abs(wa), std::abs(wb)}))
+      return false;
+  }
+  return true;
+}
+
+void certifySplineContinuity(SplineSurfaceAxis &axis,
+                             const SplineSurfaceAxis &other,
+                             const SplineSurfaceGrid &grid, bool swapAxes,
+                             double tolerance) {
+  const auto control = [&](size_t along, size_t across) -> const auto & {
+    return swapAxes ? grid[across][along] : grid[along][across];
+  };
+  std::erase_if(axis.creases, [&](double knot) {
+    const auto first = std::ranges::lower_bound(axis.knots, knot);
+    const auto row = size_t(first - axis.knots.begin() - 1);
+    // At an internal knot of multiplicity equal to the degree, both
+    // control spans meet at this row; the adjacent controls determine the
+    // limiting derivatives. Lower multiplicities are already C1.
+    return splineTracesAreSmooth(
+        control, other.count, axis.degree, row, knot - axis.knots[row], row,
+        axis.knots[row + axis.degree + 1] - knot, tolerance);
+  });
+  // For a clamped curve the endpoint traces are the first and last
+  // control polygons along the transverse axis. Compare both the controls
+  // and their weights, permitting one common homogeneous scale factor.
+  if (axis.knots.front() != axis.domain.first ||
+      axis.knots.back() != axis.domain.second)
+    return;
+  const size_t last = axis.count - 1;
+  const double logScale =
+      std::log(control(last, 0).weight) - std::log(control(0, 0).weight);
+  constexpr double relativePrecision =
+      256 * std::numeric_limits<double>::epsilon();
+  for (size_t j = 0; j < other.count; ++j) {
+    const auto &a = control(0, j), &b = control(last, j);
+    const double weightScale = std::log(b.weight) - std::log(a.weight);
+    if (glm::length(a.point - b.point) > tolerance ||
+        std::abs(weightScale - logScale) >
+            relativePrecision * std::max(1., std::abs(logScale)))
+      return;
+  }
+  const double period = axis.domain.second - axis.domain.first;
+  if (!std::isfinite(period) || !(period > 0))
+    return;
+  axis.period = period;
+  axis.meshKnots.insert(axis.meshKnots.begin(), axis.domain.first);
+
+  if (!splineTracesAreSmooth(control, other.count, axis.degree, last,
+                             axis.domain.second - axis.knots[last], 0,
+                             axis.knots[axis.degree + 1] - axis.domain.first,
+                             tolerance))
+    axis.creases.insert(axis.creases.begin(), axis.domain.first);
+}
+
+struct ActiveSplineBasis {
+  size_t first = 0;
+  std::array<double, 33> value{}, derivative{};
+};
+
+std::array<double, 33> splineBasis(const SplineSurfaceAxis &axis, size_t span,
+                                   unsigned degree, double t) {
+  // Standard local recurrence. Only degree + 1 functions are nonzero at
+  // any parameter, independent of the number of authored control points.
+  std::array<double, 33> values{}, left{}, right{};
+  values[0] = 1;
+  for (unsigned j = 1; j <= degree; ++j) {
+    left[j] = t - axis.knots[span + 1 - j];
+    right[j] = axis.knots[span + j] - t;
+    double carry = 0;
+    for (unsigned i = 0; i < j; ++i) {
+      const double width =
+          axis.knots[span + i + 1] - axis.knots[span + 1 - j + i];
+      const double part = width > 0 ? values[i] / width : 0;
+      values[i] = carry + right[i + 1] * part;
+      carry = left[j - i] * part;
+    }
+    values[j] = carry;
+  }
+  return values;
+}
+
+std::optional<ActiveSplineBasis>
+activeSplineBasis(const SplineSurfaceAxis &axis, double t, bool derivatives) {
+  if (!std::isfinite(t))
+    return std::nullopt;
+  const auto [first, last] = axis.domain;
+  if (t < first || t > last) {
+    if (!axis.period)
+      return std::nullopt;
+    const double offset = t - first;
+    if (!std::isfinite(offset))
+      return std::nullopt;
+    t = std::clamp(first + wrapped(offset, axis.period), first, last);
+  }
+  const auto begin = axis.knots.begin() + axis.degree;
+  const auto end = axis.knots.begin() + axis.count;
+  const auto after = t == last ? std::lower_bound(begin, end, t)
+                               : std::upper_bound(begin, end, t);
+  const auto span = size_t(after - axis.knots.begin() - 1);
+  const unsigned p = axis.degree;
+  ActiveSplineBasis basis;
+  basis.first = span - p;
+  basis.value = splineBasis(axis, span, p, t);
+  if (derivatives) {
+    const auto lower = splineBasis(axis, span, p - 1, t);
+    for (unsigned j = 0; j <= p; ++j) {
+      const size_t i = basis.first + j;
+      const double left = axis.knots[i + p] - axis.knots[i],
+                   right = axis.knots[i + p + 1] - axis.knots[i + 1];
+      basis.derivative[j] = (j > 0 && left > 0 ? p * lower[j - 1] / left : 0) -
+                            (j < p && right > 0 ? p * lower[j] / right : 0);
+    }
+  }
+  return basis;
+}
+
+struct SplineSurfaceData {
+  SplineSurfaceAxis u, v;
+  SplineSurfaceGrid grid;
+
+  std::optional<std::array<glm::dvec3, 3>> evaluate(double x, double y,
+                                                    bool derivatives) const {
+    const auto bu = activeSplineBasis(u, x, derivatives),
+               bv = activeSplineBasis(v, y, derivatives);
+    if (!bu || !bv)
+      return std::nullopt;
+    const auto origin = grid[bu->first][bv->first].point;
+    glm::dvec3 point(0), du(0), dv(0);
+    double weight = 0, wu = 0, wv = 0;
+    for (unsigned i = 0; i <= u.degree; ++i)
+      for (unsigned j = 0; j <= v.degree; ++j) {
+        const auto &c = grid[bu->first + i][bv->first + j];
+        const auto control = c.point - origin;
+        const double coefficient = bu->value[i] * bv->value[j] * c.weight;
+        point += coefficient * control;
+        weight += coefficient;
+        if (derivatives) {
+          const double cu = bu->derivative[i] * bv->value[j] * c.weight,
+                       cv = bu->value[i] * bv->derivative[j] * c.weight;
+          du += cu * control;
+          dv += cv * control;
+          wu += cu;
+          wv += cv;
+        }
+      }
+    if (!(weight > 0) || !std::isfinite(weight))
+      return std::nullopt;
+    point /= weight;
+    if (derivatives) {
+      du = (du - wu * point) / weight;
+      dv = (dv - wv * point) / weight;
+    }
+    point += origin;
+    return finite(point) && finite(du) && finite(dv)
+               ? std::optional(std::array{point, du, dv})
+               : std::nullopt;
+  }
+};
 Measure measure(const StepValue *v) {
   if (!v || v->kind != StepValue::Kind::List || v->list.size() != 1 ||
       (v->text != "IFCPARAMETERVALUE" && v->text != "IFCLENGTHMEASURE" &&
@@ -506,14 +708,21 @@ ParametricCurve Reader::polyline(const Entity &e) {
     ParametricCurve c;
     c.domain = {{0, 1}};
     c.dimension = dimension;
-    const auto p = points[a], d = points[b] - p;
-    c.point = [p, d](double t) -> std::optional<glm::dvec3> {
-      return p + d * t;
+    const auto p = points[a], q = points[b], d = q - p;
+    // Keep authored endpoints exact. A pcurve endpoint may sit on the
+    // inclusive boundary of its spline surface's native knot domain.
+    const auto interpolate = [p, q](double t) {
+      return glm::dvec3(std::lerp(p.x, q.x, t), std::lerp(p.y, q.y, t),
+                        std::lerp(p.z, q.z, t));
+    };
+    c.point = [interpolate](double t) -> std::optional<glm::dvec3> {
+      return interpolate(t);
     };
     c.derivative = [d](double) -> std::optional<glm::dvec3> { return d; };
     c.constantSpeed = glm::length(d);
-    c.sampler = [p, d](double a, double b, double, size_t n) {
-      return n >= 2 ? std::vector<CurveSample>{{a, p + d * a}, {b, p + d * b}}
+    c.sampler = [interpolate](double a, double b, double, size_t n) {
+      return n >= 2 ? std::vector<CurveSample>{{a, interpolate(a)},
+                                               {b, interpolate(b)}}
                     : std::vector<CurveSample>{};
     };
     pieces.push_back(c);
@@ -2913,14 +3122,14 @@ Surface Reader::surfaceImpl(uint32_t id) {
     if (du < 1 || dv < 1 || du > 32 || dv > 32 || du != std::floor(du) ||
         dv != std::floor(dv))
       throw std::runtime_error("Invalid pcurve surface degrees");
-    std::vector<std::vector<glm::dvec3>> grid;
+    SplineSurfaceGrid grid;
     for (const auto &row : list(arg(e, 2), 256)) {
-      std::vector<glm::dvec3> points;
+      std::vector<SplineSurfaceControl> points;
       for (const auto &r : list(&row, 256)) {
         auto p = point(reference(&r));
         if (p.second != 3)
           throw std::runtime_error("Spline surface controls must be 3D");
-        points.push_back(p.first);
+        points.push_back({p.first, 1.});
       }
       if (!grid.empty() && points.size() != grid.front().size())
         throw std::runtime_error("Ragged spline surface control grid");
@@ -2945,77 +3154,96 @@ Surface Reader::surfaceImpl(uint32_t id) {
       }
       return knots;
     };
-    const auto ku = expand(7, 9, nu, du), kv = expand(8, 10, nv, dv);
+    auto ku = expand(7, 9, nu, du), kv = expand(8, 10, nv, dv);
     auto ucurve = makeBSplineCurve(
              unsigned(du), std::vector<glm::dvec3>(nu, glm::dvec3(0)), ku),
          vcurve = makeBSplineCurve(
              unsigned(dv), std::vector<glm::dvec3>(nv, glm::dvec3(0)), kv);
     if (!ucurve || !vcurve)
       throw std::runtime_error("Invalid spline surface knot domain");
-    std::vector<std::vector<double>> weights(nu, std::vector<double>(nv, 1));
     if (e.type == "IFCRATIONALBSPLINESURFACEWITHKNOTS") {
       const auto &rows = list(arg(e, 12), 256);
       if (rows.size() != nu)
         throw std::runtime_error("Spline surface weight row count mismatch");
       double scale = 0;
       for (size_t i = 0; i < nu; ++i) {
-        weights[i] = numbers(&rows[i], 256);
-        if (weights[i].size() != nv)
+        const auto weights = numbers(&rows[i], 256);
+        if (weights.size() != nv)
           throw std::runtime_error(
               "Spline surface weight column count mismatch");
-        for (double w : weights[i]) {
+        for (size_t j = 0; j < nv; ++j) {
+          const double w = weights[j];
           if (w <= 0)
             throw std::runtime_error("Nonpositive spline surface weight");
           scale = std::max(scale, w);
+          grid[i][j].weight = w;
         }
       }
-      for (auto &row : weights)
-        for (auto &w : row) {
-          w /= scale;
-          if (w <= 0)
+      for (auto &row : grid)
+        for (auto &control : row) {
+          control.weight /= scale;
+          if (control.weight <= 0)
             throw std::runtime_error(
                 "Spline surface weight range exceeds precision");
         }
     }
-    const auto basis = [](const std::vector<double> &knots, size_t count,
-                          unsigned degree, double t) {
-      std::vector<double> b(count + degree, 0);
-      if (t == knots[count])
-        t = std::nextafter(t, -std::numeric_limits<double>::infinity());
-      for (size_t i = 0; i < b.size(); ++i)
-        b[i] = knots[i] <= t && t < knots[i + 1] ? 1 : 0;
-      for (unsigned p = 1; p <= degree; ++p)
-        for (size_t i = 0; i < count + degree - p; ++i) {
-          const double l = knots[i + p] - knots[i],
-                       r = knots[i + p + 1] - knots[i + 1];
-          b[i] = (l > 0 ? (t - knots[i]) * b[i] / l : 0) +
-                 (r > 0 ? (knots[i + p + 1] - t) * b[i + 1] / r : 0);
-        }
-      b.resize(count);
-      return b;
+    const auto makeAxis = [](unsigned degree, size_t count,
+                             std::pair<double, double> domain,
+                             std::vector<double> knots) {
+      SplineSurfaceAxis axis{degree, count, domain, std::move(knots)};
+      auto first =
+          std::upper_bound(axis.knots.begin(), axis.knots.end(), domain.first);
+      const auto last =
+          std::lower_bound(first, axis.knots.end(), domain.second);
+      while (first != last) {
+        const auto next = std::upper_bound(first, last, *first);
+        axis.meshKnots.push_back(*first);
+        if (next - first == degree)
+          axis.creases.push_back(*first);
+        first = next;
+      }
+      return axis;
     };
     const auto ud = *ucurve->domain, vd = *vcurve->domain;
-    return {.point = [=](double u, double v) -> std::optional<glm::dvec3> {
-              if (!std::isfinite(u) || !std::isfinite(v) || u < ud.first ||
-                  u > ud.second || v < vd.first || v > vd.second)
-                return std::nullopt;
-              const auto bu = basis(ku, nu, unsigned(du), u),
-                         bv = basis(kv, nv, unsigned(dv), v);
-              glm::dvec3 p(0);
-              double w = 0;
-              for (size_t i = 0; i < nu; ++i)
-                for (size_t j = 0; j < nv; ++j) {
-                  const double f = bu[i] * bv[j] * weights[i][j];
-                  p += grid[i][j] * f;
-                  w += f;
-                }
-              return w > 0 && finite(p / w) ? std::optional(p / w)
-                                            : std::nullopt;
-            },
-            .uDomain = ud,
-            .vDomain = vd,
-            .meshU = ucurve->breaks,
-            .meshV = vcurve->breaks};
+    auto u = makeAxis(unsigned(du), nu, ud, std::move(ku));
+    auto v = makeAxis(unsigned(dv), nv, vd, std::move(kv));
+    // UClosed and VClosed are informational. Use the evaluated spline's
+    // control traces to establish any periodicity.
+    certifySplineContinuity(u, v, grid, false, tolerance_ * .01);
+    certifySplineContinuity(v, u, grid, true, tolerance_ * .01);
+    const auto data = std::make_shared<const SplineSurfaceData>(
+        SplineSurfaceData{std::move(u), std::move(v), std::move(grid)});
+    ParametricSurface result{
+        .point = [data](double x, double y) -> std::optional<glm::dvec3> {
+          const auto value = data->evaluate(x, y, false);
+          return value ? std::optional((*value)[0]) : std::nullopt;
+        },
+        .periods = {data->u.period, data->v.period},
+        .uDomain = ud,
+        .vDomain = vd,
+        .meshU = data->u.meshKnots,
+        .meshV = data->v.meshKnots,
+        .derivatives = [data](double x, double y)
+            -> std::optional<std::pair<glm::dvec3, glm::dvec3>> {
+          const auto value = data->evaluate(x, y, true);
+          return value ? std::optional(std::pair((*value)[1], (*value)[2]))
+                       : std::nullopt;
+        },
+        .spline = true,
+        .creaseU = data->u.creases,
+        .creaseV = data->v.creases};
+    if (data->u.period || data->v.period)
+      result.regionStep = [periods = result.periods](glm::dvec2 a,
+                                                     glm::dvec2 b) {
+        // A lifted pcurve may span many identical turns while the 3D end
+        // and interior samples alias. Force enough samples in each cyclic
+        // parameter independently before applying the 3D chord test.
+        for (unsigned axis = 0; axis < 2; ++axis)
+          if (periods[axis] && std::abs(a[axis] - b[axis]) > periods[axis] / 16)
+            return false;
+        return true;
+      };
+    return result;
   }
   if (e.type != "IFCPLANE" && e.type != "IFCCYLINDRICALSURFACE" &&
       e.type != "IFCSPHERICALSURFACE" && e.type != "IFCTOROIDALSURFACE")
