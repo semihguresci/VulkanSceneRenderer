@@ -7,6 +7,7 @@
 #include <optional>
 #include <span>
 #include <stop_token>
+#include <string>
 #include <string_view>
 #include <unordered_map>
 
@@ -24,6 +25,20 @@ struct SphericalSurface {
   CurveFrame frame;
   double radius;
 };
+using SurfaceDerivatives =
+    std::function<std::optional<std::pair<glm::dvec3, glm::dvec3>>(double,
+                                                                   double)>;
+
+struct RevolvedRadialGraph {
+  // Origin is the apex. X is the native zero-angle radius, Z is the authored
+  // axis, and Y carries the native surface orientation.
+  CurveFrame frame;
+  double maxRadius, apexParameter, rimParameter;
+  std::function<std::optional<glm::dvec3>(double, double)> point;
+  std::function<std::optional<glm::dvec2>(glm::dvec3)> inverse;
+  SurfaceDerivatives derivatives;
+};
+
 struct ParametricSurface {
   std::function<std::optional<glm::dvec3>(double, double)> point;
   glm::dvec2 angularScale{0};
@@ -35,6 +50,9 @@ struct ParametricSurface {
   std::function<std::optional<glm::dvec2>(glm::dvec3)> inverse;
   // Polar topology needs regular local charts instead of angular coordinates.
   std::optional<SphericalSurface> sphere;
+  std::optional<RevolvedRadialGraph> radialGraph;
+  std::string radialGraphError;
+  SurfaceDerivatives derivatives;
   // Branch tips and zero-width profile segments create coincident mesh edges.
   bool allowCoincidentEdges = false;
   std::optional<glm::dvec3> meshUp;

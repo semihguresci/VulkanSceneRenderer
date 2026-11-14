@@ -124,6 +124,7 @@ ParametricCurve sharedCurve(ParametricCurve curve) {
   shareFunction(curve.sampler);
   shareFunction(curve.frame);
   shareFunction(curve.curvature);
+  shareFunction(curve.increasingSplineProjection);
   return curve;
 }
 
@@ -148,6 +149,13 @@ ParametricCurve remap(ParametricCurve parent, double first, double last,
     auto d = curveDerivative(parent, first + scale * std::clamp(t, 0., extent));
     return d ? std::optional(*d * scale) : std::nullopt;
   };
+  if (parent.increasingSplineProjection && parent.domain && !parent.period &&
+      std::min(first, last) >= parent.domain->first &&
+      std::max(first, last) <= parent.domain->second)
+    r.increasingSplineProjection = [certify = parent.increasingSplineProjection,
+                                    scale](glm::dvec3 d) {
+      return certify(scale > 0 ? d : -d);
+    };
   if (parent.constantSpeed)
     r.constantSpeed = *parent.constantSpeed * std::abs(scale);
   for (double t : parent.breaks) {
@@ -210,6 +218,12 @@ ParametricCurve transformed(ParametricCurve parent, CurveFrame placement) {
     auto p = curveDerivative(parent, t);
     return p ? std::optional(vector(*p)) : std::nullopt;
   };
+  if (parent.increasingSplineProjection)
+    r.increasingSplineProjection = [certify = parent.increasingSplineProjection,
+                                    placement](glm::dvec3 d) {
+      return certify({glm::dot(d, placement.x), glm::dot(d, placement.y),
+                      glm::dot(d, placement.z)});
+    };
   r.sampler = [parent, placement, vector](double a, double b, double e,
                                           size_t n) {
     auto samples = sampleCurve(parent, a, b, e, n);
@@ -260,6 +274,12 @@ ParametricCurve transformedProfile(ParametricCurve parent,
     const auto q = vector(*d);
     return finite(q) ? std::optional(q) : std::nullopt;
   };
+  if (parent.increasingSplineProjection)
+    r.increasingSplineProjection = [certify = parent.increasingSplineProjection,
+                                    transform](glm::dvec3 d) {
+      return certify({glm::dot(glm::dvec2(d), transform.x),
+                      glm::dot(glm::dvec2(d), transform.y), d.z});
+    };
   r.sampler = [parent, transform, origin, vector](double a, double b,
                                                   double error, size_t n) {
     auto points = sampleCurve(parent, a, b, error / transform.maxScale, n);
@@ -1437,6 +1457,157 @@ int closedProfileWinding(const std::vector<CurveSample> &samples,
   return twiceArea > 0 ? 1 : -1;
 }
 
+std::optional<RevolvedRadialGraph> makeRevolvedRadialGraph(
+    const ParametricCurve &curve, std::span<const CurveSample> samples,
+    const CurveFrame &placement, glm::dvec3 origin, glm::dvec3 axis,
+    glm::dvec3 radial, double tolerance, std::string &error) {
+  const auto signedRadius = [origin, radial](glm::dvec3 point) {
+    return glm::dot(point - origin, radial);
+  };
+  const auto fail =
+      [&](const char *reason) -> std::optional<RevolvedRadialGraph> {
+    error = reason;
+    return std::nullopt;
+  };
+  const auto [first, last] = *curve.domain;
+  const auto &front = samples.front().point, &back = samples.back().point;
+  const bool apexAtStart = std::abs(signedRadius(front)) <= tolerance,
+             apexAtEnd = std::abs(signedRadius(back)) <= tolerance;
+  if (curve.period || apexAtStart == apexAtEnd)
+    return fail("Singular revolution requires exactly one meridian endpoint on "
+                "its axis");
+  const double apex = apexAtStart ? first : last,
+               rim = apexAtStart ? last : first, sense = apexAtStart ? 1 : -1;
+  const auto &apexPoint = apexAtStart ? front : back;
+  const double apexHeight = glm::dot(apexPoint - origin, axis);
+  const double radius = signedRadius(apexAtStart ? back : front);
+  if (!(radius > tolerance) || !std::isfinite(radius))
+    return fail("Singular revolution meridian crosses its axis or has no "
+                "radial extent");
+  const auto localApex = origin + apexHeight * axis;
+  const double precision =
+      32 * std::numeric_limits<double>::epsilon() *
+      std::max({radius, glm::length(localApex), glm::length(origin)});
+  if (glm::length(apexPoint - localApex) > precision)
+    return fail("Singular revolution meridian endpoint misses its axis");
+  if (!curve.increasingSplineProjection ||
+      !curve.increasingSplineProjection(sense * radial))
+    return fail("Singular revolution requires a smooth spline with strictly "
+                "monotone radius");
+  const auto slope = curveDerivative(curve, apex);
+  if (!slope || !(sense * glm::dot(*slope, radial) > 0) ||
+      std::abs(glm::dot(*slope, axis)) >
+          1e-10 * std::abs(glm::dot(*slope, radial)))
+    return fail("Singular revolution meridian must leave its axis with a "
+                "smooth radial tangent");
+
+  const auto vector = [&placement](glm::dvec3 p) {
+    return placement.x * p.x + placement.y * p.y + placement.z * p.z;
+  };
+  const CurveFrame graph{placement.origin + vector(localApex), vector(radial),
+                         vector(-sense * glm::cross(axis, radial)),
+                         vector(axis)};
+  if (!finite(graph.origin))
+    return fail("Singular revolution apex exceeds its coordinate range");
+  const double margin = std::max(tolerance, radius * 4e-7);
+  std::vector<std::pair<double, double>> brackets;
+  brackets.reserve(samples.size());
+  for (const auto &sample : samples)
+    brackets.emplace_back(signedRadius(sample.point), sample.parameter);
+  if (!apexAtStart)
+    std::ranges::reverse(brackets);
+  brackets.front() = {0., apex};
+  brackets.back() = {radius, rim};
+  if (!std::ranges::is_sorted(brackets, {}, &std::pair<double, double>::first))
+    return fail("Singular revolution sampled radius reverses");
+  const auto parameterAtRadius =
+      [curve, signedRadius, radial, radius, apex, rim, margin, precision,
+       brackets = std::move(brackets)](double r) -> std::optional<double> {
+    if (!std::isfinite(r) || r < 0 || r > radius + margin)
+      return std::nullopt;
+    if (r == 0)
+      return apex;
+    if (r >= radius)
+      return rim;
+    const auto after = std::ranges::upper_bound(
+        brackets, r, {}, &std::pair<double, double>::first);
+    const auto before = after - 1;
+    double near = before->second, far = after->second;
+    double parameter = std::lerp(
+        near, far, (r - before->first) / (after->first - before->first));
+    for (unsigned i = 0; i < 56; ++i) {
+      const auto sample = curve.point(parameter);
+      if (!sample)
+        return std::nullopt;
+      const double residual = signedRadius(*sample) - r;
+      if (std::abs(residual) <= precision)
+        return parameter;
+      if (residual < 0)
+        near = parameter;
+      else
+        far = parameter;
+      const auto d = curveDerivative(curve, parameter);
+      const double dr = d ? glm::dot(*d, radial) : 0.;
+      const double next = dr != 0 ? parameter - residual / dr : parameter;
+      const auto [lo, hi] = std::minmax(near, far);
+      parameter = next > lo && next < hi ? next : std::midpoint(near, far);
+      if (parameter == near || parameter == far)
+        return parameter;
+    }
+    return std::midpoint(near, far);
+  };
+  const auto heightAt = [curve, parameterAtRadius, localApex,
+                         axis](double r) -> std::optional<double> {
+    const auto parameter = parameterAtRadius(r);
+    const auto profile = parameter ? curve.point(*parameter) : std::nullopt;
+    if (!profile)
+      return std::nullopt;
+    const double h = glm::dot(*profile - localApex, axis);
+    return std::isfinite(h) ? std::optional(h) : std::nullopt;
+  };
+  RevolvedRadialGraph result{graph, radius, apex, rim};
+  result.point = [graph, heightAt](double x,
+                                   double y) -> std::optional<glm::dvec3> {
+    const auto h = heightAt(std::hypot(x, y));
+    if (!h)
+      return std::nullopt;
+    const auto p = graph.origin + x * graph.x + y * graph.y + *h * graph.z;
+    return finite(p) ? std::optional(p) : std::nullopt;
+  };
+  result.inverse = [graph, heightAt,
+                    margin](glm::dvec3 p) -> std::optional<glm::dvec2> {
+    const auto delta = p - graph.origin;
+    const glm::dvec2 uv(glm::dot(delta, graph.x), glm::dot(delta, graph.y));
+    const auto h = heightAt(std::hypot(uv.x, uv.y));
+    if (!h || std::abs(glm::dot(delta, graph.z) - *h) > margin)
+      return std::nullopt;
+    return uv;
+  };
+  result.derivatives =
+      [graph, curve, parameterAtRadius, radial, axis,
+       sense](double x,
+              double y) -> std::optional<std::pair<glm::dvec3, glm::dvec3>> {
+    const double r = std::hypot(x, y);
+    if (r == 0)
+      return std::pair(graph.x, graph.y);
+    const auto parameter = parameterAtRadius(r);
+    const auto d =
+        parameter ? curveDerivative(curve, *parameter) : std::nullopt;
+    if (!d)
+      return std::nullopt;
+    const double dr = glm::dot(*d, radial), dh = glm::dot(*d, axis);
+    if (!(sense * dr > 0) || !std::isfinite(dh / dr))
+      return std::nullopt;
+    const double slope = dh / dr;
+    const auto du = graph.x + (x / r * slope) * graph.z,
+               dv = graph.y + (y / r * slope) * graph.z;
+    if (!finite(du) || !finite(dv))
+      return std::nullopt;
+    return std::pair(du, dv);
+  };
+  return result;
+}
+
 std::vector<Surface> Reader::sweptSurfaceCharts(const Entity &e) {
   const IfcSweptProfileCallbacks callbacks{
       .entity = [&](uint32_t id) -> const Entity & { return get(id); },
@@ -1582,7 +1753,11 @@ std::vector<Surface> Reader::sweptSurfaceCharts(const Entity &e) {
     surface.standaloneRegular = false;
     if (std::abs(axis.z) <= 1e-12 && std::abs(origin.z) <= tolerance) {
       auto radial = normalized(glm::cross(axis, glm::dvec3(0, 0, 1)));
-      if (glm::dot(samples.front().point - origin, radial) < 0)
+      const double frontRadius =
+          glm::dot(samples.front().point - origin, radial);
+      const double backRadius = glm::dot(samples.back().point - origin, radial);
+      if ((std::abs(frontRadius) >= std::abs(backRadius) ? frontRadius
+                                                         : backRadius) < 0)
         radial = -radial;
       if (std::ranges::all_of(samples, [&](const auto &sample) {
             return glm::dot(sample.point - origin, radial) >
@@ -1609,6 +1784,10 @@ std::vector<Surface> Reader::sweptSurfaceCharts(const Entity &e) {
                          glm::dvec2(wrapped(angle / radians, period), *v))
                    : std::nullopt;
         };
+      } else {
+        surface.radialGraph =
+            makeRevolvedRadialGraph(c, samples, frame, origin, axis, radial,
+                                    tolerance, surface.radialGraphError);
       }
     }
   }
