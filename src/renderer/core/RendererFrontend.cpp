@@ -50,6 +50,7 @@
 #include "Container/renderer/bim/BimDrawingExport.h"
 #include "Container/renderer/bim/BimFrameDrawRoutingPlanner.h"
 #include "Container/renderer/bim/BimGeoreferenceTransform.h"
+#include "Container/renderer/bim/BimLightingOverlayPlanner.h"
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/core/FrameConcurrencyPolicy.h"
 #include "Container/renderer/core/FrameRecorder.h"
@@ -67,9 +68,11 @@
 #include "Container/renderer/deferred/DeferredLightGizmoPlanner.h"
 #include "Container/renderer/deferred/DeferredRasterFrameGraphContext.h"
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
+#include "Container/renderer/deferred/DeferredRasterPipelineBridge.h"
 #include "Container/renderer/effects/BloomManager.h"
 #include "Container/renderer/effects/ExposureManager.h"
 #include "Container/renderer/effects/OitManager.h"
+#include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/lighting/EnvironmentManager.h"
 #include "Container/renderer/lighting/LightingManager.h"
 #include "Container/renderer/picking/RenderSurfaceInteractionController.h"
@@ -254,6 +257,22 @@ private:
 [[nodiscard]] std::string bimFloorPlanDrawingViewName(bool sourceElevation) {
   return sourceElevation ? "Floor plan (source elevation)"
                          : "Floor plan (projected ground)";
+}
+
+[[nodiscard]] const std::vector<DrawCommand> &bimFloorPlanDrawCommands(
+    const BimManager &bim, container::ui::BimFloorPlanElevationMode elevation) {
+  return elevation == container::ui::BimFloorPlanElevationMode::SourceElevation
+      ? bim.floorPlanSourceElevationDrawCommands()
+      : bim.floorPlanGroundDrawCommands();
+}
+
+[[nodiscard]] FrameBimFloorPlanOverlayState bimFloorPlanFrameStyle(
+    const container::ui::BimFloorPlanOverlayState &settings, bool hasDraws) {
+  return {.enabled = settings.enabled && hasDraws,
+          .depthTest = settings.depthTest,
+          .color = settings.color,
+          .opacity = settings.opacity,
+          .lineWidth = settings.lineWidth};
 }
 
 [[nodiscard]] std::string bimDrawingTitle(const BimManager *bimManager) {
@@ -3397,6 +3416,82 @@ container::gpu::ExposureSettings RendererFrontend::effectiveExposureSettings() c
   return settings;
 }
 
+const container::ui::BimFloorPlanOverlayState *
+RendererFrontend::effectiveBimFloorPlanSettings() const {
+  if (captureBimFloorPlan_)
+    return captureBimFloorPlan_.get();
+  return subs_.guiManager ? &subs_.guiManager->bimFloorPlanOverlayState() : nullptr;
+}
+
+void RendererFrontend::appendBimFloorPlanTelemetry(
+    nlohmann::json &json, const FrameRecordParams *frame) const {
+  using Elevation = container::ui::BimFloorPlanElevationMode;
+  const auto *bim = subs_.bimManager.get();
+  const auto *settings = effectiveBimFloorPlanSettings();
+  const bool hasScene = bim != nullptr && bim->hasScene();
+  if (!hasScene && !(settings && settings->enabled))
+    return;
+
+  const auto elevation = settings ? settings->elevationMode : Elevation::ProjectedGround;
+  const auto *draws = frame ? frame->bim.floorPlanDrawCommands : nullptr;
+  if (draws == nullptr && hasScene)
+    draws = &bimFloorPlanDrawCommands(*bim, elevation);
+  const size_t drawCount = draws ? draws->size() : 0u;
+  const bool requested = settings && settings->enabled;
+  const auto style = frame && frame->bim.floorPlanDrawCommands
+      ? frame->bim.floorPlan
+      : settings ? bimFloorPlanFrameStyle(*settings, drawCount != 0u) : FrameBimFloorPlanOverlayState{};
+  const auto technique = frame ? frame->runtime.activeTechnique : subs_.activeTechnique->id();
+  auto pipelineTechnique = technique;
+  std::string_view pipeline;
+  switch (technique) {
+  case RenderTechniqueId::DeferredRaster:
+    pipeline = deferredRasterPipelineName(style.depthTest
+        ? DeferredRasterPipelineId::BimFloorPlanDepth : DeferredRasterPipelineId::BimFloorPlanNoDepth);
+    break;
+  case RenderTechniqueId::ForwardRaster:
+    pipeline = forwardRasterPipelineName(style.depthTest
+        ? ForwardRasterPipelineId::BimFloorPlanDepth : ForwardRasterPipelineId::BimFloorPlanNoDepth);
+    break;
+  case RenderTechniqueId::PathTracing:
+    pipelineTechnique = RenderTechniqueId::ForwardRaster;
+    pipeline = forwardRasterPipelineName(style.depthTest
+        ? ForwardRasterPipelineId::BimFloorPlanDisplayDepth : ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth);
+    break;
+  default:
+    break;
+  }
+  const auto *registry = resources_.builtPipelines.pipelines.handleRegistry.get();
+  const bool pipelineReady = !pipeline.empty() && registry &&
+      registry->pipelineHandle({.technique = pipelineTechnique, .name = std::string(pipeline)}) != VK_NULL_HANDLE;
+  const bool wideLines = frame ? frame->debug.lineListWideLinesSupported
+      : svc_.ctx.deviceWrapper->enabledFeatures().wideLines == VK_TRUE;
+  std::string modelFormat;
+  if (hasScene) {
+    const auto extension = container::util::pathFromUtf8(bim->modelPath()).extension();
+    modelFormat = container::util::pathToUtf8(extension);
+    if (modelFormat.starts_with('.')) modelFormat.erase(0, 1);
+    std::ranges::transform(modelFormat, modelFormat.begin(),
+        [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+  }
+  json["bim"] = {{"modelFormat", modelFormat.empty() ? nlohmann::json(nullptr) : nlohmann::json(modelFormat)},
+                 {"revision", CONTAINER_GIT_REVISION},
+                 {"technique", renderTechniqueName(technique)},
+                 {"floorPlan", {{"requested", requested},
+                     {"enabled", style.enabled},
+                     {"elevation", elevation == Elevation::SourceElevation ? "source-elevation" : "projected-ground"},
+                     {"depthTest", style.depthTest},
+                     {"color", {style.color.r, style.color.g, style.color.b}},
+                     {"opacity", sanitizeBimLightingOverlayOpacity(style.opacity)},
+                     {"lineWidth", style.lineWidth},
+                     {"rasterLineWidth", rasterBimLightingOverlayLineWidth(style.lineWidth, wideLines)},
+                     {"drawCount", drawCount},
+                     {"projectedGroundDrawCount", hasScene ? bim->floorPlanGroundDrawCommands().size() : 0u},
+                     {"sourceElevationDrawCount", hasScene ? bim->floorPlanSourceElevationDrawCommands().size() : 0u},
+                     {"pipeline", pipeline.empty() ? nlohmann::json(nullptr) : nlohmann::json(pipeline)},
+                     {"pipelineReady", pipelineReady}}}};
+}
+
 nlohmann::json RendererFrontend::captureTelemetry() const {
   const auto &temporal = *subs_.temporalManager;
   const auto &settings = temporal.settings();
@@ -3801,6 +3896,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
       subs_.sceneManager ? subs_.sceneManager->indices().size() : 0u;
   json["scene"]["auxiliaryObjectCount"] =
       subs_.bimManager ? subs_.bimManager->objectData().size() : 0u;
+  appendBimFloorPlanTelemetry(json);
   json["scene"]["geometryArenaCapacityBytes"] =
       svc_.allocationManager.geometryArenaCapacityBytes();
   if (subs_.rayShadowManager) {
@@ -7084,6 +7180,7 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
                           {"width", readback.extent.width}, {"height", readback.extent.height},
                           {"colorSpace", screenshot_.sceneLinear ? "linear-sRGB" : "sRGB"},
                           {"includesUi", !screenshot_.sceneLinear && !screenshot_.viewportOnly && subs_.guiManager != nullptr}};
+  appendBimFloorPlanTelemetry(metadata, &params);
   if (referenceCapture) {
     const auto lens = referenceCapture->effectiveLens();
     const auto denoiser = referenceCapture->oidnStatus();
@@ -9539,22 +9636,10 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         &selectedBimNativePointDrawCommands_;
     p.bim.nativeCurveDraws.selectedDrawCommands =
         &selectedBimNativeCurveDrawCommands_;
-    const auto* floorPlanSettings = captureBimFloorPlan_ ? captureBimFloorPlan_.get()
-        : subs_.guiManager ? &subs_.guiManager->bimFloorPlanOverlayState() : nullptr;
-    if (floorPlanSettings) {
-      const auto &floorPlan = *floorPlanSettings;
+    if (const auto *floorPlan = effectiveBimFloorPlanSettings()) {
       p.bim.floorPlanDrawCommands =
-          floorPlan.elevationMode ==
-                  container::ui::BimFloorPlanElevationMode::SourceElevation
-              ? &subs_.bimManager->floorPlanSourceElevationDrawCommands()
-              : &subs_.bimManager->floorPlanGroundDrawCommands();
-      p.bim.floorPlan.enabled = floorPlan.enabled &&
-                                p.bim.floorPlanDrawCommands != nullptr &&
-                                !p.bim.floorPlanDrawCommands->empty();
-      p.bim.floorPlan.depthTest = floorPlan.depthTest;
-      p.bim.floorPlan.color = floorPlan.color;
-      p.bim.floorPlan.opacity = floorPlan.opacity;
-      p.bim.floorPlan.lineWidth = floorPlan.lineWidth;
+          &bimFloorPlanDrawCommands(*subs_.bimManager, floorPlan->elevationMode);
+      p.bim.floorPlan = bimFloorPlanFrameStyle(*floorPlan, !p.bim.floorPlanDrawCommands->empty());
     }
 
     if (captureBimAnnotations_ || subs_.guiManager != nullptr) {

@@ -33,6 +33,14 @@ In Deferred raster, Forward raster, and Path tracing, the BIM floor plan appears
 PNGs and stays out of raw EXR. Path tracing keeps its accumulated radiance
 when floor-plan settings change. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
 
+For captures of BIM models, the capture sidecar and CLI telemetry identify
+the model format, renderer revision and rendering engine in `bim`.
+`bim.floorPlan` records the overlay toggle, selected elevation, depth test,
+style and available draw counts for each elevation. `enabled` means the
+overlay was requested and the selected elevation has draw commands.
+`pipelineReady` indicates whether the selected pipeline is available. The
+viewport PNG shows the linework after depth testing and display processing.
+
 Command-line examples:
 
 ```text

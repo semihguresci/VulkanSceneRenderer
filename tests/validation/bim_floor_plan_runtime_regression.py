@@ -107,7 +107,32 @@ def read_capture(image, frame, technique):
             "metadata": metadata, "decodedSha256": hashlib.sha256(pixels.tobytes()).hexdigest()}
 
 
-def record(renderer, model, output, technique, mode, report, *, comparison, generate_only):
+def check_floor_plan_telemetry(sample, style):
+    state, metadata = sample["state"], sample["metadata"]
+    bim = state["bim"]
+    require(metadata["bim"] == bim, "Image sidecar and CLI BIM telemetry disagree")
+    require(bim["modelFormat"] == "bim" and bim["revision"] == state["build"]["revision"]
+            and bim["technique"] == state["technique"], bim)
+    overlay = bim["floorPlan"]
+    if style is None:
+        style = settings(enabled=False, color=(.02, .02, .02), opacity=.85, width=1)
+    require(overlay["requested"] == overlay["enabled"] == style["enabled"], overlay)
+    for key in ("elevation", "depthTest", "lineWidth"):
+        require(overlay[key] == style[key], overlay)
+    require(math.isclose(overlay["opacity"], style["opacity"], abs_tol=1e-6)
+            and all(math.isclose(actual, expected, abs_tol=1e-6)
+                    for actual, expected in zip(overlay["color"], style["color"], strict=True)), overlay)
+    width = style["lineWidth"] if state["wideLinesSupported"] else 1
+    require(overlay["rasterLineWidth"] == width, overlay)
+    projected, source = overlay["projectedGroundDrawCount"], overlay["sourceElevationDrawCount"]
+    require(projected > 0 and source > 0, overlay)
+    require(overlay["drawCount"] == (source if style["elevation"] == "source-elevation" else projected), overlay)
+    pipeline = "bim-floor-plan-display" if state["technique"] == "path-tracing" else "bim-floor-plan"
+    require(overlay["pipelineReady"] and overlay["pipeline"] ==
+            f"{pipeline}-{'depth' if style['depthTest'] else 'no-depth'}", overlay)
+
+
+def record(renderer, model, output, technique, mode, report, *, comparison, generate_only, check_telemetry):
     frames, events = sequence_plan(mode, comparison)
     name = f"{technique}-{mode}"
     sequence = output / f"{name}.sequence.json"
@@ -145,6 +170,10 @@ def record(renderer, model, output, technique, mode, report, *, comparison, gene
         sample = read_capture(image, frame, active_technique)
         state = sample["state"]
         require(Path(state["scene"]["auxiliary"]).resolve() == model, "The authored BIM fixture was not loaded")
+        if check_telemetry:
+            style = next((event["bimFloorPlan"] for event in reversed(events)
+                          if event["frame"] <= frame and "bimFloorPlan" in event), None)
+            check_floor_plan_telemetry(sample, style)
         row["captures"].append({key: sample[key] for key in ("frame", "image", "metadata", "decodedSha256")}
                                | {"technique": state["technique"], "referencePath": state.get("referencePath"),
                                   "revision": state["build"]["revision"]})
@@ -290,7 +319,8 @@ def main():
     try:
         for technique in ("deferred-raster", args.comparison):
             styled, linear, controls = (record(renderer, model, output, technique, mode, report,
-                                               comparison=args.comparison, generate_only=args.generate_only)
+                                               comparison=args.comparison, generate_only=args.generate_only,
+                                               check_telemetry=not expect_missing)
                                         for mode in ("styled", "linear", "linear-control"))
             if args.generate_only:
                 continue
@@ -300,7 +330,8 @@ def main():
                                            "sceneLinear": check_linear(linear, controls, path=path)}
             print(technique, report["checks"][technique], flush=True)
         switched = record(renderer, model, output, "deferred-raster", "switch", report,
-                          comparison=args.comparison, generate_only=args.generate_only)
+                          comparison=args.comparison, generate_only=args.generate_only,
+                          check_telemetry=not expect_missing)
         if args.generate_only:
             return 0
         import numpy as np
