@@ -97,6 +97,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
 
 set(SLANG_COMPUTE_SHADER_NAMES
     material_sampler_contract.slang
+    scene_data_capture.slang
     gltf_deformation.slang
     hierarchy_transform.slang
     ray_instance_transform.slang

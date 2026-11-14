@@ -358,6 +358,7 @@ struct FrameScreenshotCapture {
 
 struct FramePassServices {
   std::function<bool(VkCommandBuffer,const FrameRecordParams&)> referencePathTrace{};
+  std::function<void(VkCommandBuffer, const FrameRecordParams&)> sceneDataCapture{};
   PbrAuxiliaryPass *pbrAuxiliaryPass{nullptr};
   ScreenReflectionPass *screenReflectionPass{nullptr};
   VolumetricFogPass *volumetricFogPass{nullptr};

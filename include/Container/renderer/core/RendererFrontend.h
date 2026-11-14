@@ -37,6 +37,7 @@
 #include "Container/renderer/scene/SceneState.h"
 #include "Container/scene/MeshSceneProviderAssetAdapter.h"
 #include "Container/utility/VulkanMemoryManager.h"
+#include "Container/utility/ComputePipeline.h"
 #include "Container/utility/SceneEditHistory.h"
 #include "Container/geometry/GltfAnimationRuntime.h"
 #include "Container/geometry/GltfInteractivity.h"
@@ -199,7 +200,8 @@ public:
 
   // Capture the next submitted frame as an sRGB PNG or scene-linear EXR.
   void requestScreenshot(std::filesystem::path outputPath, bool viewportOnly = false,
-                         std::optional<uint32_t> referenceSampleTarget = std::nullopt);
+                         std::optional<uint32_t> referenceSampleTarget = std::nullopt,
+                         bool sceneData = false);
   void saveSceneModel(const std::filesystem::path& outputPath, bool keepLinks = false);
   bool selectMaterialVariant(std::optional<size_t> variant,bool recordHistory=true);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
@@ -777,6 +779,7 @@ private:
     std::filesystem::path outputPath{};
     std::optional<uint32_t> referenceSampleTarget{};
     bool sceneLinear{false};
+    bool sceneData{false};
     bool viewportOnly{false};
     bool interactive{false};
     bool remote{false};
@@ -784,6 +787,16 @@ private:
     std::vector<HostReadbackSlot> readbacks{};
   };
   ScreenshotState screenshot_{};
+  // A screenshot waits for its own submission before the next frame can reuse these bindings.
+  struct SceneDataCaptureState {
+    VkDescriptorSetLayout descriptorLayout{VK_NULL_HANDLE};
+    VkDescriptorPool descriptorPool{VK_NULL_HANDLE};
+    VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+    VkPipelineLayout pipelineLayout{VK_NULL_HANDLE};
+    container::gpu::ComputePipeline pipeline{};
+    HostReadbackSlot readback{};
+    bool recorded{false};
+  } sceneDataCapture_{};
   std::unique_ptr<ComfyUiFrontendState> comfyUi_;
   std::string mcpCaptureStatus_;
   std::string mcpModelStatus_;
@@ -949,6 +962,9 @@ private:
   void ensureScreenshotReadbackBuffer(uint32_t frameSlot, VkExtent2D extent,
                                       VkFormat format);
   void writePendingScreenshot(uint32_t frameSlot, const FrameRecordParams& params);
+  void prepareSceneDataCapture(FrameRecordParams& frame, const glm::mat4& projection);
+  void writeSceneDataCapture();
+  void destroySceneDataCapture();
   void ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot);
   void markDepthVisibilityFrameComplete(uint32_t imageIndex,
                                         uint32_t frameSlot,

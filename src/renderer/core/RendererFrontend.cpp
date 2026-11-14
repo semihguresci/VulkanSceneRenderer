@@ -2430,12 +2430,11 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   frameTemporalSettings.enabled =
       (frameTemporalSettings.enabled || temporal.upscalingActive()) && !referencePathActive() &&
       (mode == 0u || mode == 8u || (mode >= 100u && mode <= 104u));
+  const glm::mat4 projection = gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
+      temporalCamera->projectionMatrix(float(displayExtent.width) / float(displayExtent.height));
   temporal.prepareCamera(
       buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
-      frameTemporalSettings,
-      gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
-      temporalCamera->projectionMatrix(float(displayExtent.width) /
-                                       float(displayExtent.height)), temporalFrameMilliseconds_);
+      frameTemporalSettings, projection, temporalFrameMilliseconds_);
   SceneController::writeToBuffer(
       svc_.allocationManager, buffers_.cameras[imageIndex],
       &buffers_.cameraData, sizeof(buffers_.cameraData));
@@ -2575,6 +2574,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   if (frameRecordParams.screenshot.sceneLinear)
     subs_.frameResourceManager->setLinearCaptureTarget(
         imageIndex, frameRecordParams.screenshot.readbackBuffer);
+  if (screenshotThisFrame && screenshot_.sceneData)
+    prepareSceneDataCapture(frameRecordParams, projection);
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::DescriptorUpdate,
                            elapsedMilliseconds(phaseStart));
@@ -5320,7 +5321,8 @@ bool RendererFrontend::referencePathActive() const {
 }
 
 void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool viewportOnly,
-                                         std::optional<uint32_t> referenceSampleTarget) {
+                                         std::optional<uint32_t> referenceSampleTarget,
+                                         bool sceneData) {
   if (outputPath.empty()) {
     throw std::runtime_error("screenshot output path is empty");
   }
@@ -5331,6 +5333,8 @@ void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool 
   const bool sceneLinear = extension == ".exr";
   if (!sceneLinear && extension != ".png")
     throw std::runtime_error("screenshot path must end in .png or .exr");
+  if (sceneData && (!sceneLinear || referenceSampleTarget))
+    throw std::runtime_error("Scene data requires a scene-linear EXR capture");
   if (referenceSampleTarget &&
       (!sceneLinear || !referencePathActive() || *referenceSampleTarget == 0 ||
        *referenceSampleTarget > svc_.config.pathSampleLimit))
@@ -5345,6 +5349,7 @@ void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool 
   screenshot_.outputPath = std::move(outputPath);
   screenshot_.referenceSampleTarget = referenceSampleTarget;
   screenshot_.sceneLinear = sceneLinear;
+  screenshot_.sceneData = sceneData;
   screenshot_.viewportOnly = viewportOnly && !sceneLinear;
   screenshot_.interactive = false;
   screenshot_.remote = false;
@@ -5841,6 +5846,7 @@ void RendererFrontend::shutdown() {
 
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
   svc_.swapChainManager.drainAcquires();
+  destroySceneDataCapture();
 
   // History may own inactive scene generations and descriptor pools. Release
   // them while their allocator/pipeline services and live managers still exist.
@@ -7099,6 +7105,8 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
   if (!screenshot_.pending) {
     return;
   }
+  if (screenshot_.sceneData)
+    writeSceneDataCapture();
   const auto* referenceCapture = referencePathActive() ? subs_.referencePathTracePass.get() : nullptr;
   const auto ground = referenceCapture ? referenceCapture->effectiveGround() : ReferenceGroundSettings{};
   const bool shadowMatte = ground.mode == ReferenceGroundMode::ShadowMatte;
