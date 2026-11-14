@@ -1,4 +1,5 @@
 #include "material_data_common.slang"
+#include "scene_clip_common.slang"
 
 [[vk::binding(2, 0)]] SamplerState materialSamplers[];
 [[vk::binding(4, 0)]] StructuredBuffer<GpuTextureMetadata> uTextureMetadata;
@@ -16,5 +17,6 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     GpuTextureMetadata metadata = uTextureMetadata[tid.x];
     uResults[tid.x * 2] = materialTextures[NonUniformResourceIndex(tid.x)].SampleLevel(
         materialSamplers[NonUniformResourceIndex(metadata.samplerIndex)], query.uv, 0);
-    uResults[tid.x * 2 + 1] = float4(metadata.samplerIndex, metadata.samplerCount, 0, 0);
+    const bool clip = SceneClipPlanesClip(float3(query.uv, 0.0), 0u, float4(0.0));
+    uResults[tid.x * 2 + 1] = float4(metadata.samplerIndex, metadata.samplerCount, clip ? 1.0 : 0.0, 0.0);
 }

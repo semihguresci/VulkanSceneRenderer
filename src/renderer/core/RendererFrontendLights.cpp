@@ -198,7 +198,7 @@ bool RendererFrontend::publishLightEdit(LightEditPublication& publication) {
   }
   std::optional<OpenVdbVolumeRenderer::PreparedSceneBindings> volume;
   if(subs_.openVdbVolumeRenderer) volume=subs_.openVdbVolumeRenderer->prepareSceneBindings(
-      edit.lightingBuffers(),scene.sceneClipBuffer(),edit.pointLightBuffer(),edit.areaLightBuffer());
+      edit.lightingBuffers(),scene.sceneClipBuffers(),edit.pointLightBuffer(),edit.areaLightBuffer());
   std::optional<DdgiManager::PreparedSceneHistoryReset> ddgi;
   std::optional<DdgiManager::PreparedLightSnapshotCapacity> capacity;
   if(subs_.ddgiManager) {

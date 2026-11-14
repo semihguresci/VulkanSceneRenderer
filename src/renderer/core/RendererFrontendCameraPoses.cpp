@@ -321,7 +321,7 @@ bool RendererFrontend::publishCameraViewPose(CameraViewPosePublication& publicat
   auto auxiliaryBindings=subs_.frameResourceManager->prepareAuxiliaryBindings(anisotropy,diffuse);
   std::optional<OpenVdbVolumeRenderer::PreparedSceneBindings> volumeBindings;
   if(subs_.openVdbVolumeRenderer) volumeBindings=subs_.openVdbVolumeRenderer->prepareSceneBindings(
-      nextLighting.lightingBuffers(),manager.sceneClipBuffer(),nextLighting.pointLightBuffer(),nextLighting.areaLightBuffer());
+      nextLighting.lightingBuffers(),manager.sceneClipBuffers(),nextLighting.pointLightBuffer(),nextLighting.areaLightBuffer());
   std::optional<GpuCullManager::PreparedGeneration> culling;
   const auto cullDraws=nextController.opaqueSingleSidedDrawCommands();
   if(subs_.gpuCullManager) culling=subs_.gpuCullManager->prepareGeneration(nextController.objectBuffers(),

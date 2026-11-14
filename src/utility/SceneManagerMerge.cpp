@@ -614,6 +614,8 @@ uint64_t SceneManager::mergeHistoryResidentBytes() const {
   RETAINED_MEMBER(authoredPointBindings_); RETAINED_MEMBER(authoredDirectionalBindings_); RETAINED_MEMBER(authoredAreaBindings_);
   RETAINED_MEMBER(materialSamplers_); RETAINED_MEMBER(materialSamplerSlots_.keys);
   RETAINED_MEMBER(descriptorSets_); RETAINED_MEMBER(auxiliaryDescriptorSets_);
+  bytes.add(checkedBytes(sceneClipBuffers().size(),
+      sizeof(container::gpu::AllocatedBuffer) + sizeof(std::optional<container::gpu::SceneClipState>)));
   if(textureImageOwnership_) bytes.add(textureImageOwnership_->ownedBytes());
   if(textureResourceLifecycle_) bytes.add(textureResourceLifecycle_->ownedBytes());
 #undef RETAINED_MEMBER
@@ -1053,7 +1055,6 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
   candidate.uploadTextureMetadataBuffer(cpu.limit-cpu.bytes);
   cpu.add(candidate.textureResourceLifecycle_->ownedBytes());
   cpu.add(candidate.materialResourceDependencyBytes());
-  candidate.createSceneClipStateBuffer();
   if(descriptorSets_.size()>UINT32_MAX/2) mergeFailure("frame descriptor count exceeds its integer range");
   candidate.allocateDescriptorSets(static_cast<uint32_t>(descriptorSets_.size()));
   candidate.geometryRevision_=geometryRevision_+1;
@@ -1255,7 +1256,7 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareSubtreeCloneGeneratio
   // No texture allocation batch, image preparation, geometry decoder or file
   // access belongs to this path. All image handles retain their existing lease.
   candidate.createSampler();candidate.uploadMaterialBuffer();candidate.uploadTextureMetadataBuffer();
-  candidate.createSceneClipStateBuffer();candidate.allocateDescriptorSets(uint32_t(descriptorSets_.size()));
+  candidate.allocateDescriptorSets(uint32_t(descriptorSets_.size()));
   candidate.geometryRevision_=geometryRevision_+1;candidate.materialRevision_=materialRevision_+1;
   candidate.materialResourceRevision_=materialResourceRevision_+1;
   candidate.generationEpoch_=generationEpoch_+1;
@@ -1271,9 +1272,7 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareSubtreeCloneGeneratio
 void SceneManager::PreparedMergeGeneration::prepareDescriptorFrames(uint32_t imageCount) {
   if(!manager_ || imageCount==0 || imageCount>64)
     throw std::invalid_argument("Invalid inactive scene descriptor frame count");
-  if(manager_->descriptorSets_.size()!=imageCount ||
-      manager_->auxiliaryDescriptorSets_.size()!=imageCount)
-    manager_->allocateDescriptorSets(imageCount);
+  manager_->resizeDescriptorFrames(imageCount);
 }
 
 void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,const AnimationPlayer* targetPlayer) noexcept {
@@ -1344,7 +1343,7 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
   EXCHANGE_ASSET(materialBuffer_); EXCHANGE_ASSET(materialBufferCapacity_);
   EXCHANGE_ASSET(textureMetadata_); EXCHANGE_ASSET(textureMetadataBuffer_); EXCHANGE_ASSET(textureMetadataBufferCapacity_);
   EXCHANGE_ASSET(textureSamplingFallback_); EXCHANGE_ASSET(textureSamplingPlan_);
-  EXCHANGE_ASSET(sceneClipState_); EXCHANGE_ASSET(sceneClipStateBuffer_);
+  EXCHANGE_ASSET(sceneClipState_); EXCHANGE_ASSET(sceneClipFrames_);
   EXCHANGE_ASSET(baseColorSampler_); EXCHANGE_ASSET(materialSamplers_); EXCHANGE_ASSET(materialSamplerSlots_);
   EXCHANGE_ASSET(descriptorPool_); EXCHANGE_ASSET(ownsDescriptorPool_);
   EXCHANGE_ASSET(descriptorSets_); EXCHANGE_ASSET(auxiliaryDescriptorSets_); EXCHANGE_ASSET(textureImageOwnership_);

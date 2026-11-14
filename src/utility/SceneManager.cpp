@@ -924,6 +924,22 @@ struct SceneManager::IesGpuProfileCache {
   size_t usedBytes{};
 };
 
+struct SceneManager::SceneClipFrames {
+  explicit SceneClipFrames(container::gpu::AllocationManager& allocator, uint32_t count)
+      : allocator(allocator), buffers(count), uploadedStates(count) {}
+
+  ~SceneClipFrames() {
+    for (auto& buffer : buffers) {
+      if (buffer.buffer != VK_NULL_HANDLE) allocator.destroyBuffer(buffer);
+    }
+  }
+
+  container::gpu::AllocationManager& allocator;
+  std::vector<container::gpu::AllocatedBuffer> buffers;
+  std::vector<std::optional<container::gpu::SceneClipState>> uploadedStates;
+  std::shared_ptr<const uint8_t> identity{std::make_shared<const uint8_t>(0)};
+};
+
 SceneManager::SceneManager(
     container::gpu::AllocationManager& allocationManager,
     container::gpu::PipelineManager& pipelineManager,
@@ -950,9 +966,6 @@ SceneManager::~SceneManager() {
     }
   }
   resetLoadedAssets();
-  if (sceneClipStateBuffer_.buffer != VK_NULL_HANDLE) {
-    allocationManager_->destroyBuffer(sceneClipStateBuffer_);
-  }
 
   descriptorSets_.clear();
   descriptorPool_ = VK_NULL_HANDLE;
@@ -1095,7 +1108,6 @@ void SceneManager::initialize(const std::string& initialModelPath,
   resetMaterialLifecycle();
   uploadMaterialBuffer();
   uploadTextureMetadataBuffer();
-  createSceneClipStateBuffer();
   allocateDescriptorSets(descriptorSetCount);
   finishTextureImageOwnershipPublication();
 }
@@ -1822,7 +1834,7 @@ void SceneManager::updateDescriptorSets(
   for (size_t i = 0; i < descriptorCount; ++i) {
     const auto& objectBuffer = objectBuffers[std::min(
         i, objectBuffers.size() - 1u)];
-    writeDescriptorSetContents(descriptorSets_[i], cameraBuffers[i], objectBuffer);
+    writeDescriptorSetContents(descriptorSets_[i], i, cameraBuffers[i], objectBuffer);
   }
 }
 
@@ -1849,19 +1861,42 @@ void SceneManager::updateAuxiliaryDescriptorSets(
   for (size_t i = 0; i < descriptorCount; ++i) {
     const auto& objectBuffer = objectBuffers[std::min(
         i, objectBuffers.size() - 1u)];
-    writeDescriptorSetContents(auxiliaryDescriptorSets_[i], cameraBuffers[i],
+    writeDescriptorSetContents(auxiliaryDescriptorSets_[i], i, cameraBuffers[i],
                                objectBuffer);
   }
 }
 
+void SceneManager::resizeDescriptorFrames(uint32_t imageCount) {
+  if (descriptorSets_.size() != imageCount || auxiliaryDescriptorSets_.size() != imageCount)
+    allocateDescriptorSets(imageCount);
+}
+
 void SceneManager::updateSceneClipState(
-    const container::gpu::SceneClipState& clipState) {
-  if (std::memcmp(&sceneClipState_, &clipState,
-                  sizeof(container::gpu::SceneClipState)) == 0) {
-    return;
+    uint32_t imageIndex, const container::gpu::SceneClipState& clipState) {
+  const auto& buffer = sceneClipBuffer(imageIndex);
+  auto& uploaded = sceneClipFrames_->uploadedStates[imageIndex];
+  if (!uploaded || std::memcmp(&*uploaded, &clipState, sizeof(clipState)) != 0) {
+    // A flush failure can leave bytes changed. Retry even if the next request
+    // matches the state that preceded the failed upload.
+    uploaded.reset();
+    writeHostVisibleBuffer(*allocationManager_, buffer, &clipState, sizeof(clipState));
+    uploaded = clipState;
   }
   sceneClipState_ = clipState;
-  writeSceneClipStateBuffer();
+}
+
+std::span<const container::gpu::AllocatedBuffer> SceneManager::sceneClipBuffers() const noexcept {
+  if (!sceneClipFrames_) return {};
+  return sceneClipFrames_->buffers;
+}
+
+const container::gpu::AllocatedBuffer& SceneManager::sceneClipBuffer(size_t imageIndex) const {
+  if (!sceneClipFrames_) throw std::logic_error("Scene clip buffers have not been prepared");
+  return sceneClipFrames_->buffers.at(imageIndex);
+}
+
+std::shared_ptr<const uint8_t> SceneManager::sceneClipFrameIdentity() const noexcept {
+  return sceneClipFrames_ ? sceneClipFrames_->identity : nullptr;
 }
 
 /* ---------- Material resolution ---------- */
@@ -3630,29 +3665,6 @@ void SceneManager::uploadTextureMetadataBuffer(uint64_t maxLogicalCpuBytes) {
     textureImageOwnership_.swap(ownership);
 }
 
-void SceneManager::createSceneClipStateBuffer() {
-  if (sceneClipStateBuffer_.buffer != VK_NULL_HANDLE) {
-    return;
-  }
-
-  sceneClipStateBuffer_ = allocationManager_->createBuffer(
-      sizeof(container::gpu::SceneClipState),
-      VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-          VMA_ALLOCATION_CREATE_MAPPED_BIT);
-  writeSceneClipStateBuffer();
-}
-
-void SceneManager::writeSceneClipStateBuffer() {
-  if (sceneClipStateBuffer_.buffer == VK_NULL_HANDLE) {
-    createSceneClipStateBuffer();
-    return;
-  }
-  writeHostVisibleBuffer(*allocationManager_, sceneClipStateBuffer_,
-                         &sceneClipState_, sizeof(sceneClipState_));
-}
-
 std::filesystem::path SceneManager::resolveSceneAssetPath(
     std::string_view relativePath) {
   const std::filesystem::path requestedPath =
@@ -3814,65 +3826,79 @@ void SceneManager::allocateDescriptorSets(uint32_t descriptorSetCount) {
   const uint32_t textureDescriptorCount =
       std::max<uint32_t>(1u, static_cast<uint32_t>(textureManager_.textureCount()));
   const uint32_t frameSetCount = std::max(1u, descriptorSetCount);
+  if (frameSetCount > UINT32_MAX / 6u)
+    throw std::length_error("Scene descriptor frame count exceeds its integer range");
   const uint32_t setCount = frameSetCount * 2u;
 
-  if (descriptorPool_ != VK_NULL_HANDLE) {
-    if(ownsDescriptorPool_) {
-      vkDestroyDescriptorPool(deviceWrapper_->device(),descriptorPool_,nullptr);
-      descriptorPool_=VK_NULL_HANDLE;
-    } else pipelineManager_->destroyDescriptorPool(descriptorPool_);
-  }
-  descriptorSets_.clear();
-  auxiliaryDescriptorSets_.clear();
-
-  if (textureDescriptorCount > textureDescriptorCapacity_) {
-    throw std::runtime_error("Model requires more sampled-image descriptors than "
-                             "the device supports");
+  if (textureDescriptorCount > textureDescriptorCapacity_ ||
+      textureDescriptorCapacity_ > UINT32_MAX / setCount ||
+      materialSamplerDescriptorCapacity_ > UINT32_MAX / setCount) {
+    throw std::runtime_error("Model requires more descriptors than the device supports");
   }
 
-  std::vector<VkDescriptorPoolSize> poolSizes = {
+  std::unique_ptr<SceneClipFrames> clipFrames;
+  if (sceneClipBuffers().size() != frameSetCount) {
+    clipFrames = std::make_unique<SceneClipFrames>(*allocationManager_, frameSetCount);
+    for (uint32_t image = 0; image < frameSetCount; ++image) {
+      auto& buffer = clipFrames->buffers[image];
+      buffer = allocationManager_->createBuffer(
+          sizeof(container::gpu::SceneClipState), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+          VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                                    VMA_ALLOCATION_CREATE_MAPPED_BIT);
+      writeHostVisibleBuffer(*allocationManager_, buffer, &sceneClipState_, sizeof(sceneClipState_));
+      clipFrames->uploadedStates[image] = sceneClipState_;
+    }
+  }
+
+  const std::vector<VkDescriptorPoolSize> poolSizes = {
       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount * 2u},
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * 3u},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
-       textureDescriptorCapacity_ * setCount},
-      {VK_DESCRIPTOR_TYPE_SAMPLER,
-        materialSamplerDescriptorCapacity_ * setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, textureDescriptorCapacity_ * setCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLER, materialSamplerDescriptorCapacity_ * setCount},
   };
 
-  if(ownsDescriptorPool_) {
+  const std::vector<VkDescriptorSetLayout> layouts(setCount, descriptorSetLayout_);
+  std::vector<VkDescriptorSet> allocatedSets(setCount);
+  std::vector<VkDescriptorSet> primary(frameSetCount);
+  std::vector<VkDescriptorSet> auxiliary(frameSetCount);
+  const auto destroyPool = [&](VkDescriptorPool& pool) {
+    if (pool == VK_NULL_HANDLE) return;
+    if (ownsDescriptorPool_) vkDestroyDescriptorPool(deviceWrapper_->device(), pool, nullptr);
+    else pipelineManager_->destroyDescriptorPool(pool);
+  };
+
+  VkDescriptorPool pool = VK_NULL_HANDLE;
+  if (ownsDescriptorPool_) {
     VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    poolInfo.maxSets=setCount;
-    poolInfo.poolSizeCount=static_cast<uint32_t>(poolSizes.size());
-    poolInfo.pPoolSizes=poolSizes.data();
-    if(vkCreateDescriptorPool(deviceWrapper_->device(),&poolInfo,nullptr,&descriptorPool_)!=VK_SUCCESS)
+    poolInfo.maxSets = setCount;
+    poolInfo.poolSizeCount = static_cast<uint32_t>(poolSizes.size());
+    poolInfo.pPoolSizes = poolSizes.data();
+    if (vkCreateDescriptorPool(deviceWrapper_->device(), &poolInfo, nullptr, &pool) != VK_SUCCESS)
       throw std::runtime_error("failed to create detached scene descriptor pool");
-  } else descriptorPool_ = pipelineManager_->createDescriptorPool(poolSizes, setCount, 0);
+  } else {
+    pool = pipelineManager_->createDescriptorPool(poolSizes, setCount, 0);
+  }
 
-  VkDescriptorSetAllocateInfo allocInfo{};
-  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = descriptorPool_;
+  VkDescriptorSetAllocateInfo allocInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  allocInfo.descriptorPool = pool;
   allocInfo.descriptorSetCount = setCount;
-
-  std::vector<VkDescriptorSetLayout> layouts(setCount, descriptorSetLayout_);
   allocInfo.pSetLayouts = layouts.data();
-
-  // Binding 5 has a fixed device-sized capacity. Variable descriptor counts
-  // would require it to be the highest binding; camera data lives at binding 6.
-
-  std::vector<VkDescriptorSet> allocatedSets(setCount, VK_NULL_HANDLE);
-  if (vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo,
-                               allocatedSets.data()) != VK_SUCCESS) {
+  if (vkAllocateDescriptorSets(deviceWrapper_->device(), &allocInfo, allocatedSets.data()) != VK_SUCCESS) {
+    destroyPool(pool);
     throw std::runtime_error("failed to allocate scene descriptor sets");
   }
 
-  descriptorSets_.assign(allocatedSets.begin(),
-                         allocatedSets.begin() + frameSetCount);
-  auxiliaryDescriptorSets_.assign(allocatedSets.begin() + frameSetCount,
-                                  allocatedSets.end());
+  std::copy_n(allocatedSets.begin(), frameSetCount, primary.begin());
+  std::copy_n(allocatedSets.begin() + frameSetCount, frameSetCount, auxiliary.begin());
+  descriptorSets_.swap(primary);
+  auxiliaryDescriptorSets_.swap(auxiliary);
+  auto oldPool = std::exchange(descriptorPool_, pool);
+  destroyPool(oldPool);
+  if (clipFrames) sceneClipFrames_.swap(clipFrames);
 }
 
 void SceneManager::writeDescriptorSetContents(
-    VkDescriptorSet descriptorSet,
+    VkDescriptorSet descriptorSet, size_t imageIndex,
     const container::gpu::AllocatedBuffer& cameraBuffer,
     const container::gpu::AllocatedBuffer& objectBuffer) {
   if (descriptorSet == VK_NULL_HANDLE) return;
@@ -3882,16 +3908,12 @@ void SceneManager::writeDescriptorSetContents(
   if (textureMetadataBuffer_.buffer == VK_NULL_HANDLE) {
     uploadTextureMetadataBuffer();
   }
-  if (sceneClipStateBuffer_.buffer == VK_NULL_HANDLE) {
-    createSceneClipStateBuffer();
-  }
-
-  writeMaterialDescriptorSetContents(descriptorSet,cameraBuffer,objectBuffer,
+  writeMaterialDescriptorSetContents(descriptorSet,imageIndex,cameraBuffer,objectBuffer,
       materialBuffer_,gpuMaterials_.size());
 }
 
 void SceneManager::writeMaterialDescriptorSetContents(
-    VkDescriptorSet descriptorSet,const container::gpu::AllocatedBuffer& cameraBuffer,
+    VkDescriptorSet descriptorSet,size_t imageIndex,const container::gpu::AllocatedBuffer& cameraBuffer,
     const container::gpu::AllocatedBuffer& objectBuffer,
     const container::gpu::AllocatedBuffer& materialBuffer,size_t materialCount) const {
 
@@ -3911,7 +3933,7 @@ void SceneManager::writeMaterialDescriptorSetContents(
           sizeof(container::gpu::GpuTextureMetadata) *
           std::max<size_t>(1, textureMetadata_.size()))};
   VkDescriptorBufferInfo sceneClipInfo{
-      sceneClipStateBuffer_.buffer, 0, sizeof(container::gpu::SceneClipState)};
+      sceneClipBuffer(imageIndex).buffer, 0, sizeof(container::gpu::SceneClipState)};
 
   std::vector<VkWriteDescriptorSet> writes;
   writes.reserve(8);

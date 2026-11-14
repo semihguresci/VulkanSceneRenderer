@@ -2917,6 +2917,8 @@ add_custom_command(OUTPUT "${SAMPLER_PUBLICATION_SPIRV}"
         -I "${CMAKE_SOURCE_DIR}/shaders" -o "${SAMPLER_PUBLICATION_SPIRV}"
     DEPENDS "${CMAKE_SOURCE_DIR}/tests/shaders/scene_texture_sampling_contract.slang"
         "${CMAKE_SOURCE_DIR}/shaders/material_data_common.slang"
+        "${CMAKE_SOURCE_DIR}/shaders/scene_clip_common.slang"
+        "${CMAKE_SOURCE_DIR}/shaders/push_constants_common.slang"
     VERBATIM)
 add_custom_target(scene_sampler_publication_shader DEPENDS "${SAMPLER_PUBLICATION_SPIRV}")
 add_custom_test(scene_sampler_publication_gpu_tests

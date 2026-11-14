@@ -512,10 +512,11 @@ class SceneManager {
   void updateAuxiliaryDescriptorSets(
       std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
       std::span<const container::gpu::AllocatedBuffer> objectBuffers);
-  void updateSceneClipState(const container::gpu::SceneClipState& clipState);
-  const container::gpu::AllocatedBuffer& sceneClipBuffer() const {
-    return sceneClipStateBuffer_;
-  }
+  // The caller retires all old frame readers before changing the frame count.
+  void resizeDescriptorFrames(uint32_t imageCount);
+  // The caller retires graphics and async readers of this image before upload.
+  void updateSceneClipState(uint32_t imageIndex, const container::gpu::SceneClipState& clipState);
+  [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> sceneClipBuffers() const noexcept;
   [[nodiscard]] const container::gpu::SceneClipState& sceneClipState() const noexcept {
     return sceneClipState_;
   }
@@ -837,10 +838,10 @@ class SceneManager {
       const container::material::TextureManager&,uint64_t maxCpuBytes,uint64_t maxMetadataBufferBytes) const;
   [[nodiscard]] bool textureDescriptorStateMatches(const PreparedTextureDescriptorState&,
       const container::material::TextureManager&) const noexcept;
-  void writeTextureDescriptorSetContents(VkDescriptorSet,const container::gpu::AllocatedBuffer& camera,
+  void writeTextureDescriptorSetContents(VkDescriptorSet,size_t imageIndex,const container::gpu::AllocatedBuffer& camera,
       const container::gpu::AllocatedBuffer& objects,const container::gpu::AllocatedBuffer& materials,size_t materialCount,
       const PreparedTextureDescriptorState&) const;
-  void writeTextureDescriptorSetContents(VkDescriptorSet,const container::gpu::AllocatedBuffer& camera,
+  void writeTextureDescriptorSetContents(VkDescriptorSet,size_t imageIndex,const container::gpu::AllocatedBuffer& camera,
       const container::gpu::AllocatedBuffer& objects,const container::gpu::AllocatedBuffer& materials,size_t materialCount,
       const container::gpu::AllocatedBuffer& metadata,size_t metadataCount,std::span<const VkDescriptorImageInfo>,
       std::span<const VkSampler>) const;
@@ -967,8 +968,9 @@ class SceneManager {
   static void validateGltfTextureResourceTable(
       const container::material::GltfTextureResources&, size_t sourceTextureCount,
       size_t runtimeResourceCount);
-  void createSceneClipStateBuffer();
-  void writeSceneClipStateBuffer();
+  struct SceneClipFrames;
+  [[nodiscard]] const container::gpu::AllocatedBuffer& sceneClipBuffer(size_t imageIndex) const;
+  [[nodiscard]] std::shared_ptr<const uint8_t> sceneClipFrameIdentity() const noexcept;
   void collectAuthoredPunctualLights(const SceneGraph* graph = nullptr);
   void prepareIesProfileAddresses();
   [[nodiscard]] AuthoredSceneLights evaluateAuthoredSceneLights(
@@ -979,10 +981,10 @@ class SceneManager {
   [[nodiscard]] ModelBounds calculateModelBounds(const SceneGraph* graph = nullptr) const;
   void allocateDescriptorSets(uint32_t descriptorSetCount);
   void writeDescriptorSetContents(
-      VkDescriptorSet descriptorSet,
+      VkDescriptorSet descriptorSet, size_t imageIndex,
       const container::gpu::AllocatedBuffer& cameraBuffer,
       const container::gpu::AllocatedBuffer& objectBuffer);
-  void writeMaterialDescriptorSetContents(VkDescriptorSet,
+  void writeMaterialDescriptorSetContents(VkDescriptorSet,size_t imageIndex,
       const container::gpu::AllocatedBuffer& cameraBuffer,
       const container::gpu::AllocatedBuffer& objectBuffer,
       const container::gpu::AllocatedBuffer& materialBuffer, size_t materialCount) const;
@@ -1158,7 +1160,7 @@ class SceneManager {
   container::gpu::AllocatedBuffer textureMetadataBuffer_{};
   size_t textureMetadataBufferCapacity_{0};
   container::gpu::SceneClipState sceneClipState_{};
-  container::gpu::AllocatedBuffer sceneClipStateBuffer_{};
+  std::unique_ptr<SceneClipFrames> sceneClipFrames_;
 
   VkSampler baseColorSampler_{VK_NULL_HANDLE};
   std::vector<VkSampler> materialSamplers_{};
@@ -1239,7 +1241,7 @@ class SceneManager::PreparedMaterialResources {
   [[nodiscard]] bool liveOwnerWillBeActive(const TextureResourceLiveOwnerPtr&) const noexcept;
   [[nodiscard]] MaterialResourceCommand command() const noexcept;
   [[nodiscard]] uint64_t ownedBytes() const noexcept;
-  void writeDescriptorSetContents(VkDescriptorSet, const container::gpu::AllocatedBuffer& camera,
+  void writeDescriptorSetContents(VkDescriptorSet,size_t imageIndex,const container::gpu::AllocatedBuffer& camera,
       const container::gpu::AllocatedBuffer& objects, const container::gpu::AllocatedBuffer& materials,
       size_t materialCount) const;
  private:
@@ -1460,7 +1462,7 @@ class SceneManager::PreparedSourceResourceRetirement {
   [[nodiscard]] const container::material::TextureSamplingPlan& samplingPlan() const;
   [[nodiscard]] TextureResourceReferenceOwnerPtr retainAllResourceReferences(container::util::ResourcePinClass,
       uint64_t maxCpuBytes=64ull*1024*1024) const;
-  void writeDescriptorSetContents(VkDescriptorSet,const container::gpu::AllocatedBuffer& camera,
+  void writeDescriptorSetContents(VkDescriptorSet,size_t imageIndex,const container::gpu::AllocatedBuffer& camera,
       const container::gpu::AllocatedBuffer& objects,const container::gpu::AllocatedBuffer& materials,size_t materialCount,
       const container::geometry::gltf::AnimationPlayer* currentPlayer=nullptr) const;
   [[nodiscard]] bool publicationMatches(const SceneManager&,bool consumed=false,
