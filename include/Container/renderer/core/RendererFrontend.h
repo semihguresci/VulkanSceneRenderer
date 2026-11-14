@@ -315,6 +315,10 @@ private:
   void drawModelLoadProgressFrame();
   container::capture::Journal gfxJournal_;
   [[nodiscard]] nlohmann::json captureTelemetry() const;
+  [[nodiscard]] const container::ui::BimFloorPlanOverlayState *
+  effectiveBimFloorPlanSettings() const;
+  void appendBimFloorPlanTelemetry(
+      nlohmann::json &json, const FrameRecordParams *frame = nullptr) const;
   [[nodiscard]] container::gpu::ExposureSettings effectiveExposureSettings() const;
   std::optional<float> captureExposure_{};
   std::optional<UpscaleSelection> captureUpscaling_{};
