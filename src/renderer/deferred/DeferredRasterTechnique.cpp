@@ -1581,29 +1581,12 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   // Transition depth from attachment-writable to read-only for the compute
   // passes (TileCull, GTAO) that sample depth.  The lighting render pass
   // initialLayout also expects DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL.
-  graph.addPass(RenderPassId::DepthToReadOnly, [deferred](
-                                                   VkCommandBuffer cmd,
-                                                   const FrameRecordParams &p) {
+  graph.addPass(RenderPassId::DepthToReadOnly, [](VkCommandBuffer cmd,
+                                                const FrameRecordParams &p) {
     const DeferredRasterDepthReadOnlyTransitionPlan transitionPlan =
         buildDeferredRasterDepthReadOnlyTransitionPlan(
             {.depthStencilImage =
-                 deferredRasterImage(p, DeferredRasterImageId::DepthStencil),
-             .shadowAtlasImage =
-                 p.shadows.shadowManager != nullptr
-                     ? p.shadows.shadowManager->shadowAtlasImage()
-                     : VK_NULL_HANDLE,
-             .shadowAtlasVisible =
-                 displayModeRecordsShadowAtlas(deferred->displayMode()),
-             .shadowCascadeCount = kShadowCascadeCount,
-             .localShadowAtlasImage =
-                 p.shadows.shadowManager != nullptr
-                     ? p.shadows.shadowManager->localShadowAtlasImage()
-                     : VK_NULL_HANDLE,
-             .localShadowAtlasVisible =
-                 displayModeRecordsShadowAtlas(deferred->displayMode()) &&
-                 deferredRasterCanRecordLocalShadowPass(p),
-             .localShadowLayerCount = std::min(p.shadows.localShadowLayerCount,
-                                               kMaxShadowedLocalLightLayers)});
+                 deferredRasterImage(p, DeferredRasterImageId::DepthStencil)});
     static_cast<void>(recordDeferredRasterDepthReadOnlyTransitionCommands(
         cmd, transitionPlan));
   });

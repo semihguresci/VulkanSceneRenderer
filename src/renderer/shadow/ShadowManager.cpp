@@ -265,7 +265,9 @@ void ShadowManager::createResources(VkFormat depthFormat,
       barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
       barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
       vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT, 0u,
+                           VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           0u,
                            0u, nullptr, 0u, nullptr, 1u, &barrier);
     };
     initializeAtlas(shadowAtlasImage_, kShadowCascadeCount);
