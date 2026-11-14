@@ -165,47 +165,77 @@ primitiveDrawLists(const FrameDrawLists &draws) {
                                          ForwardRasterDescriptorSetId::BimScene);
 }
 
-void recordForwardWireframe(
+void recordForwardEditorOverlays(
     VkCommandBuffer cmd, const FrameRecordParams &p,
     const BimRasterOverlayRecordInputs &overlay) {
   const auto &style = p.bim.technicalElevation;
+  const auto &debug = p.debug;
   if (p.runtime.activeTechnique != RenderTechniqueId::ForwardRaster ||
-      p.screenshot.sceneLinear || (!style.enabled && !p.debug.wireframe.enabled)) {
+      p.screenshot.sceneLinear || (!style.enabled && !debug.wireframe.enabled &&
+      !debug.geometryOverlay && !debug.normalValidation.enabled)) {
     return;
   }
 
-  const auto &pipelines = overlay.pipelines;
+  const auto &wireframePipelines = overlay.pipelines;
+  const auto pipeline = [&p](ForwardRasterPipelineId id) {
+    return forwardRasterPipelineHandle(p, id);
+  };
+  const DeferredDebugOverlayPipelineHandles pipelines{
+      .wireframeDepth = wireframePipelines.wireframeDepth,
+      .wireframeNoDepth = wireframePipelines.wireframeNoDepth,
+      .wireframeDepthFrontCull = wireframePipelines.wireframeDepthFrontCull,
+      .wireframeNoDepthFrontCull = wireframePipelines.wireframeNoDepthFrontCull,
+      .geometryDebug = pipeline(ForwardRasterPipelineId::GeometryDebug),
+      .normalValidation = pipeline(ForwardRasterPipelineId::NormalValidation),
+      .normalValidationFrontCull = pipeline(ForwardRasterPipelineId::NormalValidationFrontCull),
+      .normalValidationNoCull = pipeline(ForwardRasterPipelineId::NormalValidationNoCull),
+      .surfaceNormalLine = pipeline(ForwardRasterPipelineId::SurfaceNormalLine)};
   const auto state = buildDeferredLightingFrameState(
-      {.guiAvailable = p.debug.wireframe.enabled,
+      {.guiAvailable = true,
        .wireframeSupported = true,
-       .wireframeSettings = p.debug.wireframe,
+       .wireframeWideLinesSupported = debug.wireframeWideLinesSupported,
+       .wireframeSettings = debug.wireframe,
        .bimTechnicalElevation = {.enabled = style.enabled,
                                  .hiddenLineOverlay = style.hiddenLineOverlay,
                                  .depthTestLines = style.depthTestLines,
                                  .lineColor = style.lineColor,
                                  .lineWidth = style.lineWidth,
                                  .overlayIntensity = style.overlayIntensity},
+       .normalValidationSettings = debug.normalValidation,
+       .geometryOverlayRequested = debug.geometryOverlay,
        .pipelines = {.wireframeDepth = pipelines.wireframeDepth != VK_NULL_HANDLE,
-                     .wireframeNoDepth = pipelines.wireframeNoDepth != VK_NULL_HANDLE}});
-  if (!state.wireframeEnabled) {
-    return;
-  }
+                     .wireframeNoDepth = pipelines.wireframeNoDepth != VK_NULL_HANDLE,
+                     .normalValidation = pipelines.normalValidation != VK_NULL_HANDLE,
+                     .surfaceNormalLine = pipelines.surfaceNormalLine != VK_NULL_HANDLE,
+                     .geometryDebug = pipelines.geometryDebug != VK_NULL_HANDLE}});
 
   const auto &wireframe = state.wireframeSettings;
   const bool bimReady = hasBimGeometry(p);
   const auto plan = buildDeferredDebugOverlayPlan(
       {.frameState = {.wireframeFullMode = state.wireframeFullMode,
                       .wireframeOverlayMode = state.wireframeOverlayMode,
+                      .geometryOverlayEnabled = state.geometryOverlayEnabled,
+                      .normalValidationEnabled = state.normalValidationEnabled,
+                      .surfaceNormalLinesEnabled = state.surfaceNormalLinesEnabled,
                       .wireframeDepthTest = wireframe.depthTest,
-                      .wireframeLineWidth = wireframe.lineWidth},
+                      .wireframeLineWidth = wireframe.lineWidth,
+                      .surfaceNormalLineWidth = state.surfaceNormalLineWidth},
        .pipelines = {
            .wireframeDepth = pipelines.wireframeDepth != VK_NULL_HANDLE,
            .wireframeNoDepth = pipelines.wireframeNoDepth != VK_NULL_HANDLE,
            .wireframeDepthFrontCull =
                pipelines.wireframeDepthFrontCull != VK_NULL_HANDLE,
            .wireframeNoDepthFrontCull =
-               pipelines.wireframeNoDepthFrontCull != VK_NULL_HANDLE},
+               pipelines.wireframeNoDepthFrontCull != VK_NULL_HANDLE,
+           .geometryDebug = pipelines.geometryDebug != VK_NULL_HANDLE,
+           .normalValidation = pipelines.normalValidation != VK_NULL_HANDLE,
+           .normalValidationFrontCull = pipelines.normalValidationFrontCull != VK_NULL_HANDLE,
+           .normalValidationNoCull = pipelines.normalValidationNoCull != VK_NULL_HANDLE,
+           .surfaceNormalLine = pipelines.surfaceNormalLine != VK_NULL_HANDLE},
+       .bindlessPushConstantsReady = p.pushConstants.bindless != nullptr,
        .wireframePushConstantsReady = overlay.wireframePushConstants != nullptr,
+       .normalValidationPushConstantsReady = p.pushConstants.normalValidation != nullptr,
+       .surfaceNormalPushConstantsReady = p.pushConstants.surfaceNormal != nullptr,
        .sources = {{{.source = DeferredDebugOverlaySource::Scene,
                      .geometryReady = hasSceneGeometry(p),
                      .draws = debugOverlayDrawLists(p.draws)},
@@ -220,13 +250,25 @@ void recordForwardWireframe(
                      .draws = debugOverlayDrawLists(p.bim.curveDraws)}}},
        .sourceCount = kDeferredDebugOverlaySourceCapacity});
 
+  NormalValidationPushConstants normalPush;
+  SurfaceNormalPushConstants surfacePush;
+  if (p.pushConstants.normalValidation) {
+    normalPush = *p.pushConstants.normalValidation;
+    normalPush.sectionPlaneEnabled = overlay.wireframePushConstants->sectionPlaneEnabled;
+    normalPush.sectionPlane = overlay.wireframePushConstants->sectionPlane;
+  }
+  if (p.pushConstants.surfaceNormal) {
+    surfacePush = *p.pushConstants.surfaceNormal;
+    surfacePush.sectionPlaneEnabled = overlay.wireframePushConstants->sectionPlaneEnabled;
+    surfacePush.sectionPlane = overlay.wireframePushConstants->sectionPlane;
+  }
   const DeferredDebugOverlayRecordInputs inputs{
        .plan = &plan,
-       .pipelines = {.wireframeDepth = pipelines.wireframeDepth,
-                     .wireframeNoDepth = pipelines.wireframeNoDepth,
-                     .wireframeDepthFrontCull = pipelines.wireframeDepthFrontCull,
-                     .wireframeNoDepthFrontCull = pipelines.wireframeNoDepthFrontCull},
+       .pipelines = pipelines,
+       .sceneLayout = forwardRasterPipelineLayout(p, ForwardRasterPipelineLayoutId::Scene),
        .wireframeLayout = overlay.wireframeLayout,
+       .normalValidationLayout = forwardRasterPipelineLayout(p, ForwardRasterPipelineLayoutId::NormalValidation),
+       .surfaceNormalLayout = forwardRasterPipelineLayout(p, ForwardRasterPipelineLayoutId::SurfaceNormal),
        .scene = {.descriptorSet = overlay.sceneDescriptorSet,
                  .vertexSlice = p.scene.vertexSlice,
                  .indexSlice = p.scene.indexSlice,
@@ -235,7 +277,11 @@ void recordForwardWireframe(
                .vertexSlice = p.bim.scene.vertexSlice,
                .indexSlice = p.bim.scene.indexSlice,
                .indexType = p.bim.scene.indexType},
+       .bindlessPushConstants = p.pushConstants.bindless,
        .wireframePushConstants = overlay.wireframePushConstants,
+       .normalValidationPushConstants = p.pushConstants.normalValidation ? &normalPush : nullptr,
+       .surfaceNormalPushConstants = p.pushConstants.surfaceNormal ? &surfacePush : nullptr,
+       .normalValidationSettings = state.normalValidationSettings,
        .wireframeColor = wireframe.color,
        .wireframeIntensity = state.wireframeIntensity,
        .wireframeLineWidth = wireframe.lineWidth,
@@ -244,7 +290,10 @@ void recordForwardWireframe(
        .debugOverlay = overlay.debugOverlay};
   if (state.wireframeFullMode)
     (void)recordDeferredDebugOverlayWireframeFullCommands(cmd, inputs);
-  else
+  (void)recordDeferredDebugOverlayGeometryCommands(cmd, inputs);
+  (void)recordDeferredDebugOverlayNormalValidationCommands(cmd, inputs);
+  (void)recordDeferredDebugOverlaySurfaceNormalCommands(cmd, inputs);
+  if (state.wireframeOverlayMode)
     (void)recordDeferredDebugOverlayWireframeOverlayCommands(cmd, inputs);
 }
 
@@ -294,7 +343,7 @@ void recordForwardBimOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
       .wireframePushConstants = &pushConstants,
       .debugOverlay = &debugOverlay};
 
-  recordForwardWireframe(cmd, p, overlay);
+  recordForwardEditorOverlays(cmd, p, overlay);
   recordBimRasterOverlays(cmd, p, overlay);
 }
 

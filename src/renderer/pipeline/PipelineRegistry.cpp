@@ -343,6 +343,16 @@ buildGraphicsPipelineHandleRegistry(const GraphicsPipelines &pipelines) {
   // Forward's resolved transparency scope has the same single-sample color
   // and depth/stencil formats as deferred lighting, including writable stencil.
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "geometry-debug", pipelines.geometryDebug);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "normal-validation", pipelines.normalValidation);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "normal-validation-front-cull", pipelines.normalValidationFrontCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "normal-validation-no-cull", pipelines.normalValidationNoCull);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "surface-normal-line", pipelines.surfaceNormalLine);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                     "wireframe-depth", pipelines.wireframeDepth);
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                     "wireframe-no-depth", pipelines.wireframeNoDepth);
@@ -412,7 +422,11 @@ buildGraphicsPipelineLayoutRegistry(const PipelineLayouts &layouts) {
                           "wireframe", layouts.wireframe);
   registerLayoutIfPresent(*registry, "normal-validation",
                           layouts.normalValidation);
+  registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                          "normal-validation", layouts.normalValidation);
   registerLayoutIfPresent(*registry, "surface-normal", layouts.surfaceNormal);
+  registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                          "surface-normal", layouts.surfaceNormal);
   registerLayoutIfPresent(*registry, "transform-gizmo", layouts.transformGizmo);
   registerLayoutIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                           "transform-gizmo", layouts.transformGizmo);

@@ -235,6 +235,21 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
       "transparent");
   registerTransparentRecipe("forward-transparent-front-cull");
   registerTransparentRecipe("forward-transparent-no-cull");
+  registerGraphicsRecipe("geometry-debug",
+                         {"spv_shaders/geometry_debug.vert.spv",
+                          "spv_shaders/geometry_debug.frag.spv"}, "scene");
+  for (const auto pipeline : {ForwardRasterPipelineId::NormalValidation,
+                              ForwardRasterPipelineId::NormalValidationFrontCull,
+                              ForwardRasterPipelineId::NormalValidationNoCull}) {
+    registerGraphicsRecipe(forwardRasterPipelineName(pipeline),
+                           {"spv_shaders/normal_validation.vert.spv",
+                            "spv_shaders/normal_validation.geom.spv",
+                            "spv_shaders/normal_validation.frag.spv"}, "normal-validation");
+  }
+  registerGraphicsRecipe("surface-normal-line",
+                         {"spv_shaders/surface_normals.vert.spv",
+                          "spv_shaders/surface_normals.geom.spv",
+                          "spv_shaders/surface_normals.frag.spv"}, "surface-normal");
   // The triangle wireframe aliases use the device-selected native or fallback
   // stages. These recipes describe overlays with a fixed set of stages.
   for (const auto pipeline : {ForwardRasterPipelineId::BimPointCloudDepth,

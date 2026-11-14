@@ -3184,6 +3184,11 @@ void RendererFrontend::applyTemporalCapture(
         .lineWidth = wireframe->lineWidth,
         .overlayIntensity = wireframe->intensity});
   }
+  if (const auto& diagnostics = event.editorDiagnostics) {
+    if (!subs_.guiManager)
+      throw std::runtime_error("Capture editor diagnostics require the editor GUI");
+    subs_.guiManager->setEditorDiagnostics(diagnostics->vertices, diagnostics->normalValidation);
+  }
   if (event.bimHiddenObject)
     captureBimHiddenObject_ = *event.bimHiddenObject;
   if (event.bimLodBias)
@@ -9773,9 +9778,12 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   }
   const auto displayMode = frontendDisplayMode(
       subs_.guiManager.get(), configuredDisplayMode(svc_.config));
-  p.debug.temporalForceReactive =
-      (subs_.guiManager && (subs_.guiManager->showGeometryOverlay() ||
-                            subs_.guiManager->showNormalValidation()));
+  if (subs_.guiManager) {
+    p.debug.geometryOverlay = subs_.guiManager->showGeometryOverlay();
+    p.debug.normalValidation = subs_.guiManager->normalValidationSettings();
+    p.debug.normalValidation.enabled = subs_.guiManager->showNormalValidation();
+  }
+  p.debug.temporalForceReactive = p.debug.geometryOverlay || p.debug.normalValidation.enabled;
   // Reference diagnostics are already display colors. Use the postprocess
   // raw-color mode also used by the raster object-space normals view.
   p.debug.displayMode = referencePathActive()

@@ -1018,6 +1018,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       pipelineManager_.createGraphicsPipeline(postPCI, "post_process_pipeline");
 
   // Geometry debug
+  const float vertexMarkerSize = device_->enabledFeatures().largePoints == VK_TRUE
+      ? 4.0f : 1.0f;
+  const VkSpecializationMapEntry markerSizeEntry{0, 0, sizeof(vertexMarkerSize)};
+  const VkSpecializationInfo markerSizeInfo{1, &markerSizeEntry,
+                                          sizeof(vertexMarkerSize), &vertexMarkerSize};
+  dbgStages.front().pSpecializationInfo = &markerSizeInfo;
   RenderingGraphicsPipelineCreateInfo dbgPCI = meshPCI;
   dbgPCI.stageCount = static_cast<uint32_t>(dbgStages.size());
   dbgPCI.pStages = dbgStages.data();
@@ -1230,7 +1236,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   snPCI.pRasterizationState = &normalLineRaster;
   snPCI.pColorBlendState = &overlayBlend;
   snPCI.pDepthStencilState = &normalLineDS;
-  snPCI.pDynamicState = &dynState;
+  snPCI.pDynamicState = &lineDynState;
   snPCI.layout = layouts.surfaceNormal;
   snPCI.renderPass = renderPasses.lighting;
   pipelines.surfaceNormalLine = pipelineManager_.createGraphicsPipeline(

@@ -27,6 +27,11 @@ enum class ForwardRasterPipelineId {
   BimPointCloudNoDepth,
   BimCurveDepth,
   BimCurveNoDepth,
+  GeometryDebug,
+  NormalValidation,
+  NormalValidationFrontCull,
+  NormalValidationNoCull,
+  SurfaceNormalLine,
   WireframeDepth,
   WireframeNoDepth,
   WireframeDepthFrontCull,
@@ -91,6 +96,16 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
     return "bim-curve-depth";
   case ForwardRasterPipelineId::BimCurveNoDepth:
     return "bim-curve-no-depth";
+  case ForwardRasterPipelineId::GeometryDebug:
+    return "geometry-debug";
+  case ForwardRasterPipelineId::NormalValidation:
+    return "normal-validation";
+  case ForwardRasterPipelineId::NormalValidationFrontCull:
+    return "normal-validation-front-cull";
+  case ForwardRasterPipelineId::NormalValidationNoCull:
+    return "normal-validation-no-cull";
+  case ForwardRasterPipelineId::SurfaceNormalLine:
+    return "surface-normal-line";
   case ForwardRasterPipelineId::WireframeDepth:
     return "wireframe-depth";
   case ForwardRasterPipelineId::WireframeNoDepth:
@@ -141,6 +156,8 @@ enum class ForwardRasterPipelineLayoutId {
   LightGizmo,
   TransformGizmo,
   Wireframe,
+  NormalValidation,
+  SurfaceNormal,
   BimFloorPlanDisplay,
 };
 
@@ -161,6 +178,10 @@ forwardRasterPipelineLayoutName(ForwardRasterPipelineLayoutId id) {
     return "transform-gizmo";
   case ForwardRasterPipelineLayoutId::Wireframe:
     return "wireframe";
+  case ForwardRasterPipelineLayoutId::NormalValidation:
+    return "normal-validation";
+  case ForwardRasterPipelineLayoutId::SurfaceNormal:
+    return "surface-normal";
   case ForwardRasterPipelineLayoutId::BimFloorPlanDisplay:
     return "bim-floor-plan-display";
   }

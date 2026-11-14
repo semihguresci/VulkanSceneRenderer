@@ -265,9 +265,7 @@ void bindWireframePipeline(VkCommandBuffer cmd, VkPipeline pipeline,
       continue;
     }
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-    if (inputs.wireframeRasterModeSupported) {
-      vkCmdSetLineWidth(cmd, route.rasterLineWidth);
-    }
+    vkCmdSetLineWidth(cmd, route.rasterLineWidth);
     inputs.debugOverlay->recordSurfaceNormals(
         cmd, inputs.surfaceNormalLayout,
         route.opaqueCommands != nullptr ? *route.opaqueCommands
