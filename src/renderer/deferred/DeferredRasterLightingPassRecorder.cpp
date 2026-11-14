@@ -547,7 +547,8 @@ void DeferredRasterLightingPassRecorder::record(
                 p.services.ddgiManager->descriptorLayout() != VK_NULL_HANDLE,
             .framebufferExtent = lightingExtent,
             .lightPushConstants = p.pushConstants.light,
-            .lightingManager = lightingManager});
+            .lightingManager = lightingManager,
+            .imageIndex = p.runtime.imageIndex});
 
   if (transparentOitEnabled) {
     const bool drawBimTransparent = hasBimTransparentGeometry(p);

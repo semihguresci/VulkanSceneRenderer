@@ -270,7 +270,9 @@ public:
   // every live reader to have retired. Indexed upload requires only that image.
   void uploadLightingData() const;
   void uploadLightingData(uint32_t imageIndex) const;
-  void collectStats();
+  // Retire the image's submission before reading its mapped counters.
+  void collectStats(uint32_t imageIndex);
+  void onSubmitted(uint32_t imageIndex) noexcept;
 
   // Dispatches the tile culling compute shader using this image's published
   // light snapshot. Must be called between G-Buffer and Lighting passes.
@@ -278,11 +280,11 @@ public:
                         VkBuffer cameraBuffer, VkDeviceSize cameraBufferSize,
                         VkImageView depthView, float cameraNear,
                         float cameraFar) const;
-  void resetGpuTimers(VkCommandBuffer cmd, uint32_t frameSlot) const;
-  void beginClusterCullTimer(VkCommandBuffer cmd) const;
-  void endClusterCullTimer(VkCommandBuffer cmd) const;
-  void beginClusteredLightingTimer(VkCommandBuffer cmd) const;
-  void endClusteredLightingTimer(VkCommandBuffer cmd) const;
+  void beginClusterFrame(VkCommandBuffer cmd, uint32_t imageIndex) const;
+  void beginClusterCullTimer(VkCommandBuffer cmd, uint32_t imageIndex) const;
+  void endClusterCullTimer(VkCommandBuffer cmd, uint32_t imageIndex) const;
+  void beginClusteredLightingTimer(VkCommandBuffer cmd, uint32_t imageIndex) const;
+  void endClusteredLightingTimer(VkCommandBuffer cmd, uint32_t imageIndex) const;
 
   // ---- Draw helpers -------------------------------------------------------
 
@@ -418,7 +420,10 @@ public:
   [[nodiscard]] bool scaleSelectedEditableLight(float factor);
 
   // Tile grid SSBO accessors for debug visualization (heat map).
-  VkBuffer tileGridBuffer() const { return tileGridSsbo_.buffer; }
+  VkBuffer tileGridBuffer(uint32_t imageIndex = 0) const {
+    return imageIndex < tileGridBuffers_.size() ? tileGridBuffers_[imageIndex].buffer : VK_NULL_HANDLE;
+  }
+  std::span<const container::gpu::AllocatedBuffer> tileGridBuffers() const { return tileGridBuffers_; }
   VkDeviceSize tileGridBufferSize() const {
     return tiledScratchResourcesReady() ? clusteredLightCapacity_.tileGridBytes : 0;
   }
@@ -471,6 +476,8 @@ private:
   void uploadLightingData(const LightingManager& source) const;
   void uploadLightingData(uint32_t imageIndex, const LightingManager& source) const;
   void allocateClusterBuffers(VkExtent2D extent);
+  void destroyClusterScratch() noexcept;
+  void discardClusterSamples() noexcept;
   void writeTiledResourceDescriptors(const LightingManager& target) const noexcept;
   void destroyLightDescriptorPool() noexcept;
   void invalidateRayShadowBindingPreparations() noexcept;
@@ -538,14 +545,22 @@ private:
   // SSBOs
   std::vector<container::gpu::AllocatedBuffer> pointLightBuffers_{};
   std::vector<container::gpu::AllocatedBuffer> areaLightBuffers_{};
-  container::gpu::AllocatedBuffer tileGridSsbo_{};
+  std::vector<container::gpu::AllocatedBuffer> tileGridBuffers_;
+  struct ClusterReadback {
+    container::gpu::AllocatedBuffer buffer{};
+    uint64_t submission{};
+    uint32_t clusters{};
+    bool cullTimed{};
+    bool lightingTimed{};
+  };
+  mutable std::vector<ClusterReadback> clusterReadbacks_;
+  // The large index list is shared by graphics-queue cull and tiled shading.
   container::gpu::AllocatedBuffer lightIndexListSsbo_{};
-  container::gpu::AllocatedBuffer lightStatsBuffer_{};
   VkQueryPool timestampQueryPool_{VK_NULL_HANDLE};
-  bool timestampQueriesSupported_{false};
   float timestampPeriodNs_{1.0f};
-  mutable uint32_t lastTimingQueryBase_{0};
-  mutable bool timingQueriesWritten_{false};
+  uint64_t timestampMask_{0};
+  uint64_t nextClusterSubmission_{0};
+  uint64_t latestClusterReadback_{0};
 
   // Compute pipeline
   container::gpu::ComputePipeline tileCullPipeline_{};
@@ -575,7 +590,6 @@ private:
   VkDeviceSize clusteredStorageRangeLimit_{};
   std::array<uint32_t, 3> clusteredDispatchLimits_{};
   ClusteredLightCapacity clusteredLightCapacity_{};
-  mutable uint32_t lastDispatchClusterCount_{0};
 
 };
 

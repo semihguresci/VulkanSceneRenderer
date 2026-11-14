@@ -1032,7 +1032,7 @@ void FrameResourceManager::updateDescriptorSets(
     VkSampler   aoSampler,
     std::span<const VkImageView> bloomTextureViews,
     VkSampler   bloomSampler,
-    VkBuffer    tileGridBuffer,
+    std::span<const container::gpu::AllocatedBuffer> tileGridBuffers,
     VkDeviceSize tileGridBufferSize,
     std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers,
     VkDeviceSize exposureStateBufferSize,
@@ -1054,7 +1054,6 @@ void FrameResourceManager::updateDescriptorSets(
   nextKey.brdfLutSampler    = brdfLutSampler;
   nextKey.aoSampler         = aoSampler;
   nextKey.bloomSampler      = bloomSampler;
-  nextKey.tileGridBuffer    = tileGridBuffer;
   nextKey.tileGridBufferSize = tileGridBufferSize;
   nextKey.exposureStateBufferSize = exposureStateBufferSize;
 
@@ -1078,6 +1077,8 @@ void FrameResourceManager::updateDescriptorSets(
     nextKey.localShadowUboBuffer = bufferAt(localShadowUbos);
     nextKey.aoTextureView = viewAt(aoTextureViews);
     nextKey.bloomTextureView = viewAt(bloomTextureViews);
+    nextKey.tileGridBuffer = frameIndex < tileGridBuffers.size()
+        ? tileGridBuffers[frameIndex].buffer : VK_NULL_HANDLE;
     nextKey.exposureStateBuffer = bufferAt(exposureStateBuffers);
     nextKey.anisotropyView = viewAt(anisotropyViews, f.normal.view);
     nextKey.diffuseTransmissionView = viewAt(diffuseTransmissionViews, f.normal.view);
@@ -1294,8 +1295,8 @@ void FrameResourceManager::updateDescriptorSets(
 
       // Tile grid SSBO (binding 9)
       VkDescriptorBufferInfo tileGridInfo{};
-      if (tileGridBuffer != VK_NULL_HANDLE && tileGridBufferSize > 0) {
-        tileGridInfo = {tileGridBuffer, 0, tileGridBufferSize};
+      if (nextKey.tileGridBuffer != VK_NULL_HANDLE && tileGridBufferSize > 0) {
+        tileGridInfo = {nextKey.tileGridBuffer, 0, tileGridBufferSize};
       } else {
         tileGridInfo = {fallbackTileGridBuffer_.buffer, 0, sizeof(container::gpu::TileLightGrid)};
       }

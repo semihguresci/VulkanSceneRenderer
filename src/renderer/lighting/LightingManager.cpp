@@ -182,7 +182,6 @@ struct PoseLightBudget {
 };
 
 constexpr uint32_t kTimingQueryCount = 4u;
-constexpr uint32_t kTimingQueryFrameSlots = 8u;
 constexpr uint32_t kClusterCullStartQuery = 0u;
 constexpr uint32_t kClusterCullEndQuery = 1u;
 constexpr uint32_t kClusteredLightingStartQuery = 2u;
@@ -837,11 +836,15 @@ bool LightingManager::tiledScratchResourcesReady() const noexcept {
     return bytes && buffer.buffer!=VK_NULL_HANDLE && buffer.allocation && buffer.allocation_info.size>=bytes;
   };
   return clusteredLightCapacity_.available() &&
-      sufficient(tileGridSsbo_, clusteredLightCapacity_.tileGridBytes) &&
+      tileGridBuffers_.size() == lightingBuffers_.size() &&
+      clusterReadbacks_.size() == lightingBuffers_.size() &&
       sufficient(lightIndexListSsbo_, clusteredLightCapacity_.lightIndexListBytes) &&
-      // GPU stats contain four counters; submitted count and timings in the
-      // public CPU LightCullingStats are derived separately during collection.
-      sufficient(lightStatsBuffer_,4*sizeof(uint32_t));
+      std::ranges::all_of(tileGridBuffers_, [&](const auto& grid) {
+        return sufficient(grid, clusteredLightCapacity_.tileGridBytes);
+      }) &&
+      std::ranges::all_of(clusterReadbacks_, [&](const auto& slot) {
+        return sufficient(slot.buffer, 4 * sizeof(uint32_t));
+      });
 }
 
 bool LightingManager::generationResourcesReady(const PreparedGeneration& value) const noexcept {
@@ -923,7 +926,7 @@ void LightingManager::exchangeGenerationPayload(PreparedGeneration& value) noexc
   lightEditIdentities_.swap(next.lightEditIdentities_);
   swap(generatedLightRevision_,next.generatedLightRevision_);
   swapFrameResources(next);
-  lastDispatchClusterCount_ = 0; timingQueriesWritten_ = false;
+  discardClusterSamples();
   invalidateRayShadowBindingPreparations();
   if(value.state_->graphPose||value.state_->lightOnly) value.state_->consumed=true;
   if(!value.state_->lightOnly&&lightEditRevision_!=UINT64_MAX) ++lightEditRevision_;
@@ -949,14 +952,7 @@ LightingManager::~LightingManager() {
     destroyOwnedSampler(device_->device(), lightGizmoIconSampler_, nullptr);
     lightGizmoIconSampler_ = VK_NULL_HANDLE;
   }
-  if (timestampQueryPool_ != VK_NULL_HANDLE && device_ &&
-      device_->device() != VK_NULL_HANDLE) {
-    destroyOwnedQueryPool(device_->device(), timestampQueryPool_, nullptr);
-    timestampQueryPool_ = VK_NULL_HANDLE;
-  }
-  allocationManager_.destroyBuffer(lightStatsBuffer_);
-  allocationManager_.destroyBuffer(lightIndexListSsbo_);
-  allocationManager_.destroyBuffer(tileGridSsbo_);
+  destroyClusterScratch();
   for (auto* buffers : {&lightingBuffers_, &pointLightBuffers_, &areaLightBuffers_}) {
     for (auto& buffer : *buffers) allocationManager_.destroyBuffer(buffer);
   }
@@ -1026,6 +1022,7 @@ void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
   createLightGizmoIconDescriptorResources();
   invalidateRayShadowBindingPreparations();
   swapFrameResources(next);
+  discardClusterSamples();
 }
 
 void LightingManager::createLightingFrameResources(LightingManager& target, uint32_t imageCount,
@@ -1391,31 +1388,37 @@ void LightingManager::clearSceneLightOverrides() {
   updateLightingData();
 }
 
-void LightingManager::collectStats() {
-  if (!isTiledLightingReady() || lastDispatchClusterCount_ == 0) {
+void LightingManager::onSubmitted(uint32_t imageIndex) noexcept {
+  if (imageIndex >= clusterReadbacks_.size())
     return;
-  }
+  auto& slot = clusterReadbacks_[imageIndex];
+  if (slot.clusters != 0)
+    slot.submission = ++nextClusterSubmission_;
+}
 
-  VmaAllocationInfo allocInfo{};
-  vmaGetAllocationInfo(allocationManager_.memoryManager()->allocator(),
-                       lightStatsBuffer_.allocation, &allocInfo);
-  if (allocInfo.pMappedData == nullptr)
+void LightingManager::collectStats(uint32_t imageIndex) {
+  if (imageIndex >= clusterReadbacks_.size())
     return;
-
-  vmaInvalidateAllocation(allocationManager_.memoryManager()->allocator(),
-                          lightStatsBuffer_.allocation, 0,
-                          sizeof(uint32_t) * 4);
-  const auto *data = static_cast<const uint32_t *>(allocInfo.pMappedData);
+  auto& slot = clusterReadbacks_[imageIndex];
+  if (slot.submission <= latestClusterReadback_)
+    return;
+  const auto allocator = allocationManager_.memoryManager()->allocator();
+  const auto* data = static_cast<const uint32_t*>(slot.buffer.allocation_info.pMappedData);
+  if (!data || vmaInvalidateAllocation(allocator, slot.buffer.allocation, 0,
+                                       4 * sizeof(uint32_t)) != VK_SUCCESS)
+    return;
+  latestClusterReadback_ = slot.submission;
+  lastStats_ = {};
   lastStats_.maxLightsPerCluster = data[0];
   lastStats_.droppedLightReferences = data[1];
   lastStats_.activeClusters = data[2];
   lastStats_.submittedLights = data[3];
-  lastStats_.totalClusters = lastDispatchClusterCount_;
+  lastStats_.totalClusters = slot.clusters;
 
-  if (timestampQueryPool_ != VK_NULL_HANDLE && timingQueriesWritten_) {
+  if (timestampQueryPool_ != VK_NULL_HANDLE && (slot.cullTimed || slot.lightingTimed)) {
     std::array<uint64_t, kTimingQueryCount * 2u> queryResults{};
     const VkResult queryResult = vkGetQueryPoolResults(
-        device_->device(), timestampQueryPool_, lastTimingQueryBase_,
+        device_->device(), timestampQueryPool_, imageIndex * kTimingQueryCount,
         kTimingQueryCount, sizeof(queryResults), queryResults.data(),
         sizeof(uint64_t) * 2u,
         VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WITH_AVAILABILITY_BIT);
@@ -1423,26 +1426,21 @@ void LightingManager::collectStats() {
       return queryResults[queryIndex * 2u + 1u] != 0u;
     };
     const auto elapsedMs = [&](uint32_t startQuery, uint32_t endQuery) {
-      if (queryResult != VK_SUCCESS || !queryAvailable(startQuery) ||
+      if ((queryResult != VK_SUCCESS && queryResult != VK_NOT_READY) ||
+          !queryAvailable(startQuery) ||
           !queryAvailable(endQuery)) {
         return 0.0f;
       }
       const uint64_t start = queryResults[startQuery * 2u];
       const uint64_t end = queryResults[endQuery * 2u];
-      if (end <= start)
-        return 0.0f;
-      return static_cast<float>(static_cast<double>(end - start) *
+      return static_cast<float>(static_cast<double>((end - start) & timestampMask_) *
                                 static_cast<double>(timestampPeriodNs_) *
                                 1.0e-6);
     };
-    const float clusterCullMs =
-        elapsedMs(kClusterCullStartQuery, kClusterCullEndQuery);
-    const float clusteredLightingMs =
-        elapsedMs(kClusteredLightingStartQuery, kClusteredLightingEndQuery);
-    if (clusterCullMs > 0.0f)
-      lastStats_.clusterCullMs = clusterCullMs;
-    if (clusteredLightingMs > 0.0f)
-      lastStats_.clusteredLightingMs = clusteredLightingMs;
+    if (slot.cullTimed)
+      lastStats_.clusterCullMs = elapsedMs(kClusterCullStartQuery, kClusterCullEndQuery);
+    if (slot.lightingTimed)
+      lastStats_.clusteredLightingMs = elapsedMs(kClusteredLightingStartQuery, kClusteredLightingEndQuery);
   }
 }
 
@@ -2017,6 +2015,30 @@ void LightingManager::drawLightGizmoPickIds(
 // Tiled light culling
 // ---------------------------------------------------------------------------
 
+void LightingManager::discardClusterSamples() noexcept {
+  latestClusterReadback_ = nextClusterSubmission_;
+  for (auto& slot : clusterReadbacks_) {
+    slot.submission = 0;
+    slot.clusters = 0;
+    slot.cullTimed = false;
+    slot.lightingTimed = false;
+  }
+}
+
+void LightingManager::destroyClusterScratch() noexcept {
+  if (timestampQueryPool_ != VK_NULL_HANDLE) {
+    destroyOwnedQueryPool(device_->device(), timestampQueryPool_, nullptr);
+    timestampQueryPool_ = VK_NULL_HANDLE;
+  }
+  for (auto& slot : clusterReadbacks_)
+    allocationManager_.destroyBuffer(slot.buffer);
+  for (auto& grid : tileGridBuffers_)
+    allocationManager_.destroyBuffer(grid);
+  clusterReadbacks_.clear();
+  tileGridBuffers_.clear();
+  allocationManager_.destroyBuffer(lightIndexListSsbo_);
+}
+
 void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
   const auto capacity = planClusteredLightCapacity(
       extent, clusteredStorageRangeLimit_, clusteredDispatchLimits_);
@@ -2043,12 +2065,10 @@ void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
   if (descriptorBindingEpoch_ == std::numeric_limits<uint64_t>::max())
     throw std::overflow_error("Lighting descriptor binding epoch exhausted");
   invalidateRayShadowBindingPreparations();
-  allocationManager_.destroyBuffer(lightIndexListSsbo_);
-  allocationManager_.destroyBuffer(tileGridSsbo_);
+  destroyClusterScratch();
   clusteredLightCapacity_ = capacity;
   lastStats_ = {};
-  lastDispatchClusterCount_ = 0;
-  timingQueriesWritten_ = false;
+  discardClusterSamples();
   if (!capacity.available()) {
     container::log::ContainerLogger::instance().renderer()->warn(
         "Clustered lighting disabled at {}x{} ({}): grid {} bytes, light indices "
@@ -2067,27 +2087,51 @@ void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
     }
   };
   allocationCheckpoint(1);
-  tileGridSsbo_ = allocationManager_.createBuffer(
-      capacity.tileGridBytes,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+  tileGridBuffers_.resize(lightingBuffers_.size());
+  for (auto& grid : tileGridBuffers_) {
+    grid = allocationManager_.createBuffer(
+        capacity.tileGridBytes,
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+  }
 
   allocationCheckpoint(2);
   lightIndexListSsbo_ = allocationManager_.createBuffer(
       capacity.lightIndexListBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
       VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
+
+  clusterReadbacks_.resize(lightingBuffers_.size());
+  for (auto& slot : clusterReadbacks_) {
+    slot.buffer = allocationManager_.createBuffer(
+        4 * sizeof(uint32_t),
+        VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  }
+
+  if (timestampMask_ != 0) {
+    VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+    info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+    info.queryCount = static_cast<uint32_t>(clusterReadbacks_.size()) * kTimingQueryCount;
+    if (createOwnedQueryPool(device_->device(), &info, nullptr, &timestampQueryPool_) != VK_SUCCESS)
+      timestampQueryPool_ = VK_NULL_HANDLE;
+  }
 }
 
 void LightingManager::writeTiledResourceDescriptors(const LightingManager& target) const noexcept {
+  // Descriptor counts can change before the retired resize replaces scratch.
+  // In that case the subsequent resize binds all newly created rows together.
+  if (!tiledScratchResourcesReady() || target.tiledSets_.size() != tileGridBuffers_.size())
+    return;
   for (size_t image = 0; image < target.tiledSets_.size(); ++image) {
     const auto& sets = target.tiledSets_[image];
     writeTiledDescriptors(device_->device(), sets[1], sets[2], sets[3], target.pointLightBuffers_[image],
-        tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, clusteredLightCapacity_);
+        tileGridBuffers_[image], lightIndexListSsbo_, clusterReadbacks_[image].buffer, clusteredLightCapacity_);
   }
 }
 
 void LightingManager::resizeTiledResources(VkExtent2D extent) {
-  if (pointLightBuffers_.empty() || lightStatsBuffer_.buffer == VK_NULL_HANDLE) return;
+  if (pointLightBuffers_.empty() || tileCullSet0Layout_ == VK_NULL_HANDLE) return;
 
   const uint64_t previousBindingEpoch = descriptorBindingEpoch_;
   allocateClusterBuffers(extent);
@@ -2105,49 +2149,20 @@ void LightingManager::createTiledResources(
   invalidateRayShadowBindingPreparations();
   loadLightGizmoIconResources(shaderDir / "materials" / "gizmos" / "lights");
 
-  lightStatsBuffer_ = allocationManager_.createBuffer(
-      sizeof(uint32_t) * 4,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-      VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT |
-          VMA_ALLOCATION_CREATE_MAPPED_BIT);
-  const std::array<uint32_t, 4> zeroStats{};
-  SceneController::writeToBuffer(allocationManager_, lightStatsBuffer_,
-                                 zeroStats.data(),
-                                 sizeof(uint32_t) * zeroStats.size());
-
   VkPhysicalDeviceProperties deviceProperties{};
   vkGetPhysicalDeviceProperties(device_->physicalDevice(), &deviceProperties);
   clusteredStorageRangeLimit_ = deviceProperties.limits.maxStorageBufferRange;
   std::copy_n(deviceProperties.limits.maxComputeWorkGroupCount,
               clusteredDispatchLimits_.size(), clusteredDispatchLimits_.begin());
-  if (timestampQueryPool_ == VK_NULL_HANDLE) {
-    timestampPeriodNs_ = deviceProperties.limits.timestampPeriod;
-
-    uint32_t queueFamilyCount = 0;
-    vkGetPhysicalDeviceQueueFamilyProperties(device_->physicalDevice(),
-                                             &queueFamilyCount, nullptr);
-    std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
-    vkGetPhysicalDeviceQueueFamilyProperties(
-        device_->physicalDevice(), &queueFamilyCount, queueFamilies.data());
-
-    const auto queueIndices = device_->queueFamilyIndices();
-    if (queueIndices.graphicsFamily.has_value() &&
-        queueIndices.graphicsFamily.value() < queueFamilies.size() &&
-        queueFamilies[queueIndices.graphicsFamily.value()].timestampValidBits >
-            0) {
-      VkQueryPoolCreateInfo queryPoolInfo{
-          VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
-      queryPoolInfo.queryType = VK_QUERY_TYPE_TIMESTAMP;
-      queryPoolInfo.queryCount = kTimingQueryFrameSlots * kTimingQueryCount;
-      timestampQueriesSupported_ =
-          createOwnedQueryPool(device_->device(), &queryPoolInfo, nullptr,
-                            &timestampQueryPool_) == VK_SUCCESS;
-      if (!timestampQueriesSupported_) {
-        timestampQueryPool_ = VK_NULL_HANDLE;
-      }
-    }
-  }
+  timestampPeriodNs_ = deviceProperties.limits.timestampPeriod;
+  uint32_t queueFamilyCount = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(device_->physicalDevice(), &queueFamilyCount, nullptr);
+  std::vector<VkQueueFamilyProperties> queueFamilies(queueFamilyCount);
+  vkGetPhysicalDeviceQueueFamilyProperties(device_->physicalDevice(), &queueFamilyCount, queueFamilies.data());
+  const auto graphicsFamily = device_->queueFamilyIndices().graphicsFamily;
+  const uint32_t validBits = graphicsFamily && *graphicsFamily < queueFamilyCount
+      ? queueFamilies[*graphicsFamily].timestampValidBits : 0;
+  timestampMask_ = validBits >= 64 ? UINT64_MAX : (uint64_t{1} << validBits) - 1;
 
   // ---- Descriptor set layouts -----------------------------------------------
   // Set 0: camera UBO + depth texture. The compute shader uses texel Load for
@@ -2240,22 +2255,23 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd, uint32_t imageIndex,
     return;
 
   const auto& sets = tiledSets_[imageIndex];
+  auto& slot = clusterReadbacks_[imageIndex];
   const auto dispatch = planClusteredLightCapacity(
       screenExtent, clusteredStorageRangeLimit_, clusteredDispatchLimits_);
   if (!dispatch.available() ||
       dispatch.clusterCount > clusteredLightCapacity_.clusterCount) {
-    lastDispatchClusterCount_ = 0;
+    slot.clusters = 0;
     return;
   }
   const uint32_t totalLights = std::min(
       static_cast<uint32_t>(pointLightsSsbo_.size()), kMaxClusteredLights);
-  lastDispatchClusterCount_ = static_cast<uint32_t>(dispatch.clusterCount);
+  slot.clusters = static_cast<uint32_t>(dispatch.clusterCount);
 
-  vkCmdFillBuffer(cmd, lightStatsBuffer_.buffer, 0, sizeof(uint32_t) * 4, 0u);
+  vkCmdFillBuffer(cmd, slot.buffer.buffer, 0, sizeof(uint32_t) * 4, 0u);
   if (totalLights == 0u) {
     // No point lights: keep the downstream tiled-lighting descriptor valid but
     // make every cluster empty without launching one workgroup per cluster.
-    vkCmdFillBuffer(cmd, tileGridSsbo_.buffer, 0,
+    vkCmdFillBuffer(cmd, tileGridBuffers_[imageIndex].buffer, 0,
                     dispatch.tileGridBytes, 0u);
 
     VkMemoryBarrier clearBarrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
@@ -2276,6 +2292,27 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd, uint32_t imageIndex,
   vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_TRANSFER_BIT,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                        &statsClearBarrier, 0, nullptr, 0, nullptr);
+
+  // Tiled shading is the only graphics reader of the shared index list.
+  // Preserve its previous fragment reads and cover back-to-back culls that
+  // skipped shading, such as the heat-map view.
+  const VkBufferMemoryBarrier2 indexReuse{
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT |
+                      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = lightIndexListSsbo_.buffer,
+      .size = VK_WHOLE_SIZE};
+  const VkDependencyInfo dependency{
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1,
+      .pBufferMemoryBarriers = &indexReuse};
+  vkCmdPipelineBarrier2(cmd, &dependency);
 
   // Update this image's set 0 with its camera and depth resources.
   {
@@ -2333,54 +2370,55 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd, uint32_t imageIndex,
                        0, 1, &barrier, 0, nullptr, 0, nullptr);
 }
 
-void LightingManager::resetGpuTimers(VkCommandBuffer,
-                                     uint32_t frameSlot) const {
-  if (!timestampQueriesSupported_ || timestampQueryPool_ == VK_NULL_HANDLE) {
+void LightingManager::beginClusterFrame(VkCommandBuffer cmd, uint32_t imageIndex) const {
+  if (imageIndex >= clusterReadbacks_.size())
     return;
-  }
-  const uint32_t slot = frameSlot % kTimingQueryFrameSlots;
-  lastTimingQueryBase_ = slot * kTimingQueryCount;
-  timingQueriesWritten_ = false;
-  vkResetQueryPool(device_->device(), timestampQueryPool_, lastTimingQueryBase_,
-                   kTimingQueryCount);
+  auto& slot = clusterReadbacks_[imageIndex];
+  slot.submission = 0;
+  slot.clusters = 0;
+  slot.cullTimed = false;
+  slot.lightingTimed = false;
+  if (timestampQueryPool_ != VK_NULL_HANDLE)
+    vkCmdResetQueryPool(cmd, timestampQueryPool_, imageIndex * kTimingQueryCount,
+                        kTimingQueryCount);
 }
 
-void LightingManager::beginClusterCullTimer(VkCommandBuffer cmd) const {
-  if (!timestampQueriesSupported_ || timestampQueryPool_ == VK_NULL_HANDLE) {
+void LightingManager::beginClusterCullTimer(VkCommandBuffer cmd, uint32_t imageIndex) const {
+  if (timestampQueryPool_ == VK_NULL_HANDLE || imageIndex >= clusterReadbacks_.size()) {
     return;
   }
   vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       timestampQueryPool_,
-                      lastTimingQueryBase_ + kClusterCullStartQuery);
+                      imageIndex * kTimingQueryCount + kClusterCullStartQuery);
 }
 
-void LightingManager::endClusterCullTimer(VkCommandBuffer cmd) const {
-  if (!timestampQueriesSupported_ || timestampQueryPool_ == VK_NULL_HANDLE) {
+void LightingManager::endClusterCullTimer(VkCommandBuffer cmd, uint32_t imageIndex) const {
+  if (timestampQueryPool_ == VK_NULL_HANDLE || imageIndex >= clusterReadbacks_.size()) {
     return;
   }
   vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                       timestampQueryPool_,
-                      lastTimingQueryBase_ + kClusterCullEndQuery);
-  timingQueriesWritten_ = true;
+                      imageIndex * kTimingQueryCount + kClusterCullEndQuery);
+  clusterReadbacks_[imageIndex].cullTimed = true;
 }
 
-void LightingManager::beginClusteredLightingTimer(VkCommandBuffer cmd) const {
-  if (!timestampQueriesSupported_ || timestampQueryPool_ == VK_NULL_HANDLE) {
+void LightingManager::beginClusteredLightingTimer(VkCommandBuffer cmd, uint32_t imageIndex) const {
+  if (timestampQueryPool_ == VK_NULL_HANDLE || imageIndex >= clusterReadbacks_.size()) {
     return;
   }
   vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                       timestampQueryPool_,
-                      lastTimingQueryBase_ + kClusteredLightingStartQuery);
+                      imageIndex * kTimingQueryCount + kClusteredLightingStartQuery);
 }
 
-void LightingManager::endClusteredLightingTimer(VkCommandBuffer cmd) const {
-  if (!timestampQueriesSupported_ || timestampQueryPool_ == VK_NULL_HANDLE) {
+void LightingManager::endClusteredLightingTimer(VkCommandBuffer cmd, uint32_t imageIndex) const {
+  if (timestampQueryPool_ == VK_NULL_HANDLE || imageIndex >= clusterReadbacks_.size()) {
     return;
   }
   vkCmdWriteTimestamp(cmd, VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
                       timestampQueryPool_,
-                      lastTimingQueryBase_ + kClusteredLightingEndQuery);
-  timingQueriesWritten_ = true;
+                      imageIndex * kTimingQueryCount + kClusteredLightingEndQuery);
+  clusterReadbacks_[imageIndex].lightingTimed = true;
 }
 
 namespace {

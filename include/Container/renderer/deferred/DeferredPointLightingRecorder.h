@@ -25,6 +25,7 @@ struct DeferredPointLightingRecordInputs {
   VkExtent2D framebufferExtent{};
   LightPushConstants *lightPushConstants{nullptr};
   const LightingManager *lightingManager{nullptr};
+  uint32_t imageIndex{0};
 };
 
 [[nodiscard]] bool recordDeferredPointLightingCommands(
