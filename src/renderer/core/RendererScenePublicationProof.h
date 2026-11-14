@@ -18,7 +18,7 @@ namespace container::renderer::detail {
 struct ScenePublicationExternalProof {
   const BimManager* bim{};
   uint64_t geometry{},objects{},metadata{};
-  VkBuffer buffer{};
+  std::vector<VkBuffer> objectBuffers;
   bool available{};
   std::vector<uint32_t> objectMaterials,metadataMaterials;
   std::array<const container::scene::IRenderSceneProvider*,16> providers{};
@@ -48,6 +48,7 @@ struct ScenePublicationExternalProof {
       if(objects>1'000'000 || metadata>1'000'000)
         throw std::length_error("Material external-reference proof exceeds its limit");
       add(objects,2*sizeof(uint32_t));add(metadata,2*sizeof(uint32_t));
+      add(source->objectBuffers().size(), 2 * sizeof(VkBuffer));
     }
     const auto current=registry.providers();
     if(current.size()>16) throw std::length_error("Material provider proof exceeds its limit");
@@ -92,7 +93,8 @@ struct ScenePublicationExternalProof {
     providerCount=current.size();std::copy(current.begin(),current.end(),providers.begin());
     if(bim) {
       available=bim->hasScene();geometry=bim->geometryRevision();objects=bim->objectDataRevision();metadata=bim->metadataRevision();
-      buffer=bim->objectBuffer();
+      objectBuffers.reserve(bim->objectBuffers().size());
+      for (const auto& buffer : bim->objectBuffers()) objectBuffers.push_back(buffer.buffer);
       const auto rows=bim->elementMetadata();
       if(bim->objectData().size()>1'000'000 || rows.size()>1'000'000)
         throw std::length_error("Material external-reference proof exceeds its limit");
@@ -158,7 +160,10 @@ struct ScenePublicationExternalProof {
     }
     if(!bim) return true;
     if(available!=bim->hasScene() || geometry!=bim->geometryRevision() || objects!=bim->objectDataRevision() ||
-        metadata!=bim->metadataRevision() || buffer!=bim->objectBuffer() || objectMaterials.size()!=bim->objectData().size()) return false;
+        metadata!=bim->metadataRevision() || objectMaterials.size()!=bim->objectData().size() ||
+        objectBuffers.size()!=bim->objectBuffers().size()) return false;
+    for (size_t image = 0; image < objectBuffers.size(); ++image)
+      if (objectBuffers[image] != bim->objectBuffers()[image].buffer) return false;
     for(size_t i=0;i<objectMaterials.size();++i) if(objectMaterials[i]!=bim->objectData()[i].objectInfo.x) return false;
     const auto rows=bim->elementMetadata();if(rows.size()!=metadataMaterials.size()) return false;
     size_t i{};for(const auto row:rows) if(row.materialIndex!=metadataMaterials[i++]) return false;
@@ -166,7 +171,8 @@ struct ScenePublicationExternalProof {
     } catch(...) {return false;}
   }
   uint64_t ownedBytes() const noexcept {
-    uint64_t bytes=sizeof(*this)+objectMaterials.capacity()*sizeof(uint32_t)+metadataMaterials.capacity()*sizeof(uint32_t)+
+    uint64_t bytes=sizeof(*this)+objectBuffers.capacity()*sizeof(VkBuffer)+
+        objectMaterials.capacity()*sizeof(uint32_t)+metadataMaterials.capacity()*sizeof(uint32_t)+
         materialIdentities.capacity()*sizeof(container::util::ResourceHandle)+providerStates.capacity()*sizeof(container::scene::SceneProviderSnapshot);
     for(const auto& state:providerStates) bytes+=state.id.value.capacity()+state.displayName.capacity()+
         state.triangleBatches.size()*sizeof(container::scene::SceneProviderTriangleBatch);

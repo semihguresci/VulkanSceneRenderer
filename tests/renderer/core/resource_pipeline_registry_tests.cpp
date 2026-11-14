@@ -2472,17 +2472,13 @@ TEST(TechniqueRegistryGuardrails,
   const std::string frameGraphContext = readRepoTextFile(
       "src/renderer/deferred/DeferredRasterFrameGraphContext.cpp");
 
-  EXPECT_TRUE(contains(recorderHeader, "prepareBimFrameGpuVisibility("
-                                       "BimManager *manager,\n"
-                                       "                                  "
-                                       "const FrameBimResources &bim)"));
-  EXPECT_TRUE(contains(recorder,
-                       ".meshCompactionEnabled =\n"
-                       "          bim.opaqueMeshDrawsUseGpuVisibility ||\n"
-                       "          bim.transparentMeshDrawsUseGpuVisibility"));
+  EXPECT_TRUE(containsIgnoringWhitespace(recorderHeader,
+      "prepareBimFrameGpuVisibility(BimManager *manager, const FrameBimResources &bim, uint32_t imageIndex)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(recorder,
+      "inputs.meshCompactionEnabled = bim.opaqueMeshDrawsUseGpuVisibility || bim.transparentMeshDrawsUseGpuVisibility"));
   EXPECT_TRUE(contains(frameGraphContext,
                        "prepareBimFrameGpuVisibility(p.services.bimManager, "
-                       "p.bim)"));
+                       "p.bim, p.runtime.imageIndex)"));
 }
 
 TEST(TechniqueRegistryGuardrails, SceneRasterPassesPublishReadinessCallbacks) {

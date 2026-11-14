@@ -211,9 +211,9 @@ void DeferredRasterFrameGraphContext::beforePrepareFrame(
 
 void DeferredRasterFrameGraphContext::afterPrepareFrame(
     const FrameRecordParams &p, const RenderGraph &) const {
+  prepareBimFrameGpuVisibility(p.services.bimManager, p.bim, p.runtime.imageIndex);
   shadowCascadeFramePassRecorder_.prepareFrame(p,
                                                shadowCascadeFramePassContext(p));
-  prepareBimFrameGpuVisibility(p.services.bimManager, p.bim);
 }
 
 void DeferredRasterFrameGraphContext::afterCommandBufferBegin(

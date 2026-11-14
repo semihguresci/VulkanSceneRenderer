@@ -44,6 +44,7 @@ struct ShadowPassRecordInputs {
   float rasterSlopeBias{0.0f};
   ShadowPassGpuIndirectBuffers sceneGpuIndirect{};
   const BimManager *bimManager{nullptr};
+  uint32_t imageIndex{};
 };
 
 struct ShadowCascadePassRecordInputs {
@@ -62,6 +63,7 @@ struct ShadowCascadePassRecordInputs {
   float rasterSlopeBias{0.0f};
   ShadowPassGpuIndirectBuffers sceneGpuIndirect{};
   const BimManager *bimManager{nullptr};
+  uint32_t imageIndex{};
   ShadowPassDrawInputs drawInputs{};
 };
 

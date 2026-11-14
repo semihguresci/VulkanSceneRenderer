@@ -1,5 +1,6 @@
 #include "Container/renderer/bim/BimManager.h"
 
+#include "Container/common/VulkanObjects.h"
 #include "Container/geometry/DotBimLoader.h"
 #include "Container/geometry/GltfModelLoader.h"
 #include "Container/geometry/IfcTessellatedLoader.h"
@@ -1586,6 +1587,7 @@ BimManager::~BimManager() {
   // The frontend's progress renderer may already be gone during teardown.
   loadProgressCallback_ = {};
   clear();
+  destroyVisibilityFrames();
   destroyDrawCompactionComputeResources();
   destroyVisibilityFilterComputeResources();
   destroyMeshletResidencyComputeResources();
@@ -1615,12 +1617,13 @@ void BimManager::clear() {
   if (indexBuffer_.buffer != VK_NULL_HANDLE) {
     allocationManager_.destroyBuffer(indexBuffer_);
   }
-  if (objectBuffer_.buffer != VK_NULL_HANDLE) {
-    allocationManager_.destroyBuffer(objectBuffer_);
-  }
-  clearSectionClipCapGeometry();
-  clearCoordinationMarkerGeometry();
-  clearSectionPlaneVisualGeometry();
+  for (auto& buffer : objectBuffers_) allocationManager_.destroyBuffer(buffer);
+  objectBuffers_.clear();
+  objectSnapshots_.clear();
+  objectRowRevisions_.clear();
+  clearSectionClipCapGeometry({});
+  clearCoordinationMarkerGeometry({});
+  clearSectionPlaneVisualGeometry({});
   objectBufferCapacity_ = 0;
   vertexSlice_ = {};
   indexSlice_ = {};
@@ -1683,7 +1686,7 @@ void BimManager::clear() {
 bool BimManager::hasScene() const {
   return vertexSlice_.buffer != VK_NULL_HANDLE &&
          indexSlice_.buffer != VK_NULL_HANDLE &&
-         objectBuffer_.buffer != VK_NULL_HANDLE && !objectData_.empty() &&
+         !objectBuffers_.empty() && !objectData_.empty() &&
          (!opaqueDrawCommands_.empty() ||
           !opaqueSingleSidedDrawCommands_.empty() ||
           !opaqueWindingFlippedDrawCommands_.empty() ||
@@ -1703,7 +1706,9 @@ VkDeviceSize BimManager::objectBufferSize() const {
                                    objectBufferCapacity_);
 }
 
-void BimManager::clearSectionClipCapGeometry() {
+void BimManager::clearSectionClipCapGeometry(const RetireOverlayReaders& retireReaders) {
+  if (retireReaders && (sectionClipCapVertexBuffer_.buffer || sectionClipCapIndexBuffer_.buffer))
+    retireReaders();
   if (sectionClipCapVertexBuffer_.buffer != VK_NULL_HANDLE) {
     allocationManager_.destroyBuffer(sectionClipCapVertexBuffer_);
   }
@@ -1716,7 +1721,9 @@ void BimManager::clearSectionClipCapGeometry() {
   sectionClipCapBuildOptionsValid_ = false;
 }
 
-void BimManager::clearCoordinationMarkerGeometry() {
+void BimManager::clearCoordinationMarkerGeometry(const RetireOverlayReaders& retireReaders) {
+  if (retireReaders && (coordinationMarkerVertexBuffer_.buffer || coordinationMarkerIndexBuffer_.buffer))
+    retireReaders();
   if (coordinationMarkerVertexBuffer_.buffer != VK_NULL_HANDLE) {
     allocationManager_.destroyBuffer(coordinationMarkerVertexBuffer_);
   }
@@ -1729,7 +1736,9 @@ void BimManager::clearCoordinationMarkerGeometry() {
   coordinationMarkerGeometrySignature_ = 0u;
 }
 
-void BimManager::clearSectionPlaneVisualGeometry() {
+void BimManager::clearSectionPlaneVisualGeometry(const RetireOverlayReaders& retireReaders) {
+  if (retireReaders && (sectionPlaneVisualVertexBuffer_.buffer || sectionPlaneVisualIndexBuffer_.buffer))
+    retireReaders();
   if (sectionPlaneVisualVertexBuffer_.buffer != VK_NULL_HANDLE) {
     allocationManager_.destroyBuffer(sectionPlaneVisualVertexBuffer_);
   }
@@ -1743,9 +1752,10 @@ void BimManager::clearSectionPlaneVisualGeometry() {
 }
 
 bool BimManager::rebuildCoordinationMarkerGeometry(
-    const BimCoordinationOverlayResult &overlay, float markerRadius) {
+    const BimCoordinationOverlayResult &overlay,
+    const RetireOverlayReaders& retireReaders, float markerRadius) {
   if (overlay.markers.empty() || objectData_.empty()) {
-    clearCoordinationMarkerGeometry();
+    clearCoordinationMarkerGeometry(retireReaders);
     return false;
   }
 
@@ -1757,7 +1767,7 @@ bool BimManager::rebuildCoordinationMarkerGeometry(
     return true;
   }
 
-  clearCoordinationMarkerGeometry();
+  clearCoordinationMarkerGeometry(retireReaders);
 
   const auto primitives =
       buildBimCoordinationOverlayMarkerWirePrimitives(overlay.markers,
@@ -1835,7 +1845,7 @@ bool BimManager::rebuildCoordinationMarkerGeometry(
 
   if (coordinationMarkerVertices_.empty() ||
       coordinationMarkerIndices_.empty()) {
-    clearCoordinationMarkerGeometry();
+    clearCoordinationMarkerGeometry(retireReaders);
     return false;
   }
 
@@ -1861,9 +1871,10 @@ bool BimManager::rebuildCoordinationMarkerGeometry(
 }
 
 bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
-                                                   glm::vec3 color) {
+                                                   glm::vec3 color,
+                                                   const RetireOverlayReaders& retireReaders) {
   if (objectData_.empty()) {
-    clearSectionPlaneVisualGeometry();
+    clearSectionPlaneVisualGeometry(retireReaders);
     return false;
   }
 
@@ -1871,7 +1882,7 @@ bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
   const float normalLength = glm::length(normal);
   if (!std::isfinite(normalLength) || normalLength <= 0.0001f ||
       !std::isfinite(plane.w)) {
-    clearSectionPlaneVisualGeometry();
+    clearSectionPlaneVisualGeometry(retireReaders);
     return false;
   }
   normal /= normalLength;
@@ -1889,7 +1900,7 @@ bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
     return true;
   }
 
-  clearSectionPlaneVisualGeometry();
+  clearSectionPlaneVisualGeometry(retireReaders);
 
   const glm::vec3 center = -normal * plane.w;
   const glm::vec3 helper =
@@ -1899,14 +1910,14 @@ bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
   const glm::vec3 bitangent = glm::normalize(glm::cross(normal, tangent));
   if (!isFiniteVec3(center) || !isFiniteVec3(tangent) ||
       !isFiniteVec3(bitangent)) {
-    clearSectionPlaneVisualGeometry();
+    clearSectionPlaneVisualGeometry(retireReaders);
     return false;
   }
 
   const uint32_t objectIndex = 0u;
   const glm::mat4 inverseModel = glm::inverse(objectData_[objectIndex].model);
   if (!isFiniteMat4(inverseModel)) {
-    clearSectionPlaneVisualGeometry();
+    clearSectionPlaneVisualGeometry(retireReaders);
     return false;
   }
 
@@ -1927,7 +1938,7 @@ bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
       const glm::vec3 localPosition =
           glm::vec3(inverseModel * glm::vec4(worldPosition, 1.0f));
       if (!isFiniteVec3(localPosition)) {
-        clearSectionPlaneVisualGeometry();
+        clearSectionPlaneVisualGeometry(retireReaders);
         return false;
       }
       container::geometry::Vertex vertex{};
@@ -1983,13 +1994,13 @@ bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
 }
 
 bool BimManager::rebuildSectionClipCapGeometry(
-    const BimSectionCapBuildOptions &options) {
+    const BimSectionCapBuildOptions &options, const RetireOverlayReaders& retireReaders) {
   if (sectionClipCapBuildOptionsValid_ &&
       sameSectionCapBuildOptions(sectionClipCapBuildOptions_, options) &&
       sectionClipCapDrawData_.valid()) {
     return true;
   }
-  clearSectionClipCapGeometry();
+  clearSectionClipCapGeometry(retireReaders);
   if (vertices_.empty() || indices_.empty() || objectData_.empty() ||
       objectDrawCommands_.empty()) {
     return false;
@@ -2188,7 +2199,7 @@ bool BimManager::rebuildSectionClipCapGeometry(
   }
 
   if (sectionClipCapVertices_.empty() || sectionClipCapIndices_.empty()) {
-    clearSectionClipCapGeometry();
+    clearSectionClipCapGeometry(retireReaders);
     return false;
   }
 
@@ -2502,9 +2513,7 @@ bool BimManager::setSemanticColorMode(BimSemanticColorMode mode) {
     object.objectInfo.w = semanticId;
     objectDataChanged = true;
   }
-  if (objectDataChanged) {
-    uploadObjects();
-  }
+  if (objectDataChanged) fullObjectRevision_ = ++objectDataRevision_;
   semanticColorIdsDirty_ = false;
   return objectDataChanged;
 }
@@ -2512,7 +2521,7 @@ bool BimManager::setSemanticColorMode(BimSemanticColorMode mode) {
 BimSceneStats BimManager::sceneStats() const {
   std::array<BimDrawCompactionStats, kBimDrawCompactionSlotCount> compaction{};
   for (size_t i = 0; i < compaction.size(); ++i) {
-    compaction[i] = drawCompactionSlots_[i].stats;
+    compaction[i] = visibilityFrame().draws[i].stats;
   }
   return statisticsCache_->sceneStats(meshletResidencyStats_, compaction);
 }
@@ -3787,7 +3796,8 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
   notifyLoadProgress("Uploading BIM materials");
   sceneManager.uploadMaterialResources();
   notifyLoadProgress("Uploading BIM objects");
-  uploadObjects();
+  ++objectDataRevision_;
+  resizeObjectFrames(objectFrameCount_);
   notifyLoadProgress("Uploading BIM visibility data");
   uploadVisibilityFilterBuffers();
 }
@@ -3859,7 +3869,8 @@ void BimManager::loadGltfFallback(
 
   elementMetadata_.seal();
   relationshipGraph_.build(elementMetadata_);
-  uploadObjects();
+  ++objectDataRevision_;
+  resizeObjectFrames(objectFrameCount_);
   uploadVisibilityFilterBuffers();
   if (!hasScene()) {
     clear();
@@ -3927,21 +3938,19 @@ void BimManager::destroyMeshletResidencyBuffers() {
     allocationManager_.destroyBuffer(meshletResidencyBuffer_);
   }
   meshletResidencyStats_ = {};
-  meshletResidencyCameraBuffer_ = VK_NULL_HANDLE;
-  meshletResidencyCameraBufferSize_ = 0;
-  meshletResidencyObjectBuffer_ = VK_NULL_HANDLE;
-  meshletResidencyObjectBufferSize_ = 0;
-  meshletResidencyDescriptorsDirty_ = true;
+  ++meshletResidencyRevision_;
+  for (auto& frame : visibilityFrames_) {
+    frame.residencyDescriptorsDirty = true;
+    frame.camera = VK_NULL_HANDLE;
+    frame.objects = VK_NULL_HANDLE;
+  }
   meshletResidencyDispatchPending_ = false;
 }
 
 void BimManager::destroyMeshletResidencyComputeResources() {
   pipelineManager_.destroyPipeline(meshletResidencyPipeline_);
   pipelineManager_.destroyPipelineLayout(meshletResidencyPipelineLayout_);
-  pipelineManager_.destroyDescriptorPool(meshletResidencyDescriptorPool_);
   pipelineManager_.destroyDescriptorSetLayout(meshletResidencySetLayout_);
-  meshletResidencyDescriptorSet_ = VK_NULL_HANDLE;
-  meshletResidencyDescriptorsDirty_ = false;
   meshletResidencyDispatchPending_ = false;
 }
 
@@ -3949,29 +3958,23 @@ void BimManager::destroyVisibilityFilterBuffers() {
   if (visibilityFilterMetadataBuffer_.buffer != VK_NULL_HANDLE) {
     allocationManager_.destroyBuffer(visibilityFilterMetadataBuffer_);
   }
-  if (visibilityMaskBuffer_.buffer != VK_NULL_HANDLE) {
-    allocationManager_.destroyBuffer(visibilityMaskBuffer_);
-  }
   visibilityFilterMetadata_.clear();
   visibilityFilterStats_ = {};
-  visibilityFilterStats_.computeReady =
-      visibilityFilterPipeline_ != VK_NULL_HANDLE &&
-      visibilityFilterDescriptorSet_ != VK_NULL_HANDLE;
+  visibilityFilterStats_.computeReady = visibilityFilterPipeline_ != VK_NULL_HANDLE;
   visibilityFilterSettings_ = {};
-  visibilityFilterDescriptorsDirty_ = true;
-  visibilityFilterDispatchPending_ = false;
-  visibilityFilterMaskCurrent_ = false;
-  visibilityFilterMaskAllVisible_ = false;
+  for (auto& frame : visibilityFrames_) {
+    allocationManager_.destroyBuffer(frame.mask);
+    frame.filterDescriptorsDirty = true;
+    frame.filterDispatchPending = false;
+    frame.maskCurrent = false;
+    frame.maskAllVisible = false;
+  }
 }
 
 void BimManager::destroyVisibilityFilterComputeResources() {
   pipelineManager_.destroyPipeline(visibilityFilterPipeline_);
   pipelineManager_.destroyPipelineLayout(visibilityFilterPipelineLayout_);
-  pipelineManager_.destroyDescriptorPool(visibilityFilterDescriptorPool_);
   pipelineManager_.destroyDescriptorSetLayout(visibilityFilterSetLayout_);
-  visibilityFilterDescriptorSet_ = VK_NULL_HANDLE;
-  visibilityFilterDescriptorsDirty_ = false;
-  visibilityFilterDispatchPending_ = false;
   visibilityFilterStats_.computeReady = false;
   visibilityFilterStats_.dispatchPending = false;
 }
@@ -3982,7 +3985,6 @@ void BimManager::createVisibilityFilterResources(
     return;
   }
   if (visibilityFilterSetLayout_ != VK_NULL_HANDLE ||
-      visibilityFilterDescriptorPool_ != VK_NULL_HANDLE ||
       visibilityFilterPipelineLayout_ != VK_NULL_HANDLE) {
     destroyVisibilityFilterComputeResources();
   }
@@ -4000,19 +4002,6 @@ void BimManager::createVisibilityFilterResources(
   const std::vector<VkDescriptorBindingFlags> flags(bindings.size(), 0u);
   visibilityFilterSetLayout_ = pipelineManager_.createDescriptorSetLayout(
       {bindings.begin(), bindings.end()}, flags);
-  visibilityFilterDescriptorPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2}}, 1, 0);
-
-  VkDescriptorSetAllocateInfo allocInfo{};
-  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = visibilityFilterDescriptorPool_;
-  allocInfo.descriptorSetCount = 1;
-  allocInfo.pSetLayouts = &visibilityFilterSetLayout_;
-  if (vkAllocateDescriptorSets(device_->device(), &allocInfo,
-                               &visibilityFilterDescriptorSet_) != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate BIM visibility filter set");
-  }
-
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   pcRange.offset = 0;
@@ -4024,27 +4013,24 @@ void BimManager::createVisibilityFilterResources(
       shaderDir / "spv_shaders" / "bim_visibility_filter.comp.spv";
   if (!std::filesystem::exists(compPath)) {
     visibilityFilterStats_.computeReady = false;
-    visibilityFilterDescriptorsDirty_ = true;
+    visibilityFrame().filterDescriptorsDirty = true;
     return;
   }
 
   visibilityFilterPipeline_ = pipelineManager_.createComputePipeline(
       compPath, visibilityFilterPipelineLayout_, "bim_visibility_filter");
-  visibilityFilterStats_.computeReady =
-      visibilityFilterPipeline_ != VK_NULL_HANDLE &&
-      visibilityFilterDescriptorSet_ != VK_NULL_HANDLE;
-  visibilityFilterDescriptorsDirty_ = true;
-  writeVisibilityFilterDescriptorSet();
+  visibilityFilterStats_.computeReady = visibilityFilterPipeline_ != VK_NULL_HANDLE;
 }
 
 void BimManager::writeVisibilityFilterDescriptorSet() {
-  if (visibilityFilterDescriptorSet_ == VK_NULL_HANDLE ||
+  auto& frame = visibilityFrame();
+  if (frame.filterSet == VK_NULL_HANDLE ||
       visibilityFilterMetadataBuffer_.buffer == VK_NULL_HANDLE ||
-      visibilityMaskBuffer_.buffer == VK_NULL_HANDLE ||
+      frame.mask.buffer == VK_NULL_HANDLE ||
       visibilityFilterStats_.metadataBufferBytes == 0u ||
       visibilityFilterStats_.visibilityMaskBufferBytes == 0u) {
-    visibilityFilterDescriptorsDirty_ = true;
-    visibilityFilterDispatchPending_ = false;
+    frame.filterDescriptorsDirty = true;
+    frame.filterDispatchPending = false;
     visibilityFilterStats_.dispatchPending = false;
     return;
   }
@@ -4052,13 +4038,13 @@ void BimManager::writeVisibilityFilterDescriptorSet() {
   const std::array<VkDescriptorBufferInfo, 2> bufferInfos{{
       {visibilityFilterMetadataBuffer_.buffer, 0,
        visibilityFilterStats_.metadataBufferBytes},
-      {visibilityMaskBuffer_.buffer, 0,
+      {frame.mask.buffer, 0,
        visibilityFilterStats_.visibilityMaskBufferBytes},
   }};
   std::array<VkWriteDescriptorSet, 2> writes{};
   for (uint32_t binding = 0; binding < writes.size(); ++binding) {
     writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[binding].dstSet = visibilityFilterDescriptorSet_;
+    writes[binding].dstSet = frame.filterSet;
     writes[binding].dstBinding = binding;
     writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[binding].descriptorCount = 1;
@@ -4067,16 +4053,16 @@ void BimManager::writeVisibilityFilterDescriptorSet() {
   vkUpdateDescriptorSets(device_->device(),
                          static_cast<uint32_t>(writes.size()), writes.data(), 0,
                          nullptr);
-  visibilityFilterDescriptorsDirty_ = false;
+  frame.filterDescriptorsDirty = false;
   visibilityFilterStats_.computeReady =
       visibilityFilterPipeline_ != VK_NULL_HANDLE;
-  visibilityFilterDispatchPending_ =
+  frame.filterDispatchPending =
       visibilityFilterStats_.computeReady &&
       visibilityFilterStats_.objectCount > 0u &&
-      !visibilityFilterMaskCurrent_ &&
+      !frame.maskCurrent &&
       (visibilityFilterHasActiveMask(visibilityFilterSettings_) ||
-       !visibilityFilterMaskAllVisible_);
-  visibilityFilterStats_.dispatchPending = visibilityFilterDispatchPending_;
+       !frame.maskAllVisible);
+  visibilityFilterStats_.dispatchPending = frame.filterDispatchPending;
 }
 
 void BimManager::destroyDrawCompactionBuffers(
@@ -4102,13 +4088,13 @@ void BimManager::destroyDrawCompactionBuffers(
 }
 
 void BimManager::destroyDrawCompactionBuffers() {
-  for (BimDrawCompactionSlotResources &slot : drawCompactionSlots_) {
-    destroyDrawCompactionBuffers(slot);
-  }
+  for (auto& frame : visibilityFrames_)
+    for (auto& slot : frame.draws) destroyDrawCompactionBuffers(slot);
 }
 
 void BimManager::invalidateDrawCompactionOutputs(bool requestDispatch) {
-  for (BimDrawCompactionSlotResources &slot : drawCompactionSlots_) {
+  auto& frame = visibilityFrame();
+  for (BimDrawCompactionSlotResources &slot : frame.draws) {
     slot.stats.drawsValid = false;
     const bool canDispatch = requestDispatch && slot.stats.computeReady &&
                              slot.stats.inputDrawCount > 0u &&
@@ -4121,16 +4107,7 @@ void BimManager::invalidateDrawCompactionOutputs(bool requestDispatch) {
 void BimManager::destroyDrawCompactionComputeResources() {
   pipelineManager_.destroyPipeline(drawCompactionPipeline_);
   pipelineManager_.destroyPipelineLayout(drawCompactionPipelineLayout_);
-  pipelineManager_.destroyDescriptorPool(drawCompactionDescriptorPool_);
   pipelineManager_.destroyDescriptorSetLayout(drawCompactionSetLayout_);
-  drawCompactionDescriptorSets_.fill(VK_NULL_HANDLE);
-  for (BimDrawCompactionSlotResources &slot : drawCompactionSlots_) {
-    slot.descriptorsDirty = false;
-    slot.dispatchPending = false;
-    slot.stats.computeReady = false;
-    slot.stats.dispatchPending = false;
-    slot.stats.drawsValid = false;
-  }
 }
 
 void BimManager::createDrawCompactionResources(
@@ -4139,7 +4116,6 @@ void BimManager::createDrawCompactionResources(
     return;
   }
   if (drawCompactionSetLayout_ != VK_NULL_HANDLE ||
-      drawCompactionDescriptorPool_ != VK_NULL_HANDLE ||
       drawCompactionPipelineLayout_ != VK_NULL_HANDLE) {
     destroyDrawCompactionComputeResources();
   }
@@ -4164,25 +4140,6 @@ void BimManager::createDrawCompactionResources(
   drawCompactionSetLayout_ = pipelineManager_.createDescriptorSetLayout(
       {bindings.begin(), bindings.end()}, flags);
 
-  drawCompactionDescriptorPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-        5u * static_cast<uint32_t>(kBimDrawCompactionSlotCount)}},
-      static_cast<uint32_t>(kBimDrawCompactionSlotCount), 0);
-
-  VkDescriptorSetAllocateInfo allocInfo{};
-  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = drawCompactionDescriptorPool_;
-  allocInfo.descriptorSetCount =
-      static_cast<uint32_t>(drawCompactionDescriptorSets_.size());
-  std::array<VkDescriptorSetLayout, kBimDrawCompactionSlotCount> setLayouts{};
-  setLayouts.fill(drawCompactionSetLayout_);
-  allocInfo.pSetLayouts = setLayouts.data();
-  if (vkAllocateDescriptorSets(device_->device(), &allocInfo,
-                               drawCompactionDescriptorSets_.data()) !=
-      VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate BIM draw compaction sets");
-  }
-
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   pcRange.offset = 0;
@@ -4190,41 +4147,22 @@ void BimManager::createDrawCompactionResources(
   drawCompactionPipelineLayout_ = pipelineManager_.createPipelineLayout(
       {drawCompactionSetLayout_}, {pcRange});
 
-  const std::filesystem::path compPath =
-      shaderDir / "spv_shaders" / "bim_draw_compact.comp.spv";
-  if (!std::filesystem::exists(compPath)) {
-    for (BimDrawCompactionSlotResources &slot : drawCompactionSlots_) {
-      slot.stats.computeReady = false;
-      slot.descriptorsDirty = true;
-    }
-    return;
-  }
-
-  drawCompactionPipeline_ = pipelineManager_.createComputePipeline(
-      compPath, drawCompactionPipelineLayout_, "bim_draw_compact");
-  for (size_t index = 0; index < drawCompactionSlots_.size(); ++index) {
-    BimDrawCompactionSlotResources &slot = drawCompactionSlots_[index];
-    slot.stats.computeReady =
-        drawCompactionSupported() &&
-        drawCompactionPipeline_ != VK_NULL_HANDLE &&
-        drawCompactionDescriptorSets_[index] != VK_NULL_HANDLE;
-    slot.descriptorsDirty = true;
-    writeDrawCompactionDescriptorSet(static_cast<BimDrawCompactionSlot>(index));
-  }
+  const auto compPath = shaderDir / "spv_shaders" / "bim_draw_compact.comp.spv";
+  if (std::filesystem::exists(compPath))
+    drawCompactionPipeline_ = pipelineManager_.createComputePipeline(
+        compPath, drawCompactionPipelineLayout_, "bim_draw_compact");
 }
 
 void BimManager::createMeshletResidencyResources(
     const std::filesystem::path &shaderDir) {
-  if (meshletResidencyPipeline_ != VK_NULL_HANDLE) {
-    createVisibilityFilterResources(shaderDir);
-    createDrawCompactionResources(shaderDir);
-    return;
-  }
+  if (visibilityDescriptorPool_ != VK_NULL_HANDLE) return;
   if (meshletResidencySetLayout_ != VK_NULL_HANDLE ||
-      meshletResidencyDescriptorPool_ != VK_NULL_HANDLE ||
       meshletResidencyPipelineLayout_ != VK_NULL_HANDLE) {
     destroyMeshletResidencyComputeResources();
+    destroyVisibilityFilterComputeResources();
+    destroyDrawCompactionComputeResources();
   }
+  const auto imageCount = static_cast<uint32_t>(objectFrameCount_);
   if (!device_) {
     throw std::runtime_error(
         "BimManager::createMeshletResidencyResources requires a device");
@@ -4246,21 +4184,6 @@ void BimManager::createMeshletResidencyResources(
   meshletResidencySetLayout_ = pipelineManager_.createDescriptorSetLayout(
       {bindings.begin(), bindings.end()}, flags);
 
-  meshletResidencyDescriptorPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 4},
-       {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}},
-      1, 0);
-
-  VkDescriptorSetAllocateInfo allocInfo{};
-  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = meshletResidencyDescriptorPool_;
-  allocInfo.descriptorSetCount = 1;
-  allocInfo.pSetLayouts = &meshletResidencySetLayout_;
-  if (vkAllocateDescriptorSets(device_->device(), &allocInfo,
-                               &meshletResidencyDescriptorSet_) != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate BIM meshlet residency set");
-  }
-
   VkPushConstantRange pcRange{};
   pcRange.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
   pcRange.offset = 0;
@@ -4270,25 +4193,13 @@ void BimManager::createMeshletResidencyResources(
 
   const std::filesystem::path compPath =
       shaderDir / "spv_shaders" / "bim_meshlet_residency.comp.spv";
-  if (!std::filesystem::exists(compPath)) {
-    meshletResidencyStats_.computeReady = false;
-    meshletResidencyDescriptorsDirty_ = true;
-    createVisibilityFilterResources(shaderDir);
-    createDrawCompactionResources(shaderDir);
-    return;
-  }
-
-  meshletResidencyPipeline_ = pipelineManager_.createComputePipeline(
-      compPath, meshletResidencyPipelineLayout_, "bim_meshlet_residency");
-  meshletResidencyStats_.computeReady =
-      meshletResidencyPipeline_ != VK_NULL_HANDLE &&
-      meshletResidencyDescriptorSet_ != VK_NULL_HANDLE;
-  if (meshletResidencyStats_.gpuResident) {
-    meshletResidencyDescriptorsDirty_ = true;
-    writeMeshletResidencyDescriptorSet();
-  }
+  if (std::filesystem::exists(compPath))
+    meshletResidencyPipeline_ = pipelineManager_.createComputePipeline(
+        compPath, meshletResidencyPipelineLayout_, "bim_meshlet_residency");
+  meshletResidencyStats_.computeReady = meshletResidencyPipeline_ != VK_NULL_HANDLE;
   createVisibilityFilterResources(shaderDir);
   createDrawCompactionResources(shaderDir);
+  resizeVisibilityFrames(imageCount);
 }
 
 void BimManager::updateMeshletResidencySettings(
@@ -4302,7 +4213,87 @@ void BimManager::updateMeshletResidencySettings(
   meshletResidencyStats_.dispatchPending = meshletResidencyDispatchPending_;
 }
 
-void BimManager::updateVisibilityFilterSettings(const BimDrawFilter &filter) {
+void BimManager::beginVisibilityFrame(uint32_t imageIndex) {
+  if (imageIndex >= visibilityFrames_.size())
+    throw std::out_of_range("BIM visibility image is out of range");
+  visibilityImage_ = imageIndex;
+  if (visibilityFrame().maskRevision != visibilityFilterRevision_)
+    visibilityFrame().maskCurrent = false;
+}
+
+void BimManager::releaseVisibilityFrames(std::vector<VisibilityFrame>& frames) noexcept {
+  for (auto& frame : frames) {
+    allocationManager_.destroyBuffer(frame.mask);
+    for (auto& slot : frame.draws) destroyDrawCompactionBuffers(slot);
+  }
+}
+
+void BimManager::destroyVisibilityFrames() noexcept {
+  if (visibilityDescriptorPool_)
+    destroyOwnedDescriptorPool(device_->device(), std::exchange(visibilityDescriptorPool_, VK_NULL_HANDLE), nullptr);
+  releaseVisibilityFrames(visibilityFrames_);
+}
+
+void BimManager::resizeVisibilityFrames(uint32_t imageCount) {
+  if (visibilityDescriptorPool_ && visibilityFrames_.size() == imageCount) return;
+  constexpr uint32_t setCount = 2 + static_cast<uint32_t>(kBimDrawCompactionSlotCount);
+  constexpr uint32_t storageCount = 6 + 5 * static_cast<uint32_t>(kBimDrawCompactionSlotCount);
+  if (!imageCount || imageCount > std::numeric_limits<uint32_t>::max() / storageCount)
+    throw std::invalid_argument("Invalid BIM visibility image count");
+  const auto device = device_->device();
+  const std::array<VkDescriptorPoolSize, 2> sizes{{
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, storageCount * imageCount},
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount}}};
+  const VkDescriptorPoolCreateInfo poolInfo{
+      .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
+      .maxSets = setCount * imageCount,
+      .poolSizeCount = static_cast<uint32_t>(sizes.size()),
+      .pPoolSizes = sizes.data()};
+  std::vector<VisibilityFrame> frames(imageCount);
+  VkDescriptorPool pool{};
+  if (createOwnedDescriptorPool(device, &poolInfo, nullptr, &pool) != VK_SUCCESS)
+    throw std::runtime_error("Failed to allocate BIM visibility frame pool");
+  try {
+    std::array<VkDescriptorSetLayout, setCount> layouts{};
+    layouts.fill(drawCompactionSetLayout_);
+    layouts[0] = meshletResidencySetLayout_;
+    layouts[1] = visibilityFilterSetLayout_;
+    const VkDescriptorSetAllocateInfo allocate{
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
+        .descriptorPool = pool,
+        .descriptorSetCount = setCount,
+        .pSetLayouts = layouts.data()};
+    const std::vector<uint32_t> mask(visibilityFilterMetadata_.size(), 1u);
+    for (auto& frame : frames) {
+      std::array<VkDescriptorSet, setCount> sets{};
+      if (vkAllocateDescriptorSets(device, &allocate, sets.data()) != VK_SUCCESS)
+        throw std::runtime_error("Failed to allocate BIM visibility frame sets");
+      frame.residencySet = sets[0];
+      frame.filterSet = sets[1];
+      std::copy(sets.begin() + 2, sets.end(), frame.drawSets.begin());
+      if (!mask.empty()) {
+        frame.mask = allocationManager_.uploadBuffer(std::as_bytes(std::span(mask)),
+            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+        frame.maskAllVisible = true;
+        frame.maskCurrent = !visibilityFilterHasActiveMask(visibilityFilterSettings_);
+        if (frame.maskCurrent) frame.maskRevision = visibilityFilterRevision_;
+      }
+    }
+  } catch (...) {
+    destroyOwnedDescriptorPool(device, pool, nullptr);
+    releaseVisibilityFrames(frames);
+    throw;
+  }
+
+  destroyOwnedDescriptorPool(device, std::exchange(visibilityDescriptorPool_, pool), nullptr);
+  visibilityFrames_.swap(frames);
+  visibilityImage_ = 0;
+  releaseVisibilityFrames(frames);
+}
+
+void BimManager::updateVisibilityFilterSettings(const BimDrawFilter &filter, uint32_t imageIndex) {
+  beginVisibilityFrame(imageIndex);
+  auto& frame = visibilityFrame();
   BimVisibilityFilterPushConstants settings{};
   settings.objectCount = static_cast<uint32_t>(
       std::min<size_t>(visibilityFilterStats_.objectCount,
@@ -4365,13 +4356,14 @@ void BimManager::updateVisibilityFilterSettings(const BimDrawFilter &filter) {
       !sameVisibilityFilterSettings(visibilityFilterSettings_, settings);
   if (settingsChanged) ++visibilityFilterRevision_;
   const bool activeMask = visibilityFilterHasActiveMask(settings);
+  const bool rowSettingsChanged = frame.maskRevision != visibilityFilterRevision_;
   visibilityFilterSettings_ = settings;
 
   if (!visibilityFilterStats_.gpuResident ||
       visibilityFilterStats_.objectCount == 0u) {
-    visibilityFilterMaskCurrent_ = false;
-    visibilityFilterMaskAllVisible_ = false;
-    visibilityFilterDispatchPending_ = false;
+    frame.maskCurrent = false;
+    frame.maskAllVisible = false;
+    frame.filterDispatchPending = false;
     visibilityFilterStats_.dispatchPending = false;
     invalidateDrawCompactionOutputs(false);
     return;
@@ -4379,42 +4371,49 @@ void BimManager::updateVisibilityFilterSettings(const BimDrawFilter &filter) {
 
   // The upload path seeds an all-visible mask, so inactive filters can reuse it
   // instead of redispatching a full object-count compute pass every frame.
-  if (!activeMask && visibilityFilterMaskAllVisible_) {
-    visibilityFilterMaskCurrent_ = true;
-    visibilityFilterDispatchPending_ = false;
-  } else if (!settingsChanged && visibilityFilterMaskCurrent_) {
-    visibilityFilterDispatchPending_ = false;
+  if (!activeMask && frame.maskAllVisible) {
+    frame.maskCurrent = true;
+    frame.maskRevision = visibilityFilterRevision_;
+    frame.filterDispatchPending = false;
+  } else if (!rowSettingsChanged && frame.maskCurrent) {
+    frame.filterDispatchPending = false;
   } else if (visibilityFilterStats_.computeReady &&
-             visibilityFilterDescriptorSet_ != VK_NULL_HANDLE) {
-    visibilityFilterMaskCurrent_ = false;
-    visibilityFilterDispatchPending_ = true;
+             frame.filterSet != VK_NULL_HANDLE) {
+    frame.maskCurrent = false;
+    frame.filterDispatchPending = true;
   } else {
-    visibilityFilterMaskCurrent_ = false;
-    visibilityFilterDispatchPending_ = false;
+    frame.maskCurrent = false;
+    frame.filterDispatchPending = false;
   }
 
-  visibilityFilterStats_.dispatchPending = visibilityFilterDispatchPending_;
-  if (settingsChanged || visibilityFilterDispatchPending_) {
+  visibilityFilterStats_.dispatchPending = frame.filterDispatchPending;
+  if (rowSettingsChanged || frame.filterDispatchPending) {
     invalidateDrawCompactionOutputs(visibilityMaskReadyForDrawCompaction());
   }
 }
 
 bool BimManager::visibilityMaskReadyForDrawCompaction() const {
+  return visibilityMaskReadyForDrawCompaction(visibilityImage_);
+}
+
+bool BimManager::visibilityMaskReadyForDrawCompaction(uint32_t imageIndex) const {
+  if (imageIndex >= visibilityFrames_.size()) return false;
+  const auto& frame = visibilityFrames_[imageIndex];
   if (!visibilityFilterStats_.gpuResident ||
       visibilityFilterStats_.objectCount == 0u ||
-      visibilityMaskBuffer_.buffer == VK_NULL_HANDLE ||
+      frame.mask.buffer == VK_NULL_HANDLE ||
       visibilityFilterStats_.visibilityMaskBufferBytes == 0u) {
     return false;
   }
   if (!visibilityFilterHasActiveMask(visibilityFilterSettings_)) {
-    return visibilityFilterMaskAllVisible_;
+    return frame.maskAllVisible;
   }
   // Active filters require a completed compute pass. A resident all-visible
   // mask alone is not enough, otherwise missing filter shaders would bypass
   // CPU-filtered BIM draw lists.
   return visibilityFilterStats_.computeReady &&
-         !visibilityFilterDescriptorsDirty_ &&
-         !visibilityFilterDispatchPending_ && visibilityFilterMaskCurrent_;
+         !frame.filterDescriptorsDirty && !frame.filterDispatchPending &&
+         frame.maskCurrent && frame.maskRevision == visibilityFilterRevision_;
 }
 
 bool BimManager::drawCompactionSupported() const {
@@ -4427,27 +4426,28 @@ bool BimManager::drawCompactionSupported() const {
 void BimManager::writeMeshletResidencyDescriptorSet(
     VkBuffer cameraBuffer, VkDeviceSize cameraBufferSize, VkBuffer objectBuffer,
     VkDeviceSize objectBufferSize) {
+  auto& frame = visibilityFrame();
   if (cameraBuffer != VK_NULL_HANDLE && cameraBufferSize > 0u) {
-    meshletResidencyCameraBuffer_ = cameraBuffer;
-    meshletResidencyCameraBufferSize_ = cameraBufferSize;
+    frame.camera = cameraBuffer;
+    frame.cameraBytes = cameraBufferSize;
   }
   if (objectBuffer != VK_NULL_HANDLE && objectBufferSize > 0u) {
-    meshletResidencyObjectBuffer_ = objectBuffer;
-    meshletResidencyObjectBufferSize_ = objectBufferSize;
+    frame.objects = objectBuffer;
+    frame.objectBytes = objectBufferSize;
   }
 
-  if (meshletResidencyDescriptorSet_ == VK_NULL_HANDLE ||
+  if (frame.residencySet == VK_NULL_HANDLE ||
       meshletClusterBuffer_.buffer == VK_NULL_HANDLE ||
       meshletObjectLodBuffer_.buffer == VK_NULL_HANDLE ||
       meshletResidencyBuffer_.buffer == VK_NULL_HANDLE ||
-      meshletResidencyCameraBuffer_ == VK_NULL_HANDLE ||
-      meshletResidencyObjectBuffer_ == VK_NULL_HANDLE ||
+      frame.camera == VK_NULL_HANDLE ||
+      frame.objects == VK_NULL_HANDLE ||
       meshletResidencyStats_.clusterBufferBytes == 0u ||
       meshletResidencyStats_.objectLodBufferBytes == 0u ||
       meshletResidencyStats_.residencyBufferBytes == 0u ||
-      meshletResidencyCameraBufferSize_ == 0u ||
-      meshletResidencyObjectBufferSize_ == 0u) {
-    meshletResidencyDescriptorsDirty_ = true;
+      frame.cameraBytes == 0u ||
+      frame.objectBytes == 0u) {
+    frame.residencyDescriptorsDirty = true;
     meshletResidencyDispatchPending_ = false;
     meshletResidencyStats_.dispatchPending = false;
     return;
@@ -4460,13 +4460,13 @@ void BimManager::writeMeshletResidencyDescriptorSet(
        meshletResidencyStats_.objectLodBufferBytes},
       {meshletResidencyBuffer_.buffer, 0,
        meshletResidencyStats_.residencyBufferBytes},
-      {meshletResidencyCameraBuffer_, 0, meshletResidencyCameraBufferSize_},
-      {meshletResidencyObjectBuffer_, 0, meshletResidencyObjectBufferSize_},
+      {frame.camera, 0, frame.cameraBytes},
+      {frame.objects, 0, frame.objectBytes},
   }};
   std::array<VkWriteDescriptorSet, 5> writes{};
   for (uint32_t binding = 0; binding < writes.size(); ++binding) {
     writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[binding].dstSet = meshletResidencyDescriptorSet_;
+    writes[binding].dstSet = frame.residencySet;
     writes[binding].dstBinding = binding;
     writes[binding].descriptorType = binding == 3u
                                          ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
@@ -4477,7 +4477,7 @@ void BimManager::writeMeshletResidencyDescriptorSet(
   vkUpdateDescriptorSets(device_->device(),
                          static_cast<uint32_t>(writes.size()), writes.data(), 0,
                          nullptr);
-  meshletResidencyDescriptorsDirty_ = false;
+  frame.residencyDescriptorsDirty = false;
   meshletResidencyStats_.computeReady =
       meshletResidencyPipeline_ != VK_NULL_HANDLE;
   meshletResidencyDispatchPending_ = meshletResidencyStats_.computeReady;
@@ -4485,16 +4485,17 @@ void BimManager::writeMeshletResidencyDescriptorSet(
 }
 
 void BimManager::recordVisibilityFilterUpdate(VkCommandBuffer cmd) {
+  auto& frame = visibilityFrame();
   if (cmd == VK_NULL_HANDLE || visibilityFilterPipeline_ == VK_NULL_HANDLE ||
       visibilityFilterPipelineLayout_ == VK_NULL_HANDLE ||
-      visibilityFilterDescriptorSet_ == VK_NULL_HANDLE ||
+      frame.filterSet == VK_NULL_HANDLE ||
       visibilityFilterStats_.objectCount == 0u) {
     return;
   }
-  if (visibilityFilterDescriptorsDirty_) {
+  if (frame.filterDescriptorsDirty) {
     writeVisibilityFilterDescriptorSet();
   }
-  if (visibilityFilterDescriptorsDirty_ || !visibilityFilterDispatchPending_) {
+  if (frame.filterDescriptorsDirty || !frame.filterDispatchPending) {
     return;
   }
 
@@ -4507,7 +4508,7 @@ void BimManager::recordVisibilityFilterUpdate(VkCommandBuffer cmd) {
                     visibilityFilterPipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                           visibilityFilterPipelineLayout_, 0, 1,
-                          &visibilityFilterDescriptorSet_, 0, nullptr);
+                          &frame.filterSet, 0, nullptr);
   vkCmdPushConstants(cmd, visibilityFilterPipelineLayout_,
                      VK_SHADER_STAGE_COMPUTE_BIT, 0,
                      sizeof(BimVisibilityFilterPushConstants), &pushConstants);
@@ -4522,10 +4523,11 @@ void BimManager::recordVisibilityFilterUpdate(VkCommandBuffer cmd) {
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1, &barrier, 0,
                        nullptr, 0, nullptr);
 
-  visibilityFilterDispatchPending_ = false;
+  frame.filterDispatchPending = false;
   visibilityFilterStats_.dispatchPending = false;
-  visibilityFilterMaskCurrent_ = true;
-  visibilityFilterMaskAllVisible_ =
+  frame.maskCurrent = true;
+  frame.maskRevision = visibilityFilterRevision_;
+  frame.maskAllVisible =
       !visibilityFilterHasActiveMask(pushConstants);
   invalidateDrawCompactionOutputs(true);
 }
@@ -4535,9 +4537,10 @@ void BimManager::recordMeshletResidencyUpdate(VkCommandBuffer cmd,
                                               VkDeviceSize cameraBufferSize,
                                               VkBuffer objectBuffer,
                                               VkDeviceSize objectBufferSize) {
+  auto& frame = visibilityFrame();
   if (cmd == VK_NULL_HANDLE || meshletResidencyPipeline_ == VK_NULL_HANDLE ||
       meshletResidencyPipelineLayout_ == VK_NULL_HANDLE ||
-      meshletResidencyDescriptorSet_ == VK_NULL_HANDLE ||
+      frame.residencySet == VK_NULL_HANDLE ||
       meshletResidencyStats_.objectCount == 0u) {
     return;
   }
@@ -4545,15 +4548,15 @@ void BimManager::recordMeshletResidencyUpdate(VkCommandBuffer cmd,
     meshletResidencyStats_.dispatchPending = meshletResidencyDispatchPending_;
     return;
   }
-  if (meshletResidencyDescriptorsDirty_ ||
-      meshletResidencyCameraBuffer_ != cameraBuffer ||
-      meshletResidencyCameraBufferSize_ != cameraBufferSize ||
-      meshletResidencyObjectBuffer_ != objectBuffer ||
-      meshletResidencyObjectBufferSize_ != objectBufferSize) {
+  if (frame.residencyDescriptorsDirty ||
+      frame.camera != cameraBuffer ||
+      frame.cameraBytes != cameraBufferSize ||
+      frame.objects != objectBuffer ||
+      frame.objectBytes != objectBufferSize) {
     writeMeshletResidencyDescriptorSet(cameraBuffer, cameraBufferSize,
                                        objectBuffer, objectBufferSize);
   }
-  if (meshletResidencyDescriptorsDirty_ || !meshletResidencyDispatchPending_) {
+  if (frame.residencyDescriptorsDirty || !meshletResidencyDispatchPending_) {
     return;
   }
 
@@ -4579,11 +4582,26 @@ void BimManager::recordMeshletResidencyUpdate(VkCommandBuffer cmd,
       (meshletResidencySettings_.keepSelectedResident ? 4u : 0u) |
       (meshletResidencySettings_.pauseStreaming ? 8u : 0u);
 
+  const VkBufferMemoryBarrier2 beforeWrite{
+      .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .buffer = meshletResidencyBuffer_.buffer,
+      .size = VK_WHOLE_SIZE};
+  const VkDependencyInfo dependency{
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .bufferMemoryBarrierCount = 1,
+      .pBufferMemoryBarriers = &beforeWrite};
+  vkCmdPipelineBarrier2(cmd, &dependency);
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                     meshletResidencyPipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                           meshletResidencyPipelineLayout_, 0, 1,
-                          &meshletResidencyDescriptorSet_, 0, nullptr);
+                          &frame.residencySet, 0, nullptr);
   vkCmdPushConstants(cmd, meshletResidencyPipelineLayout_,
                      VK_SHADER_STAGE_COMPUTE_BIT, 0,
                      sizeof(BimMeshletResidencyPushConstants), &pushConstants);
@@ -4605,6 +4623,7 @@ void BimManager::recordMeshletResidencyUpdate(VkCommandBuffer cmd,
       meshletResidencySettings_.autoLod ||
       meshletResidencySettings_.drawBudgetEnabled;
   meshletResidencyStats_.dispatchPending = meshletResidencyDispatchPending_;
+  frame.compactionResidencyRevision = ++meshletResidencyRevision_;
   invalidateDrawCompactionOutputs(visibilityMaskReadyForDrawCompaction());
 }
 
@@ -4615,7 +4634,7 @@ void BimManager::ensureDrawCompactionCapacity(BimDrawCompactionSlot slotId,
     return;
   }
   BimDrawCompactionSlotResources &slot =
-      drawCompactionSlots_[drawCompactionSlotIndex(slotId)];
+      visibilityFrame().draws[drawCompactionSlotIndex(slotId)];
   const size_t clampedInputCount =
       std::min(inputDrawCount,
                static_cast<size_t>(std::numeric_limits<uint32_t>::max()));
@@ -4650,7 +4669,8 @@ void BimManager::ensureDrawCompactionCapacity(BimDrawCompactionSlot slotId,
   slot.indirectBuffer = allocationManager_.createBuffer(
       sizeof(container::gpu::GpuDrawIndexedIndirectCommand) *
           requiredOutputCapacity,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT,
+      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDIRECT_BUFFER_BIT |
+          VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
       VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
   slot.countBuffer = allocationManager_.createBuffer(
       sizeof(uint32_t),
@@ -4672,7 +4692,7 @@ void BimManager::ensureDrawCompactionCapacity(BimDrawCompactionSlot slotId,
   slot.stats.computeReady =
       drawCompactionSupported() &&
       drawCompactionPipeline_ != VK_NULL_HANDLE &&
-      drawCompactionDescriptorSets_[drawCompactionSlotIndex(slotId)] !=
+      visibilityFrame().drawSets[drawCompactionSlotIndex(slotId)] !=
           VK_NULL_HANDLE;
   slot.stats.drawsValid = false;
   slot.descriptorsDirty = true;
@@ -4681,14 +4701,15 @@ void BimManager::ensureDrawCompactionCapacity(BimDrawCompactionSlot slotId,
 
 void BimManager::writeDrawCompactionDescriptorSet(
     BimDrawCompactionSlot slotId) {
+  auto& frame = visibilityFrame();
   const size_t slotIndex = drawCompactionSlotIndex(slotId);
-  BimDrawCompactionSlotResources &slot = drawCompactionSlots_[slotIndex];
-  if (drawCompactionDescriptorSets_[slotIndex] == VK_NULL_HANDLE ||
+  BimDrawCompactionSlotResources &slot = frame.draws[slotIndex];
+  if (frame.drawSets[slotIndex] == VK_NULL_HANDLE ||
       slot.inputBuffer.buffer == VK_NULL_HANDLE ||
       meshletResidencyBuffer_.buffer == VK_NULL_HANDLE ||
       slot.indirectBuffer.buffer == VK_NULL_HANDLE ||
       slot.countBuffer.buffer == VK_NULL_HANDLE ||
-      visibilityMaskBuffer_.buffer == VK_NULL_HANDLE ||
+      frame.mask.buffer == VK_NULL_HANDLE ||
       slot.stats.inputBufferBytes == 0u ||
       meshletResidencyStats_.residencyBufferBytes == 0u ||
       slot.stats.outputBufferBytes == 0u || slot.stats.countBufferBytes == 0u ||
@@ -4705,13 +4726,13 @@ void BimManager::writeDrawCompactionDescriptorSet(
        meshletResidencyStats_.residencyBufferBytes},
       {slot.indirectBuffer.buffer, 0, slot.stats.outputBufferBytes},
       {slot.countBuffer.buffer, 0, slot.stats.countBufferBytes},
-      {visibilityMaskBuffer_.buffer, 0,
+      {frame.mask.buffer, 0,
        visibilityFilterStats_.visibilityMaskBufferBytes},
   }};
   std::array<VkWriteDescriptorSet, 5> writes{};
   for (uint32_t binding = 0; binding < writes.size(); ++binding) {
     writes[binding].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    writes[binding].dstSet = drawCompactionDescriptorSets_[slotIndex];
+    writes[binding].dstSet = frame.drawSets[slotIndex];
     writes[binding].dstBinding = binding;
     writes[binding].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
     writes[binding].descriptorCount = 1;
@@ -4732,7 +4753,7 @@ void BimManager::writeDrawCompactionDescriptorSet(
 void BimManager::prepareDrawCompaction(
     BimDrawCompactionSlot slotId, const std::vector<DrawCommand> &commands) {
   BimDrawCompactionSlotResources &slot =
-      drawCompactionSlots_[drawCompactionSlotIndex(slotId)];
+      visibilityFrame().draws[drawCompactionSlotIndex(slotId)];
   if (!drawCompactionSupported() || commands.empty() ||
       meshletResidencyBuffer_.buffer == VK_NULL_HANDLE ||
       meshletResidencyStats_.objectCount == 0u) {
@@ -4750,7 +4771,7 @@ void BimManager::prepareDrawCompaction(
   const bool sourceUnchanged =
       slot.inputSourceData == commands.data() &&
       slot.inputSourceSize == commands.size() &&
-      slot.inputSourceRevision == objectDataRevision_ &&
+      slot.inputSourceRevision == geometryRevision_ &&
       slot.stats.inputDrawCount == commands.size() &&
       slot.inputBuffer.buffer != VK_NULL_HANDLE &&
       slot.stats.inputBufferBytes >=
@@ -4788,7 +4809,7 @@ void BimManager::prepareDrawCompaction(
 
   slot.inputSourceData = commands.data();
   slot.inputSourceSize = commands.size();
-  slot.inputSourceRevision = objectDataRevision_;
+  slot.inputSourceRevision = geometryRevision_;
   const uint32_t inputDrawCount = static_cast<uint32_t>(std::min<size_t>(
       commands.size(),
       slot.stats.inputBufferBytes /
@@ -4826,6 +4847,11 @@ void BimManager::prepareDrawCompaction(
 }
 
 void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
+  auto& frame = visibilityFrame();
+  if (frame.compactionResidencyRevision != meshletResidencyRevision_) {
+    invalidateDrawCompactionOutputs(visibilityMaskReadyForDrawCompaction());
+    frame.compactionResidencyRevision = meshletResidencyRevision_;
+  }
   if (!drawCompactionSupported() || cmd == VK_NULL_HANDLE ||
       drawCompactionPipeline_ == VK_NULL_HANDLE ||
       drawCompactionPipelineLayout_ == VK_NULL_HANDLE ||
@@ -4836,12 +4862,12 @@ void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                     drawCompactionPipeline_);
-  for (size_t index = 0; index < drawCompactionSlots_.size(); ++index) {
-    BimDrawCompactionSlotResources &slot = drawCompactionSlots_[index];
+  for (size_t index = 0; index < frame.draws.size(); ++index) {
+    BimDrawCompactionSlotResources &slot = frame.draws[index];
     const BimDrawCompactionSlot slotId =
         static_cast<BimDrawCompactionSlot>(index);
     if (slot.stats.inputDrawCount == 0u || slot.stats.outputCapacity == 0u ||
-        drawCompactionDescriptorSets_[index] == VK_NULL_HANDLE) {
+        frame.drawSets[index] == VK_NULL_HANDLE) {
       continue;
     }
     if (slot.descriptorsDirty) {
@@ -4874,7 +4900,7 @@ void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             drawCompactionPipelineLayout_, 0, 1,
-                            &drawCompactionDescriptorSets_[index], 0, nullptr);
+                            &frame.drawSets[index], 0, nullptr);
     vkCmdPushConstants(cmd, drawCompactionPipelineLayout_,
                        VK_SHADER_STAGE_COMPUTE_BIT, 0,
                        sizeof(BimDrawCompactionPushConstants), &pushConstants);
@@ -4900,25 +4926,34 @@ void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
 
 const BimDrawCompactionStats &
 BimManager::drawCompactionStats(BimDrawCompactionSlot slot) const {
-  return drawCompactionSlots_[drawCompactionSlotIndex(slot)].stats;
+  return visibilityFrame().draws[drawCompactionSlotIndex(slot)].stats;
 }
 
 bool BimManager::drawCompactionReady(BimDrawCompactionSlot slotId) const {
+  return drawCompactionReady(slotId, visibilityImage_);
+}
+
+bool BimManager::drawCompactionReady(BimDrawCompactionSlot slotId, uint32_t imageIndex) const {
+  if (!drawCompactionSupported() || !visibilityMaskReadyForDrawCompaction(imageIndex)) return false;
+  const auto& frame = visibilityFrames_[imageIndex];
   const size_t slotIndex = drawCompactionSlotIndex(slotId);
-  const BimDrawCompactionSlotResources &slot = drawCompactionSlots_[slotIndex];
-  return drawCompactionSupported() && visibilityMaskReadyForDrawCompaction() &&
-         slot.stats.drawsValid &&
+  const BimDrawCompactionSlotResources &slot = frame.draws[slotIndex];
+  return frame.compactionResidencyRevision == meshletResidencyRevision_ && slot.stats.drawsValid &&
          slot.indirectBuffer.buffer != VK_NULL_HANDLE &&
          slot.countBuffer.buffer != VK_NULL_HANDLE;
 }
 
 void BimManager::drawCompacted(BimDrawCompactionSlot slotId,
                                VkCommandBuffer cmd) const {
+  drawCompacted(slotId, cmd, visibilityImage_);
+}
+
+void BimManager::drawCompacted(BimDrawCompactionSlot slotId, VkCommandBuffer cmd, uint32_t imageIndex) const {
   const size_t slotIndex = drawCompactionSlotIndex(slotId);
-  const BimDrawCompactionSlotResources &slot = drawCompactionSlots_[slotIndex];
-  if (cmd == VK_NULL_HANDLE || !drawCompactionReady(slotId)) {
+  if (cmd == VK_NULL_HANDLE || !drawCompactionReady(slotId, imageIndex)) {
     return;
   }
+  const auto& slot = visibilityFrames_[imageIndex].draws[slotIndex];
   const uint32_t maxDrawCount = static_cast<uint32_t>(std::min<size_t>(
       slot.stats.outputCapacity, std::numeric_limits<uint32_t>::max()));
   if (maxDrawCount == 0u) {
@@ -4940,12 +4975,9 @@ void BimManager::uploadVisibilityFilterBuffers() {
   }
 
   visibilityFilterMetadata_.reserve(elementMetadata_.size());
-  std::vector<uint32_t> visibilityMask;
-  visibilityMask.reserve(elementMetadata_.size());
   for (const BimElementMetadataView &metadata : elementMetadata_) {
     visibilityFilterMetadata_.push_back(
         metadataCatalog_->visibilityGpuMetadata(metadata));
-    visibilityMask.push_back(1u);
   }
 
   auto asBytes = [](const auto &values) {
@@ -4957,36 +4989,20 @@ void BimManager::uploadVisibilityFilterBuffers() {
 
   visibilityFilterMetadataBuffer_ = allocationManager_.uploadBuffer(
       asBytes(visibilityFilterMetadata_), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-  visibilityMaskBuffer_ = allocationManager_.uploadBuffer(
-      asBytes(visibilityMask),
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
-
-  visibilityFilterStats_.gpuResident =
-      visibilityFilterMetadataBuffer_.buffer != VK_NULL_HANDLE &&
-      visibilityMaskBuffer_.buffer != VK_NULL_HANDLE;
-  visibilityFilterStats_.objectCount = visibilityFilterMetadata_.size();
-  visibilityFilterStats_.metadataBufferBytes =
-      static_cast<VkDeviceSize>(sizeof(BimVisibilityGpuObjectMetadata) *
-                                visibilityFilterMetadata_.size());
-  visibilityFilterStats_.visibilityMaskBufferBytes =
-      static_cast<VkDeviceSize>(sizeof(uint32_t) * visibilityMask.size());
-  visibilityFilterStats_.computeReady =
-      visibilityFilterPipeline_ != VK_NULL_HANDLE &&
-      visibilityFilterDescriptorSet_ != VK_NULL_HANDLE;
-  visibilityFilterDescriptorsDirty_ = true;
-  visibilityFilterMaskAllVisible_ = visibilityFilterStats_.gpuResident;
-  visibilityFilterMaskCurrent_ =
-      visibilityFilterMaskAllVisible_ &&
-      !visibilityFilterHasActiveMask(visibilityFilterSettings_);
-  visibilityFilterDispatchPending_ =
-      visibilityFilterStats_.gpuResident &&
-      visibilityFilterHasActiveMask(visibilityFilterSettings_);
-  visibilityFilterStats_.dispatchPending = visibilityFilterDispatchPending_;
-  writeVisibilityFilterDescriptorSet();
-
-  for (BimDrawCompactionSlotResources &slot : drawCompactionSlots_) {
-    slot.descriptorsDirty = true;
+  const std::vector<uint32_t> mask(elementMetadata_.size(), 1u);
+  for (auto& frame : visibilityFrames_) {
+    frame.mask = allocationManager_.uploadBuffer(
+        asBytes(mask), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+    frame.maskAllVisible = true;
+    frame.maskCurrent = !visibilityFilterHasActiveMask(visibilityFilterSettings_);
+    frame.maskRevision = visibilityFilterRevision_;
+    for (auto& slot : frame.draws) slot.descriptorsDirty = true;
   }
+  visibilityFilterStats_.gpuResident = visibilityFilterMetadataBuffer_.buffer != VK_NULL_HANDLE;
+  visibilityFilterStats_.objectCount = visibilityFilterMetadata_.size();
+  visibilityFilterStats_.metadataBufferBytes = sizeof(BimVisibilityGpuObjectMetadata) * visibilityFilterMetadata_.size();
+  visibilityFilterStats_.visibilityMaskBufferBytes = sizeof(uint32_t) * mask.size();
+  visibilityFilterStats_.computeReady = visibilityFilterPipeline_ != VK_NULL_HANDLE;
 }
 
 void BimManager::uploadMeshletResidencyBuffers() {
@@ -5081,11 +5097,9 @@ void BimManager::uploadMeshletResidencyBuffers() {
       sizeof(BimMeshletGpuObjectLod) * gpuObjectLods.size());
   meshletResidencyStats_.residencyBufferBytes = static_cast<VkDeviceSize>(
       sizeof(BimMeshletResidencyEntry) * residencyEntries.size());
-  meshletResidencyStats_.computeReady =
-      meshletResidencyPipeline_ != VK_NULL_HANDLE &&
-      meshletResidencyDescriptorSet_ != VK_NULL_HANDLE;
-  meshletResidencyDescriptorsDirty_ = true;
-  writeMeshletResidencyDescriptorSet();
+  meshletResidencyStats_.computeReady = meshletResidencyPipeline_ != VK_NULL_HANDLE;
+  meshletResidencyDispatchPending_ = meshletResidencyStats_.computeReady;
+  for (auto& frame : visibilityFrames_) frame.residencyDescriptorsDirty = true;
 }
 
 std::vector<uint32_t> BimManager::changedTransformObjects(
@@ -5096,16 +5110,11 @@ std::vector<uint32_t> BimManager::changedTransformObjects(
     if (update.objectIndex < objectData_.size() &&
         update.model != objectData_[update.objectIndex].model)
       changed.push_back(update.objectIndex);
-  std::ranges::sort(changed);
-  if (!changed.empty() && (objectBuffer_.buffer == VK_NULL_HANDLE ||
-                           changed.back() >= objectBufferCapacity_))
-    throw std::runtime_error("BIM object buffer is not ready for transform publication");
   return changed;
 }
 
 void BimManager::validateObjectTransforms(
     std::span<const container::gpu::ObjectTransformUpdate> updates) const {
-  (void)changedTransformObjects(updates);
   runtimeObjectTransforms_.validate(objectData_, elementMetadata_, updates,
                                     temporalRootTranslation_);
 }
@@ -5113,50 +5122,15 @@ void BimManager::validateObjectTransforms(
 bool BimManager::setObjectTransforms(
     std::span<const container::gpu::ObjectTransformUpdate> updates) {
   const auto changed = changedTransformObjects(updates);
-  if (changed.empty())
-    return runtimeObjectTransforms_.apply(objectData_, elementMetadata_, updates,
-                                           temporalRootTranslation_);
-  // Acquire writable memory before publishing CPU models/bounds. Otherwise a
-  // mapping failure would leave the GPU stale while the CPU equality check
-  // suppresses the next attempt to upload the same physics transforms.
-  void *mapped = objectBuffer_.allocation_info.pMappedData;
-  const bool mappedHere = mapped == nullptr;
-  if (mappedHere && vmaMapMemory(allocationManager_.memoryManager()->allocator(),
-                                  objectBuffer_.allocation, &mapped) != VK_SUCCESS)
-    throw std::runtime_error("Failed to map BIM object transforms");
-  // A physics tick changes only attached product fragments. Coalesce adjacent
-  // slots without copying or flushing the rest of a potentially large model.
-  bool applied = false;
-  try {
-    applied = runtimeObjectTransforms_.apply(objectData_, elementMetadata_, updates,
-                                               temporalRootTranslation_);
-    if (applied) {
-      // Existing safe rebuild paths retire/recreate cap buffers when needed.
-      // Do not free a cached cap buffer while a prior frame can reference it.
-      sectionClipCapBuildOptionsValid_ = false;
-      for (size_t begin = 0; begin < changed.size();) {
-        size_t end = begin + 1u;
-        while (end < changed.size() && changed[end] == changed[end - 1u] + 1u) ++end;
-        const VkDeviceSize offset = VkDeviceSize(changed[begin]) * sizeof(container::gpu::ObjectData);
-        const VkDeviceSize bytes = VkDeviceSize(end - begin) * sizeof(container::gpu::ObjectData);
-        std::memcpy(static_cast<std::byte *>(mapped) + offset,
-                      objectData_.data() + changed[begin], static_cast<size_t>(bytes));
-        if (vmaFlushAllocation(allocationManager_.memoryManager()->allocator(),
-                                objectBuffer_.allocation, offset, bytes) != VK_SUCCESS)
-          throw std::runtime_error("Failed to flush BIM object transforms");
-        begin = end;
-      }
-    }
-  } catch (...) {
-    if (mappedHere)
-      vmaUnmapMemory(allocationManager_.memoryManager()->allocator(), objectBuffer_.allocation);
-    throw;
-  }
-  if (mappedHere)
-    vmaUnmapMemory(allocationManager_.memoryManager()->allocator(), objectBuffer_.allocation);
-  if (applied)
-    ++objectDataRevision_;
-  return applied;
+  if (!changed.empty() && objectRowRevisions_.size() != objectData_.size())
+    throw std::runtime_error("BIM object buffer is not ready for transform publication");
+  if (!runtimeObjectTransforms_.apply(objectData_, elementMetadata_, updates,
+                                      temporalRootTranslation_))
+    return false;
+  sectionClipCapBuildOptionsValid_ = false;
+  ++objectDataRevision_;
+  for (const auto index : changed) objectRowRevisions_[index] = objectDataRevision_;
+  return true;
 }
 
 void BimManager::setRootTranslation(glm::vec3 translation) {
@@ -5184,23 +5158,83 @@ void BimManager::setRootTranslation(glm::vec3 translation) {
   }
   temporalRootTranslation_ = translation;
   sectionClipCapBuildOptionsValid_ = false;
-  ++objectDataRevision_;
-  uploadObjects();
+  fullObjectRevision_ = ++objectDataRevision_;
 }
 
-void BimManager::uploadObjects() {
-  const bool recreated = SceneController::ensureObjectBufferCapacity(
-      allocationManager_, objectBuffer_, objectBufferCapacity_,
-      objectData_.size());
-  (void)recreated;
-  if (objectBuffer_.buffer == VK_NULL_HANDLE || objectData_.empty()) {
+void BimManager::resizeObjectFrames(uint32_t imageCount) {
+  if (imageCount == 0)
+    throw std::invalid_argument("BIM object snapshots need a graphics image");
+  if (objectData_.empty()) {
+    if (visibilityDescriptorPool_) resizeVisibilityFrames(imageCount);
+    objectFrameCount_ = imageCount;
     return;
   }
+  if (objectBuffers_.size() == imageCount && objectBufferCapacity_ >= objectData_.size())
+    return;
 
-  SceneController::writeToBuffer(
-      allocationManager_, objectBuffer_, objectData_.data(),
-      sizeof(container::gpu::ObjectData) * objectData_.size());
-  ++objectDataRevision_;
+  std::vector<container::gpu::AllocatedBuffer> buffers(imageCount);
+  std::vector<ObjectSnapshot> snapshots(imageCount);
+  std::vector<uint64_t> rowRevisions(objectData_.size());
+  try {
+    for (auto& buffer : buffers) {
+      size_t capacity = 0;
+      SceneController::ensureObjectBufferCapacity(allocationManager_, buffer, capacity, objectData_.size());
+      SceneController::writeToBuffer(allocationManager_, buffer,
+          objectData_.data(), sizeof(container::gpu::ObjectData) * objectData_.size());
+    }
+    if (visibilityDescriptorPool_) resizeVisibilityFrames(imageCount);
+  } catch (...) {
+    for (auto& buffer : buffers) allocationManager_.destroyBuffer(buffer);
+    throw;
+  }
+
+  for (auto& snapshot : snapshots) snapshot.revision = objectDataRevision_;
+  objectBuffers_.swap(buffers);
+  objectSnapshots_.swap(snapshots);
+  objectRowRevisions_.swap(rowRevisions);
+  objectFrameCount_ = imageCount;
+  objectBufferCapacity_ = objectData_.size();
+  for (auto& buffer : buffers) allocationManager_.destroyBuffer(buffer);
+}
+
+void BimManager::uploadObjectFrame(uint32_t imageIndex,
+    std::span<const container::gpu::ObjectData> temporalObjects) {
+  if (imageIndex >= objectBuffers_.size() || objectData_.empty())
+    throw std::out_of_range("BIM object snapshot image is out of range");
+  if (!temporalObjects.empty() && temporalObjects.size() != objectData_.size())
+    throw std::invalid_argument("BIM temporal snapshot must cover all objects");
+
+  auto& snapshot = objectSnapshots_[imageIndex];
+  const bool temporal = !temporalObjects.empty();
+  if (!temporal && !snapshot.temporal && snapshot.revision == objectDataRevision_)
+    return;
+
+  const auto& buffer = objectBuffers_[imageIndex];
+  auto* mapped = static_cast<std::byte*>(buffer.allocation_info.pMappedData);
+  if (temporal || snapshot.temporal || snapshot.revision < fullObjectRevision_ || !mapped) {
+    const auto objects = temporal ? temporalObjects : std::span<const container::gpu::ObjectData>(objectData_);
+    SceneController::writeToBuffer(allocationManager_, buffer, objects.data(), objects.size_bytes());
+  } else {
+    // Physics edits typically change only a few product fragments. Flush the
+    // contiguous records that changed since this image's last acquire.
+    const auto allocator = allocationManager_.memoryManager()->allocator();
+    constexpr size_t stride = sizeof(container::gpu::ObjectData);
+    for (size_t begin = 0; begin < objectRowRevisions_.size();) {
+      if (objectRowRevisions_[begin] <= snapshot.revision) {
+        ++begin;
+        continue;
+      }
+      size_t end = begin + 1;
+      while (end < objectRowRevisions_.size() && objectRowRevisions_[end] > snapshot.revision) ++end;
+      const auto offset = begin * stride;
+      const auto bytes = (end - begin) * stride;
+      std::memcpy(mapped + offset, objectData_.data() + begin, bytes);
+      if (vmaFlushAllocation(allocator, buffer.allocation, offset, bytes) != VK_SUCCESS)
+        throw std::runtime_error("Failed to flush BIM object transforms");
+      begin = end;
+    }
+  }
+  snapshot = {.revision = objectDataRevision_, .temporal = temporal};
 }
 
 } // namespace container::renderer

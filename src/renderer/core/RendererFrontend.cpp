@@ -1488,6 +1488,7 @@ void RendererFrontend::initialize() {
   if (!svc_.config.bimModelPath.empty()) {
     subs_.bimManager = std::make_unique<BimManager>(
         svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+    subs_.bimManager->resizeObjectFrames(static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
     subs_.bimManager->createMeshletResidencyResources(
         container::util::executableDirectory());
     subs_.bimManager->loadModel(svc_.config.bimModelPath,
@@ -2354,7 +2355,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
            (uint64_t(object.objectInfo.y) << 32u)));
     }
     uploadPreparedObjectData(imageIndex,objects);
-    if (subs_.bimManager && subs_.bimManager->objectAllocatedBuffer().buffer) {
+    if (subs_.bimManager && subs_.bimManager->objectBuffer(imageIndex)) {
       uint64_t providerRevision = 0;
       // Residency policy changes invalidate only the sidecar provider;
       // root/instance motion keeps correspondence and retains its history.
@@ -2376,11 +2377,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
              (uint64_t(object.objectInfo.y) << 32u) ^
              (providerRevision << 16u)));
       }
-      if (!bimObjects.empty())
-        SceneController::writeToBuffer(
-            svc_.allocationManager, subs_.bimManager->objectAllocatedBuffer(),
-            bimObjects.data(), bimObjects.size() * sizeof(bimObjects[0]));
+      subs_.bimManager->uploadObjectFrame(imageIndex, bimObjects);
     }
+  } else if (subs_.bimManager && subs_.bimManager->objectBuffer(imageIndex)) {
+    subs_.bimManager->uploadObjectFrame(imageIndex);
   }
 
   if(!frameTemporalSettings.enabled && gpuHierarchyPrepared_)
@@ -4016,6 +4016,8 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
   if (subs_.exposureManager && previousImageCount != imageCount)
     subs_.exposureManager->resizeFrameResources(imageCount);
   subs_.sceneManager->resizeDescriptorFrames(imageCount);
+  if (subs_.bimManager)
+    subs_.bimManager->resizeObjectFrames(imageCount);
   createFrameResources();
   if (subs_.bloomManager)
     subs_.bloomManager->createTextures(extent.width, extent.height, imageCount);
@@ -4031,7 +4033,7 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
   updateAllObjectBuffers();
   if (subs_.sceneManager && subs_.bimManager && subs_.bimManager->hasScene())
     subs_.sceneManager->updateAuxiliaryDescriptorSets(
-        buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
+        buffers_.cameras, subs_.bimManager->objectBuffers());
   updateFrameDescriptorSets();
 }
 
@@ -5204,7 +5206,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     updateAllObjectBuffers();
     if (subs_.bimManager && subs_.bimManager->hasScene()) {
       subs_.sceneManager->updateAuxiliaryDescriptorSets(
-          buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
+          buffers_.cameras, subs_.bimManager->objectBuffers());
     }
     syncSceneProviders();
   };
@@ -5219,6 +5221,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     if (!subs_.bimManager) {
       subs_.bimManager = std::make_unique<BimManager>(
           svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+      subs_.bimManager->resizeObjectFrames(static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
       subs_.bimManager->createMeshletResidencyResources(
           container::util::executableDirectory());
       if (modelLoad_ && modelLoad_->committing)
@@ -6128,7 +6131,7 @@ void RendererFrontend::initializeScene() {
   subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     subs_.sceneManager->updateAuxiliaryDescriptorSets(
-        buffers_.cameras, subs_.bimManager->objectAllocatedBuffer());
+        buffers_.cameras, subs_.bimManager->objectBuffers());
   }
   updateFrameDescriptorSets();
   syncSceneProviders();
@@ -9244,6 +9247,15 @@ void RendererFrontend::ensureExtendedPbrResources() {
 
 FrameRecordParams
 RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
+  bool bimOverlayReadersRetired = false;
+  const BimManager::RetireOverlayReaders retireBimOverlayReaders = [&] {
+    if (bimOverlayReadersRetired) return;
+    // Overlay geometry is recorded only on the graphics queue. This runs
+    // before recording and fence reset, so one wait covers all replacements.
+    subs_.frameSyncManager->waitForAllFrames();
+    bimOverlayReadersRetired = true;
+  };
+
   ensureExtendedPbrResources();
   publishFrameRuntimeResourceBindings(imageIndex);
   syncSceneProviders();
@@ -9324,7 +9336,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     // back to the CPU draw filter until the shader mask grows that model.
     const BimDrawFilter gpuVisibilityFilter =
         bimFilter.requiresCpuFiltering() ? BimDrawFilter{} : bimFilter;
-    subs_.bimManager->updateVisibilityFilterSettings(gpuVisibilityFilter);
+    subs_.bimManager->updateVisibilityFilterSettings(gpuVisibilityFilter, imageIndex);
     const auto bimLayers = subs_.guiManager
                                ? subs_.guiManager->bimLayerVisibilityState()
                                : container::ui::BimLayerVisibilityState{};
@@ -9343,7 +9355,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     p.bim.scene.indexType = subs_.bimManager->indexType();
     p.bim.scene.objectData = &subs_.bimManager->objectData();
     p.bim.scene.objectDataRevision = subs_.bimManager->objectDataRevision();
-    p.bim.scene.objectBuffer = subs_.bimManager->objectBuffer();
+    p.bim.scene.objectBuffer = subs_.bimManager->objectBuffer(imageIndex);
     p.bim.scene.objectBufferSize = subs_.bimManager->objectBufferSize();
     p.bim.semanticColorMode =
         static_cast<uint32_t>(subs_.bimManager->semanticColorMode());
@@ -9476,9 +9488,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
                  .issuePinsEnabled = issueMarkers},
                 clashPairs, issuePins);
         if (coordinationOverlay.markers.empty()) {
-          subs_.bimManager->clearCoordinationMarkerGeometry();
+          subs_.bimManager->clearCoordinationMarkerGeometry(retireBimOverlayReaders);
         } else if (subs_.bimManager->rebuildCoordinationMarkerGeometry(
-                coordinationOverlay)) {
+                coordinationOverlay, retireBimOverlayReaders)) {
           const BimCoordinationMarkerDrawData &markerDrawData =
               subs_.bimManager->coordinationMarkerDrawData();
           p.bim.coordinationMarkerScene.vertexSlice =
@@ -9490,7 +9502,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           p.bim.coordinationMarkerScene.objectDataRevision =
               subs_.bimManager->objectDataRevision();
           p.bim.coordinationMarkerScene.objectBuffer =
-              subs_.bimManager->objectBuffer();
+              subs_.bimManager->objectBuffer(imageIndex);
           p.bim.coordinationMarkerScene.objectBufferSize =
               subs_.bimManager->objectBufferSize();
           p.bim.coordinationIssueMarkerDrawCommands =
@@ -9503,7 +9515,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
               clashMarkers && !markerDrawData.clashDrawCommands.empty();
         }
       } else {
-        subs_.bimManager->clearCoordinationMarkerGeometry();
+        subs_.bimManager->clearCoordinationMarkerGeometry(retireBimOverlayReaders);
       }
 
       auto& technical = p.bim.technicalElevation;
@@ -9622,7 +9634,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     if (sectionPlaneVisualEnabled &&
         subs_.bimManager->rebuildSectionPlaneVisualGeometry(
             activeSectionPlane, sectionPlane.visualPlaneSize,
-            sectionPlane.visualPlaneColor)) {
+            sectionPlane.visualPlaneColor, retireBimOverlayReaders)) {
       const auto &visualData =
           subs_.bimManager->sectionPlaneVisualDrawData();
       p.bim.sectionPlaneVisualScene.vertexSlice = visualData.vertexSlice;
@@ -9633,12 +9645,12 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       p.bim.sectionPlaneVisualScene.objectDataRevision =
           subs_.bimManager->objectDataRevision();
       p.bim.sectionPlaneVisualScene.objectBuffer =
-          subs_.bimManager->objectBuffer();
+          subs_.bimManager->objectBuffer(imageIndex);
       p.bim.sectionPlaneVisualScene.objectBufferSize =
           subs_.bimManager->objectBufferSize();
       p.bim.sectionPlaneVisualDrawCommands = &visualData.drawCommands;
     } else {
-      subs_.bimManager->clearSectionPlaneVisualGeometry();
+      subs_.bimManager->clearSectionPlaneVisualGeometry(retireBimOverlayReaders);
     }
 
     auto capUi = subs_.guiManager ? subs_.guiManager->bimClipCapHatchingUiState()
@@ -9723,7 +9735,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           });
         }
       }
-      if (subs_.bimManager->rebuildSectionClipCapGeometry(capOptions)) {
+      if (subs_.bimManager->rebuildSectionClipCapGeometry(capOptions, retireBimOverlayReaders)) {
         const auto &capData = subs_.bimManager->sectionClipCapDrawData();
         p.bim.sectionClipCapGeometry.scene.vertexSlice = capData.vertexSlice;
         p.bim.sectionClipCapGeometry.scene.indexSlice = capData.indexSlice;
@@ -9739,7 +9751,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           &capData.sectionMarkerLines;
       }
     } else {
-      subs_.bimManager->clearSectionClipCapGeometry();
+      subs_.bimManager->clearSectionClipCapGeometry(retireBimOverlayReaders);
     }
   }
   p.pushConstants = pushConstants_.state();

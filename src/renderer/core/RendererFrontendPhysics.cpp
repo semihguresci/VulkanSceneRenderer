@@ -238,8 +238,7 @@ void RendererFrontend::publishBimPhysicsTransforms() {
     return update.objectIndex < objects.size() && objects[update.objectIndex].model == update.model;
   });
   if (updates.empty()) return;
-  // Object instances are shared with asynchronous DDGI readers. Graphics
-  // fences are already retired here; finish the remaining compute readers.
+  // Retire asynchronous readers before publishing the updated scene provider.
   if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
   if (subs_.bimManager->setObjectTransforms(updates)) {
     selectionNavigationAnchor_ = {};
