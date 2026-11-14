@@ -5,6 +5,7 @@
 #include <array>
 #include <glm/vec2.hpp>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string_view>
 #include <unordered_map>
@@ -41,6 +42,7 @@ struct ParametricSurface {
   bool innerProfile = false;
   bool reverseMeshWinding = false;
   bool standaloneRegular = true;
+  bool ruledSectionPanels = false;
   std::vector<double> creaseU, creaseV;
 };
 [[nodiscard]] bool isCurveEntity(std::string_view type);
@@ -48,7 +50,9 @@ struct ParametricSurface {
 [[nodiscard]] std::optional<ParametricCurve>
 readIfcCurve(const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,
              double metersPerUnit, std::optional<double> radiansPerAngleUnit,
-             std::string &error);
+             std::string &error, std::span<const uint32_t> guides = {},
+             std::stop_token stop = {},
+             std::span<const uint32_t> differentFrameGuides = {});
 [[nodiscard]] std::optional<ParametricCurve>
 readIfcEdgeCurve(const std::unordered_map<uint32_t, Entity> &entities,
                  uint32_t id, double metersPerUnit,
@@ -68,5 +72,7 @@ readIfcSurfaceCharts(const std::unordered_map<uint32_t, Entity> &entities,
 readIfcSectionedSurfaceMesh(
     const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,
     double metersPerUnit, std::optional<double> radiansPerAngleUnit,
-    std::string &error);
+    std::string &error, std::span<const uint32_t> guides = {},
+    std::stop_token stop = {},
+    std::span<const uint32_t> differentFrameGuides = {});
 } // namespace container::geometry::ifc::detail
