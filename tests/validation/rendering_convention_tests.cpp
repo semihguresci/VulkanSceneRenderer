@@ -3783,8 +3783,7 @@ TEST(RenderingConventionTests,
                        "std::span<const container::gpu::AllocatedBuffer> "
                        "exposureStateBuffers"));
   EXPECT_TRUE(containsIgnoringWhitespace(frameResourceManager,
-                       "const auto& exposureStateBuffer = "
-                       "exposureStateBuffers[std::min("));
+                       "nextKey.exposureStateBuffer = bufferAt(exposureStateBuffers);"));
 
   EXPECT_FALSE(containsIgnoringWhitespace(exposureHeader,
                         "container::gpu::AllocatedBuffer histogramBuffer_{}"));
