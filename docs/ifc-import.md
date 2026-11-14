@@ -47,7 +47,7 @@ checks are free of validation and synchronization errors.
 | `IFCPOLYGONALFACESET` | Planar convex/concave faces, indexed polygonal faces with voids, indexed colors, optional `PnIndex`. Authored outer-face winding is retained. |
 | `IFCFACETEDBREP` | Connected closed shells with planar `IFCFACE`/polyloop bounds, inner loops, bound orientation and per-face surface colors. Closed topology and outward shell orientation are checked before buffer mutation. |
 | `IFCFACETEDBREPWITHVOIDS` | Faceted outer shells with inward-facing cavity shells. Cavities must be strictly enclosed, disjoint and unnested. Repeated shells/faces, open shells and incorrect winding reject atomically. |
-| `IFCADVANCEDBREP`, `IFCADVANCEDBREPWITHVOIDS` | Planar and regular curved `IFCADVANCEDFACE` geometry on planes, cylinders, spheres, tori, explicit-knot polynomial/rational spline surfaces and supported extrusion/revolution surfaces. Shared `IFCEDGECURVE`/`IFCORIENTEDEDGE` topology, face holes, periodic bands with independent seams, seam curves and the same cavity validation are retained. Spherical pole `IFCVERTEXLOOP` bounds mesh closed spheres and caps. Edge vertices trim their native 3D curves; SameSense, boundary orientation, surface membership and opposite edge reuse are checked. Other singular charts and some periodic charts remain unsupported. |
+| `IFCADVANCEDBREP`, `IFCADVANCEDBREPWITHVOIDS` | Planar and curved `IFCADVANCEDFACE` geometry on planes, cylinders, spheres, tori, explicit-knot polynomial/rational spline surfaces and supported extrusion/revolution surfaces. Shared `IFCEDGECURVE`/`IFCORIENTEDEDGE` topology, face holes, periodic bands with independent seams, seam curves and cavity validation are retained. Spherical pole vertex loops and pole-crossing edge loops mesh through regular local charts. Edge vertices trim their native 3D curves. The importer checks SameSense, boundary orientation, surface membership and opposite edge reuse. |
 | `IFCEXTRUDEDAREASOLID` | Arbitrary supported closed 2D curves with voids, sharp/rounded/hollow rectangles, circles/hollow circles, ellipses, trapezia, capped linear centerlines, disjoint area composites and L/U/I/asymmetric I/C/T/Z sections. Caps and side walls face outward, including negative extrusion directions. |
 | Profile curves | Closed 2D polylines/indexed arcs, conics, B-splines, trims and composites use the shared curve evaluator, with at most 4,097 sampled points. Repeated consecutive polyline points are removed. Profiles must pass planarity, closure, intersection and triangulation checks. |
 | `IfcDerivedProfileDef`, `IfcMirroredProfileDef` | Transform already-supported parent profiles after their 2D placement. Translation, rotation, uniform/non-uniform positive scales and axis mirroring are supported, including nested chains. Extruded profiles retain inner loops and outward winding; swept-surface curves retain source domains, periods and section tags. Parent/profile types must agree. |
@@ -129,10 +129,31 @@ periodic band, so caps extending past the equator retain their source edges.
 The authored pole remains a mesh vertex. Placement, degree/millimetre units,
 boundary orientation and inward cavity normals are preserved. The same shell
 checks and one-million-triangle B-rep budget apply. Non-pole vertex loops,
-multiple vertex-loop bounds, non-spherical singular charts and edge loops
-passing through a pole remain diagnosed. The source topology and angular/pole
+multiple vertex-loop bounds and non-spherical singular charts remain diagnosed.
+The source topology and angular/pole
 semantics follow the buildingSMART [vertex-loop](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcVertexLoop.htm)
 and [spherical-surface](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSphericalSurface.htm) definitions.
+
+An ordinary spherical edge loop that crosses a placed pole uses an oriented
+stereographic chart with its excluded point outside the trimmed region.
+The B-rep edge cache inserts a pole inside a native trim when it can verify
+the parameter with an analytic inverse or a bounded search of nearby native
+intervals. Every incident face reads the same samples. The face chart preserves
+source boundary positions and native angular pcurves. The importer tests up to
+six candidate charts and validates loop orientation, hole containment, chord
+error and closed-shell edge reuse before publishing geometry.
+
+A full sphere can use two opposite uses of one pole-to-pole `IfcSeamCurve`.
+A trimmed cap can use a pole-to-rim seam with a single monotone rim. Both
+forms verify the two native meridian pcurves. The mesher partitions the face
+using the source seam and a second shared meridian. For a trimmed cap the
+second cut ends at an existing rim vertex. Holes must stay within one chart,
+clear of both cuts. Multiple seams and intersecting cuts
+remain diagnosed.
+
+Run `ifc_spherical_edge_loops_gpu_regression` with
+`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to check shared-edge hemispheres and
+a tilted cap in Forward and Deferred raster with TAA off and on.
 
 Sloped L/U/I profiles keep their bounding-box-centred coordinate systems. L-leg
 and U-flange thicknesses use the profile coordinate axes as reference stations;
@@ -754,10 +775,10 @@ The remaining capabilities below and IFC source curve fonts/widths are tracked
 in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
 implementation tasks and independent geometry/rendering acceptance criteria.
 
-Ambiguous tag transitions, guided or incompatible sharp joins,
-non-spherical singular charts and edge loops through spherical poles remain
-outside native coverage. Swept surface limits include profiles with arbitrary
-`AREA` voids, standalone revolutions without a regular one-sided meridian, and
+Ambiguous tag transitions, guided or incompatible sharp joins, non-spherical
+singular charts and spherical trims with multiple seams or holes meeting a
+seam cut remain outside native coverage. Swept surface limits include profiles
+with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.
 Multiple-winding and otherwise ambiguous periodic spline charts also require
 further work. Each omitted

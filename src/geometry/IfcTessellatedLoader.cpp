@@ -20,6 +20,7 @@
 #include <iterator>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -3459,10 +3460,58 @@ private:
 
   struct BrepEdge {
     uint32_t start = 0, end = 0;
+    uint32_t geometry = 0;
+    bool sameSense = true;
     std::vector<glm::vec3> points;
   };
 
-  std::optional<BrepEdge> readBrepEdge(uint32_t ref, std::string &error) const {
+  struct BrepSeamUse {
+    uint32_t edge, bound;
+    bool forward, outer;
+    size_t firstSample, sampleCount, boundUseCount;
+  };
+
+  using BrepEdgePoles = std::unordered_map<uint32_t, std::vector<glm::dvec3>>;
+
+  std::optional<double> findBrepEdgePole(const ParametricCurve &curve,
+                                         glm::dvec3 pole,
+                                         std::span<const CurveSample> samples,
+                                         double tolerance, double chord,
+                                         bool &searchExceeded) const {
+    if (curve.inverse)
+      return curveParameterAtPoint(curve, pole, tolerance);
+    size_t candidates = 0;
+    for (size_t i = 1; i < samples.size(); ++i) {
+      const auto &a = samples[i - 1], &b = samples[i];
+      if (glm::length(pole - a.point) <= tolerance)
+        return a.parameter;
+      const auto delta = b.point - a.point;
+      const double squaredLength = glm::dot(delta, delta);
+      const double fraction =
+          squaredLength > 0
+              ? std::clamp(glm::dot(pole - a.point, delta) / squaredLength, 0.,
+                           1.)
+              : 0.;
+      if (glm::length(pole - (a.point + fraction * delta)) > chord + tolerance)
+        continue;
+      if (++candidates > 16) {
+        searchExceeded = true;
+        return std::nullopt;
+      }
+      checkCancellation();
+      auto local = curve;
+      local.period = 0;
+      local.domain = std::minmax({a.parameter, b.parameter});
+      if (const auto root = curveParameterAtPoint(local, pole, tolerance))
+        return root;
+    }
+    return std::nullopt;
+  }
+
+  std::optional<BrepEdge> readBrepEdge(uint32_t ref,
+                                       std::span<const glm::dvec3> poles,
+                                       std::optional<double> angle,
+                                       std::string &error) const {
     const auto *edge = entity(ref);
     if (!edge || edge->type != "IFCEDGECURVE") {
       error = "Expected IfcEdgeCurve #" + std::to_string(ref);
@@ -3484,9 +3533,8 @@ private:
               std::to_string(ref);
       return std::nullopt;
     }
-    auto curve =
-        detail::readIfcEdgeCurve(entities_, *geometry, unitScale_,
-                                 projectPlaneAngleScale(), *a, *b, error);
+    auto curve = detail::readIfcEdgeCurve(entities_, *geometry, unitScale_,
+                                          angle, *a, *b, error);
     if (!curve)
       return std::nullopt;
     if (curve->dimension != 3) {
@@ -3494,19 +3542,10 @@ private:
       return std::nullopt;
     }
     const double tolerance = 1e-7 / unitScale_;
-    auto first = curveParameterAtPoint(*curve, *a, tolerance);
-    auto last = curveParameterAtPoint(*curve, *b, tolerance);
-    if (!first || !last) {
-      error = "Edge vertices do not lie on curve #" + std::to_string(*geometry);
-      return std::nullopt;
-    }
-    if (curve->period > 0) {
-      double span =
-          std::fmod((sense == "T" ? 1 : -1) * (*last - *first), curve->period);
-      if (span <= 0)
-        span += curve->period;
-      *last = *first + (sense == "T" ? span : -span);
-    } else if (*start == *end && curve->domain) {
+    double first, last;
+    if (*start == *end && curve->domain && curve->period <= 0) {
+      // The edge's shared vertex intentionally occurs twice in its bounded
+      // curve domain. Verify both endpoints before attempting a unique inverse.
       const auto p = curve->point(curve->domain->first);
       const auto q = curve->point(curve->domain->second);
       if (!p || !q || glm::length(*p - *a) > tolerance ||
@@ -3516,29 +3555,276 @@ private:
       }
       first = sense == "T" ? curve->domain->first : curve->domain->second;
       last = sense == "T" ? curve->domain->second : curve->domain->first;
+    } else {
+      const auto startParameter = curveParameterAtPoint(*curve, *a, tolerance),
+                 endParameter = curveParameterAtPoint(*curve, *b, tolerance);
+      if (!startParameter || !endParameter) {
+        error =
+            "Edge vertices do not lie on curve #" + std::to_string(*geometry);
+        return std::nullopt;
+      }
+      first = *startParameter;
+      last = *endParameter;
+      if (curve->period > 0) {
+        const double direction = sense == "T" ? 1 : -1;
+        double span = std::fmod(direction * (last - first), curve->period);
+        if (span <= 0)
+          span += curve->period;
+        last = first + direction * span;
+      }
     }
-    if ((sense == "T" && *last <= *first) ||
-        (sense == "F" && *last >= *first)) {
+    if ((sense == "T" && last <= first) || (sense == "F" && last >= first)) {
       error = "Edge SameSense conflicts with its endpoint parameters";
       return std::nullopt;
     }
     // Reserve part of the face's 1 mm budget for float storage and surface
     // chart interpolation. Sampling exactly at the limit can reject valid
     // large-radius edges after rounding their shared positions.
-    auto samples = sampleCurve(*curve, *first, *last, .0005 / unitScale_, 4097);
+    const double chord = .0005 / unitScale_;
+    auto samples = sampleCurve(*curve, first, last, chord, 4097);
     if (samples.size() < 2 ||
         glm::length(samples.front().point - *a) > tolerance ||
         glm::length(samples.back().point - *b) > tolerance) {
       error = "Edge sampling failed or exceeded its budget";
       return std::nullopt;
     }
-    BrepEdge result{*start, *end, {}};
+    // All faces using the edge read the same cache entry, including any
+    // additional pole whose native parameter was witnessed inside this trim.
+    const double direction = sense == "T" ? 1 : -1;
+    for (const auto &pole : poles) {
+      if (glm::length(pole - *a) <= tolerance ||
+          glm::length(pole - *b) <= tolerance)
+        continue;
+      bool searchExceeded = false;
+      const auto root = findBrepEdgePole(*curve, pole, samples, tolerance,
+                                         chord, searchExceeded);
+      if (searchExceeded) {
+        error = "Spherical edge pole search exceeds its candidate budget";
+        return std::nullopt;
+      }
+      if (!root)
+        continue;
+      double parameter = *root;
+      if (curve->period > 0) {
+        double offset =
+            std::fmod(direction * (parameter - first), curve->period);
+        if (offset < 0)
+          offset += curve->period;
+        parameter = first + direction * offset;
+      }
+      if (direction * (parameter - first) <= 0 ||
+          direction * (last - parameter) <= 0)
+        continue;
+      auto after = std::ranges::lower_bound(samples, direction * parameter, {},
+                                            [direction](const CurveSample &s) {
+                                              return direction * s.parameter;
+                                            });
+      const auto coincides = [&](const CurveSample &s) {
+        return glm::length(s.point - pole) <= tolerance ||
+               glm::vec3(s.point) == glm::vec3(pole);
+      };
+      if (after != samples.end() && coincides(*after))
+        after->point = pole;
+      else if (after != samples.begin() && coincides(*(after - 1)))
+        (after - 1)->point = pole;
+      else {
+        if (samples.size() >= 4097) {
+          error = "Edge pole insertion exceeds the shared edge sample budget";
+          return std::nullopt;
+        }
+        samples.insert(after, {parameter, pole});
+      }
+    }
+    BrepEdge result{*start, *end, *geometry, sense == "T", {}};
     for (const auto &sample : samples)
       result.points.emplace_back(sample.point);
     // Adjacent edges and faces use exactly the authored vertex positions.
     result.points.front() = glm::vec3(*a);
     result.points.back() = glm::vec3(*b);
     return result;
+  }
+
+  bool collectBrepEdgePoles(
+      std::span<const uint32_t> faces, BrepEdgePoles &edgePoles,
+      std::unordered_map<uint32_t, detail::ParametricSurface> &spheres,
+      std::optional<double> angle, std::string &error) const {
+    size_t uses = 0;
+    for (uint32_t faceRef : faces) {
+      checkCancellation();
+      const auto *face = entity(faceRef);
+      const auto surfaceRef = face ? firstRef(*face, 1) : std::nullopt;
+      const auto *surface = surfaceRef ? entity(*surfaceRef) : nullptr;
+      if (!face || face->type != "IFCADVANCEDFACE" || !surface ||
+          surface->type != "IFCSPHERICALSURFACE")
+        continue;
+      if (!spheres.contains(*surfaceRef)) {
+        auto chart = detail::readIfcSurface(entities_, *surfaceRef, unitScale_,
+                                            angle, error);
+        if (!chart || !chart->sphere) {
+          error = "Face #" + std::to_string(faceRef) + ": " + error;
+          return false;
+        }
+        spheres.emplace(*surfaceRef, std::move(*chart));
+      }
+      const auto &sphere = *spheres.at(*surfaceRef).sphere;
+      const auto &f = sphere.frame;
+      const std::array poles{f.origin + sphere.radius * f.z,
+                             f.origin - sphere.radius * f.z};
+      const auto bounds = asList(argAt(*face, 0));
+      if (bounds.size() > 4096)
+        continue;
+      for (const auto &boundValue : bounds) {
+        const auto boundRef = refValue(&boundValue);
+        const auto *bound = boundRef ? entity(*boundRef) : nullptr;
+        const auto loopRef = bound ? firstRef(*bound, 0) : std::nullopt;
+        const auto *loop = loopRef ? entity(*loopRef) : nullptr;
+        if (!loop || loop->type != "IFCEDGELOOP")
+          continue;
+        const auto oriented = asList(argAt(*loop, 0));
+        if (oriented.size() > 8192)
+          continue;
+        for (const auto &useValue : oriented) {
+          if (++uses > 1'000'000) {
+            error = "B-rep spherical edge use budget exceeded";
+            return false;
+          }
+          if (uses % 1024 == 0)
+            checkCancellation();
+          const auto useRef = refValue(&useValue);
+          const auto *use = useRef ? entity(*useRef) : nullptr;
+          const auto edgeRef = use && use->type == "IFCORIENTEDEDGE"
+                                   ? firstRef(*use, 2)
+                                   : std::nullopt;
+          if (!edgeRef)
+            continue;
+          auto &candidates = edgePoles[*edgeRef];
+          for (const auto &pole : poles)
+            if (std::ranges::find(candidates, pole) == candidates.end()) {
+              if (candidates.size() >= 4) {
+                error = "Edge #" + std::to_string(*edgeRef) +
+                        " has too many incident spherical pole candidates";
+                return false;
+              }
+              candidates.push_back(pole);
+            }
+        }
+      }
+    }
+    return true;
+  }
+
+  bool validateSphericalBrepSeam(const BrepEdge &edge, uint32_t surfaceRef,
+                                 const detail::ParametricSurface &surface,
+                                 const Entity &seam, bool trimmed,
+                                 bool &poleAtStart, std::string &error) const {
+    const auto &sphere = *surface.sphere;
+    const auto &f = sphere.frame;
+    const double tolerance = std::max(1e-7 / unitScale_, sphere.radius * 4e-7);
+    const double halfPi = std::numbers::pi / 2;
+    const double radians = surface.angularScale.x;
+    const double angularTolerance = tolerance / sphere.radius;
+    const auto fail = [&](std::string reason) {
+      error = "Spherical seam #" + std::to_string(seam.id) + ": " + reason;
+      return false;
+    };
+    if (!(radians > 0) || !std::isfinite(radians) || edge.points.size() < 3 ||
+        edge.start == edge.end)
+      return fail("expected an open meridian edge");
+    const auto meridianLatitude =
+        [&](glm::vec3 point) -> std::optional<double> {
+      const auto p = glm::dvec3(point) - f.origin;
+      const double x = glm::dot(p, f.x), y = glm::dot(p, f.y),
+                   z = glm::dot(p, f.z);
+      if (std::abs(glm::length(p) - sphere.radius) > tolerance ||
+          std::abs(y) > tolerance || x < -tolerance)
+        return std::nullopt;
+      return std::atan2(z, x);
+    };
+    const auto start = meridianLatitude(edge.points.front()),
+               end = meridianLatitude(edge.points.back());
+    if (!start || !end)
+      return fail("edge endpoints do not lie on the placed meridian");
+    poleAtStart = std::abs(std::abs(*start) - halfPi) <= angularTolerance;
+    const bool poleAtEnd =
+        std::abs(std::abs(*end) - halfPi) <= angularTolerance;
+    if (trimmed ? poleAtStart == poleAtEnd
+                : !poleAtStart || !poleAtEnd ||
+                      std::abs(*start + *end) > angularTolerance)
+      return fail(
+          trimmed ? "trimmed seam requires one placed sphere pole"
+                  : "edge must have the two placed sphere poles as endpoints");
+    if (std::abs(*end - *start) <= angularTolerance)
+      return fail("edge has no meridian extent");
+    const double direction = *end > *start ? 1 : -1;
+    double previous = *start;
+    for (const auto &point : edge.points) {
+      const auto latitude = meridianLatitude(point);
+      if (!latitude || direction * (*latitude - previous) < -angularTolerance)
+        return fail("edge does not follow the placed meridian monotonically");
+      previous = *latitude;
+    }
+
+    const auto pcurves = refList(argAt(seam, 1));
+    if (pcurves.size() != 2 ||
+        pcurves.size() != asList(argAt(seam, 1)).size() ||
+        pcurves[0] == pcurves[1])
+      return fail("expected two distinct meridian pcurves");
+    std::array<bool, 2> meridianSides{};
+    for (const uint32_t pcRef : pcurves) {
+      checkCancellation();
+      const auto *pc = entity(pcRef);
+      const auto representationRef = pc ? firstRef(*pc, 1) : std::nullopt;
+      const auto *representation =
+          representationRef ? entity(*representationRef) : nullptr;
+      if (!pc || pc->type != "IFCPCURVE" || firstRef(*pc, 0) != surfaceRef ||
+          !representation)
+        return fail("pcurve #" + std::to_string(pcRef) +
+                    " does not use the same sphere");
+      auto parameterCurve = representationRef;
+      if (representation->type == "IFCDEFINITIONALREPRESENTATION") {
+        const auto items = asList(argAt(*representation, 3));
+        parameterCurve =
+            items.size() == 1 ? refValue(&items.front()) : std::nullopt;
+      }
+      std::string curveError;
+      const auto curve =
+          parameterCurve
+              ? detail::readIfcCurve(entities_, *parameterCurve, unitScale_,
+                                     radians, curveError, {}, stop_)
+              : std::nullopt;
+      if (!curve || !curve->domain || curve->dimension != 2)
+        return fail("pcurve #" + std::to_string(pcRef) +
+                    " requires a bounded 2D meridian");
+      const auto [first, last] = *curve->domain;
+      const auto samples = sampleCurve(*curve, first, last,
+                                       angularTolerance / radians * .25, 4097);
+      if (samples.size() < 2)
+        return fail("meridian pcurve exceeds its sampling budget");
+      const double u = samples.front().point.x * radians;
+      const size_t side = std::abs(u) <= angularTolerance ? 0 : 1;
+      const double expectedU = side * 2 * std::numbers::pi;
+      const double expectedStart = edge.sameSense ? *start : *end;
+      const double expectedEnd = edge.sameSense ? *end : *start;
+      const double pcurveDirection = edge.sameSense ? direction : -direction;
+      if (meridianSides[side] ||
+          std::abs(samples.front().point.y * radians - expectedStart) >
+              angularTolerance ||
+          std::abs(samples.back().point.y * radians - expectedEnd) >
+              angularTolerance)
+        return fail(
+            "meridian pcurve endpoints or direction disagree with its edge");
+      previous = expectedStart;
+      for (const auto &sample : samples) {
+        const double latitude = sample.point.y * radians;
+        if (std::abs(sample.point.x * radians - expectedU) > angularTolerance ||
+            std::abs(latitude) > halfPi + angularTolerance ||
+            pcurveDirection * (latitude - previous) < -angularTolerance)
+          return fail("pcurves must follow opposite native U chart ends");
+        previous = latitude;
+      }
+      meridianSides[side] = true;
+    }
+    return true;
   }
 
   std::vector<MeshGroup> appendBrepGeometry(const Entity &brep) {
@@ -3570,8 +3856,10 @@ private:
     };
     std::map<uint32_t, FaceGroup> groups;
     std::unordered_map<uint32_t, BrepEdge> edgeCache;
+    std::unordered_map<uint32_t, detail::ParametricSurface> spheres;
     std::unordered_set<uint32_t> shellIds, faceIds;
     std::vector<manifold::Manifold> solids;
+    const auto angle = advanced ? projectPlaneAngleScale() : std::nullopt;
     size_t triangleCount = 0, edgeSampleCount = 0;
     for (size_t shellIndex = 0; shellIndex < shells.size(); ++shellIndex) {
       const uint32_t shellRef = shells[shellIndex];
@@ -3585,6 +3873,12 @@ private:
           faces.size() != asList(argAt(*shell, 0)).size())
         return fail("Invalid or excessive faces in shell #" +
                     std::to_string(shellRef));
+      BrepEdgePoles edgePoles;
+      if (advanced) {
+        std::string error;
+        if (!collectBrepEdgePoles(faces, edgePoles, spheres, angle, error))
+          return fail(error);
+      }
       std::vector<TriangleVertices> shellTriangles;
       std::map<uint32_t, std::pair<unsigned, int>> edgeUses;
       for (uint32_t faceRef : faces) {
@@ -3595,7 +3889,10 @@ private:
         if (!face || face->type != (advanced ? "IFCADVANCEDFACE" : "IFCFACE") ||
             !faceIds.insert(faceRef).second)
           return faceFail("Invalid or repeated face");
+        const auto basisRef = advanced ? firstRef(*face, 1) : std::nullopt;
+        const bool spherical = basisRef && spheres.contains(*basisRef);
         std::vector<std::vector<glm::vec3>> loops;
+        std::vector<BrepSeamUse> seamUses;
         const auto bounds = refList(argAt(*face, 0));
         if (bounds.empty() || bounds.size() > 4096 ||
             bounds.size() != asList(argAt(*face, 0)).size())
@@ -3641,6 +3938,7 @@ private:
               refs.size() != asList(argAt(*poly, 0)).size())
             return faceFail("Invalid or excessive loop entries");
           std::vector<glm::vec3> loop;
+          const auto firstSeamUse = seamUses.size();
           uint32_t firstVertex = 0, lastVertex = 0;
           for (uint32_t entry : refs) {
             if (!advanced) {
@@ -3662,7 +3960,12 @@ private:
                               std::to_string(entry));
             if (!edgeCache.contains(*edgeRef)) {
               std::string error;
-              auto edge = readBrepEdge(*edgeRef, error);
+              const auto poles = edgePoles.find(*edgeRef);
+              const auto candidates =
+                  poles != edgePoles.end()
+                      ? std::span<const glm::dvec3>(poles->second)
+                      : std::span<const glm::dvec3>();
+              auto edge = readBrepEdge(*edgeRef, candidates, angle, error);
               if (!edge)
                 return faceFail("Edge #" + std::to_string(*edgeRef) + ": " +
                                 error);
@@ -3672,6 +3975,14 @@ private:
               edgeCache.emplace(*edgeRef, std::move(*edge));
             }
             const auto &edge = edgeCache.at(*edgeRef);
+            if (spherical) {
+              const auto *geometry = entity(edge.geometry);
+              if (geometry && geometry->type == "IFCSEAMCURVE")
+                seamUses.push_back({*edgeRef, boundRef, sense == orientation,
+                                    bound->type == "IFCFACEOUTERBOUND",
+                                    loop.size(), edge.points.size() - 1,
+                                    refs.size()});
+            }
             const auto start = sense == "T" ? edge.start : edge.end;
             const auto end = sense == "T" ? edge.end : edge.start;
             if (lastVertex && lastVertex != start)
@@ -3690,6 +4001,11 @@ private:
           }
           if (advanced && firstVertex != lastVertex)
             return faceFail("Edge loop is not closed");
+          if (orientation == "F")
+            for (auto &use : std::span(seamUses).subspan(firstSeamUse))
+              use.firstSample =
+                  (2 * loop.size() - 1 - use.firstSample - use.sampleCount) %
+                  loop.size();
           faceVertexCount += loop.size();
           if (faceVertexCount > 8192)
             return faceFail("Face exceeds its boundary vertex budget");
@@ -3746,13 +4062,18 @@ private:
                               surface->type);
             std::string error;
             std::vector<detail::ParametricSurface> charts;
-            const bool readCharts = detail::readIfcSurfaceCharts(
-                entities_, *surfaceRef, unitScale_, projectPlaneAngleScale(),
-                charts, error, stop_);
-            container::util::checkModelImportCancellation(stop_);
-            if (!readCharts)
-              return faceFail(error);
-            const auto *descriptor = &charts.front();
+            const detail::ParametricSurface *descriptor;
+            if (spherical) {
+              descriptor = &spheres.at(*surfaceRef);
+            } else {
+              const bool readCharts = detail::readIfcSurfaceCharts(
+                  entities_, *surfaceRef, unitScale_, angle, charts, error,
+                  stop_);
+              container::util::checkModelImportCancellation(stop_);
+              if (!readCharts)
+                return faceFail(error);
+              descriptor = &charts.front();
+            }
             if (charts.size() > 1) {
               descriptor = nullptr;
               std::string profiles;
@@ -3786,9 +4107,63 @@ private:
                     "Face boundary samples match no chart on surface #" +
                     std::to_string(*surfaceRef) + " from profiles" + profiles);
             }
-            const auto mesh =
-                detail::meshIfcCurvedFace(*descriptor, loops, hasOuterBound,
-                                          sameSense == "T", unitScale_, error);
+            std::span<const glm::vec3> sphericalSeam;
+            std::vector<glm::vec3> orderedSeam;
+            std::optional<std::array<BrepSeamUse, 2>> sameFaceSeam;
+            std::unordered_map<uint32_t, const BrepSeamUse *> firstSeamUses;
+            for (const auto &use : seamUses) {
+              const auto [it, first] = firstSeamUses.emplace(use.edge, &use);
+              if (!first) {
+                const auto &other = *it->second;
+                if (sameFaceSeam || use.forward == other.forward ||
+                    use.bound != other.bound ||
+                    (!use.outer && loops.size() > 1))
+                  return faceFail("Spherical seam requires two opposite uses "
+                                  "in one outer bound");
+                sameFaceSeam = std::array{other, use};
+              }
+            }
+            if (sameFaceSeam) {
+              const auto &[first, second] = *sameFaceSeam;
+              const bool trimmed = first.boundUseCount > 2;
+              const auto &edge = edgeCache.at(first.edge);
+              bool poleAtStart = false;
+              if (!validateSphericalBrepSeam(edge, *surfaceRef, *descriptor,
+                                             *entity(edge.geometry), trimmed,
+                                             poleAtStart, error))
+                return faceFail(error);
+              sphericalSeam = edge.points;
+              if (trimmed) {
+                // The oriented outer loop walks from the pole down its seam,
+                // around the physical rim, then returns up the same seam.
+                // Extract the rim samples by edge identity and oriented use.
+                const auto &down =
+                    first.forward == poleAtStart ? first : second;
+                const auto &up = first.forward == poleAtStart ? second : first;
+                const auto &outer = loops.front();
+                const size_t begin =
+                    (down.firstSample + down.sampleCount) % outer.size();
+                const size_t count =
+                    (up.firstSample + outer.size() - begin) % outer.size();
+                const size_t afterUp =
+                    (up.firstSample + up.sampleCount) % outer.size();
+                if (afterUp != down.firstSample || count < 3)
+                  return faceFail("Trimmed spherical seam must connect one "
+                                  "pole to a closed rim");
+                std::vector<glm::vec3> rim;
+                rim.reserve(count);
+                for (size_t i = 0; i < count; ++i)
+                  rim.push_back(outer[(begin + i) % outer.size()]);
+                loops.front() = std::move(rim);
+                if (!poleAtStart) {
+                  orderedSeam.assign(edge.points.rbegin(), edge.points.rend());
+                  sphericalSeam = orderedSeam;
+                }
+              }
+            }
+            const auto mesh = detail::meshIfcCurvedFace(
+                *descriptor, loops, hasOuterBound, sameSense == "T", unitScale_,
+                error, sphericalSeam);
             if (!mesh)
               return faceFail(error);
             triangles.emplace();
