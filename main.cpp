@@ -889,6 +889,10 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     if (parseExtendedPreviewOption(arg,i))continue;
     if (parseVolumeOption(arg, i)) continue;
     if (parseReferencePathOption(arg, i)) continue;
+    if (arg == "--capture-data") {
+      config.screenshotSceneData = true;
+      continue;
+    }
     if (arg == "--serialize-graphics") {
       config.serializeGraphics = true;
       continue;
@@ -1155,8 +1159,6 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       explicitBimImportScale = true;
     } else if (arg == "--screenshot-viewport") {
       config.screenshotViewportOnly = true;
-    } else if (arg == "--capture-data") {
-      config.screenshotSceneData = true;
     } else if (arg == "--gpu-hardware-telemetry") {
       config.gpuHardwareTelemetry = true;
     } else if (arg == "--visual-regression-capture" || arg == "--screenshot") {
