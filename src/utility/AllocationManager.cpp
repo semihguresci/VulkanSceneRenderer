@@ -491,9 +491,10 @@ AllocatedBuffer AllocationManager::uploadBuffer(
 
 AllocatedBuffer AllocationManager::createBuffer(
     VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memoryUsage,
-    VmaAllocationCreateFlags allocationFlags, VkSharingMode sharingMode) {
+    VmaAllocationCreateFlags allocationFlags, VkSharingMode sharingMode,
+    std::span<const uint32_t> queueFamilies) {
   return memoryManager_->createBuffer(size, usage, memoryUsage, allocationFlags,
-                                      sharingMode);
+                                      sharingMode, queueFamilies);
 }
 
 void AllocationManager::destroyBuffer(AllocatedBuffer& buffer) {
@@ -533,7 +534,8 @@ container::material::TextureResource AllocationManager::createTextureFromEncoded
 
 container::material::TextureResource AllocationManager::createTextureFromRgbaPixels(
     const std::string& textureName, std::span<const std::byte> rgbaPixels,
-    uint32_t width, uint32_t height, VkFormat format) {
+    uint32_t width, uint32_t height, VkFormat format,
+    std::span<const uint32_t> queueFamilies) {
   if (format != VK_FORMAT_R8G8B8A8_UNORM && format != VK_FORMAT_R8G8B8A8_SRGB)
     throw std::invalid_argument("RGBA8 pixel upload requires an RGBA8 format: " + textureName);
   const auto imageSize = container::material::TextureMipByteSize(format, width, height);
@@ -542,7 +544,7 @@ container::material::TextureResource AllocationManager::createTextureFromRgbaPix
   container::material::TextureImageData image;
   image.format = format;
   image.mips.push_back({width, height, {rgbaPixels.begin(), rgbaPixels.begin() + static_cast<size_t>(imageSize)}});
-  return createTextureFromImageData(textureName, image);
+  return createTextureFromImageData(textureName, image, queueFamilies);
 }
 
 container::material::TextureArrayResource

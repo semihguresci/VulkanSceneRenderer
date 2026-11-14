@@ -392,7 +392,7 @@ SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSourceBy
       archiveTextureIdentities_.resize(exportSource_.textures.size());archiveTextureIdentities_[archived]=std::move(cookie);
     }
     auto batch=allocationManager_->beginTextureAllocationBatch();
-    auto resource=allocationManager_->createTextureFromImageData(name,preparedImage);
+    auto resource=allocationManager_->createTextureFromImageData(name,preparedImage,materialQueueFamilies());
     resource.name=key+"#source="+std::to_string(archived)+(color?"#color":"#data");resource.samplerIndex=sampler;
     if(candidateTextures.findTextureIndex(resource.name)) throw std::invalid_argument("Material source resource name is already registered without this proof");
     const auto runtime=candidateTextures.registerTexture(resource);
@@ -1622,7 +1622,8 @@ void SceneManager::PreparedMaterialResources::prepareSource(std::optional<uint32
       if(gpuBytes>s.limits.maxNewTextureBytes-s.newTextureBytes) throw std::length_error("Material texture allocation exceeds its logical GPU byte budget");
       s.newTextureBytes+=gpuBytes;
       if(!batch) batch.emplace(s.allocation->beginTextureAllocationBatch());
-      resource=s.allocation->createTextureFromImageData(name.empty()?"material-source-"+std::to_string(archive):name,decoded);
+      resource=s.allocation->createTextureFromImageData(
+          name.empty()?"material-source-"+std::to_string(archive):name,decoded,owner.materialQueueFamilies());
     }
     s.budget.add(sizeof(resource)+key.size()+resource.contentKey.size()+192,3);
     resource.name="material-source:"+std::to_string(archive)+(color?"#color":"#data")+"#sampler="+std::to_string(sampler);
@@ -1930,8 +1931,7 @@ std::shared_ptr<SceneManager::PreparedTextureDescriptorState> SceneManager::prep
   VkPhysicalDeviceProperties physical{};vkGetPhysicalDeviceProperties(deviceWrapper_->physicalDevice(),&physical);
   if(bytes>maxMetadataBufferBytes || bytes>physical.limits.maxStorageBufferRange)
     throw std::length_error("Texture metadata exceeds its GPU buffer capacity");
-  result->metadataBuffer=allocationManager_->createBuffer(bytes,VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT);
+  result->metadataBuffer=createMaterialStorageBuffer(bytes);
   auto* mapped=result->metadataBuffer.allocation_info.pMappedData;bool mappedHere=false;
   const auto allocator=allocationManager_->memoryManager()->allocator();
   if(!mapped) {

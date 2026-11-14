@@ -138,12 +138,19 @@ VulkanMemoryManager& VulkanMemoryManager::operator=(
 
 AllocatedBuffer VulkanMemoryManager::createBuffer(
     VkDeviceSize size, VkBufferUsageFlags usage, VmaMemoryUsage memory_usage,
-    VmaAllocationCreateFlags allocation_flags, VkSharingMode sharing_mode) {
+    VmaAllocationCreateFlags allocation_flags, VkSharingMode sharing_mode,
+    std::span<const uint32_t> queue_families) {
   VkBufferCreateInfo bufferInfo{};
   bufferInfo.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO;
   bufferInfo.size = size;
   bufferInfo.usage = usage;
   bufferInfo.sharingMode = sharing_mode;
+  if (sharing_mode == VK_SHARING_MODE_CONCURRENT) {
+    if (queue_families.size() < 2)
+      throw std::invalid_argument("Concurrent buffers require two or more queue families");
+    bufferInfo.queueFamilyIndexCount = static_cast<uint32_t>(queue_families.size());
+    bufferInfo.pQueueFamilyIndices = queue_families.data();
+  }
 
   VmaAllocationCreateInfo allocInfo{};
   allocInfo.usage = memory_usage;

@@ -107,6 +107,12 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enableOpacityMicromaps = config_.experimentalOpacityMicromaps;
     ci.enableFsrUpscaling = FsrUpscaler::builtWithSdk();
     ci.enableSwapchainMaintenance1 = enableMaintenance1;
+    if (const char* route = std::getenv("CONTAINER_DDGI_ASYNC_QUEUE")) {
+      const auto preference = container::gpu::parseAsyncComputeQueuePreference(route);
+      if (!preference) throw std::invalid_argument(
+          "CONTAINER_DDGI_ASYNC_QUEUE must be auto, same-family, or serialized");
+      ci.asyncComputeQueuePreference = *preference;
+    }
 #if CONTAINER_HAS_VK_OIDN
     ci.enableReferenceOidn = config_.enableRayQueries;
 #endif

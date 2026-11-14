@@ -74,10 +74,13 @@ container::material::TextureDecodeOptions AllocationManager::textureDecodeOption
 }
 
 container::material::TextureResource AllocationManager::createTextureFromImageData(
-    const std::string& textureName, const container::material::TextureImageData& imageData) {
+    const std::string& textureName, const container::material::TextureImageData& imageData,
+    std::span<const uint32_t> queueFamilies) {
   const UploadOperation operation(*this);
   if (!memoryManager_ || !device_ || !physicalDevice_)
     throw std::runtime_error("texture allocation is not initialized: " + textureName);
+  if (queueFamilies.size() == 1)
+    throw std::invalid_argument("Concurrent texture images require two or more queue families");
   const auto batchGroup = textureAllocationGroup(TextureAllocationLifetime::Scene);
   container::material::TextureResource resource;
   resource.name = textureName;
@@ -101,7 +104,10 @@ container::material::TextureResource AllocationManager::createTextureFromImageDa
   info.imageType = VK_IMAGE_TYPE_2D; info.format = imageData.format;
   info.extent = plan.extent; info.mipLevels = plan.allocatedMipLevels;
   info.arrayLayers = 1; info.samples = VK_SAMPLE_COUNT_1_BIT;
-  info.tiling = VK_IMAGE_TILING_OPTIMAL; info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  info.sharingMode = queueFamilies.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT;
+  info.queueFamilyIndexCount = static_cast<uint32_t>(queueFamilies.size());
+  info.pQueueFamilyIndices = queueFamilies.data();
   info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   VmaAllocationCreateInfo allocationInfo{};
   allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;

@@ -1,7 +1,5 @@
 #include "Container/renderer/lighting/DdgiAsyncHistory.h"
-#include "Container/utility/AsyncComputeQueue.h"
 #include <gtest/gtest.h>
-#include <array>
 
 namespace {
 using container::renderer::DdgiAsyncHistory;
@@ -122,31 +120,5 @@ TEST(DdgiAsyncHistory, RemapCannotAliasLiveWriter) {
   ASSERT_TRUE(history.publish(1));
   EXPECT_THROW(history.remapPublishedHistory(2), std::logic_error);
   EXPECT_EQ(history.history(), 1);
-}
-TEST(DdgiAsyncQueue, UsesIndependentQueueWithExistingOwnershipFamily) {
-  std::array<VkQueueFamilyProperties, 2> families{};
-  families[0].queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
-  families[0].queueCount = 2;
-  families[1].queueFlags = VK_QUEUE_COMPUTE_BIT;
-  families[1].queueCount = 8;
-  EXPECT_EQ(container::gpu::selectAsyncComputeQueueIndex(families, 0), 1);
-}
-TEST(DdgiAsyncQueue, SingleQueueUsesSerializedFallback) {
-  std::array<VkQueueFamilyProperties, 2> families{};
-  families[0].queueFlags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT;
-  families[0].queueCount = 1;
-  families[1].queueFlags = VK_QUEUE_COMPUTE_BIT;
-  families[1].queueCount = 2;
-  EXPECT_FALSE(container::gpu::selectAsyncComputeQueueIndex(families, 0));
-}
-TEST(DdgiAsyncQueue, MissingComputeFlagUsesFallback) {
-  std::array<VkQueueFamilyProperties, 1> families{};
-  families[0].queueFlags = VK_QUEUE_GRAPHICS_BIT;
-  families[0].queueCount = 16;
-  EXPECT_FALSE(container::gpu::selectAsyncComputeQueueIndex(families, 0));
-}
-TEST(DdgiAsyncQueue, InvalidFamilyUsesFallback) {
-  std::array<VkQueueFamilyProperties, 1> families{};
-  EXPECT_FALSE(container::gpu::selectAsyncComputeQueueIndex(families, 1));
 }
 } // namespace

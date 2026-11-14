@@ -2,10 +2,13 @@
 
 #include "Container/common/CommonVulkan.h"
 #include "Container/common/VulkanTypes.h"
+#include "Container/utility/AsyncComputeQueue.h"
 #include "Container/utility/RayQuerySupport.h"
 #include "Container/utility/VulkanInstance.h"
 
+#include <array>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -24,6 +27,7 @@ struct DeviceCreateInfo {
   VkPhysicalDeviceFeatures optionalFeatures{}; // Enabled when supported.
   const void* next{nullptr};
   bool enableSwapchainMaintenance1{false};
+  AsyncComputeQueuePreference asyncComputeQueuePreference{AsyncComputeQueuePreference::DedicatedFirst};
 };
 
 class VulkanDevice {
@@ -45,6 +49,14 @@ class VulkanDevice {
   [[nodiscard]] const vk::raii::Device& raii() const noexcept { return ownedDevice_; }
   [[nodiscard]] VkQueue graphicsQueue() const noexcept { return graphicsQueue_; }
   [[nodiscard]] VkQueue asyncComputeQueue() const noexcept { return asyncComputeQueue_; }
+  [[nodiscard]] std::optional<AsyncComputeQueueSelection> asyncComputeQueueSelection() const noexcept {
+    return asyncComputeQueueSelection_;
+  }
+  [[nodiscard]] std::span<const uint32_t> asyncComputeSharingFamilies() const noexcept {
+    return asyncComputeSharingFamilies_[0] != asyncComputeSharingFamilies_[1]
+        ? std::span<const uint32_t>(asyncComputeSharingFamilies_)
+        : std::span<const uint32_t>{};
+  }
   [[nodiscard]] VkQueue presentQueue() const noexcept { return presentQueue_; }
   [[nodiscard]] QueueFamilyIndices queueFamilyIndices() const noexcept {
     return queueFamilyIndices_;
@@ -93,6 +105,8 @@ class VulkanDevice {
   VkQueue asyncComputeQueue_{VK_NULL_HANDLE};
   VkQueue presentQueue_{VK_NULL_HANDLE};
   QueueFamilyIndices queueFamilyIndices_{};
+  std::optional<AsyncComputeQueueSelection> asyncComputeQueueSelection_;
+  std::array<uint32_t, 2> asyncComputeSharingFamilies_{};
   VkPhysicalDeviceFeatures enabledFeatures_{};
   VkPhysicalDeviceVulkan12Features enabledVulkan12Features_{};
   RayQuerySupport rayQuerySupport_{};

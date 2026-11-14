@@ -19,6 +19,7 @@
 #include <filesystem>
 #include <fstream>
 #include <print>
+#include <span>
 #include <stdexcept>
 #include <vector>
 
@@ -812,7 +813,8 @@ bool EnvironmentManager::submitEnvironment(
   auto createCube = [&](uint32_t size, uint32_t mips,
                         VkImageUsageFlags usage,
                         VkImage& image, VmaAllocation& alloc,
-                        VkImageView& cubeView) -> bool {
+                        VkImageView& cubeView,
+                        std::span<const uint32_t> queueFamilies = {}) -> bool {
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ii.imageType   = VK_IMAGE_TYPE_2D;
     ii.format      = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -822,7 +824,9 @@ bool EnvironmentManager::submitEnvironment(
     ii.samples     = VK_SAMPLE_COUNT_1_BIT;
     ii.tiling      = VK_IMAGE_TILING_OPTIMAL;
     ii.usage       = usage;
-    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ii.sharingMode = queueFamilies.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT;
+    ii.queueFamilyIndexCount = static_cast<uint32_t>(queueFamilies.size());
+    ii.pQueueFamilyIndices = queueFamilies.data();
     ii.flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
     VmaAllocationCreateInfo ai{};
     ai.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -838,6 +842,7 @@ bool EnvironmentManager::submitEnvironment(
 
   auto& [envImage, envAlloc, envCubeView] = generation->cube;
   auto& [newIrradianceImage, newIrradianceAlloc, newIrradianceView] = generation->irradiance;
+  // DDGI samples the published prefiltered cube. The other cubes stay on graphics.
   auto& [newPrefilteredImage, newPrefilteredAlloc, newPrefilteredView] = generation->prefiltered;
   if (!createCube(kEnvSize, kEnvMips,
                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
@@ -851,7 +856,8 @@ bool EnvironmentManager::submitEnvironment(
       !createCube(kPrefilterSize, kPrefilterMips,
                   VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
                   newPrefilteredImage,
-                  newPrefilteredAlloc, newPrefilteredView))
+                  newPrefilteredAlloc, newPrefilteredView,
+                  device_->asyncComputeSharingFamilies()))
     return failGeneration("Environment cubemap creation failed");
 
   auto makeArrayView = [&](VkImage img, uint32_t mip) {
@@ -1236,7 +1242,8 @@ void EnvironmentManager::createPlaceholderCubemaps() {
   environmentStatus_ = "Environment: placeholder cubemaps active";
 
   auto createCube = [&](uint32_t size, VkImage& image, VmaAllocation& alloc,
-                        VkImageView& view) {
+                        VkImageView& view,
+                        std::span<const uint32_t> queueFamilies = {}) {
     VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     ii.imageType   = VK_IMAGE_TYPE_2D;
     ii.format      = VK_FORMAT_R16G16B16A16_SFLOAT;
@@ -1249,7 +1256,9 @@ void EnvironmentManager::createPlaceholderCubemaps() {
     // Without a real HDR IBL loaded, sampling undefined memory produces zero
     // and the deferred lighting's ambient term collapses to black in shadow.
     ii.usage       = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-    ii.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+    ii.sharingMode = queueFamilies.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT;
+    ii.queueFamilyIndexCount = static_cast<uint32_t>(queueFamilies.size());
+    ii.pQueueFamilyIndices = queueFamilies.data();
     ii.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
     ii.flags       = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
 
@@ -1271,7 +1280,8 @@ void EnvironmentManager::createPlaceholderCubemaps() {
 
   createCube(1, irradianceCubeImage_, irradianceCubeAlloc_, irradianceCubeView_);
   createCube(1, radianceCubeImage_, radianceCubeAlloc_, radianceCubeView_);
-  createCube(1, prefilteredCubeImage_, prefilteredCubeAlloc_, prefilteredCubeView_);
+  createCube(1, prefilteredCubeImage_, prefilteredCubeAlloc_, prefilteredCubeView_,
+      device_->asyncComputeSharingFamilies());
   prefilteredMipCount_ = 1;
 
   // Transition both to SHADER_READ_ONLY.

@@ -329,12 +329,12 @@ emitter. The interface sampling follows the
 ### Asynchronous probe updates and queue fallback
 
 Enable **Asynchronous probe updates** or `--ddgi-async`; disable a saved opt-in
-with `--no-ddgi-async`. Where supported, DDGI trace/update submissions run on a
-second compute-capable queue from the graphics family. Timeline synchronization
-orders shared acceleration/surface data, lighting snapshots and completed atlas
-publication. Graphics lighting continues reading published history while a new
-update is pending. Probe state is also buffered; incomplete results do not become
-visible history.
+with `--no-ddgi-async`. The renderer prefers a compute-only queue family. A second
+queue in the graphics family provides the other asynchronous route. Graphics
+signals a timeline after building the acceleration structures and finishing its
+reads of the atlas. The writer waits on that value, reads published history and
+writes the alternate atlas and probe state. Graphics consumes the replacement
+after the writer's timeline reaches completion.
 
 Only one GI writer is pending at a time. Frame probe/ray ceilings are preserved,
 and scheduler/history publication advances after successful submission and
@@ -345,10 +345,22 @@ resources, and performance depends on the device and workload.
 
 Devices without a compatible second queue or enabled timeline semaphore retain
 serialized updates. The requested setting remains saved, while `asyncActive`
-and the status message report the actual mode. Telemetry also separates
-`asyncSubmittedUpdates` and `asyncPublishedUpdates`. No separate queue-family
-ownership transfer is required because this route uses the graphics family;
-dedicated queues from other families are outside the current implementation.
+and `queueRoute` report the actual mode. Telemetry separates
+`asyncSubmittedUpdates` and `asyncPublishedUpdates`, identifies the queue
+families, and reports `asyncGpuMs` for the most recently completed writer when
+the queue supports timestamps. That timing covers the writer command buffer.
+Set `CONTAINER_DDGI_ASYNC_QUEUE=same-family` or `serialized` to compare runtime
+routes. The default is `auto`.
+
+With separate families, the renderer uses concurrent sharing for both atlas and
+probe-state copies, probe-position snapshots, ray acceleration structure storage
+and surface bindings, material storage and texture inputs, IES tables, and the
+prefiltered environment cube. This allows both queues to read published data
+while the writer updates the alternate atlas. Lighting and scene-clip snapshots,
+update records and ray scratch stay local to the writer. The graphics queue
+handles atlas clears, scroll copies, scene uploads and acceleration builds.
+Image-slot reuse retires both graphics and any writer that borrowed that slot.
+Path tracing skips DDGI graphics preparation and schedules no probe work.
 
 The extended fixture runner `run_dielectric.py` uses matched active GI1/GI0
 captures in both raster routes. It compares clear, rough, absorbing and nested
@@ -537,6 +549,14 @@ The manager GPU suite submits the production trace/update kernels, then checks
 live enable/disable, pause/resume, transport refreshes, rejected edits and safe
 resource growth with an outstanding submission. CPU GUI cases verify accepted
 settings and rejection recovery across frame synchronization.
+Run the manager suite with `CONTAINER_DDGI_ASYNC_QUEUE` set to `auto`,
+`same-family`, and `serialized` to exercise the available routes. On hardware
+with both asynchronous routes, `tests/validation/ddgi_queue_runtime_regression.py`
+compares native Forward and Deferred captures and records the actual families,
+writer and graphics-pass timings, and allocation totals. Pass the renderer
+revision, a SHA-256 manifest of the runtime files and validation layer, and the
+directory containing Vulkan Validation 1.4.363. Use `--reference-control` to
+also check that Path tracing leaves the DDGI writer idle.
 The isolated lookup GPU suite includes the production lookup shader and checks
 constant physical irradiance, facing and moment visibility at metre and 1e-8
 scales, valid occluded black, visible/blocked probe mixtures, and missing-data

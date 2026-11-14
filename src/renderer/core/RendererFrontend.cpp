@@ -2561,10 +2561,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       referenceTimedLightingMs_.reset();
     }
   }
-  if (subs_.ddgiManager) {
-    subs_.ddgiManager->commit();
-    subs_.ddgiManager->submitAsync(imageIndex);
-  }
+  if (subs_.ddgiManager)
+    subs_.ddgiManager->commit(imageIndex);
   gfxJournal_.submitted();
   frame_.imagesInFlight[imageIndex] = submittedFrameFence;
   if (telemetry) {
@@ -3772,6 +3770,16 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
     json["ddgi"]["settings"]["cameraFollow"] = settings.cameraFollow;
     json["ddgi"]["settings"]["asyncCompute"] = settings.asyncCompute;
     json["ddgi"]["asyncActive"] = gi.asyncActive();
+    const auto queueFamily = gi.asyncQueueFamily();
+    const auto graphicsFamily = svc_.ctx.deviceWrapper->queueFamilyIndices().graphicsFamily;
+    json["ddgi"]["queueRoute"] = !queueFamily ? "serialized" :
+        queueFamily == graphicsFamily ? "same-family" : "dedicated";
+    if (queueFamily)
+      json["ddgi"]["asyncQueueFamily"] = *queueFamily;
+    if (graphicsFamily)
+      json["ddgi"]["graphicsQueueFamily"] = *graphicsFamily;
+    if (const auto time = gi.lastAsyncGpuMs())
+      json["ddgi"]["asyncGpuMs"] = *time;
     json["ddgi"]["asyncSubmittedUpdates"] = gi.asyncSubmittedUpdates();
     json["ddgi"]["asyncPublishedUpdates"] = gi.asyncPublishedUpdates();
     const auto runtimeVolume = gi.currentPrimaryVolume();
@@ -6524,8 +6532,9 @@ bool RendererFrontend::updateObjectBuffer(uint32_t imageIndex, bool deferUploadT
 
 void RendererFrontend::publishSceneObjectDescriptors() {
   if (subs_.sceneManager) {
-    // All scene sets share material/texture bindings. An image graphics fence
-    // alone does not retire compute work borrowing another image's set.
+    // The rewrite touches every scene set, including those borrowed by other
+    // graphics frames and the pending DDGI writer.
+    if (subs_.frameSyncManager) subs_.frameSyncManager->waitForAllFrames();
     if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
     subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
   }
@@ -9855,8 +9864,9 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     const bool hasSceneContent = !sceneGraph_.renderableNodes().empty() ||
         (subs_.bimManager && subs_.bimManager->hasScene());
     const bool giCompatible = p.bim.semanticColorMode == 0u;
+    const bool ddgiCompatible = giCompatible && !referencePathActive();
     const bool giScene = subs_.ddgiManager && subs_.ddgiManager->wantsScene() &&
-                         giCompatible && hasSceneContent;
+                         ddgiCompatible && hasSceneContent;
     const bool reflectionScene = hasSceneContent && giCompatible && p.services.screenReflectionPass &&
         p.services.screenReflectionPass->wantsRayScene(p);
     const bool surfaceScene = giScene || referencePathActive() || reflectionScene;
@@ -9998,7 +10008,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           pushConstants_.bindless.sectionPlaneEnabled,
           pushConstants_.bindless.sectionPlane, sceneClipState,
           subs_.environmentManager->prefilteredView(),
-          subs_.environmentManager->envSampler(), giCompatible, scheduling);
+          subs_.environmentManager->envSampler(), ddgiCompatible, scheduling);
     }
     if (subs_.guiManager && subs_.rayShadowManager->supported()) {
       const auto &ray = *subs_.rayShadowManager;

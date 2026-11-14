@@ -961,6 +961,8 @@ class SceneManager {
   [[nodiscard]] uint64_t retainedOpacityMicromapBytes() const noexcept;
   void loadDefaultTestSceneAssets();
   void uploadMaterialBuffer();
+  [[nodiscard]] std::span<const uint32_t> materialQueueFamilies() const noexcept;
+  [[nodiscard]] container::gpu::AllocatedBuffer createMaterialStorageBuffer(VkDeviceSize bytes) const;
   void uploadTextureMetadataBuffer(uint64_t maxLogicalCpuBytes=512ull*1024*1024);
   static void validateGltfTextureResourceTable(
       const container::material::GltfTextureResources&, size_t sourceTextureCount,

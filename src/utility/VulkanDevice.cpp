@@ -1,7 +1,6 @@
 #include <Container/utility/VulkanDevice.h>
 #include "Container/renderer/pathtracing/ReferenceDlssReconstructor.h"
 #include "Container/renderer/temporal/DlssUpscaler.h"
-#include "Container/utility/AsyncComputeQueue.h"
 #include "Container/utility/Platform.h"
 #include "Container/utility/SwapChainManager.h"  // FindQueueFamilies, QuerySwapChainSupport
 
@@ -299,29 +298,6 @@ void VulkanDevice::pickPhysicalDevice() {
 }
 
 void VulkanDevice::createLogicalDevice() {
-  std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
-
-  std::set<uint32_t> uniqueQueueFamilies = {
-      queueFamilyIndices_.graphicsFamily.value(),
-      queueFamilyIndices_.presentFamily.value()};
-
-  uint32_t familyCount = 0;
-  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &familyCount, nullptr);
-  std::vector<VkQueueFamilyProperties> families(familyCount);
-  vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &familyCount, families.data());
-  const auto asyncIndex = selectAsyncComputeQueueIndex(
-      families, queueFamilyIndices_.graphicsFamily.value());
-  const std::array queuePriorities{1.0f, 0.5f};
-  for (uint32_t queueFamily : uniqueQueueFamilies) {
-    VkDeviceQueueCreateInfo queueCreateInfo{};
-    queueCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO;
-    queueCreateInfo.queueFamilyIndex = queueFamily;
-    queueCreateInfo.queueCount = asyncIndex &&
-        queueFamily == queueFamilyIndices_.graphicsFamily.value() ? 2u : 1u;
-    queueCreateInfo.pQueuePriorities = queuePriorities.data();
-    queueCreateInfos.push_back(queueCreateInfo);
-  }
-
   VkPhysicalDeviceFeatures supportedFeatures{};
   vkGetPhysicalDeviceFeatures(physicalDevice_, &supportedFeatures);
 
@@ -560,6 +536,33 @@ void VulkanDevice::createLogicalDevice() {
     featureChain = &maintenanceFeatures;
   }
 
+  const uint32_t graphicsFamily = *queueFamilyIndices_.graphicsFamily;
+  const uint32_t presentFamily = *queueFamilyIndices_.presentFamily;
+  std::set<uint32_t> uniqueQueueFamilies{graphicsFamily, presentFamily};
+  if (rayQueriesEnabled_ && enabledVulkan12Features_.timelineSemaphore == VK_TRUE) {
+    uint32_t familyCount = 0;
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &familyCount, nullptr);
+    std::vector<VkQueueFamilyProperties> families(familyCount);
+    vkGetPhysicalDeviceQueueFamilyProperties(physicalDevice_, &familyCount, families.data());
+    asyncComputeQueueSelection_ = selectAsyncComputeQueue(
+        std::span(families).first(familyCount), queueFamilyIndices_, createInfo_.asyncComputeQueuePreference);
+    if (asyncComputeQueueSelection_) {
+      uniqueQueueFamilies.insert(asyncComputeQueueSelection_->familyIndex);
+      asyncComputeSharingFamilies_ = {graphicsFamily, asyncComputeQueueSelection_->familyIndex};
+    }
+  }
+  const std::array queuePriorities{1.0f, 0.5f};
+  std::vector<VkDeviceQueueCreateInfo> queueCreateInfos;
+  queueCreateInfos.reserve(uniqueQueueFamilies.size());
+  for (uint32_t family : uniqueQueueFamilies) {
+    const bool hasAsync = asyncComputeQueueSelection_ && asyncComputeQueueSelection_->familyIndex == family;
+    VkDeviceQueueCreateInfo queue{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
+    queue.queueFamilyIndex = family;
+    queue.queueCount = hasAsync ? 1u + asyncComputeQueueSelection_->queueIndex : 1u;
+    queue.pQueuePriorities = queuePriorities.data();
+    queueCreateInfos.push_back(queue);
+  }
+
   VkDeviceCreateInfo deviceCreateInfo{};
   deviceCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO;
   deviceCreateInfo.queueCreateInfoCount =
@@ -582,13 +585,11 @@ void VulkanDevice::createLogicalDevice() {
   device_ = static_cast<VkDevice>(*ownedDevice_);
   swapchainMaintenance1Extension_ = maintenanceExtension;
 
-  vkGetDeviceQueue(device_, queueFamilyIndices_.graphicsFamily.value(), 0,
-                   &graphicsQueue_);
-  vkGetDeviceQueue(device_, queueFamilyIndices_.presentFamily.value(), 0,
-                   &presentQueue_);
-  if (asyncIndex)
-    vkGetDeviceQueue(device_, queueFamilyIndices_.graphicsFamily.value(),
-                     *asyncIndex, &asyncComputeQueue_);
+  vkGetDeviceQueue(device_, graphicsFamily, 0, &graphicsQueue_);
+  vkGetDeviceQueue(device_, presentFamily, 0, &presentQueue_);
+  if (asyncComputeQueueSelection_)
+    vkGetDeviceQueue(device_, asyncComputeQueueSelection_->familyIndex,
+                     asyncComputeQueueSelection_->queueIndex, &asyncComputeQueue_);
 }
 
 std::optional<QueueFamilyIndices> VulkanDevice::suitableDeviceQueues(

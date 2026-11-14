@@ -39,13 +39,16 @@ struct Buffer {
   container::gpu::AllocatedBuffer value;
   VkDeviceSize size;
   Buffer(container::gpu::VulkanMemoryManager &memory, VkDeviceSize size,
-         VkBufferUsageFlags usage, bool upload = true)
+         VkBufferUsageFlags usage, bool upload = true,
+         std::span<const uint32_t> queueFamilies = {})
       : memory(memory),
         value(memory.createBuffer(
             std::max<VkDeviceSize>(size, 16), usage,
             upload ? VMA_MEMORY_USAGE_AUTO_PREFER_HOST : VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
             upload ? VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-                VMA_ALLOCATION_CREATE_MAPPED_BIT : 0)),
+                VMA_ALLOCATION_CREATE_MAPPED_BIT : 0,
+            queueFamilies.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT,
+            queueFamilies)),
         size(std::max<VkDeviceSize>(size, 16)) {}
   ~Buffer() { memory.destroyBuffer(value); }
   void write(const void *data, VkDeviceSize bytes) {
@@ -906,16 +909,19 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
     }
     // Triangle UV metadata is immutable with the compact geometry. Share it
     // through the same fence-retained generations as reused BLAS allocations.
+    // Surface generations additionally expose these buffers to the DDGI queue.
+    const auto queueFamilies = geometry.hasSurfaceData
+        ? p.device->asyncComputeSharingFamilies() : std::span<const uint32_t>{};
     if (p.current && p.current->geometry.lock() == p.pending->geometry) {
       generation->triangles = p.current->triangles;
     } else {
       auto triangles = std::make_shared<Buffer>(
-          p.memory, triangleBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+          p.memory, triangleBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, queueFamilies);
       triangles->write(geometry.triangles.data(), triangleBytes);
       generation->triangles = std::move(triangles);
     }
     generation->instances = std::make_unique<Buffer>(
-        p.memory, instanceBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        p.memory, instanceBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, queueFamilies);
     generation->instances->write(p.pending->instances.instanceData.data(),
                                  instanceBytes);
     if (geometry.hasSurfaceData) {
@@ -924,13 +930,14 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
         generation->surfaceTriangles = p.current->surfaceTriangles;
       } else {
         auto triangles = std::make_shared<Buffer>(
-            p.memory, surfaceTriangleBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+            p.memory, surfaceTriangleBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, queueFamilies);
         triangles->write(geometry.surfaceTriangles.data(),
                          surfaceTriangleBytes);
         generation->surfaceTriangles = std::move(triangles);
       }
       generation->surfaceInstances = std::make_unique<Buffer>(
-          p.memory, surfaceInstanceBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,!p.gpuTransforms.producer);
+          p.memory, surfaceInstanceBytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+          !p.gpuTransforms.producer, queueFamilies);
       if(!p.gpuTransforms.producer)
         generation->surfaceInstances->write(p.pending->instances.surfaceInstanceData.data(),surfaceInstanceBytes);
     }
