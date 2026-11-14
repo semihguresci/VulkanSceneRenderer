@@ -4,9 +4,11 @@
 #include <cmath>
 #include <deque>
 #include <glm/geometric.hpp>
+#include <limits>
 #include <map>
 #include <mapbox/earcut.hpp>
 #include <numbers>
+#include <numeric>
 #include <set>
 #include <stdexcept>
 
@@ -62,7 +64,7 @@ public:
         interiorPoint_(interiorPoint) {}
   std::vector<CurvedFaceTriangle>
   run(const std::vector<std::vector<glm::vec3>> &boundaries, bool explicitOuter,
-      bool sameSense);
+      bool sameSense, std::span<const CurvedFaceChartLoop> authoredChart = {});
 
 private:
   Point evaluate(UV uv) {
@@ -78,6 +80,13 @@ private:
   }
   std::pair<Point, Point> derivatives(UV uv, std::optional<UV> interior = {}) {
     if (s_.derivatives) {
+      if (interior)
+        for (unsigned axis = 0; axis < 2; ++axis)
+          if (onCrease(uv[axis], axis)) {
+            const double offset = (*interior)[axis] - uv[axis];
+            uv[axis] += std::copysign(
+                std::min(std::abs(offset) * .5, scale_[axis] * 1e-9), offset);
+          }
       if (++evaluations_ > 4000000)
         throw std::runtime_error("Curved face exceeds its evaluation budget");
       const auto value = s_.derivatives(uv.x, uv.y);
@@ -117,12 +126,24 @@ private:
   UV inverse(Point point);
   std::optional<UV> solve(Point point, UV seed);
   void seedInverse();
+  void joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
+                      bool sameSense);
+  double bandProgress(UV uv) const {
+    return glm::dot(bandProgress_, uv - low_);
+  }
+  void alignBandProgress(UV &uv, double progress) const {
+    uv += bandDirection_ * (progress - bandProgress(uv));
+  }
   void triangulate(const std::vector<std::vector<Vertex>> &rings,
-                   bool sameSense);
+                   bool sameSense, bool checkPeriodicCover);
+  void validatePeriodicCover(std::span<const Triangle> triangles,
+                             std::span<const UV> normalized, size_t &checks);
   void restoreBoundaryChains(std::vector<Triangle> &triangles,
                              std::span<const UV> normalized, size_t &checks);
   void seedInteriorPoint(std::vector<Triangle> &triangles,
                          std::span<const UV> normalized, UV uv, bool sameSense);
+  std::vector<double> liftKnots(std::span<const double> knots,
+                                unsigned axis) const;
   void constrainCreases(std::vector<Triangle> &triangles);
   bool onCrease(double parameter, unsigned axis) const {
     const double epsilon = scale_[axis] * 1e-10;
@@ -198,39 +219,53 @@ private:
   std::deque<std::pair<uint32_t, uint32_t>> pending_;
   std::vector<uint32_t> freeTriangles_, generations_;
   std::set<Edge> boundary_;
-  std::array<std::vector<double>, 2> creases_;
+  std::array<std::vector<double>, 2> creases_, probeKnots_;
   std::map<Edge, Edge> seams_;
   std::deque<Edge> flipPending_;
   size_t flipChecks_ = 0;
   size_t bandFirstSize_ = 0;
-  unsigned bandAxis_ = 0;
+  UV bandProgress_{0}, bandDirection_{0};
   std::optional<glm::vec3> fanPoint_;
   std::optional<InteriorPoint> interiorPoint_;
   std::map<Edge, std::set<uint32_t>> adjacent_;
 };
+
+std::vector<double> Mesher::liftKnots(std::span<const double> knots,
+                                      unsigned axis) const {
+  const double first = low_[axis], last = first + scale_[axis];
+  const double epsilon = scale_[axis] * 1e-10;
+  const double period = s_.periods[axis];
+  std::vector<double> lifted;
+  for (double knot : knots) {
+    if (period) {
+      knot += std::ceil((first - epsilon - knot) / period) * period;
+      for (unsigned repeat = 0; knot <= last + epsilon; ++repeat) {
+        if (repeat >= 16 || lifted.size() >= 4096)
+          throw std::runtime_error(
+              "Curved face periodic knot lifting exceeds its budget");
+        lifted.push_back(knot);
+        knot += period;
+      }
+    } else if (knot >= first - epsilon && knot <= last + epsilon)
+      lifted.push_back(knot);
+  }
+  std::ranges::sort(lifted);
+  lifted.erase(std::unique(lifted.begin(), lifted.end()), lifted.end());
+  return lifted;
+}
 
 void Mesher::constrainCreases(std::vector<Triangle> &triangles) {
   size_t checks = 0;
   for (unsigned axis = 0; axis < 2; ++axis) {
     const double first = low_[axis], last = first + scale_[axis];
     const double epsilon = scale_[axis] * 1e-10;
-    const double period = s_.periods[axis];
-    auto &cuts = creases_[axis];
-    for (double knot : axis ? s_.creaseV : s_.creaseU) {
-      if (period) {
-        knot += std::ceil((first - epsilon - knot) / period) * period;
-        for (unsigned repeat = 0; knot <= last + epsilon; ++repeat) {
-          if (repeat >= 2 || cuts.size() >= 4096)
-            throw std::runtime_error(
-                "Curved face crease lifting exceeds its budget");
-          cuts.push_back(knot);
-          knot += period;
-        }
-      } else if (knot >= first - epsilon && knot <= last + epsilon)
-        cuts.push_back(knot);
+    creases_[axis] = liftKnots(axis ? s_.creaseV : s_.creaseU, axis);
+    if (s_.spline) {
+      probeKnots_[axis] = liftKnots(axis ? s_.meshV : s_.meshU, axis);
+    } else {
+      probeKnots_[axis] = axis ? s_.meshV : s_.meshU;
     }
-    std::ranges::sort(cuts);
-    for (double knot : cuts) {
+    for (double knot : creases_[axis]) {
       if (knot <= first + epsilon || knot >= last - epsilon)
         continue;
       std::vector<Triangle> pieces;
@@ -395,8 +430,76 @@ UV Mesher::inverse(Point point) {
   return *result;
 }
 
+void Mesher::validatePeriodicCover(std::span<const Triangle> triangles,
+                                   std::span<const UV> normalized,
+                                   size_t &checks) {
+  constexpr double epsilon = 1e-10;
+  const UV period = s_.periods / scale_;
+  glm::ivec2 copies(0);
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    if (!s_.periods[axis])
+      continue;
+    if (period[axis] < 1. / 16)
+      throw std::runtime_error("Spline chart image search exceeds its budget");
+    copies[axis] = static_cast<int>((1 - epsilon) / period[axis]);
+  }
+  if (copies == glm::ivec2(0))
+    return;
+  struct BoundedTriangle {
+    std::array<UV, 3> points;
+    UV low, high;
+  };
+  std::vector<BoundedTriangle> bounded;
+  bounded.reserve(triangles.size());
+  for (const auto &t : triangles) {
+    const auto a = normalized[t[0]], b = normalized[t[1]], c = normalized[t[2]];
+    bounded.push_back(
+        {{a, b, c}, glm::min(a, glm::min(b, c)), glm::max(a, glm::max(b, c))});
+  }
+  std::ranges::sort(bounded, {}, [](const auto &t) { return t.low.x; });
+  const auto separated = [&](const BoundedTriangle &a, const BoundedTriangle &b,
+                             UV offset, const BoundedTriangle &axes) {
+    for (size_t i = 0; i < axes.points.size(); ++i) {
+      const auto edge = axes.points[(i + 1) % 3] - axes.points[i];
+      const UV normal(-edge.y, edge.x);
+      const auto range = [&](const BoundedTriangle &t) {
+        return std::minmax({glm::dot(normal, t.points[0]),
+                            glm::dot(normal, t.points[1]),
+                            glm::dot(normal, t.points[2])});
+      };
+      const auto [aLow, aHigh] = range(a);
+      const auto [bLow, bHigh] = range(b);
+      const double shift = glm::dot(normal, offset);
+      if (std::min(aHigh, bHigh + shift) - std::max(aLow, bLow + shift) <=
+          epsilon * glm::length(normal))
+        return true;
+    }
+    return false;
+  };
+  // Test one translation of each opposite pair. Periodic images may touch
+  // along a seam but they must never share triangle interiors.
+  for (int x = 0; x <= copies.x; ++x)
+    for (int y = x == 0 ? 1 : -copies.y; y <= copies.y; ++y) {
+      const UV offset = UV(x, y) * period;
+      for (const auto &b : bounded)
+        for (const auto &a : bounded) {
+          if (++checks > 8000000)
+            throw std::runtime_error(
+                "Spline chart image search exceeds its budget");
+          if (a.low.x >= b.high.x + offset.x - epsilon)
+            break;
+          if (a.high.x <= b.low.x + offset.x + epsilon ||
+              a.high.y <= b.low.y + offset.y + epsilon ||
+              a.low.y >= b.high.y + offset.y - epsilon)
+            continue;
+          if (!separated(a, b, offset, a) && !separated(a, b, offset, b))
+            throw std::runtime_error("Spline chart overlaps a periodic image");
+        }
+    }
+}
+
 void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
-                         bool sameSense) {
+                         bool sameSense, bool checkPeriodicCover) {
   low_ = rings.front().front().uv;
   UV high = low_;
   for (const auto &ring : rings)
@@ -405,7 +508,8 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
       high = glm::max(high, v.uv);
     }
   scale_ = high - low_;
-  if (scale_.x <= 0 || scale_.y <= 0)
+  if (!std::isfinite(scale_.x) || !std::isfinite(scale_.y) || scale_.x <= 0 ||
+      scale_.y <= 0)
     throw std::runtime_error("Degenerate curved face parameter region");
   std::vector<std::vector<std::array<double, 2>>> polygon;
   std::vector<UV> normalized;
@@ -488,6 +592,8 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
   }
   std::vector<uint32_t> indices;
   bool bandGrid = false;
+  const double progressTolerance =
+      glm::dot(glm::abs(bandProgress_), scale_) * 1e-10;
   if (fanPoint_) {
     if (rings.size() != 1)
       throw std::runtime_error("Polar chart requires a single enclosing ring");
@@ -500,19 +606,19 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
   } else if (bandFirstSize_ && vertices_.size() == 2 * bandFirstSize_) {
     const auto count = static_cast<uint32_t>(bandFirstSize_);
     const double offset =
-        vertices_.back().uv[bandAxis_] - vertices_.front().uv[bandAxis_];
+        bandProgress(vertices_.back().uv) - bandProgress(vertices_.front().uv);
     bandGrid = true;
     for (uint32_t i = 0; i < count; ++i)
-      if (std::abs(vertices_[i].uv[bandAxis_] -
-                   vertices_[2 * count - 1 - i].uv[bandAxis_] + offset) >
-          scale_[bandAxis_] * 1e-10)
+      if (std::abs(bandProgress(vertices_[i].uv) -
+                   bandProgress(vertices_[2 * count - 1 - i].uv) + offset) >
+          progressTolerance)
         bandGrid = false;
     if (bandGrid) {
       std::set<double> fractions{0, 1};
       for (uint32_t i = 0; i < count; ++i) {
         const auto a = vertices_[i].uv;
         auto &b = vertices_[2 * count - 1 - i].uv;
-        b[bandAxis_] = a[bandAxis_] + offset;
+        alignBandProgress(b, bandProgress(a) + offset);
         normalized[2 * count - 1 - i] = (b - low_) / scale_;
         ParametricCurve curve;
         curve.domain = {{0, 1}};
@@ -568,26 +674,24 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
     uint32_t a = 0, b = static_cast<uint32_t>(vertices_.size() - 1);
     const auto endA = static_cast<uint32_t>(bandFirstSize_ - 1),
                endB = static_cast<uint32_t>(bandFirstSize_);
-    const double sense =
-        vertices_[endA].uv[bandAxis_] > vertices_[0].uv[bandAxis_] ? 1 : -1;
-    const double offset =
-        vertices_[b].uv[bandAxis_] - vertices_[a].uv[bandAxis_];
+    const auto progress = [&](uint32_t id) {
+      return bandProgress(vertices_[id].uv);
+    };
+    const double sense = progress(endA) > progress(0) ? 1 : -1;
+    const double offset = progress(b) - progress(a);
     while (a < endA || b > endB) {
       if (a < endA && b > endB &&
-          std::abs(vertices_[a + 1].uv[bandAxis_] -
-                   vertices_[b - 1].uv[bandAxis_] + offset) <
-              scale_[bandAxis_] * 1e-10) {
-        vertices_[b - 1].uv[bandAxis_] =
-            vertices_[a + 1].uv[bandAxis_] + offset;
+          std::abs(progress(a + 1) - progress(b - 1) + offset) <
+              progressTolerance) {
+        alignBandProgress(vertices_[b - 1].uv, progress(a + 1) + offset);
         normalized[b - 1] = (vertices_[b - 1].uv - low_) / scale_;
         indices.insert(indices.end(), {a, a + 1, b, a + 1, b - 1, b});
         ++a;
         --b;
         continue;
       }
-      if (a < endA && (b == endB ||
-                       sense * vertices_[a + 1].uv[bandAxis_] <=
-                           sense * (vertices_[b - 1].uv[bandAxis_] - offset))) {
+      if (a < endA && (b == endB || sense * progress(a + 1) <=
+                                        sense * (progress(b - 1) - offset))) {
         indices.insert(indices.end(), {a, a + 1, b});
         ++a;
       } else {
@@ -620,6 +724,8 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
   if (initial.empty() ||
       std::abs(expectedArea - triangulatedArea) > std::abs(expectedArea) * 1e-7)
     throw std::runtime_error("Invalid curved face parameter triangulation");
+  if (checkPeriodicCover)
+    validatePeriodicCover(initial, normalized, checks);
   // Earcut elides collinear UV samples (e.g. all samples on a cylinder's cap).
   // Restore them before refinement so the adjacent cap keeps identical edges.
   const bool restoreChains =
@@ -870,22 +976,29 @@ bool Mesher::acceptable(const Triangle &t, bool sameSense) {
   if (!check((a.uv + b.uv + c.uv) / 3.))
     return false;
   // Include knot lines: a narrow spline span must not hide between probes.
-  for (unsigned axis = 0; axis < 2; ++axis)
-    for (double knot : axis ? s_.meshV : s_.meshU) {
-      std::vector<UV> hits;
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    const double low = std::min({a.uv[axis], b.uv[axis], c.uv[axis]});
+    const double high = std::max({a.uv[axis], b.uv[axis], c.uv[axis]});
+    const auto &knots = probeKnots_[axis];
+    for (auto it = std::upper_bound(knots.begin(), knots.end(), low);
+         it != knots.end() && *it < high; ++it) {
+      const double knot = *it;
+      std::array<UV, 2> hits{};
+      size_t count = 0;
       for (unsigned j = 0; j < 3; ++j) {
         const auto x = vertices_[t[j]].uv, y = vertices_[t[(j + 1) % 3]].uv;
         if (knot > std::min(x[axis], y[axis]) &&
             knot < std::max(x[axis], y[axis]))
-          hits.push_back(x +
-                         (y - x) * ((knot - x[axis]) / (y[axis] - x[axis])));
+          hits[count++] =
+              x + (y - x) * ((knot - x[axis]) / (y[axis] - x[axis]));
       }
-      for (auto p : hits)
-        if (!check(p))
+      for (size_t i = 0; i < count; ++i)
+        if (!check(hits[i]))
           return false;
-      if (hits.size() == 2 && !check((hits[0] + hits[1]) / 2.))
+      if (count == 2 && !check((hits[0] + hits[1]) / 2.))
         return false;
     }
+  }
   return true;
 }
 
@@ -1013,21 +1126,176 @@ void Mesher::refine(bool sameSense) {
   }
 }
 
+void Mesher::joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
+                            bool sameSense) {
+  // In integer period coordinates a simple closed band boundary must
+  // follow a primitive lattice vector. Choose an integral progress
+  // coordinate with one unit of advance along that vector.
+  constexpr int maxTurns = 8;
+  const UV turns = glm::round(winding / s_.periods);
+  if (!std::isfinite(turns.x) || !std::isfinite(turns.y) ||
+      glm::any(glm::greaterThan(glm::abs(turns), UV(maxTurns))) ||
+      glm::length(winding / s_.periods - turns) > 1e-8 ||
+      std::gcd(static_cast<int>(turns.x), static_cast<int>(turns.y)) != 1)
+    throw std::runtime_error("Spline band requires bounded primitive winding");
+
+  auto &first = rings[0];
+  const auto &second = rings[1];
+  std::vector<Vertex> forward;
+  forward.reserve(second.size());
+  forward.push_back(second.front());
+  for (auto i = second.rbegin(); i != second.rend() - 1; ++i)
+    forward.push_back({i->uv + winding, i->point});
+
+  const UV origin = first.front().uv;
+  const auto periodCoordinates = [&](UV uv) {
+    return (uv - origin) / s_.periods;
+  };
+  constexpr double epsilon = 1e-10;
+  const auto monotone = [&](const std::vector<Vertex> &ring, UV basis) {
+    const double begin = glm::dot(basis, periodCoordinates(ring.front().uv));
+    double prior = begin;
+    for (const auto &v : std::span(ring).subspan(1)) {
+      const double current = glm::dot(basis, periodCoordinates(v.uv));
+      if (current <= prior + epsilon)
+        return false;
+      prior = current;
+    }
+    return prior + epsilon < begin + 1;
+  };
+  UV progress(0);
+  int best = 2 * maxTurns * maxTurns + 1;
+  for (int x = -maxTurns; x <= maxTurns; ++x)
+    for (int y = -maxTurns; y <= maxTurns; ++y) {
+      const UV candidate(x, y);
+      const int norm = x * x + y * y;
+      if (norm < best && glm::dot(candidate, turns) == 1 &&
+          monotone(first, candidate) && monotone(forward, candidate)) {
+        progress = candidate;
+        best = norm;
+      }
+    }
+  if (progress == UV(0))
+    throw std::runtime_error("Spline band bounds have no common monotone "
+                             "chart in their winding class");
+
+  // The transform has determinant one. Each boundary now forms a
+  // period-one graph. A single cover exists precisely when the graphs
+  // remain ordered between the same two consecutive transverse images.
+  const auto graph = [&](const std::vector<Vertex> &ring) {
+    std::vector<UV> points;
+    points.reserve(ring.size() + 1);
+    for (const auto &v : ring) {
+      const auto uv = periodCoordinates(v.uv);
+      points.emplace_back(glm::dot(progress, uv), cross(turns, uv));
+    }
+    points.push_back(points.front() + UV(1, 0));
+    return points;
+  };
+  const auto a = graph(first), b = graph(forward);
+  const auto height = [](const std::vector<UV> &points, double position) {
+    position -= std::floor(position - points.front().x);
+    if (position <= points.front().x || position >= points.back().x)
+      return points.front().y;
+    const auto next =
+        std::upper_bound(points.begin(), points.end(), position,
+                         [](double p, UV vertex) { return p < vertex.x; });
+    const auto prior = next - 1;
+    return std::lerp(prior->y, next->y,
+                     (position - prior->x) / (next->x - prior->x));
+  };
+  const double sense = sameSense ? 1 : -1;
+  const double shift = -std::floor(sense * height(b, 0)) * sense;
+  const auto separated = [&](UV vertex) {
+    const double gap =
+        sense * (height(b, vertex.x) + shift - height(a, vertex.x));
+    return gap > epsilon && gap < 1 - epsilon;
+  };
+  if (!std::ranges::all_of(a, separated) || !std::ranges::all_of(b, separated))
+    throw std::runtime_error("Spline band bounds intersect a periodic image");
+
+  // Cut at existing shared samples. The second cut is the first translated
+  // by the full winding vector; both copies refine with identical positions.
+  const auto phase = [](double p) { return p - std::round(p); };
+  const UV transverse = UV(-progress.y, progress.x) * s_.periods * shift;
+  std::optional<size_t> start;
+  double shortest = std::numeric_limits<double>::infinity();
+  size_t checks = 0;
+  for (size_t i = 0; i < forward.size(); ++i) {
+    const double p = phase(b[i].x);
+    const auto end = forward[i].uv + transverse - std::round(b[i].x) * winding;
+    auto previous = Point(first.front().point);
+    const Point endpoint(forward[i].point);
+    if (glm::length(endpoint - previous) >= shortest)
+      continue;
+    double length = 0;
+    for (double fraction : {.125, .25, .375, .5, .625, .75, .875}) {
+      const auto point = evaluate(origin + fraction * (end - origin));
+      length += glm::length(point - previous);
+      previous = point;
+    }
+    length += glm::length(endpoint - previous);
+    if (length >= shortest)
+      continue;
+    const auto onCut = [&](UV v) {
+      if (++checks > 8000000)
+        throw std::runtime_error("Spline band seam search exceeds its budget");
+      double x = v.x - std::floor(v.x - std::min(0., p));
+      if (x <= std::min(0., p) || x >= std::max(0., p))
+        return true;
+      const double y = (x / p) * (b[i].y + shift);
+      return sense * (y - height(a, x)) > 0 &&
+             sense * (height(b, x) + shift - y) > 0;
+    };
+    if (std::ranges::all_of(a, onCut) && std::ranges::all_of(b, onCut)) {
+      start = i;
+      shortest = length;
+    }
+  }
+  if (!start)
+    throw std::runtime_error("Spline band has no valid cut at a shared sample");
+  const size_t j = *start;
+  const UV translation = transverse + (1 - std::round(b[j].x)) * winding;
+  first.push_back({first.front().uv + winding, first.front().point});
+  bandFirstSize_ = first.size();
+  bandProgress_ = progress / s_.periods;
+  bandDirection_ = winding;
+  for (size_t step = 0; step <= forward.size(); ++step) {
+    auto v = forward[(j + forward.size() - step) % forward.size()];
+    v.uv += translation - (step > j ? winding : UV(0));
+    first.push_back(v);
+  }
+  rings.resize(1);
+}
+
 std::vector<CurvedFaceTriangle>
 Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
-            bool explicitOuter, bool sameSense) {
+            bool explicitOuter, bool sameSense,
+            std::span<const CurvedFaceChartLoop> authoredChart) {
   std::vector<std::vector<Vertex>> rings;
   std::vector<UV> winding;
+  if (!authoredChart.empty() && authoredChart.size() != boundaries.size())
+    throw std::runtime_error("Incomplete authored curved face chart");
   size_t samples = 0;
-  for (const auto &loop : boundaries) {
+  for (size_t loopIndex = 0; loopIndex < boundaries.size(); ++loopIndex) {
+    const auto &loop = boundaries[loopIndex];
     if (loop.size() < 3 || (samples += loop.size()) > 8192)
       throw std::runtime_error(
           "Invalid or excessive curved face boundary samples");
+    const auto *authored =
+        authoredChart.empty() ? nullptr : &authoredChart[loopIndex];
+    if (authored && authored->vertices.size() != loop.size())
+      throw std::runtime_error(
+          "Authored chart does not match shared edge samples");
     previous_.reset();
     auto &ring = rings.emplace_back();
-    for (auto p : loop) {
-      auto uv = inverse(Point(p));
-      if (!ring.empty())
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const auto p = loop[i];
+      auto uv = authored ? authored->vertices[i] : inverse(Point(p));
+      if (authored && glm::length(evaluate(uv) - Point(p)) > tolerance_)
+        throw std::runtime_error(
+            "Authored pcurve sample leaves its shared edge");
+      if (!authored && !ring.empty())
         for (unsigned axis = 0; axis < 2; ++axis)
           if (s_.periods[axis])
             uv[axis] += std::round((ring.back().uv[axis] - uv[axis]) /
@@ -1035,83 +1303,98 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
                         s_.periods[axis];
       ring.push_back({uv, p});
     }
-    auto closure = ring.front().uv;
-    for (unsigned axis = 0; axis < 2; ++axis)
-      if (s_.periods[axis])
-        closure[axis] += std::round((ring.back().uv[axis] - closure[axis]) /
-                                    s_.periods[axis]) *
-                         s_.periods[axis];
+    auto closure = authored ? authored->closure : ring.front().uv;
+    if (!authored)
+      for (unsigned axis = 0; axis < 2; ++axis)
+        if (s_.periods[axis])
+          closure[axis] += std::round((ring.back().uv[axis] - closure[axis]) /
+                                      s_.periods[axis]) *
+                           s_.periods[axis];
     winding.push_back(closure - ring.front().uv);
   }
-  const auto winds = [](UV w) { return glm::length(w) > 1e-10; };
+  const auto windingCoordinates = [&](UV w) {
+    if (!authoredChart.empty())
+      for (unsigned axis = 0; axis < 2; ++axis)
+        if (s_.periods[axis])
+          w[axis] /= s_.periods[axis];
+    return w;
+  };
+  const auto winds = [&](UV w) {
+    return glm::length(windingCoordinates(w)) > 1e-10;
+  };
   if (!explicitOuter) {
     // Two oppositely wound noncontractible rings describe a periodic band.
     // Join existing samples with a possibly slanted cut in parameter space.
     // Its two sides differ by exactly one period and share exact 3D endpoints.
     // No real boundary is resampled independently of its adjacent cap.
     if (rings.size() != 2 || !winds(winding[0]) ||
-        glm::length(winding[0] + winding[1]) > 1e-8 * glm::length(winding[0]))
+        glm::length(windingCoordinates(winding[0] + winding[1])) >
+            1e-8 * glm::length(windingCoordinates(winding[0])))
       throw std::runtime_error(
           "Closed curved face requires two opposite periodic band bounds");
-    const unsigned axis = std::abs(winding[0].x) > 0 ? 0 : 1;
-    const unsigned other = 1 - axis;
-    const double period = s_.periods[axis];
-    if (!period || std::abs(winding[0][other]) > 1e-10 ||
-        std::abs(std::abs(winding[0][axis]) - period) > period * 1e-8)
-      throw std::runtime_error(
-          "Unsupported multiple winding curved face chart");
-    auto &first = rings[0];
-    auto &second = rings[1];
-    if (s_.periods[other]) {
-      double a = 0, b = 0;
-      for (const auto &v : first)
-        a += v.uv[other];
-      for (const auto &v : second)
-        b += v.uv[other];
-      const double difference = b / second.size() - a / first.size();
-      const double sense = (sameSense ? 1. : -1.) *
-                           (winding[0][axis] > 0 ? 1. : -1.) *
-                           (axis == 0 ? 1. : -1.);
-      if (difference * sense <= 0) {
-        const double shift =
-            sense * s_.periods[other] *
-            (std::floor(-difference * sense / s_.periods[other]) + 1);
-        for (auto &v : second)
-          v.uv[other] += shift;
+    if (!authoredChart.empty() && s_.periods.x && s_.periods.y) {
+      joinSplineBand(rings, winding[0], sameSense);
+    } else {
+      const unsigned axis = std::abs(winding[0].x) > 0 ? 0 : 1;
+      const unsigned other = 1 - axis;
+      const double period = s_.periods[axis];
+      if (!period || std::abs(winding[0][other]) > 1e-10 ||
+          std::abs(std::abs(winding[0][axis]) - period) > period * 1e-8)
+        throw std::runtime_error(
+            "Unsupported multiple winding curved face chart");
+      auto &first = rings[0];
+      auto &second = rings[1];
+      if (s_.periods[other]) {
+        double a = 0, b = 0;
+        for (const auto &v : first)
+          a += v.uv[other];
+        for (const auto &v : second)
+          b += v.uv[other];
+        const double difference = b / second.size() - a / first.size();
+        const double sense = (sameSense ? 1. : -1.) *
+                             (winding[0][axis] > 0 ? 1. : -1.) *
+                             (axis == 0 ? 1. : -1.);
+        if (difference * sense <= 0) {
+          const double shift =
+              sense * s_.periods[other] *
+              (std::floor(-difference * sense / s_.periods[other]) + 1);
+          for (auto &v : second)
+            v.uv[other] += shift;
+        }
       }
-    }
-    const double end = first.front().uv[axis] + winding[0][axis];
-    size_t start = 0;
-    double distance = period;
-    for (size_t i = 0; i < second.size(); ++i) {
-      const double d = (second[i].uv[axis] - end) / period;
-      const double candidate = std::abs(d - std::round(d)) * period;
-      if (candidate < distance) {
-        start = i;
-        distance = candidate;
+      const double end = first.front().uv[axis] + winding[0][axis];
+      size_t start = 0;
+      double distance = period;
+      for (size_t i = 0; i < second.size(); ++i) {
+        const double d = (second[i].uv[axis] - end) / period;
+        const double candidate = std::abs(d - std::round(d)) * period;
+        if (candidate < distance) {
+          start = i;
+          distance = candidate;
+        }
       }
+      std::rotate(second.begin(), second.begin() + start, second.end());
+      second.front().uv[axis] +=
+          std::round((end - second.front().uv[axis]) / period) * period;
+      for (size_t i = 1; i < second.size(); ++i)
+        second[i].uv[axis] +=
+            std::round((second[i - 1].uv[axis] - second[i].uv[axis]) / period) *
+            period;
+      first.push_back({first.front().uv + winding[0], first.front().point});
+      second.push_back({second.front().uv + winding[1], second.front().point});
+      const double sign = winding[0][axis] > 0 ? 1 : -1;
+      for (const auto *ring : {&first, &second})
+        for (size_t i = 1; i < ring->size(); ++i)
+          if (sign * ((*ring)[i].uv[axis] - (*ring)[i - 1].uv[axis]) *
+                  (ring == &first ? 1 : -1) <=
+              0)
+            throw std::runtime_error("Periodic band bounds must be monotone in "
+                                     "their cyclic parameter");
+      bandFirstSize_ = first.size();
+      bandProgress_[axis] = bandDirection_[axis] = 1;
+      first.insert(first.end(), second.begin(), second.end());
+      rings.resize(1);
     }
-    std::rotate(second.begin(), second.begin() + start, second.end());
-    second.front().uv[axis] +=
-        std::round((end - second.front().uv[axis]) / period) * period;
-    for (size_t i = 1; i < second.size(); ++i)
-      second[i].uv[axis] +=
-          std::round((second[i - 1].uv[axis] - second[i].uv[axis]) / period) *
-          period;
-    first.push_back({first.front().uv + winding[0], first.front().point});
-    second.push_back({second.front().uv + winding[1], second.front().point});
-    const double sign = winding[0][axis] > 0 ? 1 : -1;
-    for (const auto *ring : {&first, &second})
-      for (size_t i = 1; i < ring->size(); ++i)
-        if (sign * ((*ring)[i].uv[axis] - (*ring)[i - 1].uv[axis]) *
-                (ring == &first ? 1 : -1) <=
-            0)
-          throw std::runtime_error("Periodic band bounds must be monotone in "
-                                   "their cyclic parameter");
-    bandFirstSize_ = first.size();
-    bandAxis_ = axis;
-    first.insert(first.end(), second.begin(), second.end());
-    rings.resize(1);
   } else {
     if (std::ranges::any_of(winding, winds))
       throw std::runtime_error(
@@ -1125,7 +1408,7 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
       for (const auto &v : rings[i])
         inner += v.uv;
       inner /= rings[i].size();
-      for (unsigned axis = 0; axis < 2; ++axis)
+      for (unsigned axis = 0; axis < 2 && authoredChart.empty(); ++axis)
         if (s_.periods[axis])
           shift[axis] =
               std::round((center[axis] - inner[axis]) / s_.periods[axis]) *
@@ -1134,7 +1417,7 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
         v.uv += shift;
     }
   }
-  triangulate(rings, sameSense);
+  triangulate(rings, sameSense, explicitOuter && !authoredChart.empty());
   refine(sameSense);
   const auto normal = [&](UV uv, std::optional<UV> interior = {}) {
     const auto [x, y] = derivatives(uv, interior);
@@ -1702,7 +1985,8 @@ std::optional<std::vector<CurvedFaceTriangle>>
 meshIfcCurvedFace(const ParametricSurface &surface,
                   const std::vector<std::vector<glm::vec3>> &boundaries,
                   bool explicitOuter, bool sameSense, double units,
-                  std::string &error, std::span<const glm::vec3> polarSeam) {
+                  std::string &error, std::span<const glm::vec3> polarSeam,
+                  std::span<const CurvedFaceChartLoop> authoredChart) {
   try {
     if (boundaries.empty() || !std::isfinite(units) || units <= 0 ||
         !surface.point)
@@ -1739,7 +2023,7 @@ meshIfcCurvedFace(const ParametricSurface &surface,
       for (auto p : loop)
         extent = std::max(extent, glm::length(Point(p) - origin));
     return Mesher(surface, units, extent)
-        .run(boundaries, explicitOuter, sameSense);
+        .run(boundaries, explicitOuter, sameSense, authoredChart);
   } catch (const std::runtime_error &e) {
     error = e.what();
     return std::nullopt;

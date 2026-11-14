@@ -62,6 +62,7 @@ struct ParametricSurface {
   bool reverseMeshWinding = false;
   bool standaloneRegular = true;
   bool ruledSectionPanels = false;
+  bool spline = false;
   std::vector<double> creaseU, creaseV;
 };
 [[nodiscard]] bool isCurveEntity(std::string_view type);

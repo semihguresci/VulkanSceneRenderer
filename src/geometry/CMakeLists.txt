@@ -83,6 +83,7 @@ add_library(VulkanSceneRenderer_geometry
     IfcSectionedTagRows.cpp
     IfcCurveReader.cpp
     IfcBrepFaceGeometry.cpp
+    IfcBrepPcurveLift.cpp
     IfcSweptSurfaceMesh.cpp
     Mesh.cpp
     Model.cpp

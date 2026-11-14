@@ -47,7 +47,7 @@ checks are free of validation and synchronization errors.
 | `IFCPOLYGONALFACESET` | Planar convex/concave faces, indexed polygonal faces with voids, indexed colors, optional `PnIndex`. Authored outer-face winding is retained. |
 | `IFCFACETEDBREP` | Connected closed shells with planar `IFCFACE`/polyloop bounds, inner loops, bound orientation and per-face surface colors. Closed topology and outward shell orientation are checked before buffer mutation. |
 | `IFCFACETEDBREPWITHVOIDS` | Faceted outer shells with inward-facing cavity shells. Cavities must be strictly enclosed, disjoint and unnested. Repeated shells/faces, open shells and incorrect winding reject atomically. |
-| `IFCADVANCEDBREP`, `IFCADVANCEDBREPWITHVOIDS` | Planar and curved `IFCADVANCEDFACE` geometry on planes, cylinders, spheres, tori, explicit-knot polynomial/rational spline surfaces and supported extrusion/revolution surfaces. Shared `IFCEDGECURVE`/`IFCORIENTEDEDGE` topology, face holes, periodic bands with independent seams, seam curves and cavity validation are retained. Spherical pole vertex loops and pole-crossing edge loops mesh through regular local charts. Edge vertices trim their native 3D curves. The importer checks SameSense, boundary orientation, surface membership and opposite edge reuse. |
+| `IFCADVANCEDBREP`, `IFCADVANCEDBREPWITHVOIDS` | Planar and curved `IFCADVANCEDFACE` geometry on planes, cylinders, spheres, tori, explicit-knot polynomial/rational spline surfaces and supported extrusion/revolution surfaces. Shared `IFCEDGECURVE`/`IFCORIENTEDEDGE` topology, face holes, periodic bands with independent seams, seam curves and cavity validation are retained. Authored spline trims can use either periodic axis and primitive doubly periodic bands. Spherical pole vertex loops and pole-crossing edge loops mesh through regular local charts. Edge vertices trim their native 3D curves. The importer checks SameSense, boundary orientation, surface membership and opposite edge reuse. |
 | `IFCEXTRUDEDAREASOLID` | Arbitrary supported closed 2D curves with voids, sharp/rounded/hollow rectangles, circles/hollow circles, ellipses, trapezia, capped linear centerlines, disjoint area composites and L/U/I/asymmetric I/C/T/Z sections. Caps and side walls face outward, including negative extrusion directions. |
 | Profile curves | Closed 2D polylines/indexed arcs, conics, B-splines, trims and composites use the shared curve evaluator, with at most 4,097 sampled points. Repeated consecutive polyline points are removed. Profiles must pass planarity, closure, intersection and triangulation checks. |
 | `IfcDerivedProfileDef`, `IfcMirroredProfileDef` | Transform already-supported parent profiles after their 2D placement. Translation, rotation, uniform/non-uniform positive scales and axis mirroring are supported, including nested chains. Extruded profiles retain inner loops and outward winding; swept-surface curves retain source domains, periods and section tags. Parent/profile types must agree. |
@@ -90,8 +90,11 @@ self-intersections.
 Curved advanced faces reuse the pcurve surface evaluators. Elementary surfaces
 have analytic coordinate inverses; bounded spline/revolution charts use a
 multistart Newton projection with domain clamps and residual checks. Detected
-ambiguous roots and singular parameters are diagnosed. Spline `UClosed`/`VClosed`
-flags do not establish a period; their domains come from the authored knots.
+ambiguous roots and singular parameters are diagnosed. Clamped polynomial and
+rational splines with `UClosed` or `VClosed` can wrap on that axis when the
+corresponding boundary control traces agree. The native knot span defines its
+period. Rational trace weights may differ by a common scale. Interior knots and
+periodic joins use one-sided normals where the surface tangent traces differ.
 Face bounds unwrap angular seams before constrained UV triangulation. Collinear
 boundary samples are restored, and interior edge splits update both incident
 triangles. Local edge flips improve triangle quality without moving source
@@ -108,10 +111,16 @@ in surface coordinates. Matching cyclic sampling uses an adaptively sampled
 interior grid; unequal sample counts use a zipper triangulation. Artificial cut
 edges refine in pairs with identical float positions on both sides. Either
 surface axis can carry the period, and reversed surface sense is retained.
-Explicit seam bounds are also accepted; `IfcSeamCurve` requires
-two distinct pcurves on the same surface and honors its master representation.
-The converter retains the exact shared cap/side boundary samples. Multiple
-winding bands and ambiguous periodic charts require further conversion work.
+Explicit seam bounds require two distinct pcurves on the same surface and use
+the curve's master representation. An authored spline chart checks bounded
+pcurves against its exact shared edge samples. Both uses of a seam must follow
+the same edge and differ by a certified period. Doubly periodic spline bands
+can follow a primitive winding on both axes, such as two U turns and one V
+turn. Their trims must form opposite monotone loops with exactly one cover
+between periodic images. A cut between existing samples preserves the original
+edge positions. The importer also rejects overlapping translated interiors in
+explicit trims. Inconsistent lifts, intersecting periodic images and ambiguous
+endpoints produce face and edge diagnostics.
 Per-chart budgets allow 131,072 vertices,
 524,288 triangle slots, four million surface evaluations and eight million
 boundary/quality checks. Refinement that cannot meet the chord target at renderer
@@ -635,6 +644,14 @@ senses; every original boundary segment remains present exactly. Pole regression
 check closed-sphere and cap volumes, rotated placements, degree/millimetre units,
 paired edges, smooth pole normals and inward spherical cavities. Non-pole,
 duplicate and malformed vertex loops reject atomically.
+Spline seam regressions check U-closed and V-closed rational cylinders and
+doubly periodic rational tori with non-unit knot domains, opposite face bounds
+and authored pcurves. Independent volume, normal and exact-edge checks cover
+complementary winding bands on the torus. Conflicting lifts and periodic images
+reject without leaving mesh buffers. Use
+`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` with CTest's
+`ifc_periodic_spline_seams_gpu_regression` to verify depth, source colors and
+the torus bore in forward/deferred with TAA off/on.
 Sectioned branch regressions check split/merge and multiway source corners,
 zero-width branch tips and constant collapsed strips,
 metre/millimetre stations, sloped crowns and sampled triangle chord error,
@@ -799,8 +816,9 @@ charts and polar trims with multiple seams or holes meeting a
 seam cut remain outside native coverage. Swept surface limits include profiles
 with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.
-Multiple-winding and otherwise ambiguous periodic spline charts also require
-further work. Each omitted
+Periodic spline charts with unclamped closure, incomplete pcurve trims,
+nonmonotone winding bands or cuts across unsampled sharp knots require further
+work. Each omitted
 representation is reported. A full IFC backend remains an option if future
 assets need these capabilities.
 
