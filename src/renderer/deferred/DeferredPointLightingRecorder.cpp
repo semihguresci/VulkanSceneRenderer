@@ -79,9 +79,9 @@ bool recordDeferredPointLightingCommands(
                        VK_SHADER_STAGE_FRAGMENT_BIT, 0,
                        sizeof(plan.tiledPushConstants),
                        &plan.tiledPushConstants);
-    inputs.lightingManager->beginClusteredLightingTimer(cmd);
+    inputs.lightingManager->beginClusteredLightingTimer(cmd, inputs.imageIndex);
     vkCmdDraw(cmd, 3, 1, 0, 0);
-    inputs.lightingManager->endClusteredLightingTimer(cmd);
+    inputs.lightingManager->endClusteredLightingTimer(cmd, inputs.imageIndex);
     return true;
   }
 

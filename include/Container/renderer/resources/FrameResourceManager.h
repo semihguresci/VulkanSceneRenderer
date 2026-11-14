@@ -154,7 +154,7 @@ class FrameResourceManager {
                             VkSampler   aoSampler         = VK_NULL_HANDLE,
                             std::span<const VkImageView> bloomTextureViews = {},
                             VkSampler   bloomSampler      = VK_NULL_HANDLE,
-                            VkBuffer    tileGridBuffer    = VK_NULL_HANDLE,
+                            std::span<const container::gpu::AllocatedBuffer> tileGridBuffers = {},
                             VkDeviceSize tileGridBufferSize = 0,
                             std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers = {},
                             VkDeviceSize exposureStateBufferSize = 0,

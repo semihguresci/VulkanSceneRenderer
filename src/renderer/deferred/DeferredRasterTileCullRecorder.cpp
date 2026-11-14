@@ -13,11 +13,11 @@ bool recordDeferredRasterTileCullCommands(
     return false;
   }
 
-  inputs.lightingManager->beginClusterCullTimer(cmd);
+  inputs.lightingManager->beginClusterCullTimer(cmd, inputs.imageIndex);
   inputs.lightingManager->dispatchTileCull(
       cmd, inputs.imageIndex, plan.screenExtent, plan.cameraBuffer, plan.cameraBufferSize,
       plan.depthSamplingView, plan.cameraNear, plan.cameraFar);
-  inputs.lightingManager->endClusterCullTimer(cmd);
+  inputs.lightingManager->endClusterCullTimer(cmd, inputs.imageIndex);
   return true;
 }
 

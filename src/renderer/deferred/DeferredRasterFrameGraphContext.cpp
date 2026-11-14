@@ -219,7 +219,7 @@ void DeferredRasterFrameGraphContext::afterPrepareFrame(
 void DeferredRasterFrameGraphContext::afterCommandBufferBegin(
     VkCommandBuffer cmd, const FrameRecordParams &p) const {
   if (services_.lightingManager != nullptr) {
-    services_.lightingManager->resetGpuTimers(cmd, p.runtime.imageIndex);
+    services_.lightingManager->beginClusterFrame(cmd, p.runtime.imageIndex);
   }
   static_cast<void>(recordBimFrameGpuVisibilityCommands(
       {.manager = p.services.bimManager,

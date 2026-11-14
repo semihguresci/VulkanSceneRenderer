@@ -1,7 +1,9 @@
 #include "../scene/camera_generation_test_support.h"
 
 #include <Container/ecs/World.h>
+#include <Container/renderer/core/RenderPassManager.h>
 #include <Container/renderer/lighting/LightingManager.h>
+#include <Container/renderer/scene/SceneController.h>
 
 #ifndef CONTAINER_LIGHTING_SHADER_ROOT
 #define CONTAINER_LIGHTING_SHADER_ROOT "."
@@ -18,10 +20,16 @@ struct LightingScratchRecoveryTestAccess {
   }
   static uint64_t epoch(const LightingManager& manager) {return manager.descriptorBindingEpoch_;}
   static bool ready(const LightingManager& manager) {return manager.tiledScratchResourcesReady();}
-  static const auto& grid(const LightingManager& manager) {return manager.tileGridSsbo_;}
+  static const auto& grid(const LightingManager& manager, uint32_t imageIndex = 0) {
+    return manager.tileGridBuffers_.at(imageIndex);
+  }
   static const auto& indices(const LightingManager& manager) {return manager.lightIndexListSsbo_;}
-  static const auto& stats(const LightingManager& manager) {return manager.lightStatsBuffer_;}
-  static VkDescriptorSet published(const LightingManager& manager) {return manager.tiledSets_.front()[2];}
+  static const auto& stats(const LightingManager& manager, uint32_t imageIndex = 0) {
+    return manager.clusterReadbacks_.at(imageIndex).buffer;
+  }
+  static VkDescriptorSet published(const LightingManager& manager, uint32_t imageIndex = 0) {
+    return manager.tiledSets_.at(imageIndex)[2];
+  }
   static VkDescriptorSetLayout layout(const LightingManager& manager) {return manager.tileCullSet2Layout_;}
 };
 }
@@ -55,7 +63,7 @@ protected:
   LightEditPatch patch() const {
     LightEditPatch result;result.fields=LightEditFieldBit(LightEditField::Intensity);result.values.intensity=11;return result;
   }
-  glm::uvec4 probe() {
+  glm::uvec4 probe(uint32_t imageIndex = 0) {
     auto output=allocation->createBuffer(sizeof(glm::uvec4),VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,VMA_MEMORY_USAGE_AUTO,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT|VMA_ALLOCATION_CREATE_MAPPED_BIT);
     struct Cleanup {AllocationManager* owner;AllocatedBuffer* buffer;~Cleanup(){owner->destroyBuffer(*buffer);}} cleanup{allocation.get(),&output};
@@ -66,9 +74,9 @@ protected:
     vk::raii::DescriptorPool descriptors(device->raii(),vk::DescriptorPoolCreateInfo(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet,1,poolSize));
     const std::array directLayouts{*directLayout};auto sets=device->raii().allocateDescriptorSets(vk::DescriptorSetAllocateInfo(*descriptors,directLayouts));
     const std::array<vk::DescriptorBufferInfo,4> infos{{{output.buffer,0,sizeof(glm::uvec4)},
-        {Access::grid(*lighting).buffer,0,sizeof(TileLightGrid)},
+        {Access::grid(*lighting,imageIndex).buffer,0,sizeof(TileLightGrid)},
         {Access::indices(*lighting).buffer,0,sizeof(uint32_t)},
-        {Access::stats(*lighting).buffer,0,sizeof(uint32_t)}}};
+        {Access::stats(*lighting,imageIndex).buffer,0,sizeof(uint32_t)}}};
     std::array<vk::WriteDescriptorSet,4> writes;
     for(uint32_t i=0;i<writes.size();++i) writes[i]=vk::WriteDescriptorSet(*sets[0],i,0,1,vk::DescriptorType::eStorageBuffer,nullptr,&infos[i]);
     device->raii().updateDescriptorSets(writes,{});
@@ -81,7 +89,7 @@ protected:
         vk::PipelineShaderStageCreateInfo({},vk::ShaderStageFlagBits::eCompute,*shader,"computeMain"),*layout));
     allocation->executeStagedCommands([&](VkCommandBuffer command) {
       vkCmdBindPipeline(command,VK_PIPELINE_BIND_POINT_COMPUTE,*pipeline);
-      const std::array<VkDescriptorSet,2> raw{Access::published(*lighting),*sets[0]};
+      const std::array<VkDescriptorSet,2> raw{Access::published(*lighting,imageIndex),*sets[0]};
       vkCmdBindDescriptorSets(command,VK_PIPELINE_BIND_POINT_COMPUTE,*layout,0,uint32_t(raw.size()),raw.data(),0,nullptr);
       const auto barrier=[&](VkPipelineStageFlags target,VkAccessFlags access) {
         VkMemoryBarrier value{VK_STRUCTURE_TYPE_MEMORY_BARRIER};value.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
@@ -119,7 +127,7 @@ protected:
     const auto before=lighting->pointLightsSsbo();const auto worldCount=world.entityCount();
     Access::failNext(*lighting,fault);EXPECT_THROW(lighting->resizeTiledResources({96,64}),std::bad_alloc);
     EXPECT_GT(Access::epoch(*lighting),oldEpoch);EXPECT_FALSE(Access::ready(*lighting));
-    EXPECT_EQ(Access::grid(*lighting).buffer==VK_NULL_HANDLE,fault==1);
+    EXPECT_EQ(lighting->tileGridBuffer()==VK_NULL_HANDLE,fault==1);
     EXPECT_EQ(Access::indices(*lighting).buffer,VK_NULL_HANDLE);
     bool legacyReady{},legacyDone{},lightReady{},lightDone{},poseReady{};size_t attempts{};
     {material_publication_test::AllocationGuard deny(true);
@@ -153,6 +161,97 @@ protected:
 
 TEST_F(LightingScratchRecoveryGpu, FailureBeforeGridRejectsAllPublicationAndSameExtentRetryRepairsRealDescriptors) {exerciseFailure(1);}
 TEST_F(LightingScratchRecoveryGpu, FailureBeforeIndexRejectsAllPublicationAndSameExtentRetryRepairsRealDescriptors) {exerciseFailure(2);}
+
+TEST_F(LightingScratchRecoveryGpu, QueuedCullsPublishStatsAndDescriptorsByImage) {
+  const auto allocator = allocation->memoryManager()->allocator();
+  const auto format = RenderPassManager(device).findDepthStencilFormat();
+  const VkImageCreateInfo imageInfo{
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = format,
+      .extent = {32, 32, 1},
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+  struct TestDepth {
+    VmaAllocator allocator;
+    VkImage image{};
+    VmaAllocation memory{};
+    ~TestDepth() { if (image) vmaDestroyImage(allocator, image, memory); }
+  } depth{allocator};
+  VmaAllocationCreateInfo storage{};
+  storage.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  ASSERT_EQ(vmaCreateImage(allocator, &imageInfo, &storage, &depth.image, &depth.memory, nullptr), VK_SUCCESS);
+  const vk::raii::ImageView view(device->raii(), vk::ImageViewCreateInfo(
+      {}, depth.image, vk::ImageViewType::e2D, static_cast<vk::Format>(format), {},
+      {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, 1}));
+  allocation->executeStagedCommands([&](VkCommandBuffer command) {
+    VkImageMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = depth.image,
+        .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1}};
+    const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(command, &dependency);
+    const VkClearDepthStencilValue clear{0.5f, 0};
+    vkCmdClearDepthStencilImage(command, depth.image, barrier.newLayout, &clear, 1, &barrier.subresourceRange);
+    barrier.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    barrier.oldLayout = barrier.newLayout;
+    barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+    vkCmdPipelineBarrier2(command, &dependency);
+  });
+  const auto lightCount = static_cast<uint32_t>(lighting->pointLightsSsbo().size());
+  ASSERT_GT(lightCount, 0u);
+  ASSERT_NE(lighting->tileGridBuffer(0), lighting->tileGridBuffer(1));
+  ASSERT_NE(Access::stats(*lighting, 0).buffer, Access::stats(*lighting, 1).buffer);
+  const CameraData camera{};
+  constexpr std::array<VkExtent2D, 2> extents{{{32, 32}, {16, 16}}};
+  const auto commands = device->raii().allocateCommandBuffers(
+      vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, 2));
+  for (uint32_t image = 0; image < commands.size(); ++image) {
+    SceneController::writeToBuffer(*allocation, cameras[image], &camera, sizeof(camera));
+    commands[image].begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    const VkCommandBuffer command = *commands[image];
+    lighting->beginClusterFrame(command, image);
+    lighting->beginClusterCullTimer(command, image);
+    lighting->dispatchTileCull(command, image, extents[image], cameras[image].buffer,
+                               sizeof(camera), *view, 0.1f, 100.0f);
+    lighting->endClusterCullTimer(command, image);
+    commands[image].end();
+  }
+  const vk::raii::Queue queue(device->raii(), device->graphicsQueue());
+  lighting->collectStats(0);
+  EXPECT_EQ(lighting->lightCullingStats().totalClusters, 0u);
+  for (uint32_t image = 0; image < commands.size(); ++image) {
+    const vk::CommandBuffer command = *commands[image];
+    vk::SubmitInfo submit;
+    submit.setCommandBuffers(command);
+    queue.submit(submit, nullptr);
+    lighting->onSubmitted(image);
+  }
+  queue.waitIdle();
+  lighting->collectStats(0);
+  EXPECT_EQ(lighting->lightCullingStats().totalClusters, 4u * container::gpu::kClusterDepthSlices);
+  EXPECT_EQ(lighting->lightCullingStats().submittedLights, lightCount);
+  lighting->collectStats(1);
+  EXPECT_EQ(lighting->lightCullingStats().totalClusters, container::gpu::kClusterDepthSlices);
+  EXPECT_EQ(lighting->lightCullingStats().submittedLights, lightCount);
+  lighting->collectStats(0);
+  EXPECT_EQ(lighting->lightCullingStats().totalClusters, container::gpu::kClusterDepthSlices);
+  EXPECT_EQ(probe(1), glm::uvec4(0x12345678, 0x23456789, 0x3456789a, 0x456789ab));
+}
+
 TEST_F(LightingScratchRecoveryGpu, GenuineSameGridNoopAndRejectedOversizedExtentPreserveLightStage) {
   auto prepared=lighting->prepareLightEdit(selected().target,patch());const auto epoch=Access::epoch(*lighting);
   const auto grid=Access::grid(*lighting).buffer,index=Access::indices(*lighting).buffer;
@@ -178,7 +277,7 @@ TEST_F(LightingScratchRecoveryGpu, RangeLimitedResizePreservesLightEditsAndRecov
   EXPECT_GT(Access::epoch(*lighting), oldEpoch);
   EXPECT_FALSE(lighting->isTiledLightingReady());
   EXPECT_EQ(lighting->tileGridBufferSize(), 0u);
-  EXPECT_EQ(Access::grid(*lighting).buffer, VK_NULL_HANDLE);
+  EXPECT_EQ(lighting->tileGridBuffer(), VK_NULL_HANDLE);
   EXPECT_EQ(Access::indices(*lighting).buffer, VK_NULL_HANDLE);
   EXPECT_EQ(lighting->tiledDescriptorSetLayout(), tiledLayout);
   EXPECT_FALSE(lighting->canExchangeLightEdit(staleEdit));

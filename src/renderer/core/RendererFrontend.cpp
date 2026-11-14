@@ -2139,19 +2139,6 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
   }
 
-  // Clustered lighting still uses a shared stats buffer retired above.
-  phaseStart = TelemetryClock::now();
-  if (subs_.lightingManager)
-    subs_.lightingManager->collectStats();
-  if (telemetry) {
-    telemetry->setCpuPhase(RendererTelemetryPhase::Readbacks,
-                           elapsedMilliseconds(phaseStart));
-    if (subs_.lightingManager) {
-      telemetry->setLightCullingStats(
-          subs_.lightingManager->lightCullingStats());
-    }
-  }
-
   uint32_t imageIndex = 0;
   phaseStart = TelemetryClock::now();
   VkResult result =
@@ -2198,15 +2185,25 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
   if (subs_.ddgiManager)
     subs_.ddgiManager->retireImage(imageIndex);
+  if (telemetry) {
+    telemetry->setCpuPhase(RendererTelemetryPhase::ImageFenceWait,
+                           elapsedMilliseconds(phaseStart));
+  }
+  const auto readbackStart = TelemetryClock::now();
   if (subs_.gpuCullManager) {
-    const auto readbackStart = TelemetryClock::now();
     subs_.gpuCullManager->collectStats(imageIndex);
     if (telemetry) {
       telemetry->setCullingStats(subs_.gpuCullManager->cullStats());
-      telemetry->addCpuPhase(RendererTelemetryPhase::Readbacks,
-                             elapsedMilliseconds(readbackStart));
     }
   }
+  if (subs_.lightingManager) {
+    subs_.lightingManager->collectStats(imageIndex);
+    if (telemetry)
+      telemetry->setLightCullingStats(subs_.lightingManager->lightCullingStats());
+  }
+  if (telemetry)
+    telemetry->setCpuPhase(RendererTelemetryPhase::Readbacks,
+                           elapsedMilliseconds(readbackStart));
   collectReferenceDiagnostics(imageIndex);
   ensureReferencePathResources();
   if (!svc_.config.pathSampleSeries.empty() && !referencePathActive())
@@ -2234,11 +2231,6 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     }
     subs_.guiManager->setReferencePathStatus(std::move(status));
   }
-  if (telemetry) {
-    telemetry->setCpuPhase(RendererTelemetryPhase::ImageFenceWait,
-                           elapsedMilliseconds(phaseStart));
-  }
-
   if (subs_.exposureManager) {
     subs_.exposureManager->collectReadback(imageIndex, effectiveExposureSettings());
   }
@@ -2546,6 +2538,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
   if (subs_.exposureManager)
     subs_.exposureManager->onSubmitted();
+  if (subs_.lightingManager)
+    subs_.lightingManager->onSubmitted(imageIndex);
   subs_.temporalManager->commit();
   if (subs_.screenReflectionPass)
     subs_.screenReflectionPass->onSubmitted(
@@ -6695,10 +6689,10 @@ void RendererFrontend::updateFrameDescriptorSets(
       bloomTextureViews = subs_.bloomManager->bloomResultViews();
       bloomSampler = subs_.bloomManager->bloomSampler();
     }
-    VkBuffer tileGridBuffer = VK_NULL_HANDLE;
+    std::span<const container::gpu::AllocatedBuffer> tileGridBuffers{};
     VkDeviceSize tileGridBufferSize = 0;
     if (featureReadiness.tileCull && subs_.lightingManager) {
-      tileGridBuffer = subs_.lightingManager->tileGridBuffer();
+      tileGridBuffers = subs_.lightingManager->tileGridBuffers();
       tileGridBufferSize = subs_.lightingManager->tileGridBufferSize();
     }
     std::span<const container::gpu::AllocatedBuffer> exposureStateBuffers{};
@@ -6723,7 +6717,7 @@ void RendererFrontend::updateFrameDescriptorSets(
         shadowUbos, localShadowView, localShadowSampler, localShadowUbos,
         irradianceView, prefilteredView, brdfLutView, envSampler,
         brdfLutSampler, aoTextureViews, aoSampler, bloomTextureViews,
-        bloomSampler, tileGridBuffer, tileGridBufferSize, exposureStateBuffers,
+        bloomSampler, tileGridBuffers, tileGridBufferSize, exposureStateBuffers,
         exposureStateBufferSize, anisotropyViews, diffuseTransmissionViews,
         imageIndex == UINT32_MAX ? std::nullopt : std::optional(imageIndex));
   }
