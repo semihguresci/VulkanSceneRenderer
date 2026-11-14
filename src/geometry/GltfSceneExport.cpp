@@ -1250,6 +1250,7 @@ void appendAnimationRestores(tinygltf::Model& model, const tinygltf::Model& rest
     // Graph-controlled clips leave unrelated properties to the behavior.
     if (std::ranges::binary_search(graphClips, i)) continue;
     auto& animation = model.animations[i];
+    if (IsGltfCameraMotionDraft(animation)) continue;
     std::map<Key, std::vector<bool>> coverage;
     for (const auto& track : library.clips[i].tracks) {
       const auto& target = track.target;

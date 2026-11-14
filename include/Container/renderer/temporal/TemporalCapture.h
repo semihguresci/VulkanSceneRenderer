@@ -105,6 +105,14 @@ struct CaptureCameraPose {
   int32_t sourceNode{};
   std::optional<uint64_t> expectedCameraRevision;
 };
+struct CaptureCameraMotion {
+  enum class Operation { Create, Capture, Move, Delete };
+  Operation operation{};
+  int32_t sourceNode{};
+  int clip{-1};
+  double time{};
+  double newTime{};
+};
 struct CaptureLightTarget {
   container::renderer::EditableLightType type{};
   container::renderer::EditableLightSource source{};
@@ -265,6 +273,7 @@ struct CaptureEvent {
   std::optional<CaptureCameraProjection> cameraProjection;
   std::optional<CaptureCameraSelection> cameraSelection;
   std::optional<CaptureCameraPose> cameraPose;
+  std::optional<CaptureCameraMotion> cameraMotion;
   bool expectCameraProjectionFailure{}, expectCameraSelectionFailure{}, expectCameraPoseFailure{};
   std::optional<CaptureLightEdit> lightEdit;
   std::optional<CaptureLightTarget> lightSelection;
@@ -372,6 +381,7 @@ public:
         event.resourceRetirement = resourceRetirementRequest(value.at("resourceRetirement"));
       if (value.contains("cameraProjection")) event.cameraProjection=cameraProjectionRequest(value.at("cameraProjection"));
       if (value.contains("cameraPose")) event.cameraPose=cameraPoseRequest(value.at("cameraPose"));
+      if (value.contains("cameraMotion")) event.cameraMotion=cameraMotionRequest(value.at("cameraMotion"));
       if (value.contains("cameraSelection")) event.cameraSelection=cameraSelectionRequest(value.at("cameraSelection"));
       if(value.contains("lightEdit")) event.lightEdit=lightEditRequest(value.at("lightEdit"));
       if(value.contains("lightSelection")) event.lightSelection=lightTarget(value.at("lightSelection"));
@@ -831,8 +841,8 @@ public:
         throw std::invalid_argument("Capture node authoring and other model/scene/history/physics mutations need separate events");
       const bool animationControl = event.animationPlaying || event.animationClip || event.animationTime ||
           event.interactivityPlaying || event.interactivityReset || event.interactivityEvent;
-      if((event.cameraProjection || event.cameraSelection || event.cameraPose) &&
-          (unsigned(event.cameraProjection.has_value())+unsigned(event.cameraSelection.has_value())+unsigned(event.cameraPose.has_value())>1 ||
+      if((event.cameraProjection || event.cameraSelection || event.cameraPose || event.cameraMotion) &&
+          (unsigned(event.cameraProjection.has_value())+unsigned(event.cameraSelection.has_value())+unsigned(event.cameraPose.has_value())+unsigned(event.cameraMotion.has_value())>1 ||
           event.resourceRetirement || event.materialRetirement || event.materialEdit || event.materialBinding || event.materialTextureEdit ||
           event.merge || event.gltfScene || event.materialVariant || event.nodeFlags || event.nodeAuthoring || event.nodeReparent ||
           event.nodeTransform || event.addPrimitive || animationControl || !event.sceneHistory.empty() || !event.reload.empty() ||
@@ -1236,6 +1246,34 @@ private:
     if(value.contains("expectedCameraRevision"))
       result.expectedCameraRevision=cameraInteger(value.at("expectedCameraRevision"),1,9007199254740991ull);
     return result;
+  }
+  static CaptureCameraMotion cameraMotionRequest(const nlohmann::json& value) {
+    nodeFields(value, {"operation", "sourceNode", "clip", "time", "newTime"}, "cameraMotion");
+    using Operation = CaptureCameraMotion::Operation;
+    CaptureCameraMotion request;
+    const auto action = value.at("operation").get<std::string>();
+    if (action == "create") request.operation = Operation::Create;
+    else if (action == "capture") request.operation = Operation::Capture;
+    else if (action == "move") request.operation = Operation::Move;
+    else if (action == "delete") request.operation = Operation::Delete;
+    else throw std::invalid_argument("Capture cameraMotion operation is unknown");
+    request.sourceNode = static_cast<int32_t>(cameraInteger(value.at("sourceNode"), 0, INT32_MAX));
+    const bool editsKey = request.operation != Operation::Create;
+    if (value.contains("clip") != editsKey || value.contains("time") != editsKey ||
+        value.contains("newTime") != (request.operation == Operation::Move))
+      throw std::invalid_argument("Capture cameraMotion requires clip and time for key edits and newTime for a move");
+    const auto time = [](const nlohmann::json& field) {
+      const auto seconds = field.get<double>();
+      if (!std::isfinite(seconds) || seconds < 0 || seconds > std::numeric_limits<float>::max())
+        throw std::invalid_argument("Capture cameraMotion time is outside the glTF key range");
+      return seconds;
+    };
+    if (editsKey) {
+      request.clip = static_cast<int>(cameraInteger(value.at("clip"), 0, INT32_MAX));
+      request.time = time(value.at("time"));
+    }
+    if (request.operation == Operation::Move) request.newTime = time(value.at("newTime"));
+    return request;
   }
   static CaptureCameraProjection cameraProjectionRequest(const nlohmann::json& value) {
     using namespace container::geometry::gltf;

@@ -2879,7 +2879,7 @@ void RendererFrontend::applyTemporalCapture(
     throw std::runtime_error("Capture material gesture could not be completed");
   if(!event.reload.empty() || !event.guiReload.empty() || !event.guiSampleModel.empty() || event.guiUnload || event.merge ||
       event.materialVariant || !event.sceneHistory.empty() || event.nodeFlags || event.nodeAuthoring ||
-      event.nodeReparent || event.nodeTransform || event.addPrimitive || event.animationPlaying || event.animationClip ||
+      event.nodeReparent || event.nodeTransform || event.addPrimitive || event.cameraMotion || event.animationPlaying || event.animationClip ||
       event.animationTime || !event.physicsAttach.empty() || !event.physicsAction.empty() || event.physicsJointCreate ||
       !event.physicsJointAction.empty() || event.physicsJointMotorVelocity || event.samples || event.resize ||
       event.swapchainFormat || !event.technique.empty())
@@ -3335,6 +3335,8 @@ void RendererFrontend::applyTemporalCapture(
     cameraAction([&] {return authorCameraViewPoseSource(request.sourceNode,request.expectedCameraRevision);},
         event.expectCameraPoseFailure,"camera pose");
   }
+  if (event.cameraMotion)
+    applyCaptureCameraMotion(*event.cameraMotion);
   uint32_t objectNode = sample.objectNode;
   // Capture tracks are sampled past their last key. An explicit unload retires
   // their target; only a later capture load event permits target lookup again.
@@ -8631,6 +8633,7 @@ void RendererFrontend::presentSceneControls() {
   refreshMaterialInspector();
   refreshCameraProjectionInspector();
   refreshCameraViewPoseInspector();
+  refreshCameraMotionInspector();
   refreshLightEditInspector();
   const auto* gltfSceneManager = subs_.sceneManager.get();
   subs_.guiManager->drawSceneControls(
@@ -8776,6 +8779,7 @@ void RendererFrontend::presentSceneControls() {
   processMaterialEditRequests();
   processCameraProjectionRequests();
   processCameraViewPoseRequests();
+  processCameraMotionRequests();
   if (!subs_.guiManager->sceneEditGestureActive() && !transformDragSession_.active)
     sceneEdits_->finishGesture();
   processSceneNodeAuthoringRequest();

@@ -2,6 +2,7 @@
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <imgui_internal.h>
 
 #include "../renderer/scene/material_publication_allocations.h"
 
@@ -175,6 +176,26 @@ class CameraViewPoseWidgetTests:public ::testing::Test {
     auto& io=ImGui::GetIO();io.AddMousePosEvent((buttonMin_.x+buttonMax_.x)*.5f,(buttonMin_.y+buttonMax_.y)*.5f);frame();
     io.AddMouseButtonEvent(ImGuiMouseButton_Left,true);frame();io.AddMouseButtonEvent(ImGuiMouseButton_Left,false);frame();
   }
+  void motionFrame(const char* activate = nullptr) {
+    ImGui::NewFrame();
+    ImGui::SetNextWindowPos({0, 0});
+    ImGui::SetNextWindowSize({720, 550});
+    ImGui::Begin("Camera motion widget test", nullptr, ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
+    ImGui::GetStateStorage()->SetInt(ImGui::GetID("glTF Animation"), 1);
+    ImGui::GetStateStorage()->SetInt(ImGui::GetID("Camera motion"), 1);
+    DrawGltfAnimationControls(c_);
+    if (activate) {
+      ImGui::PushID("Camera motion");
+      ImGui::ActivateItemByID(ImGui::GetID(activate));
+      ImGui::PopID();
+    }
+    ImGui::End();
+    ImGui::Render();
+  }
+  void activateMotionButton(const char* label) {
+    motionFrame(label);
+    motionFrame();
+  }
   GltfAnimationControls c_;ImGuiContext* previous_{};ImGuiContext* context_{};ImVec2 buttonMin_{},buttonMax_{};
 };
 } // namespace
@@ -212,4 +233,66 @@ TEST_F(CameraViewPoseWidgetTests, MissingDestinationAndPendingLensRequestKeepThe
   ASSERT_TRUE(QueueCameraProjectionEdit(c_,s.target.camera,{{},{{Property::PerspectiveNear,.25}}}));
   settle();click();EXPECT_FALSE(c_.requestedCameraViewPose);ASSERT_TRUE(c_.requestedCameraProjection);
   EXPECT_EQ(c_.requestedCameraProjection->patch.values.size(),1u);
+}
+
+TEST_F(CameraViewPoseWidgetTests, CameraMotionButtonsCreateAndCaptureAtThePlayhead) {
+  const auto pose = *c_.cameraViewPose;
+  CameraMotionSnapshot motion{pose.target, pose.viewRevision, -1, {}, pose.destinationName, false};
+  c_.cameraNode = motion.target.camera.sourceNode;
+  ASSERT_TRUE(SetCameraMotionSnapshot(c_, motion));
+  activateMotionButton("Create clip from viewport");
+  EXPECT_FALSE(c_.requestedCameraMotion);
+
+  c_.cameraNode = -1;
+  motion.viewportActive = true;
+  ASSERT_TRUE(SetCameraMotionSnapshot(c_, motion));
+  activateMotionButton("Create clip from viewport");
+  ASSERT_TRUE(c_.requestedCameraMotion);
+  EXPECT_EQ(c_.requestedCameraMotion->action, CameraMotionAction::CreateClip);
+  EXPECT_EQ(c_.requestedCameraMotion->target, motion.target);
+  EXPECT_EQ(c_.requestedCameraMotion->viewRevision, motion.viewRevision);
+  EXPECT_DOUBLE_EQ(c_.requestedCameraMotion->time, 0);
+
+  c_.requestedCameraMotion.reset();
+  motion.clip = 0;
+  motion.keyTimes = {0, 1};
+  c_.clips = {{"Camera motion", 1}};
+  c_.selectedClip = motion.clip;
+  c_.time = 1;
+  ASSERT_TRUE(SetCameraMotionSnapshot(c_, motion));
+  activateMotionButton("Update key from viewport");
+  ASSERT_TRUE(c_.requestedCameraMotion);
+  EXPECT_EQ(c_.requestedCameraMotion->action, CameraMotionAction::CaptureKey);
+  EXPECT_EQ(c_.requestedCameraMotion->clip, motion.clip);
+  EXPECT_DOUBLE_EQ(c_.requestedCameraMotion->time, c_.time);
+
+  c_.requestedCameraMotion.reset();
+  c_.cameraMotionKeyTime = 2;
+  activateMotionButton("Capture viewport key");
+  ASSERT_TRUE(c_.requestedCameraMotion);
+  EXPECT_EQ(c_.requestedCameraMotion->action, CameraMotionAction::CaptureKey);
+  EXPECT_DOUBLE_EQ(c_.requestedCameraMotion->time, 2);
+}
+
+TEST_F(CameraViewPoseWidgetTests, AuthoredViewCanMoveAndDeleteExistingCameraKeys) {
+  const auto pose = *c_.cameraViewPose;
+  const CameraMotionSnapshot motion{pose.target, pose.viewRevision, 0, {0, 1}, pose.destinationName, false};
+  c_.cameraNode = motion.target.camera.sourceNode;
+  c_.clips = {{"Camera motion", 1}};
+  c_.selectedClip = motion.clip;
+  ASSERT_TRUE(SetCameraMotionSnapshot(c_, motion));
+  c_.cameraMotionSelectedKey = 1;
+  c_.cameraMotionMoveTime = 3;
+
+  activateMotionButton("Move key");
+  ASSERT_TRUE(c_.requestedCameraMotion);
+  EXPECT_EQ(c_.requestedCameraMotion->action, CameraMotionAction::MoveKey);
+  EXPECT_DOUBLE_EQ(c_.requestedCameraMotion->time, 1);
+  EXPECT_DOUBLE_EQ(c_.requestedCameraMotion->newTime, 3);
+
+  c_.requestedCameraMotion.reset();
+  activateMotionButton("Delete key");
+  ASSERT_TRUE(c_.requestedCameraMotion);
+  EXPECT_EQ(c_.requestedCameraMotion->action, CameraMotionAction::DeleteKey);
+  EXPECT_DOUBLE_EQ(c_.requestedCameraMotion->time, 1);
 }

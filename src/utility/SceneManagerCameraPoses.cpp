@@ -9,6 +9,7 @@
 #include <iterator>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 
 namespace container::scene {
 namespace {
@@ -343,6 +344,147 @@ std::optional<CameraViewPoseTarget> SceneManager::cameraViewPoseTarget(const Sce
   const auto camera=cameraProjectionTarget(graph,node); const auto incarnation=graph.nodeIncarnation(node);
   if(!camera || !incarnation) return {}; return CameraViewPoseTarget{*camera,incarnation};
 }
+
+GltfCameraMotionPose SceneManager::captureCameraMotionPose(const CameraViewPoseTarget& target,
+    const SceneGraph& graph, const glm::mat4& view, float aspect, const AnimationPlayer& player,
+    std::optional<size_t> destinationClip, double time) const {
+  const auto current = cameraViewPoseTarget(graph, target.camera.graphNode);
+  if (!current || *current != target || isLinkedNodeReadOnly(graph, target.camera.graphNode))
+    throw std::invalid_argument("Select an editable authored camera before capturing a key");
+  const CameraViewPoseLimits limits;
+  PoseBudget budget{limits.maxPreparedCpuBytes};
+  std::vector<PoseAncestor> ancestors;
+  auto context = capturePoseGraph(graph, target, aspect, limits, budget, ancestors);
+  const auto source = target.camera.sourceNode;
+  const auto& node = gltfModel_.nodes.at(size_t(source));
+  // Resolve the parent as it will be evaluated when the edited key is played.
+  // The active clip may animate it differently, or the key may extend the timeline.
+  const auto& library = player.library();
+  AnimationPose destination;
+  if (destinationClip) {
+    const auto& clip = library.clips.at(*destinationClip);
+    destination = SampleAnimation(clip, std::clamp(time, 0.0, clip.duration));
+  }
+  const auto placementBit = [](AnimationTargetKind kind) {
+    switch (kind) {
+    case AnimationTargetKind::NodeTranslation: return 1u;
+    case AnimationTargetKind::NodeRotation: return 2u;
+    case AnimationTargetKind::NodeScale: return 4u;
+    default: return 0u;
+    }
+  };
+  std::unordered_map<size_t, unsigned> restoredProperties;
+  for (const auto& ancestor : ancestors) {
+    const auto index = graph.getNode(ancestor.node)->sourceNodeIndex;
+    if (index >= 0) restoredProperties.try_emplace(size_t(index), 0);
+  }
+  for (const auto& clip : library.clips) for (const auto& track : clip.tracks) {
+    const auto bit = placementBit(track.target.kind);
+    if (bit) if (const auto entry = restoredProperties.find(track.target.index); entry != restoredProperties.end())
+      entry->second |= bit;
+  }
+  const auto destinationPose = [&](size_t index, unsigned properties) {
+    const auto& currentNode = gltfModel_.nodes.at(index);
+    const auto& rest = library.restNodes.at(index);
+    tinygltf::Model sample;
+    auto& sampleNode = sample.nodes.emplace_back();
+    sampleNode.matrix = currentNode.matrix;
+    sampleNode.translation = properties & 1 ? rest.translation : currentNode.translation;
+    sampleNode.rotation = properties & 2 ? rest.rotation : currentNode.rotation;
+    sampleNode.scale = properties & 4 ? rest.scale : currentNode.scale;
+    AnimationPose placement;
+    for (const auto& value : destination.values) {
+      if (value.target.index != index || !placementBit(value.target.kind)) continue;
+      placement.values.push_back(value);
+      placement.values.back().target.index = 0;
+    }
+    (void)ApplyAnimationPose(sample, placement);
+    return std::move(sampleNode);
+  };
+  context.parentWorld = glm::mat4(1.0f);
+  for (const auto& ancestor : std::span(ancestors).first(ancestors.size() - 1)) {
+    const auto sourceIndex = graph.getNode(ancestor.node)->sourceNodeIndex;
+    auto local = ancestor.local;
+    if (sourceIndex >= 0) {
+      const auto index = static_cast<size_t>(sourceIndex);
+      if (const auto properties = restoredProperties.at(index))
+        local = EvaluateAnimatedNodeLocalTransform(destinationPose(index, properties));
+    }
+    context.parentWorld *= local;
+  }
+  context.world = context.parentWorld * context.local;
+  const auto plan = PlanGltfCameraViewPose(GltfCameraPoseView(exportSource_), GltfCameraPoseView(gltfModel_),
+      source, source, context, view, limits.authoring);
+  auto pose = CameraPoseAsTrs(plan.localAfter, node, limits.authoring);
+  for (auto& value : pose.rotation) value = static_cast<float>(value);
+  // Only translation and rotation are keyed. Check the result with the scale
+  // that playback will use and with the same float samples playback will read.
+  for (auto& value : pose.translation) value = static_cast<float>(value);
+  const auto playback = destinationPose(size_t(source), restoredProperties.at(size_t(source)));
+  pose.scale = playback.matrix.empty() ? playback.scale
+      : CameraPoseAsTrs(EvaluateAnimatedNodeLocalTransform(playback), node, limits.authoring).scale;
+  const auto world = context.parentWorld * EvaluateAnimatedNodeLocalTransform(pose);
+  const auto evaluated = EvaluateAnimatedCamera(gltfModel_.cameras.at(size_t(node.camera)), world, aspect);
+  if (!evaluated) throw std::invalid_argument("The viewport pose cannot be represented by camera translation and rotation keys");
+  for (int column = 0; column < 4; ++column) {
+    for (int row = 0; row < 4; ++row) {
+      const auto actual = evaluated->view[column][row];
+      const auto expected = view[column][row];
+      if (!std::isfinite(actual) || std::abs(actual - expected) > (column == 3 ? 0.0002f : 0.00002f))
+        throw std::invalid_argument("The parent transform prevents matching the viewport with translation and rotation keys");
+    }
+  }
+  return {{float(pose.translation[0]), float(pose.translation[1]), float(pose.translation[2])},
+          {float(pose.rotation[0]), float(pose.rotation[1]), float(pose.rotation[2]), float(pose.rotation[3])}};
+}
+
+std::optional<tinygltf::Node> SceneManager::cameraMotionMatrixRest(size_t sourceNode) const {
+  const auto& source = exportSource_.nodes.at(sourceNode);
+  if (source.matrix.empty()) return {};
+  tinygltf::Node pose;
+  pose.camera = source.camera;
+  pose.matrix = source.matrix;
+  return pose;
+}
+
+AnimationDirtySet SceneManager::publishCameraMotionEdit(std::unique_ptr<AnimationPlayer>& player,
+    const CameraViewPoseTarget& target, const SceneGraph& graph, size_t clip,
+    std::optional<size_t> previewClip, double previewTime,
+    const std::optional<GltfCameraMotionClip>& before, const std::optional<GltfCameraMotionClip>& after,
+    const tinygltf::Node* restoredPose) {
+  const auto current = cameraViewPoseTarget(graph, target.camera.graphNode);
+  if (!player || !current || !samePoseHistoryTarget(*current, target) ||
+      isLinkedNodeReadOnly(graph, target.camera.graphNode))
+    throw std::invalid_argument("The camera motion destination changed before publication");
+  if (cameraProjectionRevision_ == UINT64_MAX || cameraEvaluationRevision_ >= UINT64_MAX - 1)
+    throw std::overflow_error("Camera publication revision exhausted");
+  const auto source = static_cast<uint32_t>(target.camera.sourceNode);
+  if (ReadGltfCameraMotion(exportSource_, clip) != before || ReadGltfCameraMotion(gltfModel_, clip) != before ||
+      (after && after->sourceNode != source) || (before && before->sourceNode != source))
+    throw std::invalid_argument("Camera motion history no longer matches the current clip");
+  auto authored = PrepareGltfCameraMotionEdit(exportSource_, clip, after, restoredPose);
+  auto evaluated = PrepareGltfCameraMotionEdit(gltfModel_, clip, after, restoredPose);
+  auto candidate = std::make_unique<AnimationPlayer>(
+      player->withEditedCameraMotion(gltfModel_, clip, after, source, restoredPose));
+
+  // Allocation and sampling complete before the authored and evaluated clip rows change.
+  ReserveGltfCameraMotionEdit(exportSource_, authored);
+  ReserveGltfCameraMotionEdit(gltfModel_, evaluated);
+  std::optional<tinygltf::Node> authoredRest;
+  if (restoredPose) authoredRest = *restoredPose;
+  auto dirty = candidate->activateCameraMotionEdit(gltfModel_, *player,
+      previewClip, previewTime, source, restoredPose);
+  if (authoredRest) {
+    exchangeNodePose(exportSource_.nodes[source], *authoredRest);
+  }
+  PublishGltfCameraMotionEdit(exportSource_, std::move(authored));
+  PublishGltfCameraMotionEdit(gltfModel_, std::move(evaluated));
+  player.swap(candidate);
+  ++cameraProjectionRevision_;
+  ++cameraEvaluationRevision_;
+  return dirty;
+}
+
 SceneManager::PreparedCameraViewPoseEdit SceneManager::prepareCameraViewPoseEdit(const CameraViewPoseTarget& target,
     const glm::mat4& desired,const SceneGraph& graph,const AnimationPlayer* player,float aspect,const CameraViewPoseLimits& limits) const {
   validatePoseLimits(limits); const auto current=cameraViewPoseTarget(graph,target.camera.graphNode);

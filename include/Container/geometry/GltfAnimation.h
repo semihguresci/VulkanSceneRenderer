@@ -4,6 +4,7 @@
 #include <Container/geometry/GltfMaterialAuthoring.h>
 #include <Container/geometry/GltfCameraAuthoring.h>
 #include <Container/geometry/GltfCameraPoseAuthoring.h>
+#include <Container/geometry/GltfCameraMotion.h>
 #include <Container/geometry/GltfNodeFlags.h>
 
 #include <cstddef>
@@ -213,6 +214,14 @@ public:
   // still contain their authored values. No clip is sampled or auto-selected.
   [[nodiscard]] AnimationPlayer withExtendedSource(
       const tinygltf::Model& appendedSource) const;
+  // Prepare a player for one camera-motion clip edit while preserving authored
+  // rests and playback settings. Activation restores the previous clip and
+  // applies the requested pose atomically before publishing the source edit.
+  [[nodiscard]] AnimationPlayer withEditedCameraMotion(const tinygltf::Model& current,
+      size_t clip, const std::optional<GltfCameraMotionClip>& after, uint32_t sourceNode,
+      const tinygltf::Node* cameraRest = nullptr) const;
+  AnimationDirtySet activateCameraMotionEdit(tinygltf::Model&, const AnimationPlayer& previous,
+      std::optional<size_t> clip, double time, uint32_t sourceNode, const tinygltf::Node* updatedRest = nullptr);
   // Prepare exactly the sibling clone declared by the detached planner. The
   // current source witnesses unchanged raw clip/sampler/channel metadata; old
   // decoded tracks must still match this player. The only accepted channel

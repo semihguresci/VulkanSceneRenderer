@@ -225,6 +225,7 @@ void RendererFrontend::appendGltfAnimationTelemetry(nlohmann::json& json) const 
   animation["speed"] = gltfAnimation_->speed(); animation["loop"] = gltfAnimation_->loop();
   animation["materialRevision"] = subs_.sceneManager->materialRevision();
   animation["diagnostics"] = gltfAnimation_->library().diagnostics.size();
+  appendCameraMotionTelemetry(animation);
   animation["targets"] = nlohmann::json::array();
   std::set<size_t> nodeIndices, materialIndices;
   if (gltfAnimation_->selectedClip()) {

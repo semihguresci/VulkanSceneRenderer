@@ -479,6 +479,13 @@ GltfCameraPosePlan buildPlan(GltfCameraPoseSourceView authored,GltfCameraPoseSou
 } // namespace
 
 GltfCameraPoseSourceView GltfCameraPoseView(const tinygltf::Model& model) noexcept {return GltfCameraSourceView(model);}
+tinygltf::Node CameraPoseAsTrs(const glm::mat4& matrix, const tinygltf::Node& preferred,
+    const GltfCameraPoseAuthoringLimits& limits) {
+  tinygltf::Node pose;
+  pose.camera = preferred.camera;
+  setTrs(pose, matrix, preferred, limits);
+  return pose;
+}
 GltfCameraPosePlan PlanGltfCameraViewPose(GltfCameraPoseSourceView authored,GltfCameraPoseSourceView evaluated,
     int32_t aNode,int32_t eNode,const GltfCameraPoseGraphState& graph,const glm::mat4& desired,const GltfCameraPoseAuthoringLimits& limits) {
   if(!limitsValid(limits)) fail("pose authoring requires finite positive capacities and tolerances");
