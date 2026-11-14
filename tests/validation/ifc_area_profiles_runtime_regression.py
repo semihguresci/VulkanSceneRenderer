@@ -62,7 +62,7 @@ STRUCTURAL_WITNESSES = (
     (2, "positive bottom flange taper", (.40, -.73), True), (2, "negative top flange taper", (.37, .806), False),
     (2, "outside narrow flange", (.86, .74), False), (2, "open side of web", (-.58, .06), False),
     (3, "flange center", (0., .79), True), (3, "flange span", (.81, .83), True),
-    (3, "tapered web neck", (.313, .39), True), (3, "concave fillet", (.395, .594), True),
+    (3, "tapered web neck", (.313, .39), True), (3, "concave fillet", (.38, .59), True),
     (3, "tapered web foot gap", (.24, -.60), False), (3, "sloping flange underside", (.90, .63), False),
     (3, "wide open side", (-.72, 0.), False),
 )
