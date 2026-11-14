@@ -359,6 +359,13 @@ bool GpuCullManager::ensureBufferCapacity(uint32_t maxObjectCount) {
     return false;
   }
 
+  // Growth replaces all images' culling buffers and rewrites their descriptor
+  // sets. Other images may still be using this generation on the graphics queue.
+  if (maxObjectCount_ != 0u &&
+      vkQueueWaitIdle(device_->graphicsQueue()) != VK_SUCCESS) {
+    throw std::runtime_error("failed to retire graphics culling buffers before growth");
+  }
+
   const uint32_t capacity = std::max(maxObjectCount, 64u);
   destroyCullBuffers();
   inputDrawBuffers_.assign(imageCount, {});
@@ -1391,6 +1398,15 @@ void GpuCullManager::freezeCulling(uint32_t imageIndex,
   if (frozenCameraBuffers_.size() < imageCount) {
     frozenCameraBuffers_.resize(imageCount);
   }
+
+  // A new freeze replaces every snapshot. Earlier submissions can still be
+  // reading snapshots from other images or writing the previous freeze.
+  VkMemoryBarrier beforeCopy{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+  beforeCopy.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+  beforeCopy.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+  vkCmdPipelineBarrier(cmd,
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT,
+      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &beforeCopy, 0, nullptr, 0, nullptr);
 
   // Copy the live camera buffer → frozen buffer.
   VkBufferCopy copy{};

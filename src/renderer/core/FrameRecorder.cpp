@@ -118,14 +118,13 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
     throw std::runtime_error("failed to begin recording command buffer!");
   }
 
+  if (p.services.gpuProfiler)
+    p.services.gpuProfiler->beginFrame(commandBuffer, p.runtime.frameSlot);
   if (p.lifecycle.afterCommandBufferBegin) {
     p.lifecycle.afterCommandBufferBegin(commandBuffer, p);
   }
 
   if (p.services.telemetry || p.services.gpuProfiler) {
-    if (p.services.gpuProfiler) {
-      p.services.gpuProfiler->beginFrame(commandBuffer, p.runtime.frameSlot);
-    }
     RenderPassExecutionHooks hooks{};
     hooks.beginPass = [gpuProfiler = p.services.gpuProfiler](
                           RenderPassId id, VkCommandBuffer cmd) {
@@ -151,6 +150,8 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
   if (p.lifecycle.afterGraphExecution) {
     p.lifecycle.afterGraphExecution(commandBuffer, p);
   }
+  if (p.services.gpuProfiler)
+    p.services.gpuProfiler->endFrame(commandBuffer);
 
   if (!recordCommandBufferEndCommands(commandBuffer)) {
     throw std::runtime_error("failed to record command buffer!");

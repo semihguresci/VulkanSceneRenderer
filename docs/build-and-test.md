@@ -251,6 +251,32 @@ Omit `--batched` when tracing a build that predates the batch. The report
 counts the initialization command buffers and their waits separately from
 rendering, upload, and swapchain retirement work.
 
+### Graphics frame overlap
+
+The Release benchmark compares the default graphics policy and
+`--serialize-graphics` using the same executable, scene, camera, and frame
+slot count. It measures both raster techniques at one, two, and three slots.
+Provide the Cornell Box glTF and Tekla House IFCX fixtures from your build's
+runtime assets. You can pass either fixture to run only its cases.
+
+```powershell
+$renderer = 'out/build/windows-release/VulkanSceneRenderer.exe'
+$models = 'out/build/windows-release/models'
+python tests/validation/graphics_concurrency_benchmark.py `
+  --renderer $renderer `
+  --gltf "$models/validation/cornell_box_local_light.gltf" `
+  --ifcx "$models/buildingSMART-IFC5-development/examples/Tekla House/TeklaHouse.ifcx" `
+  --output out/graphics-concurrency
+```
+
+Use Python 3.11 or newer. Add `--validation-manifest` with the path to
+`VkLayer_khronos_validation.json` for a separate synchronization validation run.
+The report includes the selected policy, pending frame counts, CPU phase
+statistics, submission-matched GPU timings and collection latency, and VMA
+allocations on device-local heaps. The whole-graphics timestamp span includes
+GPU waits within the command buffer. Presentation has its own CPU phase.
+The final screenshot writes the telemetry and is excluded from the steady sample.
+
 CPU tests are enabled by default through `ENABLE_TESTS`. Window/Vulkan tests are
 opt-in with `ENABLE_WINDOWED_TESTS=ON`.
 

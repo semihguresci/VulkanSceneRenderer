@@ -1,4 +1,7 @@
 #include "Container/common/CommonGLFW.h"
+#include "Container/renderer/core/FrameConcurrencyPolicy.h"
+#include "Container/renderer/core/FrameRecorder.h"
+#include "Container/renderer/core/RenderPassGpuProfiler.h"
 #include "Container/renderer/core/RenderPassManager.h"
 #include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/effects/BloomManager.h"
@@ -6,10 +9,12 @@
 #include "Container/renderer/lighting/EnvironmentManager.h"
 #include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/utility/AllocationManager.h"
+#include "Container/utility/FrameSyncManager.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/VulkanDevice.h"
 #include <gtest/gtest.h>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -73,7 +78,9 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
     create.enabledFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.bufferDeviceAddress = VK_TRUE;
+    v12.hostQueryReset = VK_TRUE;
     v12.separateDepthStencilLayouts = VK_TRUE;
+    v12.timelineSemaphore = VK_TRUE;
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
     v13.dynamicRendering = VK_TRUE;
     v13.maintenance4 = VK_TRUE;
@@ -532,6 +539,220 @@ TEST_F(ManagedComputeOwnerGpu, BloomRecordsTwoImagesWithoutInvalidatingEither) {
   queue.submit(info, nullptr);
   queue.waitIdle();
 }
+
+TEST_F(ManagedComputeOwnerGpu, ThreeRecordedGraphicsFramesRemainPendingUntilTheirGateOpens) {
+  constexpr uint32_t imageCount = 3;
+  constexpr uint32_t extent = 32;
+  constexpr VkFormat colorFormat = VK_FORMAT_R8G8B8A8_UNORM;
+  const auto rawDevice = device->device();
+  const auto allocator = allocation->memoryManager()->allocator();
+  const VkImageSubresourceRange colorRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+  struct FrameStorage {
+    AllocationManager& allocation;
+    VmaAllocator allocator;
+    std::array<VkImage, imageCount> images{};
+    std::array<VmaAllocation, imageCount> memory{};
+    std::array<AllocatedBuffer, imageCount> readbacks{};
+    ~FrameStorage() {
+      for (uint32_t image = 0; image < imageCount; ++image) {
+        if (readbacks[image].buffer)
+          allocation.destroyBuffer(readbacks[image]);
+        if (images[image])
+          vmaDestroyImage(allocator, images[image], memory[image]);
+      }
+    }
+  } frames{*allocation, allocator};
+  std::vector<vk::raii::ImageView> views;
+  views.reserve(imageCount);
+  const VkImageCreateInfo imageInfo{
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = colorFormat,
+      .extent = {extent, extent, 1},
+      .mipLevels = 1,
+      .arrayLayers = 1,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .tiling = VK_IMAGE_TILING_OPTIMAL,
+      .usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
+  VmaAllocationCreateInfo imageAllocation{};
+  imageAllocation.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  for (uint32_t image = 0; image < imageCount; ++image) {
+    ASSERT_EQ(vmaCreateImage(allocator, &imageInfo, &imageAllocation, &frames.images[image],
+                            &frames.memory[image], nullptr), VK_SUCCESS);
+    views.emplace_back(device->raii(), vk::ImageViewCreateInfo(
+        {}, frames.images[image], vk::ImageViewType::e2D, vk::Format::eR8G8B8A8Unorm,
+        {}, static_cast<vk::ImageSubresourceRange>(colorRange)));
+    frames.readbacks[image] = allocation->createBuffer(4, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VMA_MEMORY_USAGE_AUTO,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    ASSERT_NE(frames.readbacks[image].allocation_info.pMappedData, nullptr);
+  }
+
+  BloomManager bloom(device, *allocation, *pipelines, *pool);
+  bloom.createResources(root);
+  bloom.createTextures(extent, extent, imageCount);
+  ASSERT_TRUE(bloom.isReady());
+  FrameSyncManager sync(rawDevice, imageCount);
+  sync.initialize();
+  RenderPassGpuProfiler profiler;
+  // Match the timestamp backend used by the overlap policy. KHR performance
+  // queries are separately serialized by the application.
+  profiler.initialize(rawDevice, VK_NULL_HANDLE, device->physicalDevice(),
+                      device->queueFamilyIndices().graphicsFamily.value(), imageCount);
+  if (!profiler.isReady())
+    GTEST_SKIP() << profiler.backendStatus();
+
+  const auto transition = [&](VkCommandBuffer cmd, uint32_t image, VkImageLayout oldLayout,
+                             VkImageLayout newLayout, VkPipelineStageFlags2 srcStage,
+                             VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess) {
+    const VkImageMemoryBarrier2 barrier{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .srcStageMask = srcStage, .srcAccessMask = srcAccess,
+        .dstStageMask = dstStage, .dstAccessMask = dstAccess,
+        .oldLayout = oldLayout, .newLayout = newLayout,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = frames.images[image], .subresourceRange = colorRange};
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+    vkCmdPipelineBarrier2(cmd, &dependency);
+  };
+
+  FrameRecorder recorder;
+  auto& graph = recorder.graph();
+  // Each image is cleared to its own solid RGB color using a graphics
+  // attachment. Bloom exercises real image-owned descriptors and mip chains.
+  graph.addPass(RenderPassId::Lighting, {}, [&](VkCommandBuffer cmd, const FrameRecordParams& params) {
+    const auto image = params.runtime.imageIndex;
+    transition(cmd, image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+    VkRenderingAttachmentInfo attachment{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+        .imageView = *views[image],
+        .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+        .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+    attachment.clearValue.color.float32[image] = 1.0f;
+    attachment.clearValue.color.float32[3] = 1.0f;
+    const VkRenderingInfo rendering{
+        .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+        .renderArea = {{0, 0}, {extent, extent}}, .layerCount = 1,
+        .colorAttachmentCount = 1, .pColorAttachments = &attachment};
+    vkCmdBeginRendering(cmd, &rendering);
+    vkCmdEndRendering(cmd);
+    transition(cmd, image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+               VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
+  });
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::Lighting, {}, {}, {RenderResourceId::SceneColor}));
+  graph.addPass(RenderPassId::Bloom, {RenderPassId::Lighting},
+                [&](VkCommandBuffer cmd, const FrameRecordParams& params) {
+    const auto image = params.runtime.imageIndex;
+    bloom.dispatch(cmd, image, *views[image], extent, extent);
+  });
+  graph.compile();
+
+  auto commands = device->raii().allocateCommandBuffers(
+      vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, imageCount));
+  FrameRecordParams params{};
+  params.services.gpuProfiler = &profiler;
+  params.lifecycle.afterGraphExecution = [&](VkCommandBuffer cmd, const FrameRecordParams& frame) {
+    const auto image = frame.runtime.imageIndex;
+    transition(cmd, image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+               VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+               VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
+               VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
+    const VkBufferImageCopy copy{
+        .imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1},
+        .imageOffset = {extent / 2, extent / 2, 0},
+        .imageExtent = {1, 1, 1}};
+    vkCmdCopyImageToBuffer(cmd, frames.images[image], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                           frames.readbacks[image].buffer, 1, &copy);
+  };
+
+  const vk::SemaphoreTypeCreateInfo timelineType(vk::SemaphoreType::eTimeline, 0);
+  vk::SemaphoreCreateInfo semaphoreInfo;
+  semaphoreInfo.pNext = &timelineType;
+  const vk::raii::Semaphore gate(device->raii(), semaphoreInfo);
+  // Install a cleanup guard before queueing writes. Fatal assertions release
+  // the timeline semaphore and retire any submitted fences before destruction.
+  std::array<VkFence, imageCount> submitted{};
+  uint32_t submittedCount = 0;
+  struct RetireSubmissions {
+    VkDevice device;
+    VkSemaphore gate;
+    const std::array<VkFence, imageCount>& fences;
+    const uint32_t& count;
+    bool released{false};
+    VkResult release() {
+      if (released) return VK_SUCCESS;
+      const VkSemaphoreSignalInfo signal{.sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO,
+          .semaphore = gate, .value = 1};
+      const auto result = vkSignalSemaphore(device, &signal);
+      released = result == VK_SUCCESS;
+      return result;
+    }
+    ~RetireSubmissions() {
+      if (!count) return;
+      EXPECT_EQ(release(), VK_SUCCESS);
+      EXPECT_EQ(vkWaitForFences(device, count, fences.data(), VK_TRUE, 10'000'000'000ull), VK_SUCCESS);
+    }
+  } retirement{rawDevice, *gate, submitted, submittedCount};
+
+  for (uint32_t slot = 0; slot < imageCount; ++slot) {
+    // Rotate image IDs relative to CPU slots so the readback and profiler
+    // prove that the test's two independent indices remain distinguishable.
+    params.runtime.imageIndex = (slot + 1) % imageCount;
+    params.runtime.frameSlot = slot;
+    FrameConcurrencyPolicy::currentFrameFence().waitBeforeAcquire(sync, slot);
+    recorder.record(*commands[slot], params);
+    const VkSemaphoreSubmitInfo wait{
+        .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO,
+        .semaphore = *gate, .value = 1, .stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT};
+    const VkCommandBufferSubmitInfo buffer{
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_SUBMIT_INFO, .commandBuffer = *commands[slot]};
+    const VkSubmitInfo2 submission{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO_2,
+        .waitSemaphoreInfoCount = 1, .pWaitSemaphoreInfos = &wait,
+        .commandBufferInfoCount = 1, .pCommandBufferInfos = &buffer};
+    sync.resetFence(slot);
+    ASSERT_EQ(vkQueueSubmit2(device->graphicsQueue(), 1, &submission, sync.fence(slot)), VK_SUCCESS);
+    submitted[submittedCount++] = sync.fence(slot);
+    profiler.onSubmitted(sync.fence(slot), 10 + slot, {});
+  }
+
+  for (const auto fence : submitted)
+    EXPECT_EQ(vkGetFenceStatus(rawDevice, fence), VK_NOT_READY);
+  EXPECT_EQ(profiler.pendingFrames(), imageCount);
+  EXPECT_TRUE(profiler.collectRetired().empty());
+
+  ASSERT_EQ(retirement.release(), VK_SUCCESS);
+  ASSERT_EQ(vkWaitForFences(rawDevice, imageCount, submitted.data(), VK_TRUE, 10'000'000'000ull), VK_SUCCESS);
+  const auto retired = profiler.collectRetired();
+  ASSERT_EQ(retired.size(), imageCount);
+  EXPECT_EQ(profiler.pendingFrames(), 0u);
+  for (uint32_t slot = 0; slot < imageCount; ++slot) {
+    EXPECT_EQ(retired[slot].frameIndex, 10 + slot);
+    EXPECT_EQ(retired[slot].serial, slot + 1);
+    EXPECT_TRUE(retired[slot].graphicsMilliseconds.has_value());
+    ASSERT_EQ(retired[slot].timings.size(), 2u);
+    EXPECT_TRUE(std::ranges::any_of(retired[slot].timings, [](const auto& timing) {
+      return timing.id == RenderPassId::Bloom;
+    }));
+  }
+  for (uint32_t image = 0; image < imageCount; ++image) {
+    const auto& buffer = frames.readbacks[image];
+    std::array<uint8_t, 4> actual{};
+    ASSERT_EQ(vmaInvalidateAllocation(allocator, buffer.allocation, 0, actual.size()), VK_SUCCESS);
+    std::memcpy(actual.data(), buffer.allocation_info.pMappedData, actual.size());
+    std::array<uint8_t, 4> expected{};
+    expected[image] = expected[3] = 255;
+    EXPECT_EQ(actual, expected);
+  }
+}
+
 
 TEST_F(ManagedComputeOwnerGpu, ExposureDispatchRetainsHistogramAndAdaptationAcrossPublication) {
   ExposureManager exposure(device, *allocation, *pipelines);

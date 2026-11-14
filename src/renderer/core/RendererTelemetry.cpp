@@ -70,8 +70,7 @@ void RendererTelemetry::beginFrame(uint64_t frameIndex,
   active_.frameIndex = frameIndex;
   active_.sync.frameSlot = frameSlot;
   active_.sync.maxFramesInFlight = maxFramesInFlight;
-  active_.sync.serializedConcurrency = serializedConcurrency;
-  active_.sync.concurrencyReason = std::string(concurrencyReason);
+  setConcurrency(serializedConcurrency, concurrencyReason);
   active_.sync.swapchainRecreateCount = swapchainRecreateCount_;
   active_.sync.deviceWaitIdleCount = deviceWaitIdleCount_;
   if (activePassCpuMs_.size() != kRenderPassIdCount) {
@@ -96,6 +95,11 @@ void RendererTelemetry::beginFrame(uint64_t frameIndex,
   }
   activePassGpuTimingAvailable_ = false;
   activeRecording_ = true;
+}
+
+void RendererTelemetry::setConcurrency(bool serialized, std::string_view reason) {
+  active_.sync.serializedConcurrency = serialized;
+  active_.sync.concurrencyReason = reason;
 }
 
 void RendererTelemetry::setImageIndex(uint32_t imageIndex) {
@@ -199,6 +203,21 @@ void RendererTelemetry::setGpuProfilerStatus(
   active_.gpuProfiler = std::move(status);
 }
 
+void RendererTelemetry::recordSubmittedGraphicsTiming(RendererSubmittedGraphicsTiming timing) {
+  if (activeRecording_ && active_.frameIndex == timing.frameIndex) {
+    active_.submittedGraphicsTiming = timing;
+    return;
+  }
+  const auto row = std::ranges::find(history_, timing.frameIndex, &RendererTelemetryHistorySample::frameIndex);
+  if (row != history_.end()) row->submittedGraphicsTiming = timing;
+  if (latest_.valid && latest_.frameIndex == timing.frameIndex)
+    latest_.submittedGraphicsTiming = timing;
+}
+
+void RendererTelemetry::setGraphicsFramesInFlight(uint32_t count) {
+  if (activeRecording_) active_.graphicsFramesInFlight = count;
+}
+
 void RendererTelemetry::setWorkload(RendererWorkloadTelemetry workload) {
   if (!activeRecording_) return;
   const uint32_t submittedLights = active_.workload.submittedLights;
@@ -279,10 +298,12 @@ void RendererTelemetry::noteDeviceWaitIdle() {
   }
 }
 
-void RendererTelemetry::endFrame() {
+void RendererTelemetry::endFrame(bool submitted) {
   if (!activeRecording_) return;
 
   latest_ = active_;
+  activeRecording_ = false;
+  if (!submitted) return;
   if (history_.size() == historyCapacity_) {
     history_.erase(history_.begin());
   }
@@ -296,8 +317,11 @@ void RendererTelemetry::endFrame() {
       .presentMs =
           latest_.timing.cpuMs[phaseIndex(RendererTelemetryPhase::Present)],
       .cpuPhasesMs = latest_.timing.cpuMs,
+      .serializedConcurrency = latest_.sync.serializedConcurrency,
+      .concurrencyReason = latest_.sync.concurrencyReason,
+      .submittedGraphicsTiming = latest_.submittedGraphicsTiming,
+      .graphicsFramesInFlight = latest_.graphicsFramesInFlight,
   });
-  activeRecording_ = false;
 }
 
 RendererTelemetryView RendererTelemetry::view() const {

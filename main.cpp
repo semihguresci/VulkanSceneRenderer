@@ -331,6 +331,7 @@ void printCommandLineHelp() {
   --display-mode NAME           Display mode (--render-mode is an alias)
   --msaa N                     MSAA sample count
   --frames-in-flight N         Graphics frame slots (1 to 4, default 2)
+  --serialize-graphics         Wait for all graphics frame slots before acquiring
   --taa / --no-taa              Enable/disable temporal antialiasing
   --fsr MODE                    Vulkan FSR native, quality, balanced, or performance
   --dlss MODE                   Vulkan DLSS SR native, quality, balanced, or performance
@@ -887,6 +888,10 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     if (parseExtendedPreviewOption(arg,i))continue;
     if (parseVolumeOption(arg, i)) continue;
     if (parseReferencePathOption(arg, i)) continue;
+    if (arg == "--serialize-graphics") {
+      config.serializeGraphics = true;
+      continue;
+    }
     if (arg == "--model") {
       config.modelPath = std::string(requireValue(argc, argv, i, arg));
       positionalModelConsumed = true;

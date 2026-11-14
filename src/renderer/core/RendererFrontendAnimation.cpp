@@ -6,6 +6,7 @@
 #include <Container/renderer/lighting/LightingManager.h>
 #include <Container/renderer/scene/SceneController.h>
 #include <Container/renderer/temporal/TemporalManager.h>
+#include <Container/utility/FrameSyncManager.h>
 #include <Container/utility/GuiManager.h>
 #include <Container/utility/SceneManager.h>
 #include <Container/utility/SwapChainManager.h>
@@ -98,6 +99,11 @@ void RendererFrontend::publishGltfAnimationChanges(
     const container::geometry::gltf::AnimationDirtySet& dirty) {
   using namespace container::geometry::gltf;
   auto& source = subs_.sceneManager->animationSource();
+  if (!dirty.materials.empty()) {
+    // Animation updates the shared mapped material buffer in place.
+    subs_.frameSyncManager->waitForAllFrames();
+    if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
+  }
   ApplyAnimatedNodeTransforms(source, dirty, sceneGraph_);
   if (!dirty.nodeFlags.empty()) {
     AnimationDirtySet materialAndCamera;
@@ -186,9 +192,9 @@ void RendererFrontend::updateGltfAnimation() {
     controls->cameraNode = gltfAnimationCameraNode_ ? static_cast<int>(*gltfAnimationCameraNode_) : -1;
   }
 }
-bool RendererFrontend::applyGltfAnimationCamera(uint32_t imageIndex) {
+bool RendererFrontend::applyGltfAnimationCamera() {
   gltfAnimationCamera_.reset();
-  if (!gltfAnimationCameraNode_ || !subs_.sceneManager || imageIndex >= buffers_.cameras.size()) return false;
+  if (!gltfAnimationCameraNode_ || !subs_.sceneManager) return false;
   const auto extent = svc_.swapChainManager.extent();
   if (!extent.width || !extent.height) return false;
   try {
@@ -198,7 +204,6 @@ bool RendererFrontend::applyGltfAnimationCamera(uint32_t imageIndex) {
     buffers_.cameraData = gltfAnimationCamera_->data;
     if (subs_.sceneController)
       (void)subs_.sceneController->world().setActiveCamera(buffers_.cameraData,gltfAnimationCamera_->nearPlane,gltfAnimationCamera_->farPlane);
-    SceneController::writeToBuffer(svc_.allocationManager,buffers_.cameras[imageIndex],&buffers_.cameraData,sizeof(buffers_.cameraData));
     return true;
   } catch (const std::exception& error) {
     if (subs_.guiManager) subs_.guiManager->gltfAnimationControls().error = error.what();

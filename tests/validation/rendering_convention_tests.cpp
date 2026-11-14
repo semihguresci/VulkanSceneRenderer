@@ -4342,6 +4342,25 @@ TEST(RenderingConventionTests,
       "container::gpu::AllocatedBuffer occlusionCountBuffer_{}"));
 }
 
+TEST(RenderingConventionTests, GpuCullManagerRetiresPublishedBuffersBeforeGrowth) {
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const auto begin = gpuCullManager.find("bool GpuCullManager::ensureBufferCapacity(");
+  const auto end = gpuCullManager.find("void GpuCullManager::uploadDrawCommands(", begin);
+  ASSERT_NE(begin, std::string::npos);
+  ASSERT_NE(end, std::string::npos);
+  const auto grow = gpuCullManager.substr(begin, end - begin);
+  const auto unchanged = grow.find("if (maxObjectCount <= maxObjectCount_ && buffersReady)");
+  const auto wait = grow.find("vkQueueWaitIdle(device_->graphicsQueue())");
+  const auto destroy = grow.find("destroyCullBuffers();");
+  ASSERT_NE(destroy, std::string::npos);
+  EXPECT_LT(unchanged, wait);
+  EXPECT_LT(wait, destroy);
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      grow, "if (maxObjectCount_ != 0u && "
+            "vkQueueWaitIdle(device_->graphicsQueue()) != VK_SUCCESS)"));
+}
+
 TEST(RenderingConventionTests,
      GpuCullManagerOwnsFrozenCullingCameraBuffersPerImage) {
   const std::string gpuCullHeader =
@@ -4383,6 +4402,30 @@ TEST(RenderingConventionTests,
                         "container::gpu::AllocatedBuffer frozenCameraBuffer_"));
   EXPECT_FALSE(contains(gpuCullHeader, "frozenCameraBuffer_.buffer"));
   EXPECT_FALSE(contains(gpuCullManager, "frozenCameraBuffer_.buffer"));
+}
+
+TEST(RenderingConventionTests, GpuCullManagerOrdersFrozenCameraReplacement) {
+  const std::string gpuCullManager =
+      readRepoTextFile("src/renderer/culling/GpuCullManager.cpp");
+  const auto begin = gpuCullManager.find("void GpuCullManager::freezeCulling(");
+  const auto end = gpuCullManager.find("void GpuCullManager::unfreezeCulling(", begin);
+  ASSERT_NE(begin, std::string::npos);
+  ASSERT_NE(end, std::string::npos);
+  const auto freeze = gpuCullManager.substr(begin, end - begin);
+  const auto beforeCopy = freeze.find("vkCmdPipelineBarrier(");
+  const auto copy = freeze.find("vkCmdCopyBuffer(");
+  const auto afterCopy = freeze.find("vkCmdPipelineBarrier(", copy);
+  ASSERT_NE(afterCopy, std::string::npos);
+  EXPECT_LT(beforeCopy, copy);
+  EXPECT_LT(copy, afterCopy);
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      freeze, "beforeCopy.srcAccessMask = VK_ACCESS_UNIFORM_READ_BIT | "
+              "VK_ACCESS_TRANSFER_WRITE_BIT;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      freeze, "beforeCopy.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      freeze, "vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | "
+              "VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,"));
 }
 
 TEST(RenderingConventionTests, GpuCullManagerOwnsHiZResourcesPerImage) {
