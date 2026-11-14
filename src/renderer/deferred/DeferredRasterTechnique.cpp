@@ -786,6 +786,46 @@ deferredRasterScenePassInputs(const FrameRecordParams &p,
           .debugOverlay = deferred.debugOverlay()};
 }
 
+void recordOpaqueSceneDataCapture(VkCommandBuffer cmd,
+                                  const FrameRecordParams &p) {
+  const auto depth = deferredRasterImage(p, DeferredRasterImageId::DepthStencil);
+  if (depth == VK_NULL_HANDLE) {
+    return;
+  }
+
+  // The G-buffer has already made its color attachments shader-readable.
+  // Temporarily expose scene depth and restore its attachment layout for
+  // the remaining raster graph, including the transparent picking depth copy.
+  VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
+  barrier.srcStageMask = VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                         VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+  barrier.srcAccessMask = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                          VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  barrier.dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+  barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL;
+  barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+  barrier.image = depth;
+  barrier.subresourceRange = {
+      VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, 1};
+  VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
+  dependency.imageMemoryBarrierCount = 1;
+  dependency.pImageMemoryBarriers = &barrier;
+  vkCmdPipelineBarrier2(cmd, &dependency);
+
+  p.services.sceneDataCapture(cmd, p);
+
+  std::swap(barrier.oldLayout, barrier.newLayout);
+  std::swap(barrier.srcStageMask, barrier.dstStageMask);
+  std::swap(barrier.srcAccessMask, barrier.dstAccessMask);
+  // Finish the sampled ID and normal reads before another raster scope can
+  // write color attachments. Those read-to-write hazards need execution order.
+  barrier.dstStageMask |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  vkCmdPipelineBarrier2(cmd, &dependency);
+}
+
 VkPipeline chooseDeferredRasterPipeline(VkPipeline preferred,
                                         VkPipeline fallback) {
   return preferred != VK_NULL_HANDLE ? preferred : fallback;
@@ -1444,7 +1484,10 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                   const bool recorded = recordDeferredRasterScenePassCommands(
                       cmd, deferredRasterScenePassInputs(
                                p, SceneRasterPassKind::GBuffer, *deferred));
-                  if (recorded && p.pickIdWritten) *p.pickIdWritten = true;
+                  if (!recorded) return;
+                  if (p.pickIdWritten) *p.pickIdWritten = true;
+                  // Read the opaque IDs before transparent picking reuses the attachment.
+                  if (p.services.sceneDataCapture) recordOpaqueSceneDataCapture(cmd, p);
                 });
 
   graph.addPass(RenderPassId::BimGBuffer,

@@ -131,6 +131,7 @@ struct AppConfig {
   std::shared_ptr<const container::geometry::vdb::ImportOptions> vdbModelOptions;
   std::string screenshotCapturePath{};
   bool screenshotViewportOnly{false};
+  bool screenshotSceneData{false};
   bool gpuHardwareTelemetry{false};
   // Export the initialized scene (or final capture-sequence scene) on exit.
   std::string sceneExportPath{};

@@ -100,6 +100,8 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RenderPassScopeRecorder.cpp
     renderer/core/RenderTechnique.cpp
     renderer/core/ScreenshotCaptureRecorder.cpp
+    renderer/core/SceneDataCapture.cpp
+    renderer/core/RendererFrontendSceneData.cpp
 
     renderer/resources/CommandBufferManager.cpp
     renderer/resources/FrameResourceManager.cpp

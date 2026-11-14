@@ -48,10 +48,25 @@ VulkanSceneRenderer.exe --tone-map agx --white-balance 5100 --vibrance .5
 VulkanSceneRenderer.exe --tone-map neutral --save-display-grade grade.json
 VulkanSceneRenderer.exe --display-grade grade.json
 VulkanSceneRenderer.exe --display-mode lit --capture-frame 9 --screenshot scene.exr
+VulkanSceneRenderer.exe --model room.glb --render-technique deferred-raster --msaa 1 --no-taa --capture-data --screenshot scene.exr
 VulkanSceneRenderer.exe --capture-frame 9 --screenshot-viewport --screenshot viewport.png
 VulkanSceneRenderer.exe --auto-exposure --capture-frame 32 --screenshot viewport.png
 VulkanSceneRenderer.exe --render-technique path-tracing --path-spp 8 --path-sample-series 4,16,64 --screenshot reference.exr
 ```
+
+`--capture-data` writes `scene.data.exr` and `scene.data.json` alongside the
+regular `scene.exr` from the same frame. It requires a primary glTF or GLB
+scene, Deferred raster, native resolution, 1× MSAA and TAA disabled. The
+data EXR stores camera-space depth in metres in `Z` and world-space shading
+normals in `N.X`, `N.Y` and `N.Z` as FLOAT channels. `ObjectID` is an exact
+UINT channel. The nearest opaque or alpha-mask-passing surface supplies the
+data. Background pixels have zero depth, normal and ID. Blended surfaces
+still affect scene RGB.
+
+The JSON lookup maps nonzero IDs to visible render objects, including
+non-selectable objects and separate instances of the same glTF node. It
+records scene graph and glTF source indices when available. IDs are local
+to the captured scene state. The data EXR uses uncompressed scanlines.
 
 `--path-sample-series` exports raw EXR checkpoints from one accumulation with
 playback held at the starting pose. Give up to 64 strictly increasing counts
@@ -85,6 +100,7 @@ python tests/validation/display_grade_runtime_regression.py PATH_TO_EXE OUTPUT_D
 python tests/validation/scene_linear_capture_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 python tests/validation/scene_linear_selection_history_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 python tests/validation/reference_sample_series_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
+python tests/validation/scene_data_capture_runtime_regression.py PATH_TO_EXE OUTPUT_DIRECTORY
 ```
 
 They check analytic tone curves and emission, transparent coverage, preset

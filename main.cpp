@@ -441,6 +441,7 @@ void printCommandLineHelp() {
   --bloom / --no-bloom            Enable/disable bloom
   --screenshot PATH             Capture window PNG or scene-linear EXR
   --screenshot-viewport         Omit editor overlays from PNG capture
+  --capture-data                Add depth, normals and object IDs to a glTF Scene EXR capture
   --gpu-hardware-telemetry      Add optional NVML readings to capture telemetry
   --save-scene PATH              Save primary editable scene as .glb or .gltf
   --save-linked-scene PATH       Save a companion .gltf with retained URI links
@@ -1154,6 +1155,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       explicitBimImportScale = true;
     } else if (arg == "--screenshot-viewport") {
       config.screenshotViewportOnly = true;
+    } else if (arg == "--capture-data") {
+      config.screenshotSceneData = true;
     } else if (arg == "--gpu-hardware-telemetry") {
       config.gpuHardwareTelemetry = true;
     } else if (arg == "--visual-regression-capture" || arg == "--screenshot") {
@@ -1438,6 +1441,24 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   }
 
   container::temporal::validateSettings(config.taa, config.msaaSamples);
+  if (config.screenshotSceneData) {
+    const auto imageExtension = lowerAscii(container::util::pathToUtf8(
+        container::util::pathFromUtf8(config.screenshotCapturePath).extension()));
+    if (imageExtension != ".exr")
+      throw std::invalid_argument("--capture-data requires --screenshot FILE.exr");
+    const auto modelExtension = lowerAscii(container::util::pathToUtf8(
+        container::util::pathFromUtf8(config.modelPath).extension()));
+    if ((modelExtension != ".gltf" && modelExtension != ".glb") ||
+        !config.bimModelPath.empty() || vdbSourceCount != 0 || !config.aslPosePath.empty())
+      throw std::invalid_argument("--capture-data requires a primary glTF or GLB scene without auxiliary models");
+    if (config.renderTechnique != "deferred-raster" || config.msaaSamples != 1 ||
+        config.taa.enabled || config.upscaling.mode != container::renderer::UpscaleMode::Native)
+      throw std::invalid_argument("--capture-data requires Deferred raster, 1× MSAA and native resolution with TAA disabled");
+    if (config.displayModeOverride.empty())
+      config.displayModeOverride = "lit";
+    if (config.displayModeOverride != "lit" || !displayGradeOutput.empty() || !skyPresetOutput.empty())
+      throw std::invalid_argument("--capture-data requires a Lit scene capture");
+  }
   if (!config.volumetricFog.valid())
     throw std::invalid_argument("Fog density must be in [0,4], albedo [0,1], anisotropy [-0.9,0.9], and distance [0.5,5000]");
   if (!config.pathSampleSeries.empty()) {
