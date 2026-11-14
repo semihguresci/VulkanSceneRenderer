@@ -28,6 +28,7 @@
 #include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/lighting/LightEditTypes.h"
 #include "Container/renderer/lighting/DdgiProbeVolume.h"
+#include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/lighting/DdgiSceneChanges.h"
 #include "Container/renderer/pathtracing/ReferenceOidnSettings.h"
 #include "Container/renderer/pathtracing/ReferencePathDisplayMode.h"
@@ -59,6 +60,7 @@ struct CaptureSample;
 struct CaptureBimAnnotations;
 struct CaptureBimClash;
 struct CaptureBimSunHours;
+struct CaptureDdgiRoomPlan;
 struct CaptureRenderSetup;
 struct CaptureComfyUi;
 struct CapturePhysicsJointCreate;
@@ -360,6 +362,14 @@ private:
   void processPendingDdgiSceneFit();
   void fitDdgiDetailToSelection(uint32_t maxProbes, std::string_view nodeName = {});
   void processPendingDdgiDetailFit();
+  void processDdgiBimRoomPlan();
+  void startDdgiBimRoomPlan(uint32_t maxProbes, bool wait = false);
+  void pollDdgiBimRoomPlan(bool wait = false);
+  void applyDdgiBimRoomPlan();
+  void discardDdgiBimRoomPlan();
+  void publishDdgiBimRoomPlanUi();
+  void appendDdgiBimRoomPlanTelemetry(nlohmann::json& json) const;
+  void applyCaptureDdgiRoomPlan(const container::temporal::CaptureDdgiRoomPlan& event);
   [[nodiscard]] std::string ddgiActiveSceneIdentity() const;
   void processPendingDdgiPreset();
   std::optional<uint64_t> temporalClipRevision_{};
@@ -737,6 +747,20 @@ private:
     uint32_t overlayVertexCount{};
     bool guiDirty{};
   } bimSunHours_;
+  struct DdgiBimRoomPlanResult;
+  struct DdgiBimRoomPlanning {
+    enum class Status { Idle, Planning, Preview, Applied, Rejected };
+    const BimManager* model{};
+    uint64_t geometryRevision{}, metadataRevision{}, transformRevision{};
+    std::string sceneIdentity;
+    DdgiSettings base;
+    Status status{Status::Idle};
+    std::string diagnostic;
+    std::stop_source stop;
+    std::future<std::shared_ptr<const DdgiBimRoomPlanResult>> job;
+    std::shared_ptr<const DdgiBimRoomPlanResult> result;
+    bool snapshotMatches(const BimManager* current) const;
+  } ddgiBimRoomPlanning_;
   struct RenderSetupPreview;
   std::shared_ptr<RenderSetupPreview> renderSetupPreview_;
   RenderSetupDocument renderSetups_;

@@ -100,6 +100,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendCameraMotion.cpp
     renderer/core/RendererFrontendBimClash.cpp
     renderer/core/RendererFrontendBimSunHours.cpp
+    renderer/core/RendererFrontendDdgiBimRooms.cpp
     renderer/core/RendererFrontendRenderSetup.cpp
     renderer/core/RendererFrontendDeformation.cpp
     renderer/core/RendererFrontendDeformationTelemetry.cpp
@@ -139,6 +140,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/lighting/DdgiSceneBounds.cpp
     renderer/lighting/DdgiSceneChanges.cpp
     renderer/lighting/DdgiVolumePlacement.cpp
+    renderer/lighting/DdgiBimRoomPlan.cpp
     renderer/lighting/DdgiVolumeScroll.cpp
     renderer/lighting/DdgiVolumeSet.cpp
     renderer/lighting/DdgiPriorityScheduler.cpp
@@ -235,6 +237,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/bim/BimObjectTransforms.cpp
     renderer/bim/BimManager.cpp
     renderer/bim/BimHardClash.cpp
+    renderer/bim/BimDdgiRooms.cpp
     renderer/bim/BimMetadataCatalog.cpp
     renderer/bim/BimMetadataIndex.cpp
     renderer/bim/BimPrimitivePassPlanner.cpp

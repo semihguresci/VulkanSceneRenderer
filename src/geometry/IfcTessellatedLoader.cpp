@@ -1691,7 +1691,12 @@ private:
       storey.name = stringValue(argAt(*structure, 2)).value_or("");
       for (const auto productRef : refList(argAt(*relation, 4))) {
         if (structure->type == "IFCBUILDINGSTOREY") {
-          storeyByProduct_[productRef] = storey;
+          const auto *product = entity(productRef);
+          if (product && product->type == "IFCSPACE") {
+            rememberRoomStorey(productRef, storey);
+          } else {
+            storeyByProduct_[productRef] = storey;
+          }
         }
         ProductMetadata &metadata = semanticPropertiesByProduct_[productRef];
         appendProperty(
@@ -1701,6 +1706,13 @@ private:
                 structure->type == "IFCSPACE" ? "Space" : "BuildingStorey",
                 storey.name.empty() ? storey.id : storey.name, "reference"));
       }
+    }
+  }
+
+  void rememberRoomStorey(uint32_t product, const StoreyMetadata &storey) {
+    const auto [known, inserted] = storeyByProduct_.try_emplace(product, storey);
+    if (!inserted && known->second.id != storey.id) {
+      ambiguousStoreyProducts_.insert(product);
     }
   }
 
@@ -2527,8 +2539,18 @@ private:
         continue;
       }
 
+      const auto *parent = entity(*parentRef);
       size_t childIndex = 1u;
       for (const auto childRef : refList(argAt(*relation, 5))) {
+        if (parent && parent->type == "IFCBUILDINGSTOREY") {
+          const auto *child = entity(childRef);
+          if (child && child->type == "IFCSPACE") {
+            auto identity = stringValue(argAt(*parent, 0)).value_or("");
+            if (identity.empty()) identity = fallbackRefValue(*parentRef);
+            rememberRoomStorey(childRef, {std::move(identity),
+                                         stringValue(argAt(*parent, 2)).value_or("")});
+          }
+        }
         appendRelationshipReference(childRef, relation->type, "Parent",
                                     *parentRef);
         appendRelationshipReference(*parentRef, relation->type,
@@ -2615,6 +2637,10 @@ private:
     if (const auto semanticIt = semanticPropertiesByProduct_.find(product.id);
         semanticIt != semanticPropertiesByProduct_.end()) {
       mergeSemanticProperties(metadata, semanticIt->second);
+    }
+    if (product.type == "IFCSPACE" && ambiguousStoreyProducts_.contains(product.id)) {
+      appendProperty(metadata, makeProperty("Spatial containment", "Storey",
+                                            "Conflicting storey references", "relationship"));
     }
     return metadata;
   }
@@ -5446,14 +5472,23 @@ private:
         continue;
       }
 
+      const auto rememberMissingSpace = [&](std::string reason) {
+        if (product->type != "IFCSPACE") return;
+        const auto metadata = productMetadata(*product);
+        model_.spacesWithoutDrawableGeometry.push_back({metadata.guid, metadata.sourceId,
+            metadata.displayName, metadata.storeyId, metadata.storeyName,
+            std::move(reason), ambiguousStoreyProducts_.contains(product->id)});
+      };
       const auto placementRef = firstRef(*product, 5);
       const auto representationRef = firstRef(*product, 6);
       if (!representationRef.has_value()) {
+        rememberMissingSpace("No IFC space representation");
         continue;
       }
       const Entity *representation = entity(*representationRef);
       if (representation == nullptr ||
           representation->type != "IFCPRODUCTDEFINITIONSHAPE") {
+        rememberMissingSpace("Unsupported IFC space representation");
         continue;
       }
 
@@ -5508,6 +5543,7 @@ private:
         }
       }
       if (model_.elements.size() == elementStart) {
+        rememberMissingSpace("No drawable IFC space geometry produced");
         ++report.skippedProductCount;
         if (report.diagnostics.size() == warningStart)
           reportGeometryIssue(*representationRef, product,
@@ -5623,6 +5659,7 @@ private:
   std::unordered_map<uint32_t, std::vector<uint32_t>> openingsByHostProduct_{};
   std::unordered_map<uint32_t, uint32_t> hostByOpeningProduct_{};
   std::unordered_map<uint32_t, StoreyMetadata> storeyByProduct_{};
+  std::unordered_set<uint32_t> ambiguousStoreyProducts_{};
   std::unordered_map<uint32_t, SemanticMaterialMetadata> materialByProduct_{};
   std::unordered_map<uint32_t, ProductMetadata> semanticPropertiesByProduct_{};
 };

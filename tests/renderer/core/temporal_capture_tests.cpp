@@ -11,6 +11,37 @@ namespace {
 using container::temporal::CaptureSequence;
 using nlohmann::json;
 
+TEST(TemporalCapture, DdgiRoomPlanActionsHaveStrictAndOneShotInputs) {
+  using Action = container::temporal::CaptureDdgiRoomPlan::Action;
+  const auto input = json::parse(R"({"schemaVersion":1,"frames":5,"events":[
+    {"frame":2,"ddgiRoomPlan":{"action":"preview","maxDetailProbes":1024}},
+    {"frame":3,"ddgiRoomPlan":{"action":"apply","expectFailure":true}},
+    {"frame":4,"ddgiRoomPlan":{"action":"discard"}}
+  ]})");
+  const CaptureSequence sequence(input);
+  EXPECT_FALSE(sequence.sample(1).event.ddgiRoomPlan);
+  ASSERT_TRUE(sequence.sample(2).event.ddgiRoomPlan);
+  EXPECT_EQ(sequence.sample(2).event.ddgiRoomPlan->action, Action::Preview);
+  EXPECT_EQ(sequence.sample(2).event.ddgiRoomPlan->maxDetailProbes, 1024u);
+  EXPECT_EQ(sequence.sample(3).event.ddgiRoomPlan->action, Action::Apply);
+  EXPECT_TRUE(sequence.sample(3).event.ddgiRoomPlan->expectFailure);
+  EXPECT_EQ(sequence.sample(4).event.ddgiRoomPlan->action, Action::Discard);
+  EXPECT_FALSE(sequence.sample(5).event.ddgiRoomPlan);
+
+  for (const auto& event : json::parse(R"([
+    {"action":"apply","maxDetailProbes":512},
+    {"action":"preview","maxDetailProbes":26},
+    {"action":"preview","maxDetailProbes":65537},
+    {"action":"preview","maxDetailProbes":128.0},
+    {"action":"discard","expectFailure":"true"},
+    {"action":"publish"}
+  ])")) {
+    auto invalid = input;
+    invalid["events"][0]["ddgiRoomPlan"] = event;
+    EXPECT_THROW((void)CaptureSequence(invalid), std::exception) << event;
+  }
+}
+
 TEST(TemporalCapture, ReferenceRendererSwitchIsOneShotAndRejectsUnknownNames) {
   const json input{{"schemaVersion",1},{"frames",3},{"events",json::array({{{"frame",2},{"technique","path-tracing"}}})}};
   CaptureSequence sequence(input);

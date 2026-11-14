@@ -346,7 +346,8 @@ struct DdgiManager::Impl {
                              &info);
     device->raii().updateDescriptorSets(w, {});
   }
-  void descriptors(Slot &slot, uint32_t previous, uint32_t next) {
+  void descriptors(Slot &slot, uint32_t previous, uint32_t next,
+                   VkSampler probeSampler = VK_NULL_HANDLE) {
     const auto readHistory = asyncEnabled ? previous : next;
     for (auto set : {slot.readSet, slot.computeSet}) {
       bool read = set == slot.readSet;
@@ -357,7 +358,7 @@ struct DdgiManager::Impl {
       imageDescriptor(
           set, 2,
           static_cast<VkImageView>(*visibility[read ? readHistory : previous]->view));
-      samplerDescriptor(set, 3, static_cast<VkSampler>(*sampler));
+      samplerDescriptor(set, 3, probeSampler ? probeSampler : static_cast<VkSampler>(*sampler));
       bufferDescriptor(set, 4, state(read ? readHistory : next));
       bufferDescriptor(set, 11, *slot.positionSnapshot);
       if (!read) {
@@ -757,6 +758,36 @@ void DdgiManager::applySettings(const DdgiSettings &settings) {
   }
 }
 
+void DdgiManager::applyPlannedVolumes(const DdgiSettings &settings) {
+  auto &live = *impl_;
+  if (settings == live.settings) return;
+  if (!live.support || live.slots.empty())
+    throw std::runtime_error("DDGI is unavailable for applying a BIM room plan");
+  auto candidate = std::make_unique<Impl>(live.device, live.memory, live.rayScene, settings);
+  if (settings.cameraFollow && live.settings.cameraFollow && settings.volume == live.settings.volume) {
+    auto effective = settings;
+    effective.volume = live.volumes.volume(0).description();
+    candidate->volumes = DdgiVolumeSet(effective);
+  }
+  prepareRuntime(*candidate, live, static_cast<uint32_t>(live.slots.size()),
+      live.slots.front().environment, live.slots.front().envSampler, true);
+  synchronizeAsync();
+  live.device->raii().waitIdle();
+  candidate->resets = live.resets;
+  candidate->layout = std::move(live.layout);
+  candidate->computeSetLayout = std::move(live.computeSetLayout);
+  candidate->sceneLayout = std::move(live.sceneLayout);
+  candidate->lightSnapshotLayout = std::move(live.lightSnapshotLayout);
+  candidate->traceLayout = std::move(live.traceLayout);
+  candidate->updateLayout = std::move(live.updateLayout);
+  candidate->tracePipeline = std::move(live.tracePipeline);
+  candidate->updatePipeline = std::move(live.updatePipeline);
+  candidate->debugRenderer = std::move(live.debugRenderer);
+  candidate->debugPostProcess = live.debugPostProcess;
+  candidate->sampler = std::move(live.sampler);
+  impl_.swap(candidate);
+}
+
 void DdgiManager::createPipelines(const std::filesystem::path &root,
                                   VkDescriptorSetLayout scene,
                                   VkDescriptorSetLayout light,
@@ -863,8 +894,12 @@ void DdgiManager::publishShaderReload(RayEffectPipelines candidate) noexcept {
 
 void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
                           VkSampler envSampler) {
-  auto &p = *impl_;
   synchronizeAsync();
+  prepareRuntime(*impl_, *impl_, imageCount, environment, envSampler, false);
+}
+
+void DdgiManager::prepareRuntime(Impl &p, const Impl &pipelineOwner, uint32_t imageCount,
+                                 VkImageView environment, VkSampler envSampler, bool requireReady) {
   const auto &vk = p.device->raii();
   ++p.lightSnapshotRevision;
   p.asyncCommands.clear();
@@ -908,7 +943,7 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
   if (!imageCount || !environment || !envSampler)
     throw std::invalid_argument(
         "DDGI requires initialized frame/environment resources");
-  if (p.settings.enabled && p.support) {
+  if ((p.settings.enabled || requireReady) && p.support) {
     try {
       p.plan = planDdgiVolumeResources(p.settings,
                                  {p.properties.limits.maxImageDimension2D,
@@ -921,6 +956,7 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
         throw std::invalid_argument("DDGI dispatch exceeds device limits");
       p.ready = true;
     } catch (const std::exception &e) {
+      if (requireReady) throw;
       p.status = std::string("DDGI fallback: ") + e.what();
     }
   }
@@ -1003,7 +1039,7 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
       throw std::runtime_error(
           "DDGI actual VMA allocations exceed memory budget");
   } catch (const std::exception &e) {
-    if (!p.ready)
+    if (requireReady || !p.ready)
       throw;
     p.status = std::string("DDGI fallback: ") + e.what();
     p.ready = false;
@@ -1034,11 +1070,11 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
               imageCount * 4, poolSizes));
   std::vector<vk::DescriptorSetLayout> layouts;
   for (uint32_t i = 0; i < imageCount; ++i) {
-    layouts.push_back(*p.layout);
-    layouts.push_back(*p.computeSetLayout);
+    layouts.push_back(*pipelineOwner.layout);
+    layouts.push_back(*pipelineOwner.computeSetLayout);
     if (p.support) {
-      layouts.push_back(*p.sceneLayout);
-      layouts.push_back(*p.lightSnapshotLayout);
+      layouts.push_back(*pipelineOwner.sceneLayout);
+      layouts.push_back(*pipelineOwner.lightSnapshotLayout);
     }
   }
   p.sets = vk.allocateDescriptorSets(
@@ -1056,10 +1092,10 @@ void DdgiManager::prepare(uint32_t imageCount, VkImageView environment,
     }
     s.read->write(&s.data, sizeof(s.data));
     s.compute->write(&s.data, sizeof(s.data));
-    p.descriptors(s, 0, 0);
+    p.descriptors(s, 0, 0, *pipelineOwner.sampler);
   }
   if (p.ready)
-    p.status = "DDGI ready: bounded world-space probe volumes";
+    p.status = p.settings.enabled ? "DDGI ready: bounded world-space probe volumes" : "DDGI disabled";
   if (p.asyncEnabled) {
     const auto selection = *p.device->asyncComputeQueueSelection();
     const vk::SemaphoreTypeCreateInfo timeline(vk::SemaphoreType::eTimeline, 0);
