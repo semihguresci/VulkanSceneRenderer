@@ -1,6 +1,8 @@
 #include "IfcCurveReader.h"
 #include "Container/utility/ModelImportCancellation.h"
 #include "IfcSectionedGuide.h"
+#include "IfcSectionedMeshValidation.h"
+#include "IfcSectionedMiter.h"
 #include "IfcSectionedTagRows.h"
 #include "IfcSweptProfileCurves.h"
 
@@ -1818,6 +1820,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
     std::vector<IfcSectionTagRow> tagRows;
     std::string family;
     bool coincidentEdges = false;
+    bool allPlacementAxesDefault = true;
     for (size_t i = 0; i < positions.size(); ++i) {
       const auto &position = get(reference(&positions[i])),
                  &p = get(reference(&profiles[i]));
@@ -1885,6 +1888,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
                         ? base->x
                         : direction(reference(arg(position, 2)), 3);
       normal = normalized(normal - up * glm::dot(normal, up));
+      allPlacementAxesDefault &=
+          omitted(arg(position, 1)) && omitted(arg(position, 2));
       const auto local = [base](glm::dvec3 p) {
         return glm::dvec3(glm::dot(p, base->x), glm::dot(p, base->y),
                           glm::dot(p, base->z));
@@ -1970,13 +1975,33 @@ Surface Reader::surfaceImpl(uint32_t id) {
       }
     }
     std::map<double, glm::dvec3> miters;
+    std::vector<IfcSectionMiterCorner> sharpCorners;
     for (size_t i = 1; i + 1 < uBreaks.size(); ++i) {
       const double t = uBreaks[i],
                    h = std::min(t - uBreaks[i - 1], uBreaks[i + 1] - t) * 1e-7;
-      auto a = curveTangent(directrix, t - h),
-           b = curveTangent(directrix, t + h);
+      const auto oneSidedTangent =
+          [&](double step) -> std::optional<glm::dvec3> {
+        const auto outer = curveDerivative(directrix, t + step);
+        if (!outer)
+          return std::nullopt;
+        auto tangent = *outer;
+        if (directrix.derivative && t + step * .5 != t) {
+          const auto inner = curveDerivative(directrix, t + step * .5);
+          if (!inner)
+            return std::nullopt;
+          tangent = 2. * *inner - *outer;
+          if (glm::length(tangent) <= glm::length(*outer) * 1e-4)
+            return std::nullopt;
+        }
+        return glm::length(tangent) > 1e-15
+                   ? std::optional(glm::normalize(tangent))
+                   : std::nullopt;
+      };
+      auto a = oneSidedTangent(-h), b = oneSidedTangent(h);
       if (!a || !b)
-        throw std::runtime_error("Undefined sectioned directrix tangent");
+        throw std::runtime_error("Undefined or stationary sectioned directrix "
+                                 "tangent at parameter " +
+                                 std::to_string(t));
       const double cosine = glm::dot(*a, *b);
       if (cosine >= 1 - 1e-6)
         continue;
@@ -1985,6 +2010,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
         throw std::runtime_error(
             "Sectioned directrix miter exceeds its 10x extension limit");
       miters[t] = normalized(*a + *b) / halfCosine;
+      sharpCorners.push_back({t, *a, *b, t - h, t + h});
     }
     struct CrossSection {
       size_t index;
@@ -2024,16 +2050,23 @@ Surface Reader::surfaceImpl(uint32_t id) {
       return CrossSection{i,  fraction, f->origin,
                           up, normal,   glm::cross(up, normal)};
     };
-    const auto templatePoint =
+    const auto localProfile =
         [sections](const CrossSection &frame,
-                   double v) -> std::optional<glm::dvec3> {
+                   double v) -> std::optional<glm::dvec2> {
       const auto p = (*sections)[frame.index].curve.point(v);
       const auto q = (*sections)[frame.index + 1].curve.point(v);
       if (!p || !q)
         return std::nullopt;
-      const auto local = *p * (1 - frame.fraction) + *q * frame.fraction;
+      return glm::dvec2(*p * (1 - frame.fraction) + *q * frame.fraction);
+    };
+    const auto templatePoint =
+        [localProfile](const CrossSection &frame,
+                       double v) -> std::optional<glm::dvec3> {
+      const auto local = localProfile(frame, v);
+      if (!local)
+        return std::nullopt;
       const auto point =
-          frame.origin + frame.lateral * local.x + frame.up * local.y;
+          frame.origin + frame.lateral * local->x + frame.up * local->y;
       return finite(point) ? std::optional(point) : std::nullopt;
     };
     Surface result{
@@ -2049,6 +2082,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
         .vDomain = {{0, 1}}};
     result.allowCoincidentEdges = tagLayout.coincidentEdges || coincidentEdges;
     result.creaseU = std::move(tagTransitionStations);
+    const auto vBreaks = sections->front().curve.breaks;
     if (!miters.empty()) {
       if (uBreaks.size() > 4097)
         throw std::runtime_error("Sectioned miter exceeds its anchor budget");
@@ -2059,6 +2093,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
       const auto up =
           normalized(frame->x * initial.up.x + frame->y * initial.up.y +
                      frame->z * initial.up.z);
+      bool planarLinear = true;
       for (const auto &s : *sections) {
         const auto f = curveFrame(directrix, s.parameter);
         if (!f)
@@ -2066,11 +2101,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
         const auto worldUp = f->x * s.up.x + f->y * s.up.y + f->z * s.up.z,
                    worldNormal = f->x * s.normal.x + f->y * s.normal.y +
                                  f->z * s.normal.z;
-        if (glm::dot(worldUp, up) < 1 - 1e-8 ||
-            glm::dot(worldNormal, f->x) < 1 - 1e-8)
-          throw std::runtime_error(
-              "Sectioned miters require a common perpendicular axis and "
-              "tangent profile normals");
+        planarLinear &= glm::dot(worldUp, up) >= 1 - 1e-8 &&
+                        glm::dot(worldNormal, f->x) >= 1 - 1e-8;
       }
       std::vector<glm::dvec3> anchors;
       std::vector<double> stations;
@@ -2086,96 +2118,128 @@ Surface Reader::surfaceImpl(uint32_t id) {
         const auto d = anchors[i] - anchors[i - 1];
         if (glm::length(d) <= tolerance_ * .01 ||
             std::abs(glm::dot(normalized(d), up)) > 1e-7)
-          throw std::runtime_error(
-              "Sectioned miters require planar nonzero directrix segments");
+          planarLinear = false;
         for (double t : {.25, .5, .75}) {
           const auto p =
               directrix.point(std::lerp(uBreaks[i - 1], uBreaks[i], t));
           if (!p ||
               glm::length(*p - (anchors[i - 1] + d * t)) > tolerance_ * .01)
-            throw std::runtime_error("Sharp sectioned joins require piecewise "
-                                     "linear directrix spans");
+            planarLinear = false;
         }
       }
-      const auto x = normalized(anchors[1] - anchors[0]), y = glm::cross(up, x);
-      const auto uv = [&](glm::dvec3 p) {
-        const auto d = p - anchors.front();
-        return glm::dvec2(glm::dot(d, x), glm::dot(d, y));
-      };
-      const auto orient = [](glm::dvec2 a, glm::dvec2 b, glm::dvec2 c) {
-        const auto p = b - a, q = c - a;
-        return p.x * q.y - p.y * q.x;
-      };
-      size_t checks = 0;
-      for (size_t i = 1; i < anchors.size(); ++i)
-        for (size_t j = i + 2; j < anchors.size(); ++j) {
-          if (++checks > 8000000)
-            throw std::runtime_error(
-                "Sectioned directrix intersection budget exceeded");
-          const auto a = uv(anchors[i - 1]), b = uv(anchors[i]),
-                     c = uv(anchors[j - 1]), d = uv(anchors[j]);
-          const auto on = [&](glm::dvec2 p, glm::dvec2 q, glm::dvec2 r) {
-            const double tolerance = tolerance_ * .01;
-            return std::abs(orient(q, r, p)) <=
-                       tolerance * glm::length(r - q) &&
-                   p.x >= std::min(q.x, r.x) - tolerance &&
-                   p.x <= std::max(q.x, r.x) + tolerance &&
-                   p.y >= std::min(q.y, r.y) - tolerance &&
-                   p.y <= std::max(q.y, r.y) + tolerance;
-          };
-          if ((orient(a, b, c) * orient(a, b, d) < 0 &&
-               orient(c, d, a) * orient(c, d, b) < 0) ||
-              on(a, c, d) || on(b, c, d) || on(c, a, b) || on(d, a, b))
-            throw std::runtime_error("Sectioned directrix intersects itself");
-        }
-      // Straight spans are ruled between authored sections and miter anchors.
-      // Both incident spans reuse the same half-angle cross section exactly.
-      const auto control = [=](size_t k,
-                               double v) -> std::optional<glm::dvec3> {
-        const double u = uBreaks[k];
-        auto upper = std::upper_bound(
-            sections->begin(), sections->end(), u,
-            [](double t, const Section &s) { return t < s.parameter; });
-        const size_t i =
-            upper == sections->end()
-                ? sections->size() - 2
-                : std::max(size_t(1), size_t(upper - sections->begin())) - 1;
-        const auto &a = (*sections)[i], &b = (*sections)[i + 1];
-        const auto p = a.curve.point(v), q = b.curve.point(v);
-        if (!p || !q)
-          return std::nullopt;
-        const double fraction = std::clamp(
-            (stations[k] - a.station) / (b.station - a.station), 0., 1.);
-        const auto local = *p * (1 - fraction) + *q * fraction;
-        const auto direction =
-            miters.contains(u) ? miters.at(u)
-                               : normalized(k + 1 < anchors.size()
-                                                ? anchors[k + 1] - anchors[k]
-                                                : anchors[k] - anchors[k - 1]);
-        return anchors[k] + glm::cross(up, direction) * local.x + up * local.y;
-      };
-      result.point = [=](double u, double v) -> std::optional<glm::dvec3> {
-        if (!std::isfinite(u) || !std::isfinite(v) || u < first || u > last ||
-            v < 0 || v > 1)
-          return std::nullopt;
-        const auto upper = std::upper_bound(uBreaks.begin(), uBreaks.end(), u);
-        const size_t i =
-            upper == uBreaks.end()
-                ? uBreaks.size() - 2
-                : std::max(size_t(1), size_t(upper - uBreaks.begin())) - 1;
-        const auto a = control(i, v), b = control(i + 1, v);
-        if (!a || !b)
-          return std::nullopt;
-        return *a * (1 - (u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i])) +
-               *b * ((u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i]));
-      };
-      const auto start = initial.curve.point(0), end = initial.curve.point(1);
-      if (!start || !end || std::abs(end->x - start->x) <= tolerance_ * .01)
-        throw std::runtime_error(
-            "Sectioned miter profile has no lateral extent");
-      result.meshUp = end->x > start->x ? up : -up;
+      for (const auto &corner : sharpCorners)
+        result.creaseU.push_back(corner.parameter);
+      if (!planarLinear) {
+        std::vector<double> authoredStations;
+        authoredStations.reserve(sections->size());
+        for (const auto &section : *sections)
+          authoredStations.push_back(section.parameter);
+        const auto miterFrame =
+            [sectionAt](double u) -> std::optional<IfcSectionMiterFrame> {
+          const auto f = sectionAt(u);
+          if (!f)
+            return std::nullopt;
+          return IfcSectionMiterFrame{f->origin, f->lateral, f->up, f->normal};
+        };
+        const auto miterProfile = [sectionAt, localProfile](double u,
+                                                            double v) {
+          const auto f = sectionAt(u);
+          return f ? localProfile(*f, v) : std::nullopt;
+        };
+        auto miter = buildIfcSectionedMiter(
+            directrix, uBreaks, sharpCorners, miterFrame, miterProfile,
+            authoredStations, vBreaks, tolerance_, chordError_ * .25, stop_,
+            allPlacementAxesDefault);
+        result.point = std::move(miter.point);
+        result.meshNormal = std::move(miter.meshNormal);
+        uBreaks.insert(uBreaks.end(), miter.breaks.begin(), miter.breaks.end());
+        std::ranges::sort(uBreaks);
+        uBreaks.erase(std::unique(uBreaks.begin(), uBreaks.end()),
+                      uBreaks.end());
+      } else {
+        const auto x = normalized(anchors[1] - anchors[0]),
+                   y = glm::cross(up, x);
+        const auto uv = [&](glm::dvec3 p) {
+          const auto d = p - anchors.front();
+          return glm::dvec2(glm::dot(d, x), glm::dot(d, y));
+        };
+        const auto orient = [](glm::dvec2 a, glm::dvec2 b, glm::dvec2 c) {
+          const auto p = b - a, q = c - a;
+          return p.x * q.y - p.y * q.x;
+        };
+        size_t checks = 0;
+        for (size_t i = 1; i < anchors.size(); ++i)
+          for (size_t j = i + 2; j < anchors.size(); ++j) {
+            if (++checks > 8000000)
+              throw std::runtime_error(
+                  "Sectioned directrix intersection budget exceeded");
+            const auto a = uv(anchors[i - 1]), b = uv(anchors[i]),
+                       c = uv(anchors[j - 1]), d = uv(anchors[j]);
+            const auto on = [&](glm::dvec2 p, glm::dvec2 q, glm::dvec2 r) {
+              const double tolerance = tolerance_ * .01;
+              return std::abs(orient(q, r, p)) <=
+                         tolerance * glm::length(r - q) &&
+                     p.x >= std::min(q.x, r.x) - tolerance &&
+                     p.x <= std::max(q.x, r.x) + tolerance &&
+                     p.y >= std::min(q.y, r.y) - tolerance &&
+                     p.y <= std::max(q.y, r.y) + tolerance;
+            };
+            if ((orient(a, b, c) * orient(a, b, d) < 0 &&
+                 orient(c, d, a) * orient(c, d, b) < 0) ||
+                on(a, c, d) || on(b, c, d) || on(c, a, b) || on(d, a, b))
+              throw std::runtime_error("Sectioned directrix intersects itself");
+          }
+        // Straight spans are ruled between authored sections and miter anchors.
+        // Both incident spans reuse the same half-angle cross section exactly.
+        const auto control = [=](size_t k,
+                                 double v) -> std::optional<glm::dvec3> {
+          const double u = uBreaks[k];
+          auto upper = std::upper_bound(
+              sections->begin(), sections->end(), u,
+              [](double t, const Section &s) { return t < s.parameter; });
+          const size_t i =
+              upper == sections->end()
+                  ? sections->size() - 2
+                  : std::max(size_t(1), size_t(upper - sections->begin())) - 1;
+          const auto &a = (*sections)[i], &b = (*sections)[i + 1];
+          const auto p = a.curve.point(v), q = b.curve.point(v);
+          if (!p || !q)
+            return std::nullopt;
+          const double fraction = std::clamp(
+              (stations[k] - a.station) / (b.station - a.station), 0., 1.);
+          const auto local = *p * (1 - fraction) + *q * fraction;
+          const auto direction =
+              miters.contains(u)
+                  ? miters.at(u)
+                  : normalized(k + 1 < anchors.size()
+                                   ? anchors[k + 1] - anchors[k]
+                                   : anchors[k] - anchors[k - 1]);
+          return anchors[k] + glm::cross(up, direction) * local.x +
+                 up * local.y;
+        };
+        result.point = [=](double u, double v) -> std::optional<glm::dvec3> {
+          if (!std::isfinite(u) || !std::isfinite(v) || u < first || u > last ||
+              v < 0 || v > 1)
+            return std::nullopt;
+          const auto upper =
+              std::upper_bound(uBreaks.begin(), uBreaks.end(), u);
+          const size_t i =
+              upper == uBreaks.end()
+                  ? uBreaks.size() - 2
+                  : std::max(size_t(1), size_t(upper - uBreaks.begin())) - 1;
+          const auto a = control(i, v), b = control(i + 1, v);
+          if (!a || !b)
+            return std::nullopt;
+          return *a * (1 - (u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i])) +
+                 *b * ((u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i]));
+        };
+        const auto start = initial.curve.point(0), end = initial.curve.point(1);
+        if (!start || !end || std::abs(end->x - start->x) <= tolerance_ * .01)
+          throw std::runtime_error(
+              "Sectioned miter profile has no lateral extent");
+        result.meshUp = end->x > start->x ? up : -up;
+      }
     }
-    const auto vBreaks = sections->front().curve.breaks;
     const auto &taggedColumns = tagLayout.taggedColumns;
     std::map<std::string, uint32_t> matchingGuides;
     const auto guideTag = [&](uint32_t ref) -> std::string {
@@ -2427,13 +2491,22 @@ Surface Reader::surfaceImpl(uint32_t id) {
                     [first, last](double t) { return t < first || t > last; });
       for (const auto &p : samples)
         result.meshU.push_back(p.parameter);
-      if (!tagLayout.intermittentTags.empty() || result.ruledSectionPanels) {
+      if (!tagLayout.intermittentTags.empty() || result.ruledSectionPanels ||
+          result.meshNormal) {
         // Distance conversion and curve sampling can generate different
         // parameters for one station. Give priority to authored sections,
         // then guide knots, then the generated mesh seeds.
         std::vector<double> guideMeshStations;
         for (const auto &section : *sections)
           guideMeshStations.push_back(section.parameter);
+        // An authored section close to a corner is a separate row. Keep the
+        // native crease parameter so both incident panels share the miter.
+        for (const auto &corner : sharpCorners)
+          guideMeshStations.push_back(corner.parameter);
+        std::ranges::sort(guideMeshStations);
+        guideMeshStations.erase(
+            std::unique(guideMeshStations.begin(), guideMeshStations.end()),
+            guideMeshStations.end());
         const auto sameStation = [&](double a, double b) {
           const auto p = directrix.point(a), q = directrix.point(b);
           return p && q && glm::length(*p - *q) <= tolerance_ * .05;
@@ -3161,6 +3234,7 @@ std::vector<std::array<glm::dvec3, 3>> Reader::sectionedMesh(uint32_t id) {
     }
   }
   std::vector<std::array<glm::dvec3, 3>> triangles;
+  std::vector<size_t> miterRows;
   triangles.reserve((u.size() - 1) * (v.size() - 1) * 2);
   for (size_t i = 1; i < u.size(); ++i)
     for (size_t j = 1; j < v.size(); ++j) {
@@ -3184,9 +3258,23 @@ std::vector<std::array<glm::dvec3, 3>> Reader::sectionedMesh(uint32_t id) {
         if (s.meshUp && glm::dot(normal, *s.meshUp) <= 0)
           throw std::runtime_error(
               "Sectioned miter folds or reverses its surface");
+        if (s.meshNormal) {
+          const double fraction = side == 0 ? 2. / 3 : 1. / 3;
+          const double station = std::lerp(u[i - 1], u[i], fraction);
+          const double lateral = std::lerp(v[j - 1], v[j], 1 - fraction);
+          const auto expected = s.meshNormal(station, lateral);
+          if (!expected || glm::dot(normal, *expected) <= 0)
+            throw std::runtime_error(
+                "Sectioned miter folds or reverses near parameter " +
+                std::to_string(station));
+        }
         triangles.push_back(triangle);
+        if (s.meshUp || s.meshNormal)
+          miterRows.push_back(i);
       }
     }
+  if (!miterRows.empty())
+    validateIfcMiterMesh(triangles, miterRows, tolerance_ * .01, stop_);
   return triangles;
 }
 

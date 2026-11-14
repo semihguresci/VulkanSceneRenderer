@@ -38,6 +38,7 @@ struct ParametricSurface {
   // Branch tips and zero-width profile segments create coincident mesh edges.
   bool allowCoincidentEdges = false;
   std::optional<glm::dvec3> meshUp;
+  std::function<std::optional<glm::dvec3>(double, double)> meshNormal;
   uint32_t profileSourceId = 0;
   bool innerProfile = false;
   bool reverseMeshWinding = false;
