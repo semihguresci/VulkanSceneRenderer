@@ -125,6 +125,15 @@ struct EnvironmentManager::GtaoResources {
   }
 };
 
+struct EnvironmentManager::PreviewMaps::State {
+  std::unique_ptr<EnvironmentGeneration> maps;
+  uint32_t mipCount{EnvironmentGeneration::mipCount};
+  bool placeholder{};
+};
+
+EnvironmentManager::PreviewMaps::PreviewMaps() : state_(std::make_unique<State>()) {}
+EnvironmentManager::PreviewMaps::~PreviewMaps() = default;
+
 struct EnvironmentManager::PreparedShaderBake::State {
   container::gpu::PipelineManager pipelines;
   EnvironmentManager baked;
@@ -660,6 +669,7 @@ void EnvironmentManager::publishShaderBake(PreparedShaderBake& candidate) noexce
 }
 
 bool EnvironmentManager::loadHdrEnvironment(const std::filesystem::path& path) {
+  if (previewActive_ || environmentLoading()) return false;
   try {
     std::shared_ptr<const std::vector<std::byte>> encoded;
     auto image = decodeValidatedEnvironmentImage(path, encoded);
@@ -674,7 +684,7 @@ bool EnvironmentManager::loadHdrEnvironment(const std::filesystem::path& path) {
 
 bool EnvironmentManager::requestHdrEnvironment(const std::filesystem::path& path,
     std::shared_ptr<const std::vector<std::byte>> encoded) {
-  if (environmentLoading())
+  if (previewActive_ || environmentLoading())
     return false;
   try {
     pendingHdrPath_ = path;
@@ -700,7 +710,7 @@ bool EnvironmentManager::loadSkyEnvironment(const SkySettings& settings) {
 }
 
 bool EnvironmentManager::requestSkyEnvironment(const SkySettings& settings) {
-  if (environmentLoading())
+  if (previewActive_ || environmentLoading())
     return false;
   const auto validColor = [](const std::array<float, 3>& color) {
     return std::ranges::all_of(color, [](float channel) {
@@ -1197,6 +1207,65 @@ bool EnvironmentManager::submitEnvironment(
   environmentGeneration_ = std::move(generation);
   environmentStatus_ = std::move(buildingStatus);
   return true;
+}
+
+std::unique_ptr<EnvironmentManager::PreviewMaps> EnvironmentManager::prepareHdrPreview(
+    const std::filesystem::path& path) {
+  if (environmentLoading()) throw std::runtime_error("Finish the pending environment load before previewing a render setup");
+  auto preview = std::unique_ptr<PreviewMaps>(new PreviewMaps());
+  // submitEnvironment uses the current bake pipelines but only writes the
+  // unpublished generation. Restore the ordinary loader's status on exit.
+  auto previousStatus = environmentStatus_;
+  try {
+    std::shared_ptr<const std::vector<std::byte>> encoded;
+    auto image = decodeValidatedEnvironmentImage(path, encoded);
+    if (!submitEnvironment(path, std::move(image), nullptr, std::move(encoded)))
+      throw std::runtime_error(environmentStatus_);
+    auto& pending = *environmentGeneration_;
+    if (vkWaitForFences(device_->device(), 1, &pending.fence, VK_TRUE, UINT64_MAX) != VK_SUCCESS)
+      throw std::runtime_error("Render setup HDR generation fence failed");
+    pending.submitted = false;
+    auto maps = std::make_unique<EnvironmentGeneration>(*this, pending.path, pending.readyStatus);
+    maps->encoded = std::move(pending.encoded);
+    maps->cube = std::exchange(pending.cube, {});
+    maps->irradiance = std::exchange(pending.irradiance, {});
+    maps->prefiltered = std::exchange(pending.prefiltered, {});
+    environmentGeneration_.reset();
+    preview->state_->maps = std::move(maps);
+  } catch (...) {
+    environmentGeneration_.reset();
+    environmentStatus_.swap(previousStatus);
+    throw;
+  }
+  environmentStatus_.swap(previousStatus);
+  return preview;
+}
+
+void EnvironmentManager::exchangePreviewMaps(PreviewMaps& preview) noexcept {
+  auto& state = *preview.state_;
+  auto& generation = *state.maps;
+  using std::swap;
+  swap(radianceCubeImage_, generation.cube.image);
+  swap(radianceCubeAlloc_, generation.cube.allocation);
+  swap(radianceCubeView_, generation.cube.view);
+  swap(irradianceCubeImage_, generation.irradiance.image);
+  swap(irradianceCubeAlloc_, generation.irradiance.allocation);
+  swap(irradianceCubeView_, generation.irradiance.view);
+  swap(prefilteredCubeImage_, generation.prefiltered.image);
+  swap(prefilteredCubeAlloc_, generation.prefiltered.allocation);
+  swap(prefilteredCubeView_, generation.prefiltered.view);
+  swap(prefilteredMipCount_, state.mipCount);
+  swap(usingPlaceholderEnvironment_, state.placeholder);
+  environmentStatus_.swap(generation.readyStatus);
+  activeHdrPath_.swap(generation.path);
+  swap(activeSkyMode_, generation.skyMode);
+  swap(activeSun_, generation.sun);
+  swap(activeAtmosphere_, generation.atmosphere);
+  swap(activeAtmosphereLut_, generation.atmosphereLut);
+  swap(activeSkySettings_, generation.skySettings);
+  activeHdrBytes_.swap(generation.encoded);
+  ++publicationRevision_;
+  ++environmentRevision_;
 }
 
 bool EnvironmentManager::publishEnvironment(

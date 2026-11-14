@@ -3,6 +3,15 @@ add_library(VulkanSceneRenderer_Core
     app/Application.cpp
 )
 
+add_library(VulkanSceneRenderer_fingerprint utility/ContentFingerprint.cpp)
+target_compile_features(VulkanSceneRenderer_fingerprint PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_fingerprint PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
+
+add_library(VulkanSceneRenderer_render_setup renderer/scene/RenderSetup.cpp)
+target_compile_features(VulkanSceneRenderer_render_setup PUBLIC cxx_std_23)
+target_link_libraries(VulkanSceneRenderer_render_setup PUBLIC VulkanSceneRenderer_fingerprint
+    PRIVATE nlohmann_json::nlohmann_json)
+
 # ASL exchange validation stays independently testable without Vulkan startup.
 add_library(VulkanSceneRenderer_asl_pose asl/PoseReplay.cpp asl/HandKinematics.cpp)
 target_compile_features(VulkanSceneRenderer_asl_pose PUBLIC cxx_std_23)
@@ -91,6 +100,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendCameraMotion.cpp
     renderer/core/RendererFrontendBimClash.cpp
     renderer/core/RendererFrontendBimSunHours.cpp
+    renderer/core/RendererFrontendRenderSetup.cpp
     renderer/core/RendererFrontendDeformation.cpp
     renderer/core/RendererFrontendDeformationTelemetry.cpp
     renderer/scene/SceneLightExport.cpp
@@ -279,6 +289,7 @@ target_include_directories(VulkanSceneRenderer_renderer PUBLIC
 )
 
 target_link_libraries(VulkanSceneRenderer_renderer PUBLIC
+    VulkanSceneRenderer_render_setup
     VulkanSceneRenderer_light_edit_support
     VulkanSceneRenderer_asl_pose
     Dep_VulkanCore

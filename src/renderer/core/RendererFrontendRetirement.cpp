@@ -276,6 +276,7 @@ struct RendererFrontend::SceneRetirementHistory {
 };
 
 bool RendererFrontend::retireSceneNode(uint32_t selected) {
+  deactivateRenderSetup();
   finishEditGestures();
   if (!subs_.sceneManager) retirementError("no primary scene is loaded");
   if (pendingSceneRetirement_) retirementError("the previous deletion refresh must complete first");

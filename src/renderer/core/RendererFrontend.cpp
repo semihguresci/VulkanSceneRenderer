@@ -46,6 +46,7 @@
 #include <vector>
 
 #include "Container/app/AppConfig.h"
+#include "Container/renderer/effects/DisplayGradePreset.h"
 #include "Container/ecs/World.h"
 #include "Container/renderer/bim/BimDrawingExport.h"
 #include "Container/renderer/bim/BimFrameDrawRoutingPlanner.h"
@@ -2340,6 +2341,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   publishBimClashUi();
   pollBimSunHours();
   publishBimSunHoursUi();
+  publishRenderSetupUi();
   presentSceneControls();
   updateGltfAnimation();
   processCaptureLightEvent();
@@ -3017,8 +3019,11 @@ void RendererFrontend::applyTemporalCapture(
   }
   if(event.cameraSelection) {
     const auto& request=*event.cameraSelection;
-    cameraAction([&] {return setGltfCameraNode(request.viewport?std::nullopt:std::optional<size_t>(
-        request.sourceNode?size_t(*request.sourceNode):cameraNodeByName(*request.nodeName)));},
+    cameraAction([&] {
+      if (renderSetupPreview_) throw std::invalid_argument("Deactivate the render setup before choosing another camera");
+      return setGltfCameraNode(request.viewport ? std::nullopt : std::optional<size_t>(
+          request.sourceNode ? size_t(*request.sourceNode) : cameraNodeByName(*request.nodeName)));
+    },
         event.expectCameraSelectionFailure,"camera selection");
   }
   if(event.resourceRetirement) {
@@ -3115,8 +3120,13 @@ void RendererFrontend::applyTemporalCapture(
       }
     const auto* node = sceneGraph_.getNode(target);
     if (!node) throw std::invalid_argument("Capture nodeFlags sourceNode does not exist");
+    const bool blockVisibility = renderSetupPreview_ && event.nodeFlags->visible.has_value();
+    if (blockVisibility) {
+      renderSetupDiagnostic_ = "Deactivate the render setup before editing node visibility";
+    }
     ensureSceneEditHistory();
-    sceneEdits_->setNodeFlags(target, event.nodeFlags->visible.value_or(node->visible),
+    sceneEdits_->setNodeFlags(target,
+        blockVisibility ? node->visible : event.nodeFlags->visible.value_or(node->visible),
         event.nodeFlags->selectable.value_or(node->selectable),
         event.nodeFlags->hoverable.value_or(node->hoverable));
   }
@@ -3347,6 +3357,12 @@ void RendererFrontend::applyTemporalCapture(
     applyCaptureBimClash(*event.bimClash);
   if (event.bimSunHours)
     applyCaptureBimSunHours(*event.bimSunHours);
+  if (event.displayGradePreset) {
+    const auto grade = loadDisplayGrade(container::util::pathFromUtf8(*event.displayGradePreset));
+    if (subs_.guiManager) subs_.guiManager->setDisplayGrade(grade);
+    else captureDisplayGrade_ = grade;
+  }
+  if (event.renderSetup) applyCaptureRenderSetup(*event.renderSetup);
   uint32_t objectNode = sample.objectNode;
   // Capture tracks are sampled past their last key. An explicit unload retires
   // their target; only a later capture load event permits target lookup again.
@@ -3387,10 +3403,14 @@ void RendererFrontend::applyTemporalCapture(
   if (objectTracksActive && event.objectVisible) {
     if (!sceneGraph_.getNode(objectNode))
       throw std::invalid_argument("Capture objectNode does not exist");
-    requireEditableSceneNode(objectNode);
-    finishEditGestures();
-    sceneGraph_.setVisible(objectNode, *event.objectVisible);
-    publishSceneEdit();
+    if (renderSetupPreview_) {
+      renderSetupDiagnostic_ = "Deactivate the render setup before editing node visibility";
+    } else {
+      requireEditableSceneNode(objectNode);
+      finishEditGestures();
+      sceneGraph_.setVisible(objectNode, *event.objectVisible);
+      publishSceneEdit();
+    }
   }
   if (sample.bimTranslation && subs_.bimManager) {
     if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
@@ -3912,6 +3932,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   appendBimFloorPlanTelemetry(json);
   appendBimClashTelemetry(json);
   appendBimSunHoursTelemetry(json);
+  appendRenderSetupTelemetry(json);
   json["scene"]["geometryArenaCapacityBytes"] =
       svc_.allocationManager.geometryArenaCapacityBytes();
   if (subs_.rayShadowManager) {
@@ -5374,6 +5395,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                                         float importScale) {
   if (!subs_.sceneController || !subs_.sceneManager)
     return false;
+  deactivateRenderSetup();
   finishEditGestures();
 
   ensureObjectBuffers();
@@ -5405,6 +5427,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     retireBindingsAfterSceneReload(sceneGraph_, previousGraphIdentity,
                                    [this] { clearPhysicsBindings(); });
     if (replacedModel) {
+      clearRenderSetupDocument();
       materialGesture_.reset();lastEditedSourceMaterial_=-1;materialInspectorBinding_=UINT32_MAX;
       clearSelectedMeshNode();
       clearHoveredMeshNode();
@@ -5869,6 +5892,9 @@ void RendererFrontend::shutdown() {
     return;
 
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+  // Preview maps may own the previous cubemaps and use the environment manager
+  // to free them, so release them before tearing that manager down.
+  renderSetupPreview_.reset();
   if (bimSunHours_.overlayVertices.buffer != VK_NULL_HANDLE) {
     svc_.allocationManager.destroyBuffer(bimSunHours_.overlayVertices);
     bimSunHours_.overlayVertices = {};
@@ -8757,6 +8783,10 @@ void RendererFrontend::presentSceneControls() {
         }
       },
       [this](uint32_t nodeIndex, bool visible) {
+        if (renderSetupPreview_) {
+          renderSetupDiagnostic_ = "Deactivate the render setup before editing node visibility";
+          return;
+        }
         finishEditGestures();
         ensureSceneEditHistory();
         if (!sceneEdits_->setVisible(nodeIndex, visible)) return;
@@ -8850,6 +8880,7 @@ void RendererFrontend::presentSceneControls() {
 
   processBimClashUi();
   processBimSunHoursUi();
+  processRenderSetupUi();
   if (auto elevationRequest =
           subs_.guiManager->consumeBimElevationViewRequest()) {
     if (subs_.cameraController) {
@@ -10100,8 +10131,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.services.ddgiReadDescriptorSet = subs_.ddgiManager
       ? subs_.ddgiManager->readDescriptors(imageIndex) : VK_NULL_HANDLE;
   p.postProcess.exposureSettings = effectiveExposureSettings();
-  p.postProcess.displayGrade = subs_.guiManager ? subs_.guiManager->displayGrade()
-                                               : svc_.config.displayGrade;
+  p.postProcess.displayGrade = effectiveDisplayGrade();
   p.postProcess.renderPass = resources_.renderPasses.postProcess;
   p.postProcess.encodeSrgbOutput = svc_.swapChainManager.needsShaderSrgbEncoding();
   if (subs_.sceneProviderRegistry) {

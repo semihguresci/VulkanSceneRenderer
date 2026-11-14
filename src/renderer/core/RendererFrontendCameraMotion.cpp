@@ -106,6 +106,7 @@ void RendererFrontend::applyCaptureCameraMotion(const container::temporal::Captu
 }
 
 void RendererFrontend::authorCameraMotion(const container::ui::CameraMotionRequest& request) {
+  if (renderSetupPreview_) throw std::invalid_argument("Deactivate the render setup before editing camera motion");
   if (!subs_.sceneManager || !gltfAnimation_ || gltfAnimationGraphIdentity_ != sceneGraph_.identity())
     throw std::invalid_argument("The camera motion scene is unavailable");
   auto& manager = *subs_.sceneManager;

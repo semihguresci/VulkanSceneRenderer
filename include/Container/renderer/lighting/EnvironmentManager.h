@@ -68,6 +68,22 @@ class EnvironmentManager {
   [[nodiscard]] bool environmentLoading() const { return hdrDecode_.valid() || bool(environmentGeneration_); }
   [[nodiscard]] bool environmentGenerating() const { return bool(environmentGeneration_); }
   [[nodiscard]] const std::filesystem::path& activeHdrPath() const { return activeHdrPath_; }
+  class PreviewMaps {
+   public:
+    ~PreviewMaps();
+    PreviewMaps(const PreviewMaps&) = delete;
+    PreviewMaps& operator=(const PreviewMaps&) = delete;
+   private:
+    friend class EnvironmentManager;
+    struct State;
+    PreviewMaps();
+    std::unique_ptr<State> state_;
+  };
+  // Bake without publication. Once readers have retired, exchange the maps
+  // and their metadata as one operation. The token then owns the old maps.
+  [[nodiscard]] std::unique_ptr<PreviewMaps> prepareHdrPreview(const std::filesystem::path&);
+  void exchangePreviewMaps(PreviewMaps&) noexcept;
+  void setPreviewActive(bool active) noexcept { previewActive_ = active; }
   class PreparedShaderBake {
    public:
     ~PreparedShaderBake();
@@ -170,6 +186,7 @@ class EnvironmentManager {
   SkySettings activeSkySettings_{};
   uint64_t publicationRevision_{};
   uint64_t environmentRevision_{};
+  bool previewActive_{};
   std::shared_ptr<const std::vector<std::byte>> activeHdrBytes_;
   std::filesystem::path pendingHdrPath_;
   struct HdrSource {

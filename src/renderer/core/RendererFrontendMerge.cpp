@@ -137,6 +137,7 @@ container::scene::SceneProviderBounds mergeBounds(const SceneController::Prepare
 bool RendererFrontend::mergeSceneModel(const std::string& path,
     const container::geometry::gltf::GltfMergeOptions& options,
     const container::geometry::GltfLoadResult* prepared) {
+  deactivateRenderSetup();
   finishEditGestures();
   if(!subs_.sceneManager || !subs_.sceneController || !subs_.lightingManager)
     throw std::runtime_error("Scene merge requires an initialized primary renderer");
@@ -172,6 +173,7 @@ bool RendererFrontend::mergeSceneModel(const std::string& path,
 }
 
 bool RendererFrontend::duplicateSceneNode(uint32_t node,std::optional<std::string> name) {
+  deactivateRenderSetup();
   finishEditGestures();
   using container::scene::SceneGraph;
   if(!subs_.sceneManager || !subs_.sceneController || !subs_.lightingManager)

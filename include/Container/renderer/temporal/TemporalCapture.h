@@ -215,6 +215,12 @@ struct CaptureBimSunHours {
   uint32_t column{}, row{};
   bool wait{}, visible{};
 };
+struct CaptureRenderSetup {
+  enum class Action { Capture, Activate, Deactivate, Load, Save };
+  Action action{};
+  std::string name, path;
+  bool expectFailure{};
+};
 
 struct CaptureEditorDiagnostics {
   bool vertices{};
@@ -247,6 +253,8 @@ struct CaptureEvent {
   std::optional<CaptureBimAnnotations> bimAnnotations;
   std::optional<CaptureBimClash> bimClash;
   std::optional<CaptureBimSunHours> bimSunHours;
+  std::optional<CaptureRenderSetup> renderSetup;
+  std::optional<std::string> displayGradePreset;
   std::optional<CaptureWireframe> wireframe;
   std::optional<CaptureEditorDiagnostics> editorDiagnostics;
   std::optional<glm::vec4> sectionPlane;
@@ -608,6 +616,12 @@ public:
         event.bimClash = bimClash(value.at("bimClash"));
       if (value.contains("bimSunHours"))
         event.bimSunHours = bimSunHours(value.at("bimSunHours"));
+      if (value.contains("renderSetup"))
+        event.renderSetup = renderSetup(value.at("renderSetup"));
+      if (value.contains("displayGradePreset")) {
+        event.displayGradePreset = value.at("displayGradePreset").get<std::string>();
+        if (event.displayGradePreset->empty()) throw std::invalid_argument("Capture display grade requires a path");
+      }
       if (value.contains("wireframe"))
         event.wireframe = wireframe(value.at("wireframe"));
       if (value.contains("editorDiagnostics")) {
@@ -988,6 +1002,32 @@ public:
   std::vector<uint32_t> sampleFrames;
 
 private:
+  static CaptureRenderSetup renderSetup(const nlohmann::json& value) {
+    using Action = CaptureRenderSetup::Action;
+    nodeFields(value, {"action", "name", "path", "expectFailure"}, "renderSetup");
+    CaptureRenderSetup request;
+    const auto action = value.at("action").get<std::string>();
+    if (action == "capture" || action == "activate") {
+      request.action = action == "capture" ? Action::Capture : Action::Activate;
+      request.name = value.at("name").get<std::string>();
+      request.expectFailure = value.value("expectFailure", false);
+      if (request.name.empty() || value.contains("path") ||
+          (request.action != Action::Activate && value.contains("expectFailure")))
+        throw std::invalid_argument("Invalid capture render setup name or fields");
+    } else if (action == "load" || action == "save") {
+      nodeFields(value, {"action", "path"}, "renderSetup file action");
+      request.action = action == "load" ? Action::Load : Action::Save;
+      request.path = value.at("path").get<std::string>();
+      if (request.path.empty()) throw std::invalid_argument("Capture render setup requires a path");
+    } else if (action == "deactivate") {
+      nodeFields(value, {"action"}, "renderSetup deactivate");
+      request.action = Action::Deactivate;
+    } else {
+      throw std::invalid_argument("Unknown capture render setup action");
+    }
+    return request;
+  }
+
   static CaptureBimSunHours bimSunHours(const nlohmann::json& value) {
     using Action = CaptureBimSunHours::Action;
     nodeFields(value, {"action", "settings", "wait", "column", "row", "path", "visible"}, "bimSunHours");

@@ -93,6 +93,7 @@ target_include_directories(VulkanSceneRenderer_geometry PUBLIC
 )
 
 target_link_libraries(VulkanSceneRenderer_geometry PUBLIC
+    VulkanSceneRenderer_fingerprint
     Dep_VulkanCore
     Dep_Math
     Dep_SceneIO

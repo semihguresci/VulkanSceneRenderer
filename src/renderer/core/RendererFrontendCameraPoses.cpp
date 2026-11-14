@@ -179,6 +179,7 @@ bool RendererFrontend::authorCameraViewPoseSource(int32_t source,std::optional<u
   return authorCameraViewPose(*target,refreshCameraViewPoseViewRevision());
 }
 bool RendererFrontend::authorCameraViewPose(const Target& target,uint64_t expectedViewRevision) {
+  if (renderSetupPreview_) throw std::invalid_argument("Deactivate the render setup before writing a camera pose");
   if(subs_.sceneManager && (!gltfAnimation_ || gltfAnimationGraphIdentity_!=sceneGraph_.identity())) resetGltfAnimation();
   if(!subs_.sceneManager || !gltfAnimation_ || gltfAnimationCameraNode_)
     throw std::invalid_argument("Choose the free Viewport before writing its pose to an authored camera");

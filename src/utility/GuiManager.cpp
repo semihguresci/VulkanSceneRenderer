@@ -434,6 +434,7 @@ struct SceneHierarchyPanelActions {
   const std::function<void()>* cancelInlineRename{nullptr};
   const std::function<bool(uint32_t)>* linkedReadOnly{nullptr};
   const std::function<bool(uint32_t)>* canMakeLinkedEditable{nullptr};
+  bool visibilityReadOnly{};
 };
 
 void CloseSceneHierarchyPopup(uint32_t id) {
@@ -632,14 +633,19 @@ void DrawSceneHierarchyRow(
     ImGui::Unindent(indent);
 
   ImGui::TableNextColumn();
-  bool visible = node->visible;
-  ImGui::BeginDisabled(linkedReadOnly);
+  const bool localVisible = sceneGraph.previewLocalVisible(nodeIndex);
+  bool visible = localVisible;
+  ImGui::BeginDisabled(linkedReadOnly || actions.visibilityReadOnly);
   if (ImGui::Checkbox("##SceneHierarchyVisible", &visible) &&
       actions.setSceneNodeVisible != nullptr) {
     (*actions.setSceneNodeVisible)(nodeIndex, visible);
   }
   ImGui::EndDisabled();
-  if (!sceneGraph.isNodeEffectivelyVisible(nodeIndex) && node->visible) {
+  if (actions.visibilityReadOnly) {
+    ShowItemTooltip("Deactivate the render setup before editing node visibility.",
+                    ImGuiHoveredFlags_AllowWhenDisabled);
+  }
+  if (!sceneGraph.isNodeEffectivelyVisible(nodeIndex) && localVisible) {
     ImGui::SameLine();
     ImGui::TextDisabled("parent");
   }
@@ -3158,7 +3164,8 @@ void GuiManager::drawSceneHierarchy(
                                  .commitInlineRename = &commitInline,
                                  .cancelInlineRename = &cancelInline,
                                  .linkedReadOnly = &linkedNodeReadOnly_,
-                                 .canMakeLinkedEditable = &canMakeLinkedNodeEditable_},
+                                 .canMakeLinkedEditable = &canMakeLinkedNodeEditable_,
+                                 .visibilityReadOnly = !renderSetupState_.activeName.empty()},
       sceneHierarchyParentCandidateCache_, sceneHierarchyCache_,
       sceneHierarchySubmittedRows_);
 
@@ -3307,6 +3314,124 @@ void GuiManager::drawMaterialVariantSelector() {
   }
   if (ImGui::Button("Restore default materials")) state.requested = -1;
   if (!state.error.empty()) ImGui::TextWrapped("%s", state.error.c_str());
+}
+
+void GuiManager::setRenderSetupState(RenderSetupUiState state) {
+  if (state.path != renderSetupState_.path) {
+    renderSetupPathInput_ = state.path.empty() ? "render-setups.json" : state.path;
+  }
+  if (!std::ranges::contains(state.names, selectedRenderSetupName_)) {
+    selectedRenderSetupName_ = state.activeName;
+    if (selectedRenderSetupName_.empty() && !state.names.empty()) {
+      selectedRenderSetupName_ = state.names.front();
+    }
+  }
+  renderSetupState_ = std::move(state);
+}
+
+void GuiManager::drawRenderSetupControls() {
+  if (!ImGui::TreeNode("Render Setups")) {
+    return;
+  }
+  const auto &state = renderSetupState_;
+  if (!state.status.empty()) {
+    ImGui::TextWrapped("%s", WrapLongPathForImGui(state.status).c_str());
+  }
+  if (!state.available) {
+    ImGui::TextDisabled("Load a primary glTF or GLB scene to use render setups.");
+    ImGui::TreePop();
+    return;
+  }
+
+  const auto queue = [this](RenderSetupAction action, std::string name = {},
+                            std::string newName = {}, std::string path = {}) {
+    if (!renderSetupRequest_) {
+      renderSetupRequest_.emplace(RenderSetupRequest{
+          action, std::move(name), std::move(newName), std::move(path)});
+    }
+  };
+  const bool previewActive = !state.activeName.empty();
+  if (previewActive) {
+    ImGui::TextWrapped("Active preview %s", state.activeName.c_str());
+    if (ImGui::Button("Deactivate preview")) {
+      queue(RenderSetupAction::Deactivate);
+    }
+    ImGui::SetItemTooltip("Restore the base view before capturing or updating a setup.");
+  }
+
+  if (!state.names.empty()) {
+    if (ImGui::BeginCombo("Saved setup", selectedRenderSetupName_.c_str())) {
+      for (size_t index = 0; index < state.names.size(); ++index) {
+        const auto &name = state.names[index];
+        const bool selected = name == selectedRenderSetupName_;
+        ImGui::PushID(static_cast<int>(index));
+        if (selectableAssetName("##setup", SingleLineDisplayText(name), selected)) {
+          selectedRenderSetupName_ = name;
+        }
+        if (selected) {
+          ImGui::SetItemDefaultFocus();
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+    ImGui::BeginDisabled(selectedRenderSetupName_ == state.activeName);
+    if (ImGui::Button("Activate")) {
+      queue(RenderSetupAction::Activate, selectedRenderSetupName_);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    ImGui::BeginDisabled(previewActive);
+    if (ImGui::Button("Update from current view")) {
+      queue(RenderSetupAction::Update, selectedRenderSetupName_);
+    }
+    ImGui::EndDisabled();
+    ShowItemTooltip("Deactivate the preview before updating a setup.",
+                    previewActive ? ImGuiHoveredFlags_AllowWhenDisabled : 0);
+  }
+
+  ImGui::BeginDisabled(previewActive);
+  ImGui::InputText("Setup name", &renderSetupNameInput_);
+  const std::string name = TrimAscii(renderSetupNameInput_);
+  const bool uniqueName = !name.empty() && !std::ranges::contains(state.names, name);
+  ImGui::BeginDisabled(!uniqueName);
+  if (ImGui::Button("Capture current view")) {
+    queue(RenderSetupAction::Capture, name);
+  }
+  ImGui::EndDisabled();
+  if (!name.empty() && !uniqueName) {
+    ShowItemTooltip("Choose a new name or use Update from current view.",
+                    ImGuiHoveredFlags_AllowWhenDisabled);
+  }
+  if (!state.names.empty()) {
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!uniqueName);
+    if (ImGui::Button("Rename")) {
+      queue(RenderSetupAction::Rename, selectedRenderSetupName_, name);
+    }
+    ImGui::EndDisabled();
+    ImGui::SetItemTooltip("Rename the selected setup to the name entered above.");
+    ImGui::SameLine();
+    if (ImGui::Button("Delete")) {
+      queue(RenderSetupAction::Delete, selectedRenderSetupName_);
+    }
+  }
+  ImGui::EndDisabled();
+
+  ImGui::InputText("Sidecar file", &renderSetupPathInput_);
+  const std::string path = TrimAscii(renderSetupPathInput_);
+  ImGui::BeginDisabled(path.empty());
+  ImGui::BeginDisabled(previewActive);
+  if (ImGui::Button("Open")) {
+    queue(RenderSetupAction::Open, {}, {}, path);
+  }
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  if (ImGui::Button("Save")) {
+    queue(RenderSetupAction::Save, {}, {}, path);
+  }
+  ImGui::EndDisabled();
+  ImGui::TreePop();
 }
 
 void GuiManager::drawBimElementBrowser(const BimInspectionState &inspection) {
@@ -4158,6 +4283,9 @@ void GuiManager::resetModelInspectionState() {
   savedScenePath_.clear();
   sceneSaveRequest_.reset();
   linkedSceneSaveRequest_.reset();
+  renderSetupRequest_.reset();
+  renderSetupNameInput_.clear();
+  setRenderSetupState({});
   materialVariantControls_={};
   gltfSceneControls_={};
   // ImGui retains an active InputText buffer independently of std::string.
@@ -5050,7 +5178,7 @@ void GuiManager::drawSceneControls(
   }
   enum class ControlsSection {
     None, Project, GltfScene, Hierarchy, Selection, Material, Variants,
-    Animation, Physics, Volumes,
+    Animation, RenderSetups, Physics, Volumes,
     Rendering, Lighting, Shadows, Ddgi, PostProcess, Transforms, Bim, Diagnostics
   };
   ControlsSection requestedSection = ControlsSection::None;
@@ -5078,6 +5206,7 @@ void GuiManager::drawSceneControls(
                         ImGuiHoveredFlags_AllowWhenDisabled);
       ImGui::Separator();
       sectionItem("Animation / authored cameras", ControlsSection::Animation);
+      sectionItem("Render setups", ControlsSection::RenderSetups);
       sectionItem("Physics", ControlsSection::Physics);
       sectionItem("Volumes / OpenVDB tools", ControlsSection::Volumes);
       ImGui::Separator();
@@ -5290,6 +5419,8 @@ void GuiManager::drawSceneControls(
   xmp.drawAnimation(gltfAnimationControls_.selectedClip);
   sectionAnchor(ControlsSection::Variants);
   drawMaterialVariantSelector();
+  if (sectionAnchor(ControlsSection::RenderSetups)) ImGui::SetNextItemOpen(true);
+  drawRenderSetupControls();
 
   if (ImGui::Button("Add Primitive")) {
     ImGui::OpenPopup("Add Primitive Menu");
@@ -8781,30 +8912,36 @@ void GuiManager::drawSceneControls(
   ImGui::Separator();
   sectionAnchor(ControlsSection::PostProcess);
   ImGui::Text("Post-process");
-  int toneMapper = static_cast<int>(displayGrade_.toneMapper);
+  auto previewGrade = renderSetupState_.previewGrade;
+  auto& grade = previewGrade ? *previewGrade : displayGrade_;
+  if (previewGrade) ImGui::TextDisabled("Deactivate the render setup to edit color grading.");
+  ImGui::BeginDisabled(previewGrade.has_value());
+  int toneMapper = static_cast<int>(grade.toneMapper);
   static constexpr const char *kToneMapperLabels[] = {
       "ACES", "Reinhard", "Clipping", "Filmic", "Uncharted 2", "AgX", "Khronos PBR Neutral"};
   if (ImGui::Combo("Tone Mapping", &toneMapper, kToneMapperLabels,
                    IM_ARRAYSIZE(kToneMapperLabels))) {
-    displayGrade_.toneMapper = static_cast<container::renderer::ToneMapper>(toneMapper);
+    grade.toneMapper = static_cast<container::renderer::ToneMapper>(toneMapper);
   }
-  ImGui::SliderFloat("Saturation", &displayGrade_.saturation, 0.0f, 2.0f, "%.2f",
+  ImGui::SliderFloat("Saturation", &grade.saturation, 0.0f, 2.0f, "%.2f",
                      ImGuiSliderFlags_AlwaysClamp);
-  ImGui::SliderFloat("Contrast", &displayGrade_.contrast, 0.5f, 2.0f, "%.2f",
+  ImGui::SliderFloat("Contrast", &grade.contrast, 0.5f, 2.0f, "%.2f",
                      ImGuiSliderFlags_AlwaysClamp);
+  ImGui::EndDisabled();
   if (ImGui::TreeNode("Color Grading")) {
-    ImGui::SliderFloat("White Balance (K)", &displayGrade_.temperatureKelvin, 2000.0f,
+    ImGui::BeginDisabled(previewGrade.has_value());
+    ImGui::SliderFloat("White Balance (K)", &grade.temperatureKelvin, 2000.0f,
                        15000.0f, "%.0f", ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SliderFloat("Tint (Duv)", &displayGrade_.tintDuv, -0.025f, 0.025f, "%.4f",
+    ImGui::SliderFloat("Tint (Duv)", &grade.tintDuv, -0.025f, 0.025f, "%.4f",
                        ImGuiSliderFlags_AlwaysClamp);
-    ImGui::SliderFloat("Vibrance", &displayGrade_.vibrance, -1.0f, 1.0f, "%.2f",
+    ImGui::SliderFloat("Vibrance", &grade.vibrance, -1.0f, 1.0f, "%.2f",
                        ImGuiSliderFlags_AlwaysClamp);
-    ImGui::ColorEdit3("Shadow Tone", displayGrade_.shadowTone.data());
-    ImGui::ColorEdit3("Highlight Tone", displayGrade_.highlightTone.data());
+    ImGui::ColorEdit3("Shadow Tone", grade.shadowTone.data());
+    ImGui::ColorEdit3("Highlight Tone", grade.highlightTone.data());
     if (ImGui::Button("Reset Color Grading")) {
-      const auto toneMapper = displayGrade_.toneMapper;
-      displayGrade_ = {};
-      displayGrade_.toneMapper = toneMapper;
+      const auto toneMapper = grade.toneMapper;
+      grade = {};
+      grade.toneMapper = toneMapper;
     }
     ImGui::InputText("Preset file", &displayGradePath_);
     const bool saveGrade = ImGui::Button("Save Preset##DisplayGrade");
@@ -8813,8 +8950,8 @@ void GuiManager::drawSceneControls(
     if (saveGrade || loadGrade) {
       try {
         const auto path = container::util::pathFromUtf8(displayGradePath_);
-        if (saveGrade) container::renderer::saveDisplayGrade(path, displayGrade_);
-        else displayGrade_ = container::renderer::loadDisplayGrade(path);
+        if (saveGrade) container::renderer::saveDisplayGrade(path, grade);
+        else grade = container::renderer::loadDisplayGrade(path);
         displayGradeMessage_ = saveGrade ? "Preset saved." : "Preset loaded.";
       } catch (const std::exception &error) {
         displayGradeMessage_ = error.what();
@@ -8822,6 +8959,7 @@ void GuiManager::drawSceneControls(
     }
     if (!displayGradeMessage_.empty())
       ImGui::TextWrapped("%s", displayGradeMessage_.c_str());
+    ImGui::EndDisabled();
     ImGui::TreePop();
   }
   int exposureMode =

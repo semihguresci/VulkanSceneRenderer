@@ -63,7 +63,7 @@ protected:
   void frame() {
     ImGui::NewFrame();
     ImGui::SetNextWindowPos(ImVec2(0.0f, 0.0f));
-    ImGui::SetNextWindowSize(ImVec2(drawSunHours_ ? 500.0f : 1080.0f,
+    ImGui::SetNextWindowSize(ImVec2(drawSunHours_ || drawRenderSetups_ ? 500.0f : 1080.0f,
                                   ImGui::GetIO().DisplaySize.y - 40.0f));
     ImGui::Begin("BIM browser widget test", nullptr,
                  ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoResize);
@@ -71,7 +71,11 @@ protected:
     searchPosition_ = ImVec2(origin.x + ImGui::GetStyle().IndentSpacing + 40.0f,
                              origin.y + ImGui::GetTextLineHeightWithSpacing() +
                                  ImGui::GetFrameHeight() * 0.5f);
-    if (drawSunHours_) {
+    if (drawRenderSetups_) {
+      renderSetupsId_ = ImGui::GetID("Render Setups");
+      ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+      gui_.drawRenderSetupControls();
+    } else if (drawSunHours_) {
       ImGui::SetNextItemOpen(true, ImGuiCond_Always);
       gui_.drawBimSunHoursPanel(inspection_);
       const auto min = ImGui::GetItemRectMin();
@@ -108,6 +112,19 @@ protected:
     frame();
     io.AddMouseButtonEvent(ImGuiMouseButton_Left, false);
     frame();
+  }
+
+  ImVec2 renderSetupControl(const char *label, float x = 40.0f) {
+    const ImGuiID id = ImHashStr(label, 0, renderSetupsId_);
+    for (float y = 30.0f; y < 500.0f; y += 4.0f) {
+      ImGui::GetIO().AddMousePosEvent(x, y);
+      frame();
+      if (context_->HoveredId == id) {
+        return ImVec2(x, y);
+      }
+    }
+    ADD_FAILURE() << "Could not find Render Setups widget " << label;
+    return ImVec2(-100.0f, -100.0f);
   }
 
   void typeQuery(std::string_view text) {
@@ -192,6 +209,8 @@ protected:
   int firstModel_{}, secondModel_{};
   bool browserOpen_{true};
   bool drawSunHours_{};
+  bool drawRenderSetups_{};
+  ImGuiID renderSetupsId_{};
   uint32_t selected_{std::numeric_limits<uint32_t>::max()};
   uint32_t focused_{std::numeric_limits<uint32_t>::max()};
 };
@@ -539,6 +558,63 @@ TEST_F(BimElementBrowserWidgetTests, SunHoursRunsCancelsSelectsAndExports) {
 
   gui_.setBimSunHoursState({});
   EXPECT_FALSE(gui_.bimSunHoursSelectedCell());
+}
+
+TEST_F(BimElementBrowserWidgetTests, NamedRenderSetupPreviewAndSidecarActions) {
+  using container::ui::RenderSetupAction;
+  drawRenderSetups_ = true;
+  gui_.setRenderSetupState({.available = true, .path = "looks.json"});
+  settle();
+  click(renderSetupControl("Setup name"));
+  ImGui::GetIO().AddInputCharactersUTF8("Morning");
+  frame();
+  click(renderSetupControl("Capture current view"));
+  auto capture = gui_.consumeRenderSetupRequest();
+  ASSERT_TRUE(capture);
+  EXPECT_EQ(capture->action, RenderSetupAction::Capture);
+  EXPECT_EQ(capture->name, "Morning");
+
+  gui_.setRenderSetupState({.available = true, .names = {"Morning", "Evening"},
+                            .path = "looks.json"});
+  settle();
+  const auto updateButton = renderSetupControl("Update from current view", 125.0f);
+  click(updateButton);
+  auto update = gui_.consumeRenderSetupRequest();
+  ASSERT_TRUE(update);
+  EXPECT_EQ(update->action, RenderSetupAction::Update);
+  EXPECT_EQ(update->name, "Morning");
+  click(renderSetupControl("Activate"));
+  auto firstPreview = gui_.consumeRenderSetupRequest();
+  ASSERT_TRUE(firstPreview);
+  EXPECT_EQ(firstPreview->action, RenderSetupAction::Activate);
+  EXPECT_EQ(firstPreview->name, "Morning");
+
+  gui_.setRenderSetupState({.available = true, .names = {"Morning", "Evening"},
+                            .activeName = "Evening", .path = "looks.json"});
+  settle();
+  const auto activateButton = renderSetupControl("Activate");
+  click(ImVec2(updateButton.x, activateButton.y));
+  EXPECT_FALSE(gui_.consumeRenderSetupRequest());
+
+  click(renderSetupControl("Deactivate preview"));
+  auto deactivate = gui_.consumeRenderSetupRequest();
+  ASSERT_TRUE(deactivate);
+  EXPECT_EQ(deactivate->action, RenderSetupAction::Deactivate);
+
+  gui_.setRenderSetupState({.available = true, .names = {"Morning", "Evening"},
+                            .path = "looks.json"});
+  settle();
+  click(renderSetupControl("Open"));
+  auto open = gui_.consumeRenderSetupRequest();
+  ASSERT_TRUE(open);
+  EXPECT_EQ(open->action, RenderSetupAction::Open);
+  EXPECT_EQ(open->path, "looks.json");
+  click(renderSetupControl("Save", 80.0f));
+  auto save = gui_.consumeRenderSetupRequest();
+  ASSERT_TRUE(save);
+  EXPECT_EQ(save->action, RenderSetupAction::Save);
+  EXPECT_EQ(save->path, "looks.json");
+  EXPECT_FALSE(gui_.consumeRenderSetupRequest());
 }
 
 } // namespace

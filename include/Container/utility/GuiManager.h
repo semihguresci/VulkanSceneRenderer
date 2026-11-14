@@ -773,6 +773,33 @@ struct SampleModelOption {
   std::string path{};
 };
 
+enum class RenderSetupAction {
+  Capture,
+  Update,
+  Activate,
+  Deactivate,
+  Rename,
+  Delete,
+  Open,
+  Save,
+};
+
+struct RenderSetupRequest {
+  RenderSetupAction action{};
+  std::string name;
+  std::string newName;
+  std::string path;
+};
+
+struct RenderSetupUiState {
+  bool available{};
+  std::vector<std::string> names;
+  std::string activeName;
+  std::string status;
+  std::string path;
+  std::optional<container::renderer::DisplayGrade> previewGrade;
+};
+
 // Reusable CPU ImGui widget: call inside an active window/popup. The returned
 // index always refers to the original catalog, even after filtering/clipping.
 [[nodiscard]] std::optional<size_t> drawSampleModelList(
@@ -810,6 +837,11 @@ public:
   [[nodiscard]] std::optional<std::string> consumeLinkedSceneSaveRequest() {
     return std::exchange(linkedSceneSaveRequest_, std::nullopt);
   }
+  void setRenderSetupState(RenderSetupUiState state);
+  [[nodiscard]] std::optional<RenderSetupRequest> consumeRenderSetupRequest() {
+    return std::exchange(renderSetupRequest_, std::nullopt);
+  }
+  void drawRenderSetupControls();
   void setLinkedSceneSaveAvailable(bool available) noexcept { linkedSceneSaveAvailable_ = available; }
   void setLinkedNodeAuthoringQueries(std::function<bool(uint32_t)> readOnly,
                                     std::function<bool(uint32_t)> canMakeEditable) {
@@ -1331,6 +1363,11 @@ private:
   MaterialVariantControls gltfSceneControls_{};
   std::optional<std::string> sceneSaveRequest_{};
   std::optional<std::string> linkedSceneSaveRequest_{};
+  RenderSetupUiState renderSetupState_{};
+  std::optional<RenderSetupRequest> renderSetupRequest_{};
+  std::string renderSetupNameInput_{};
+  std::string selectedRenderSetupName_{};
+  std::string renderSetupPathInput_{"render-setups.json"};
   bool linkedSceneSaveAvailable_{};
   std::function<bool(uint32_t)> linkedNodeReadOnly_, canMakeLinkedNodeEditable_;
   std::string savedScenePath_{};

@@ -154,6 +154,7 @@ void RendererFrontend::updateGltfAnimation() {
         // Resolve/evaluate before publishing the selection. The common helper
         // resets temporal history once only after an accepted change.
         try {
+          if (renderSetupPreview_) throw std::invalid_argument("Deactivate the render setup before choosing another camera");
           if(*camera< -1) throw std::invalid_argument("Invalid authored camera selector");
           (void)setGltfCameraNode(*camera<0?std::nullopt:std::optional<size_t>(size_t(*camera)));
           controls->cameraProjectionError.clear();

@@ -584,6 +584,38 @@ TEST(GltfModelLoader, CancelledRequestsFailBeforeSourceIoAndAllowAReplacement) {
   EXPECT_EQ(loaded.model.meshes()[0].vertices().size(), 3);
 }
 
+TEST(GltfModelLoader, FingerprintUsesExactPrimaryGltfAndGlbBytes) {
+  using namespace container::geometry::gltf;
+  const auto path = writeTriangleGltf("source_fingerprint", {0, 1, 2});
+  EXPECT_FALSE(LoadModelWithSource(path.string()).sourceFingerprint);
+
+  LoadOptions options;
+  options.fingerprintPrimarySource = true;
+  const auto original = LoadModelWithSource(path.string(), options);
+  ASSERT_TRUE(original.sourceFingerprint);
+  EXPECT_EQ(*original.sourceFingerprint, container::util::FingerprintFileContent(path));
+  EXPECT_EQ(original.sourceFingerprint->byteSize, std::filesystem::file_size(path));
+
+  // Cosmetic JSON changes still change the identity of the loaded file.
+  std::ofstream(path, std::ios::binary | std::ios::app) << "\t \n";
+  options.enableLinkedAssets = true;
+  const auto changed = LoadModelWithSource(path.string(), options);
+  ASSERT_TRUE(changed.sourceFingerprint);
+  EXPECT_NE(*changed.sourceFingerprint, *original.sourceFingerprint);
+  EXPECT_EQ(*changed.sourceFingerprint, container::util::FingerprintFileContent(path));
+  EXPECT_FALSE(changed.linkedComposition);
+
+  auto glb = path;
+  glb.replace_extension(".glb");
+  tinygltf::TinyGLTF writer;
+  ASSERT_TRUE(writer.WriteGltfSceneToFile(&changed.gltfModel, glb.string(), true, true, true, true));
+  const auto binary = LoadModelWithSource(glb.string(), options);
+  ASSERT_TRUE(binary.sourceFingerprint);
+  EXPECT_EQ(*binary.sourceFingerprint, container::util::FingerprintFileContent(glb));
+  EXPECT_EQ(binary.sourceFingerprint->byteSize, std::filesystem::file_size(glb));
+  EXPECT_NE(*binary.sourceFingerprint, *changed.sourceFingerprint);
+}
+
 TEST(GltfModelLoader, LinkedCompositionStopsAfterReadingAnActiveChild) {
   using namespace container::geometry::gltf;
   const auto parent = writeTriangleGltf("cancelled_link_parent", {0, 1, 2});
