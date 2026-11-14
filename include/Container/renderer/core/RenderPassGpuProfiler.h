@@ -73,6 +73,10 @@ class RenderPassGpuProfiler {
   void markFenceComplete(uint32_t frameSlot);
   // The returned samples remain valid until the next collection or shutdown.
   [[nodiscard]] std::span<const RetiredFrame> collectRetired();
+  // A capture can retire its own submission after recording. Keep its newest
+  // result for display and scheduling at the next frame boundary.
+  void deferLatestLiveTiming();
+  [[nodiscard]] std::optional<RetiredFrame> takeDeferredLiveTiming();
   [[nodiscard]] uint32_t pendingFrames() const;
 
  private:
@@ -134,6 +138,7 @@ class RenderPassGpuProfiler {
   std::vector<Slot> slots_;
   std::vector<uint32_t> submittedSlots_;
   std::vector<RetiredFrame> retired_;
+  std::optional<RetiredFrame> deferredLiveTiming_;
   std::optional<uint32_t> activeFrameSlot_;
   uint64_t recordingSerial_{0};
 

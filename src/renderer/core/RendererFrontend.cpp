@@ -2137,6 +2137,22 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     if (subs_.renderPassGpuProfiler) {
       auto& profiler = *subs_.renderPassGpuProfiler;
       const auto timingSource = profiler.timingSource();
+      const auto applyReferenceTiming = [&](const auto& retired) {
+        if (svc_.config.pathTargetMs <= 0.0f || !retired.referenceBatch)
+          return;
+        const auto& batch = *retired.referenceBatch;
+        const auto lighting = std::ranges::find(
+            retired.timings, RenderPassId::Lighting, &RendererPassGpuTiming::id);
+        updateReferenceSampleBudget(
+            lighting == retired.timings.end() ? 0.0f : lighting->milliseconds,
+            batch.samples, batch.generation, batch.epoch);
+      };
+      std::optional<RenderPassGpuProfiler::RetiredFrame> deferred;
+      if (publishLiveTimings) {
+        deferred = profiler.takeDeferredLiveTiming();
+        if (deferred)
+          applyReferenceTiming(*deferred);
+      }
       const auto retiredFrames = profiler.collectRetired();
       for (const auto& retired : retiredFrames) {
 #ifdef CONTAINER_ENABLE_RENDERER_MCP
@@ -2144,12 +2160,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
           subs_.mcpServer->observeGpuTimings(retired.serial,
               rendererGpuTimingSourceName(timingSource), retired.timings);
 #endif
-        if (svc_.config.pathTargetMs > 0.0f && retired.referenceBatch) {
-          const auto& batch = *retired.referenceBatch;
-          const auto lighting = std::ranges::find(retired.timings, RenderPassId::Lighting, &RendererPassGpuTiming::id);
-          updateReferenceSampleBudget(lighting == retired.timings.end() ? 0.0f : lighting->milliseconds,
-                                      batch.samples, batch.generation, batch.epoch);
-        }
+        if (publishLiveTimings)
+          applyReferenceTiming(retired);
         if (telemetry) {
           std::optional<float> passSum;
           if (!retired.timings.empty()) {
@@ -2160,8 +2172,13 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
               frame_.submittedFrameCount - retired.frameIndex, passSum, retired.graphicsMilliseconds});
         }
       }
-      if (!telemetry || !publishLiveTimings) return;
-      const auto* latest = retiredFrames.empty() ? nullptr : &retiredFrames.back();
+      if (!publishLiveTimings) {
+        profiler.deferLatestLiveTiming();
+        return;
+      }
+      if (!telemetry) return;
+      const auto* latest =
+          retiredFrames.empty() ? (deferred ? &*deferred : nullptr) : &retiredFrames.back();
       if (latest && !latest->timings.empty())
         telemetry->setPassGpuTimings(latest->timings, timingSource);
       telemetry->setGpuProfilerStatus(RendererGpuProfilerTelemetry{

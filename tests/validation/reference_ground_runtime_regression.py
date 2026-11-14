@@ -55,19 +55,25 @@ def main():
     model = output / "blocker.gltf"
     fixture(model)
 
-    def capture(name, mode, height=0, intensity=1, direction=(-.6, -.8, 0)):
+    def run_capture(name, mode, height=0, intensity=1, direction=(-.6, -.8, 0), *, sequence=None):
         image = output / f"{name}.exr"
         command = [
             str(renderer), "--model", str(model), "--gltf-camera-node", "1", "--import-scale", "1",
             "--hidden", "--no-ui", "--validation", "--no-taa", "--no-bloom", "--msaa", "1",
             "--width", str(WIDTH), "--height", str(HEIGHT), "--sky", "plain", "--sky-horizon", "0", "0", "0",
-            "--environment-intensity", "0", "--directional-intensity", str(intensity),
+            "--environment-intensity", "0",
             "--directional-direction", *map(str, direction), "--directional-color", "1", "1", "1",
             "--display-mode", "lit", "--render-technique", "path-tracing", "--path-spp", "8",
-            "--path-samples", "16", "--path-bounces", "1", "--capture-frame", "2", "--warmup-frames", "0",
+            "--path-samples", "16", "--path-bounces", "1",
             "--path-ground", mode, "--path-ground-height", str(height), "--path-ground-color", ".8", ".2", ".1",
             "--screenshot", str(image),
         ]
+        if intensity is not None:
+            command += ["--directional-intensity", str(intensity)]
+        if sequence is None:
+            command += ["--capture-frame", "2", "--warmup-frames", "0"]
+        else:
+            command += ["--capture-sequence", str(sequence)]
         if mode == "shadow-matte":
             command += ["--path-firefly-clamp", ".1"]
         run = subprocess.run(command, cwd=renderer.parent, capture_output=True, text=True, errors="replace",
@@ -75,14 +81,20 @@ def main():
         log = run.stdout + run.stderr
         (output / f"{name}.log").write_text(log, encoding="utf-8")
         assert run.returncode == 0 and not validation_log_error(log), log
+        return image
+
+    def read_capture(image, mode, height, *, samples=16, resets=1, submitted=8):
         metadata = json.loads(Path(f"{image}.capture.json").read_text(encoding="utf-8"))
         settings = metadata["referencePath"]
-        assert settings["attemptedSamplesPerPixel"] == 16 and not settings["hasDiagnostics"], metadata
+        assert settings["attemptedSamplesPerPixel"] == samples and not settings["hasDiagnostics"], metadata
+        assert settings["sampleLimit"] == 16 and settings["sampleLimitReached"] == (samples == 16), metadata
+        assert settings["historyResets"] == resets and settings["lastSubmittedSamples"] == submitted, metadata
         assert settings["ground"]["mode"] == mode, metadata
         if mode != "off":
             assert settings["ground"]["height"] == height, metadata
         if mode == "shadow-matte":
             assert metadata["source"] == "path-trace-shadow-matte" and metadata["colorSpace"] == "linear-mask"
+            assert not (metadata["includesUi"] or metadata["exposureApplied"] or metadata["toneMappingApplied"]), metadata
             assert settings["fireflyClamp"] == 0, metadata
         else:
             assert metadata["source"] == "path-trace-mean", metadata
@@ -94,6 +106,9 @@ def main():
             np.testing.assert_array_equal(pixels[:, :, 0], pixels[:, :, 1])
             np.testing.assert_array_equal(pixels[:, :, 0], pixels[:, :, 2])
         return pixels[:, :, ::-1]
+
+    def capture(name, mode, height=0, intensity=1, direction=(-.6, -.8, 0)):
+        return read_capture(run_capture(name, mode, height, intensity, direction), mode, height)
 
     off = capture("ground-off", "off")
     np.testing.assert_array_equal(off, 0)
@@ -114,6 +129,37 @@ def main():
     np.testing.assert_array_equal(region(flipped, .85), 1)
     np.testing.assert_array_equal(capture("no-light", "shadow-matte", intensity=0), 0)
     print("PASS analytic ground, light/height response, and linear EXR shadow matte", flush=True)
+
+    sequence = output / "live-shadow-matte.json"
+    move_frame, light_frame = 4, 7
+    checkpoints = (3, move_frame, 6, light_frame, 9)
+    sequence.write_text(json.dumps({
+        "schemaVersion": 1, "frames": checkpoints[-1], "sampleFrames": checkpoints,
+        "events": [
+            {"frame": move_frame, "nodeTransform": {"node": {"sourceNode": 0},
+                                           "matrix": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 1.7, 0, 0, 1]}},
+            {"frame": light_frame, "lightEdit": {"target": {"type": "directional", "source": "generated", "index": 0},
+                                       "phase": "commit", "values": {"intensity": 0}}},
+        ],
+    }), encoding="utf-8")
+    # Let the light editor own intensity during the sequence. A CLI override takes precedence.
+    image = run_capture("live-shadow-matte", "shadow-matte", intensity=None, sequence=sequence)
+    for frame, samples, resets, submitted in zip(
+        checkpoints, (16, 8, 16, 8, 16), (1, 2, 2, 3, 3), (0, 8, 0, 8, 0), strict=True
+    ):
+        path = image if frame == checkpoints[-1] else image.with_name(f"{image.stem}.frame-{frame:04d}.exr")
+        pixels = read_capture(path, "shadow-matte", 0, samples=samples, resets=resets, submitted=submitted)
+        state = json.loads(path.with_suffix(".telemetry.json").read_text(encoding="utf-8"))
+        intensity = state["lighting"]["directionalIntensity"]
+        assert (intensity > 0 if frame < light_frame else intensity == 0), state["lighting"]
+        if frame == checkpoints[0]:
+            np.testing.assert_array_equal(pixels, matte)
+        elif frame < light_frame:
+            np.testing.assert_array_equal(region(pixels, -.85), 0)
+            np.testing.assert_array_equal(region(pixels, .85), 1)
+        else:
+            np.testing.assert_array_equal(pixels, 0)
+    print("PASS blocker and light edits reset and reconverge shadow matte at the exact sample stop", flush=True)
 
 
 if __name__ == "__main__":
