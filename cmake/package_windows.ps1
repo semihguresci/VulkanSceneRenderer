@@ -299,6 +299,8 @@ try {
 }
 
 $requiredFiles = @(
+    'spv_shaders/brdf_lut.comp.spv', 'spv_shaders/equirect_to_cubemap.comp.spv',
+    'spv_shaders/irradiance_convolution.comp.spv', 'spv_shaders/prefilter_specular.comp.spv',
     'VulkanSceneRenderer.exe', 'OpenVdbTransportRender.exe', 'fmt.dll', 'glfw3.dll',
     'MaterialXCore.dll', 'MaterialXFormat.dll', 'miniz.dll',
     'spdlog.dll', 'vulkan-1.dll', 'manifold.dll', 'models/basic_cube.gltf',

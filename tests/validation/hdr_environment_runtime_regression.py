@@ -296,7 +296,8 @@ def verify_sky(renderer, output, model, exr, ddgi, multiple=False):
                 raise RuntimeError(f"{technique}: {mode} differs from equivalent EXR by {error.max()} codes")
         target = output / f"{technique}-sky-live"
         command = [
-            str(renderer), "--hidden", "--no-ui", "--validation", "--no-bloom", "--no-taa",
+            str(renderer), "--hidden", "--no-ui", "--validation", "--no-bloom",
+            "--taa", "--taa-jitter-seed", "0",
             "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1",
             "--render-technique", technique, "--display-mode", "lit", "--exposure", "1",
             "--camera-position", "0", "0", "4", "--camera-target", "0", "0", "0",
@@ -327,13 +328,19 @@ def verify_sky(renderer, output, model, exr, ddgi, multiple=False):
             directional = state["lighting"]["directionalIntensity"]
             if (mode == 3 and directional <= 1.) or (mode != 3 and directional != 1.):
                 raise RuntimeError(f"{technique}: linked sun was not installed or cleared at frame {frame}")
-            if state["taa"]["epoch"] <= previous_epoch:
-                raise RuntimeError(f"{technique}: sky change did not reset temporal history")
-            previous_epoch = state["taa"]["epoch"]
+            taa = state["taa"]
+            if not taa["enabled"] or not any(
+                render_pass["name"] == "TemporalResolve" and render_pass["active"]
+                for render_pass in state["passes"]
+            ):
+                raise RuntimeError(f"{technique}: TAA resolve was inactive at frame {frame}")
+            if taa["epoch"] <= previous_epoch or (frame != frames[0] and taa["resetReason"] != "environment changed"):
+                raise RuntimeError(f"{technique}: sky change did not reset TAA history at frame {frame}: {taa}")
+            previous_epoch = taa["epoch"]
             if ddgi:
                 probes = state["ddgi"]
                 if not probes["asyncActive"] or not probes["active"] or probes["historyResets"] <= previous_resets:
-                    raise RuntimeError(f"{technique}: sky change did not reset active DDGI history")
+                    raise RuntimeError(f"{technique}: sky change did not reset active DDGI history at frame {frame}")
                 previous_resets = probes["historyResets"]
         print(f"{technique}: plain and gradient match baked EXR; live transitions reset history", flush=True)
 
