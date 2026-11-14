@@ -61,6 +61,7 @@ add_library(VulkanSceneRenderer_geometry
     GltfLegacyMaterialSerialization.cpp
     GltfMaterialAuthoring.cpp
     GltfCameraAuthoring.cpp
+    GltfCameraMotion.cpp
     GltfCameraPoseAuthoring.cpp
     GltfMaterialTextureAuthoring.cpp
     GltfPrimitiveFrameVariants.cpp

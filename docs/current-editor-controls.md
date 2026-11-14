@@ -104,7 +104,21 @@ which live references prevent deletion. Resource deletion supports Undo/Redo.
 
 Open **Go to → Animation / authored cameras**. Choose a **Clip**, then use **Play/Pause**, **Loop**, **Speed** and **Time**. Negative speed plays backwards. Choose **Rest pose** to leave clip playback.
 
-If the asset contains cameras, use **Camera** in this section to choose one, or return to **Viewport camera**. Open **Animation diagnostics** when the asset reports messages. These controls provide playback and camera selection; they do not provide keyframe or curve authoring.
+If the asset contains cameras, use **Camera** in this section to choose one, or return to **Viewport camera**. Open **Animation diagnostics** when the asset reports messages.
+
+To author camera motion, select the destination camera, switch to **Viewport
+camera**, and pause playback. Frame the first shot, then open **Camera motion**
+and choose **Create clip from viewport**. The clip starts with a key at zero
+seconds. Navigate to the next view and set **Key time (s)** or choose **Use
+playhead** to follow the animation timeline. **Capture viewport key** inserts
+a key. **Update key from viewport** replaces the key at that time.
+
+Use the **Key** selector to go to, move, or delete a key. Undo and Redo
+restore key poses and times. Reselect the authored camera to preview its
+clip with **Play** or **Time**. The camera interpolates translation and
+rotation between keys. Saving to glTF or GLB preserves the clip alongside
+the asset's existing animations. A draft with no keys stays available in
+the session and is omitted from export.
 
 An authored camera selection also exposes **Projection**, **Vertical FOV
 (degrees)**, automatic/fixed aspect, near/far or **Infinite far**, and separate

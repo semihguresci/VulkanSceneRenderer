@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <bit>
 #include <cmath>
+#include <cstdio>
 #include <limits>
 #include <numbers>
 #include <utility>
@@ -52,9 +53,28 @@ bool validSnapshot(const CameraViewPoseSnapshot& s) noexcept {
   return validTarget(s.target.camera) && s.target.nodeIncarnation && s.viewRevision &&
       s.destinationName.size()<=4096 && s.blockReason.size()<=maxReasonBytes;
 }
+bool validKeyTime(double time) noexcept {
+  return std::isfinite(time) && time >= 0 && time <= std::numeric_limits<float>::max();
+}
+bool validSnapshot(const CameraMotionSnapshot& snapshot) noexcept {
+  if (!validTarget(snapshot.target.camera) || !snapshot.target.nodeIncarnation ||
+      !snapshot.viewRevision || snapshot.clip < -1 ||
+      snapshot.destinationName.size() > 4096 || snapshot.blockReason.size() > maxReasonBytes ||
+      (snapshot.clip < 0 && !snapshot.keyTimes.empty())) return false;
+  for (size_t i = 0; i < snapshot.keyTimes.size(); ++i) {
+    const auto time = snapshot.keyTimes[i];
+    if (!validKeyTime(time) || (i > 0 && float(snapshot.keyTimes[i - 1]) >= float(time))) return false;
+  }
+  return true;
+}
+bool hasCameraMotionKey(const CameraMotionSnapshot& snapshot, double time) noexcept {
+  const auto key = std::ranges::lower_bound(snapshot.keyTimes, float(time), {},
+                                            [](double entry) { return float(entry); });
+  return key != snapshot.keyTimes.end() && float(*key) == float(time);
+}
 bool conflictingRequest(const GltfAnimationControls& c) noexcept {
   return c.requestedCameraNode || c.requestedClip || c.requestedTime || c.requestedSpeed || c.requestedPlaying || c.requestedLoop ||
-      c.requestedCameraViewPose;
+      c.requestedCameraViewPose || c.requestedCameraMotion;
 }
 bool poseCanApply(const GltfAnimationControls& c) noexcept {
   return c.cameraViewPose && validSnapshot(*c.cameraViewPose) && c.cameraViewPose->viewportActive && c.cameraNode<0 &&
@@ -145,7 +165,8 @@ bool SetCameraProjectionSnapshot(GltfAnimationControls& c,const std::optional<Ca
   return true;
 }
 bool SetCameraProjectionDraft(GltfAnimationControls& c,const CameraProjectionDraft& draft) noexcept {
-  if(!c.cameraProjection || c.requestedCameraProjection || c.requestedCameraViewPose || draft.target!=c.cameraProjection->target ||
+  if(!c.cameraProjection || c.requestedCameraProjection || c.requestedCameraViewPose || c.requestedCameraMotion ||
+      draft.target!=c.cameraProjection->target ||
       !validLens(draft.type,draft.values) || (draft.type!=c.cameraProjection->type && !draft.typeEdited)) return false;
   if(draft.type!=c.cameraProjection->type && !c.cameraProjection->typeSwitchBlockReason.empty()) return false;
   if(draft.type!=c.cameraProjection->type && (draft.type==Projection::Perspective?
@@ -181,6 +202,139 @@ bool QueueCameraViewPose(GltfAnimationControls& c,const PoseTarget& target,uint6
   if(!poseCanApply(c) || target!=c.cameraViewPose->target || viewRevision!=c.cameraViewPose->viewRevision) return false;
   c.requestedCameraViewPose.emplace(CameraViewPoseRequest{target,viewRevision});return true;
 }
+
+bool SetCameraMotionSnapshot(GltfAnimationControls& controls, std::optional<CameraMotionSnapshot> snapshot) {
+  if (snapshot && !validSnapshot(*snapshot)) return false;
+  const auto& previous = controls.cameraMotion;
+  const bool sameDestination = previous && snapshot && previous->clip == snapshot->clip &&
+      previous->target.nodeIncarnation == snapshot->target.nodeIncarnation &&
+      sameDraftIdentity(previous->target.camera, snapshot->target.camera);
+  if (!sameDestination) controls.cameraMotionKeyTime.reset();
+  if (!sameDestination || (controls.cameraMotionSelectedKey &&
+      !hasCameraMotionKey(*snapshot, *controls.cameraMotionSelectedKey))) {
+    controls.cameraMotionSelectedKey.reset();
+    controls.cameraMotionMoveTime.reset();
+  }
+  controls.cameraMotion.swap(snapshot);
+  return true;
+}
+
+bool QueueCameraMotion(GltfAnimationControls& controls, CameraMotionRequest request) noexcept {
+  if (!controls.cameraMotion || controls.playing || controls.requestedCameraProjection ||
+      conflictingRequest(controls) || !validKeyTime(request.time)) return false;
+  const auto& snapshot = *controls.cameraMotion;
+  if (request.target != snapshot.target || !snapshot.blockReason.empty() ||
+      request.clip != snapshot.clip) return false;
+  switch (request.action) {
+  case CameraMotionAction::CreateClip:
+  case CameraMotionAction::CaptureKey:
+    if (!snapshot.viewportActive || controls.cameraNode >= 0 || request.viewRevision != snapshot.viewRevision ||
+        (request.action == CameraMotionAction::CreateClip ? request.time != 0 : snapshot.clip < 0)) return false;
+    break;
+  case CameraMotionAction::MoveKey:
+    if (!validKeyTime(request.newTime) || hasCameraMotionKey(snapshot, request.newTime)) return false;
+    [[fallthrough]];
+  case CameraMotionAction::DeleteKey:
+    if (snapshot.clip < 0 || !hasCameraMotionKey(snapshot, request.time)) return false;
+    break;
+  default:
+    return false;
+  }
+  controls.requestedCameraMotion = request;
+  return true;
+}
+
+namespace {
+void drawCameraMotionControls(GltfAnimationControls& controls) {
+  if (controls.cameras.empty() && !controls.cameraMotion && controls.cameraMotionError.empty()) return;
+  if (!ImGui::TreeNode("Camera motion")) return;
+  if (!controls.cameraMotionError.empty()) ImGui::TextWrapped("%s", controls.cameraMotionError.c_str());
+  if (!controls.cameraMotion) {
+    ImGui::TextWrapped("Choose an authored camera, then switch to Viewport camera to capture its motion.");
+    ImGui::TreePop();
+    return;
+  }
+
+  const auto& motion = *controls.cameraMotion;
+  if (motion.destinationName.empty()) ImGui::Text("Camera node %d", motion.target.camera.sourceNode);
+  else ImGui::TextWrapped("%s", motion.destinationName.c_str());
+  if (!motion.blockReason.empty()) ImGui::TextWrapped("%s", motion.blockReason.c_str());
+  else if (controls.playing) ImGui::TextUnformatted("Pause playback to edit camera motion.");
+  else if (!motion.viewportActive) ImGui::TextWrapped("Switch to Viewport camera to capture a pose.");
+
+  const bool canEdit = !controls.playing && motion.blockReason.empty() &&
+      !controls.requestedCameraProjection && !conflictingRequest(controls);
+  const bool canCapture = canEdit && motion.viewportActive && controls.cameraNode < 0;
+  const auto queue = [&](CameraMotionAction action, double time, double newTime = 0) {
+    if (QueueCameraMotion(controls, {action, motion.target, motion.viewRevision, motion.clip, time, newTime}))
+      controls.cameraMotionError.clear();
+  };
+  ImGui::BeginDisabled(!canCapture);
+  if (ImGui::Button("Create clip from viewport")) queue(CameraMotionAction::CreateClip, 0);
+  ImGui::EndDisabled();
+
+  if (motion.clip < 0) {
+    ImGui::TextWrapped("Select a camera motion clip in Clip to edit its keys.");
+    ImGui::TreePop();
+    return;
+  }
+
+  auto time = controls.cameraMotionKeyTime.value_or(controls.time);
+  ImGui::BeginDisabled(!canEdit);
+  ImGui::SetNextItemWidth(130);
+  if (ImGui::InputDouble("Key time (s)", &time, 0, 0, "%.9g")) controls.cameraMotionKeyTime = time;
+  ImGui::SameLine();
+  if (ImGui::Button("Use playhead")) {
+    controls.cameraMotionKeyTime.reset();
+    time = controls.time;
+  }
+  ImGui::BeginDisabled(!canCapture || !validKeyTime(time));
+  const bool replacesKey = validKeyTime(time) && hasCameraMotionKey(motion, time);
+  if (ImGui::Button(replacesKey ? "Update key from viewport" : "Capture viewport key"))
+    queue(CameraMotionAction::CaptureKey, time);
+  ImGui::EndDisabled();
+  if (motion.keyTimes.empty()) {
+    ImGui::TextDisabled("No keys in this clip.");
+  } else {
+    char selected[40] = "Choose a key";
+    if (controls.cameraMotionSelectedKey)
+      std::snprintf(selected, sizeof(selected), "%.9g s", *controls.cameraMotionSelectedKey);
+    ImGui::SetNextItemWidth(130);
+    if (ImGui::BeginCombo("Key", selected)) {
+      for (size_t i = 0; i < motion.keyTimes.size(); ++i) {
+        const auto key = motion.keyTimes[i];
+        char label[40];
+        std::snprintf(label, sizeof(label), "%.9g s", key);
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::Selectable(label, controls.cameraMotionSelectedKey == key)) {
+          controls.cameraMotionSelectedKey = key;
+          controls.cameraMotionMoveTime.reset();
+        }
+        ImGui::PopID();
+      }
+      ImGui::EndCombo();
+    }
+    if (const auto key = controls.cameraMotionSelectedKey) {
+      ImGui::SameLine();
+      if (ImGui::Button("Go to key")) {
+        controls.requestedTime = *key;
+        controls.cameraMotionKeyTime.reset();
+      }
+      auto newTime = controls.cameraMotionMoveTime.value_or(*key);
+      ImGui::SetNextItemWidth(130);
+      if (ImGui::InputDouble("New time (s)", &newTime, 0, 0, "%.9g")) controls.cameraMotionMoveTime = newTime;
+      const bool validMove = validKeyTime(newTime) && !hasCameraMotionKey(motion, newTime);
+      ImGui::BeginDisabled(!validMove);
+      if (ImGui::Button("Move key")) queue(CameraMotionAction::MoveKey, *key, newTime);
+      ImGui::EndDisabled();
+      ImGui::SameLine();
+      if (ImGui::Button("Delete key")) queue(CameraMotionAction::DeleteKey, *key);
+    }
+  }
+  ImGui::EndDisabled();
+  ImGui::TreePop();
+}
+} // namespace
 
 void DrawCameraViewPoseControls(GltfAnimationControls& c) {
   ImGui::Separator();ImGui::TextUnformatted("Camera pose");
@@ -271,7 +425,7 @@ void DrawCameraProjectionControls(GltfAnimationControls& c) {
 void DrawGltfAnimationControls(GltfAnimationControls& controls) {
   if (!ImGui::CollapsingHeader("glTF Animation")) return;
   if (!controls.error.empty()) ImGui::TextWrapped("%s",controls.error.c_str());
-  ImGui::BeginDisabled(controls.requestedCameraProjection.has_value() || controls.requestedCameraViewPose.has_value());
+  ImGui::BeginDisabled(controls.requestedCameraProjection || controls.requestedCameraViewPose || controls.requestedCameraMotion);
   if (controls.clips.empty()) ImGui::TextDisabled("No animation clips in this scene.");
   else {
     const char* selected = controls.selectedClip >= 0 && static_cast<size_t>(controls.selectedClip) < controls.clips.size()
@@ -295,7 +449,10 @@ void DrawGltfAnimationControls(GltfAnimationControls& controls) {
     double time = controls.time;
     const double zero = 0, duration = controls.selectedClip >= 0 && static_cast<size_t>(controls.selectedClip) < controls.clips.size()
       ? controls.clips[static_cast<size_t>(controls.selectedClip)].duration : 0;
-    if (ImGui::SliderScalar("Time",ImGuiDataType_Double,&time,&zero,&duration,"%.3f s",ImGuiSliderFlags_AlwaysClamp)) controls.requestedTime = time;
+    if (ImGui::SliderScalar("Time",ImGuiDataType_Double,&time,&zero,&duration,"%.3f s",ImGuiSliderFlags_AlwaysClamp)) {
+      controls.requestedTime = time;
+      controls.cameraMotionKeyTime.reset();
+    }
     ImGui::EndDisabled();
   }
   if (!controls.cameras.empty()) {
@@ -344,6 +501,7 @@ void DrawGltfAnimationControls(GltfAnimationControls& controls) {
   }
   DrawCameraProjectionControls(controls);
   DrawCameraViewPoseControls(controls);
+  drawCameraMotionControls(controls);
   if (!controls.diagnostics.empty() && ImGui::TreeNode("Animation diagnostics")) {
     for (const auto& message : controls.diagnostics) ImGui::TextWrapped("%s",message.c_str());
     ImGui::TreePop();

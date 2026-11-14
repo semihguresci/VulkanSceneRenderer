@@ -86,6 +86,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendInteractivity.cpp
     renderer/core/RendererFrontendCameras.cpp
     renderer/core/RendererFrontendCameraPoses.cpp
+    renderer/core/RendererFrontendCameraMotion.cpp
     renderer/core/RendererFrontendDeformation.cpp
     renderer/core/RendererFrontendDeformationTelemetry.cpp
     renderer/scene/SceneLightExport.cpp

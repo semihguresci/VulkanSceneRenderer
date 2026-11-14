@@ -58,10 +58,12 @@ struct CaptureComfyUi;
 struct CapturePhysicsJointCreate;
 struct CaptureEvent;
 struct CaptureLightTarget;
+struct CaptureCameraMotion;
 }
 namespace container::ui {
 struct BimFloorPlanOverlayState;
 struct GltfAnimationControls;
+struct CameraMotionRequest;
 struct SceneNodeAuthoringRequest;
 }
 namespace container::asl { class PoseReplayScene; }
@@ -569,6 +571,13 @@ private:
   bool replayCameraViewPose(const CameraViewPoseHistory&,container::geometry::gltf::GltfCameraEditSide);
   bool publishCameraViewPose(CameraViewPosePublication&,const glm::mat4* currentView);
   void appendCameraViewPoseTelemetry(nlohmann::json&) const;
+  struct CameraMotionHistory;
+  void refreshCameraMotionInspector();
+  void processCameraMotionRequests();
+  void applyCaptureCameraMotion(const container::temporal::CaptureCameraMotion&);
+  void authorCameraMotion(const container::ui::CameraMotionRequest&);
+  bool replayCameraMotion(const CameraMotionHistory&, bool apply);
+  void appendCameraMotionTelemetry(nlohmann::json&) const;
   struct LightEditHistory;
   struct LightEditHistoryBudget;
   struct PendingLightGesture;

@@ -441,7 +441,9 @@ GltfNodeExportCompactionPlan CompactGltfExportNodes(const tinygltf::Model& sourc
 }
 
 void DropEmptyGltfExportAnimations(tinygltf::Model& model) {
-  const auto empty = [](const tinygltf::Animation& animation) { return animation.channels.empty(); };
+  const auto empty = [](const tinygltf::Animation& animation) {
+    return animation.channels.empty() || IsGltfCameraMotionDraft(animation);
+  };
   if (!std::ranges::any_of(model.animations, empty)) return;
 
   if (const auto behavior = model.extensions.find(kGltfInteractivityExtension);

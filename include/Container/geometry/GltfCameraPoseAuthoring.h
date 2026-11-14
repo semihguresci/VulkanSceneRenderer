@@ -66,6 +66,11 @@ private:
     int32_t authoredNode, int32_t evaluatedNode, const GltfCameraPoseGraphState& actualGraph,
     const glm::mat4& desiredUnjitteredView, const GltfCameraPoseAuthoringLimits& limits = {});
 
+// Use the camera pose editor's signed scale and TRS representability rules.
+// The result contains the camera association and its matrix/TRS fields.
+[[nodiscard]] tinygltf::Node CameraPoseAsTrs(const glm::mat4& matrix,
+    const tinygltf::Node& preferred, const GltfCameraPoseAuthoringLimits& limits = {});
+
 // Exact immutable public receipt, current source pose/metadata/associations,
 // lens definitions, selected raw animation targets and actual graph witness.
 // No allocation or decoding. Current selected weights are intentionally outside

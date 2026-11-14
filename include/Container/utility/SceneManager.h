@@ -46,6 +46,7 @@
 #include "Container/utility/TextureResourceLifecycle.h"
 #include "Container/utility/CameraProjectionTarget.h"
 #include "Container/utility/CameraViewPoseTarget.h"
+#include "Container/geometry/GltfCameraMotion.h"
 #include "Container/utility/SceneGraph.h"
 
 namespace container::gpu {
@@ -713,6 +714,18 @@ class SceneManager {
   bool exchangeCameraProjectionEdit(PreparedCameraProjectionEdit&,const SceneGraph&,
       container::geometry::gltf::AnimationPlayer*,float viewportAspect) noexcept;
   [[nodiscard]] std::optional<CameraViewPoseTarget> cameraViewPoseTarget(const SceneGraph&,uint32_t graphNode) const noexcept;
+  [[nodiscard]] container::geometry::gltf::GltfCameraMotionPose captureCameraMotionPose(
+      const CameraViewPoseTarget&, const SceneGraph&, const glm::mat4& view, float aspect,
+      const container::geometry::gltf::AnimationPlayer&, std::optional<size_t> destinationClip,
+      double time) const;
+  [[nodiscard]] std::optional<tinygltf::Node> cameraMotionMatrixRest(size_t sourceNode) const;
+  [[nodiscard]] container::geometry::gltf::AnimationDirtySet publishCameraMotionEdit(
+      std::unique_ptr<container::geometry::gltf::AnimationPlayer>&,
+      const CameraViewPoseTarget&, const SceneGraph&, size_t clip,
+      std::optional<size_t> previewClip, double previewTime,
+      const std::optional<container::geometry::gltf::GltfCameraMotionClip>& before,
+      const std::optional<container::geometry::gltf::GltfCameraMotionClip>& after,
+      const tinygltf::Node* restoredPose);
   [[nodiscard]] PreparedCameraViewPoseEdit prepareCameraViewPoseEdit(const CameraViewPoseTarget&,
       const glm::mat4& desiredUnjitteredView,const SceneGraph&,
       const container::geometry::gltf::AnimationPlayer*,float viewportAspect,const CameraViewPoseLimits& = {}) const;

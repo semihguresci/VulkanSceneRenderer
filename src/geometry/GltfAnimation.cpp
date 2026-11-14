@@ -1020,6 +1020,92 @@ AnimationPlayer AnimationPlayer::withExtendedSource(const tinygltf::Model& sourc
   prepared.loop_ = loop_;
   return prepared;
 }
+
+namespace {
+std::array<AnimationTrack, 2> cameraMotionTracks(const GltfCameraMotionClip& motion) {
+  std::array<AnimationTrack, 2> tracks{
+      AnimationTrack{.target = {AnimationTargetKind::NodeTranslation, motion.sourceNode, "translation", 3, {}},
+                     .interpolation = AnimationInterpolation::Linear},
+      AnimationTrack{.target = {AnimationTargetKind::NodeRotation, motion.sourceNode, "rotation", 4, {}},
+                     .interpolation = AnimationInterpolation::Linear}};
+  for (auto& track : tracks) {
+    track.times.reserve(motion.keys.size());
+    track.values.reserve(motion.keys.size() * track.target.components);
+  }
+  for (const auto& key : motion.keys) {
+    tracks[0].times.push_back(key.time);
+    tracks[0].values.insert(tracks[0].values.end(), key.pose.translation.begin(), key.pose.translation.end());
+    tracks[1].times.push_back(key.time);
+    tracks[1].values.insert(tracks[1].values.end(), key.pose.rotation.begin(), key.pose.rotation.end());
+  }
+  return tracks;
+}
+
+void replaceCameraMotionRest(tinygltf::Node& node, const tinygltf::Node& rest) {
+  if (node.camera != rest.camera) invalid("camera motion rest target changed");
+  node.matrix = rest.matrix;
+  node.translation = rest.translation;
+  node.rotation = rest.rotation;
+  node.scale = rest.scale;
+}
+} // namespace
+
+AnimationPlayer AnimationPlayer::withEditedCameraMotion(const tinygltf::Model& current, size_t clip,
+    const std::optional<GltfCameraMotionClip>& after, uint32_t sourceNode,
+    const tinygltf::Node* cameraRest) const {
+  if (sourceNode >= library_.restNodes.size() || current.nodes.size() != library_.restNodes.size() ||
+      current.materials.size() != library_.restMaterials.size() || current.lights.size() != library_.restLights.size() ||
+      current.cameras.size() != library_.restCameras.size() || current.animations.size() != library_.clips.size() ||
+      clip > library_.clips.size() || (after && after->sourceNode != sourceNode))
+    invalid("camera motion source changed");
+  const bool append = clip == library_.clips.size();
+  const auto before = ReadGltfCameraMotion(current, clip);
+  if ((!append && (!before || before->sourceNode != sourceNode || before->name != library_.clips[clip].name)) ||
+      (!after && (append || clip + 1 != library_.clips.size())))
+    invalid("camera motion clip changed");
+  const bool hadKeys = before && !before->keys.empty();
+  const bool hasKeys = after && !after->keys.empty();
+  if (hadKeys) {
+    const auto expected = cameraMotionTracks(*before);
+    const auto& currentTracks = library_.clips[clip].tracks;
+    if (currentTracks.size() < expected.size() || !std::equal(expected.begin(), expected.end(), currentTracks.begin()))
+      invalid("camera motion source keys changed");
+  }
+
+  AnimationPlayer prepared = *this;
+  auto& library = prepared.library_;
+  if (cameraRest) {
+    replaceCameraMotionRest(library.restNodes[sourceNode], *cameraRest);
+    ++prepared.cameraNodeRestRevision_;
+  }
+  if (!after) {
+    library.clips.pop_back();
+    std::erase_if(library.diagnostics, [&](const auto& diagnostic) { return diagnostic.clip == clip; });
+  } else {
+    if (append) library.clips.emplace_back();
+    auto& item = library.clips[clip];
+    item.name = after->name;
+    if (hadKeys) item.tracks.erase(item.tracks.begin(), item.tracks.begin() + 2);
+    if (hasKeys) {
+      auto tracks = cameraMotionTracks(*after);
+      item.tracks.insert(item.tracks.begin(), std::make_move_iterator(tracks.begin()),
+                         std::make_move_iterator(tracks.end()));
+    }
+    item.duration = 0;
+    for (const auto& track : item.tracks) item.duration = std::max(item.duration, track.times.back());
+    if (hadKeys != hasKeys) {
+      for (auto& diagnostic : library.diagnostics) {
+        if (diagnostic.clip != clip) continue;
+        if (hasKeys) diagnostic.channel += 2;
+        else diagnostic.channel -= 2;
+      }
+    }
+  }
+  prepared.selected_.reset();
+  prepared.time_ = 0;
+  prepared.playing_ = false;
+  return prepared;
+}
 namespace {
 // TinyGLTF's equality omits raw target metadata and uses approximate numeric
 // comparisons. Publication proofs require the original typed/raw representation.
@@ -2847,6 +2933,35 @@ void AnimationPlayer::setSpeed(double speed) {
   if (!std::isfinite(speed)) invalid("animation speed must be finite");
   speed_ = speed;
 }
+
+AnimationDirtySet AnimationPlayer::activateCameraMotionEdit(tinygltf::Model& model,
+    const AnimationPlayer& previous, std::optional<size_t> clip, double time,
+    uint32_t sourceNode, const tinygltf::Node* updatedRest) {
+  if (!std::isfinite(time) || (clip && *clip >= library_.clips.size()) ||
+      sourceNode >= model.nodes.size())
+    invalid("invalid camera motion playhead or camera node");
+  const double nextTime = clip ? std::clamp(time, 0.0, library_.clips[*clip].duration) : 0.0;
+  const auto pose = clip ? SampleAnimation(library_.clips[*clip], nextTime) : AnimationPose{};
+  validatePoseValues(pose);
+  AnimationTransaction transaction(model);
+  transaction.capture(previous.library_);
+  transaction.capture(pose);
+  if (updatedRest) transaction.capture({AnimationTargetKind::NodeTranslation, sourceNode, "translation", 3, {}});
+  MaterialCacheMasks caches;
+  auto dirty = restoreRestPose(model, previous.library_, caches);
+  if (updatedRest) {
+    replaceCameraMotionRest(model.nodes[sourceNode], *updatedRest);
+    uniqueAppend(dirty.nodes, sourceNode);
+  }
+  dirty.merge(applyPose(model, pose, caches));
+  reconcileMaterialCaches(model, caches, transaction, &library_);
+  transaction.commit();
+  selected_ = clip;
+  time_ = nextTime;
+  playing_ = false;
+  return dirty;
+}
+
 AnimationDirtySet AnimationPlayer::selectClip(tinygltf::Model& model, size_t clip) {
   if (clip >= library_.clips.size()) invalid("animation clip index out of range");
   const auto pose = SampleAnimation(library_.clips[clip],0);

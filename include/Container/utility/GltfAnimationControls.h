@@ -46,6 +46,24 @@ struct CameraViewPoseRequest {
   container::scene::CameraViewPoseTarget target;
   uint64_t viewRevision{};
 };
+enum class CameraMotionAction { CreateClip, CaptureKey, MoveKey, DeleteKey };
+struct CameraMotionSnapshot {
+  container::scene::CameraViewPoseTarget target;
+  uint64_t viewRevision{};
+  int clip{-1};
+  std::vector<double> keyTimes;
+  std::string destinationName;
+  bool viewportActive{};
+  std::string blockReason;
+};
+struct CameraMotionRequest {
+  CameraMotionAction action{};
+  container::scene::CameraViewPoseTarget target;
+  uint64_t viewRevision{};
+  int clip{-1};
+  double time{};
+  double newTime{};
+};
 struct GltfAnimationControls {
   std::vector<GltfAnimationClipChoice> clips;
   std::vector<GltfAnimationCameraChoice> cameras;
@@ -83,6 +101,12 @@ struct GltfAnimationControls {
   std::optional<CameraViewPoseSnapshot> cameraViewPose;
   std::optional<CameraViewPoseRequest> requestedCameraViewPose;
   std::string cameraViewPoseError;
+  std::optional<CameraMotionSnapshot> cameraMotion;
+  std::optional<CameraMotionRequest> requestedCameraMotion;
+  std::string cameraMotionError;
+  std::optional<double> cameraMotionKeyTime;
+  std::optional<double> cameraMotionSelectedKey;
+  std::optional<double> cameraMotionMoveTime;
 };
 // Finite selected snapshot admission. Invalid input or allocation failure leaves
 // all previous controls intact. None clears the authored-camera editor. Dirty
@@ -108,6 +132,10 @@ struct GltfAnimationControls {
 // must independently prove the source node, view and publication context.
 [[nodiscard]] bool QueueCameraViewPose(GltfAnimationControls&,
     const container::scene::CameraViewPoseTarget&,uint64_t viewRevision) noexcept;
+// The renderer supplies only the current weak destination and authored key times.
+// Refreshing this snapshot cannot retarget a queued edit.
+[[nodiscard]] bool SetCameraMotionSnapshot(GltfAnimationControls&, std::optional<CameraMotionSnapshot>);
+[[nodiscard]] bool QueueCameraMotion(GltfAnimationControls&, CameraMotionRequest) noexcept;
 // Draws inside the existing animation controls; also usable by headless widget
 // tests without a platform window or a renderer.
 void DrawCameraProjectionControls(GltfAnimationControls&);
