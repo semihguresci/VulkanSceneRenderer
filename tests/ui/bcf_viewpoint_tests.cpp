@@ -131,7 +131,8 @@ TEST(BimMeasurementCapture, AppliesConfiguredSnapModeToSelectedBounds) {
 }
 
 TEST(BcfViewpoint, RoundTripsContainerSnapshotFields) {
-  const auto snapshot = sampleSnapshot();
+  auto snapshot = sampleSnapshot();
+  snapshot.additionalBimSelections.push_back({"second-guid", "#456"});
   const std::string xml =
       container::ui::bcf::ExportVisualizationInfo(snapshot);
 
@@ -155,6 +156,9 @@ TEST(BcfViewpoint, RoundTripsContainerSnapshotFields) {
   EXPECT_EQ(imported->selectedBimGuid, snapshot.selectedBimGuid);
   EXPECT_EQ(imported->selectedBimType, snapshot.selectedBimType);
   EXPECT_EQ(imported->selectedBimSourceId, snapshot.selectedBimSourceId);
+  ASSERT_EQ(imported->additionalBimSelections.size(), 1u);
+  EXPECT_EQ(imported->additionalBimSelections.front().guid, "second-guid");
+  EXPECT_EQ(imported->additionalBimSelections.front().sourceId, "#456");
   EXPECT_EQ(imported->bimModelPath, snapshot.bimModelPath);
   EXPECT_TRUE(imported->bimFilter.typeFilterEnabled);
   EXPECT_EQ(imported->bimFilter.type, "IfcDoor");

@@ -173,6 +173,12 @@ When a volume is loaded, **OpenVDB volume** exposes visibility, geometry shadows
 
 **BIM:** load a supported BIM model, then use **Go to → BIM**. Its existing sections include elements, spatial/storey browsing, search/filters, properties/IFC relationships, schedules/quantities, model comparison, selection sets, phases, layers, clipping, measurements, viewpoints/BCF and drawing export. Expand the relevant section. Controls depend on the loaded metadata and selection; unavailable data is reported in place. BIM measurements/drawing exports and primary glTF scene export have different scopes.
 
+Open **Hard Clashes** and choose a category or a saved selection set for each
+group. Run the check to find pairs of closed solids that overlap by a positive
+volume. The panel lists overlap in cubic metres and reports skipped geometry
+and checks that failed. Select a result to frame both elements and show its
+clash marker. Use **Save BCF viewpoint** to share the selected pair and camera.
+
 For models with plan linework, **Floor plan overlay** shows it in Deferred
 raster, Forward raster, and Path tracing. Choose the projection, depth test, color, opacity,
 and line width in the BIM panel. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)

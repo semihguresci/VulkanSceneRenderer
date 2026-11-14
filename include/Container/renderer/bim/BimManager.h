@@ -787,6 +787,7 @@ public:
   [[nodiscard]] uint64_t objectDataRevision() const {
     return objectDataRevision_;
   }
+  [[nodiscard]] uint64_t transformRevision() const { return transformRevision_; }
   // Resize after retiring every reader. An upload only changes the retired
   // swapchain image selected by the caller.
   void resizeObjectFrames(uint32_t imageCount);
@@ -983,6 +984,7 @@ private:
   uint32_t objectFrameCount_{1};
   size_t objectBufferCapacity_{0};
   uint64_t objectDataRevision_{0};
+  uint64_t transformRevision_{0};
   uint64_t fullObjectRevision_{0};
   std::unique_ptr<BimMetadataCatalog> metadataCatalog_{};
   std::unique_ptr<BimMetadataIndex> metadataIndex_{};

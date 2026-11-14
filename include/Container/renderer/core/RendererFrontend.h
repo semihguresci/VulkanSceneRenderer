@@ -19,6 +19,7 @@
 #include "Container/app/SceneLightingDefaults.h"
 #include "Container/app/GfxCapture.h"
 #include "Container/renderer/bim/BimInspectionCache.h"
+#include "Container/renderer/bim/BimHardClash.h"
 #include "Container/renderer/core/PushConstantBlock.h"
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
 #include "Container/renderer/core/RendererMsaa.h"
@@ -54,6 +55,7 @@ namespace container::temporal {
 struct CaptureViewportPointer;
 struct CaptureSample;
 struct CaptureBimAnnotations;
+struct CaptureBimClash;
 struct CaptureComfyUi;
 struct CapturePhysicsJointCreate;
 struct CaptureEvent;
@@ -62,6 +64,7 @@ struct CaptureCameraMotion;
 }
 namespace container::ui {
 struct BimFloorPlanOverlayState;
+struct BimHardClashRunRequest;
 struct GltfAnimationControls;
 struct CameraMotionRequest;
 struct SceneNodeAuthoringRequest;
@@ -95,6 +98,7 @@ class DdgiManager;
 class BimManager;
 enum class BimDisciplinePreset : uint32_t;
 struct BimDrawFilter;
+struct BimCoordinationOverlayClashPair;
 class CameraController;
 enum class ScenePrimitiveKind : uint32_t;
 class CommandBufferManager;
@@ -700,6 +704,18 @@ private:
   uint32_t hoveredBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
   uint32_t selectedBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
   BimInspectionCache bimInspectionCache_{};
+  struct BimClashState {
+    enum class Status { Idle, Running, Complete, Cancelled, Failed };
+    const BimManager* model{};
+    uint64_t geometryRevision{}, metadataRevision{}, transformRevision{};
+    Status status{Status::Idle};
+    std::string message;
+    std::stop_source stop;
+    std::future<BimHardClashResult> job;
+    BimHardClashResult result;
+    std::optional<size_t> selected;
+    bool guiDirty{};
+  } bimClash_;
   container::scene::MeshSceneProviderAssetCache meshProviderAssetCache_{};
   struct SelectionNavigationAnchor {
     bool valid{false};
@@ -941,6 +957,17 @@ private:
   [[nodiscard]] size_t sceneObjectCapacity(uint32_t imageIndex) const;
   [[nodiscard]] size_t maxSceneObjectCapacity() const;
   void applyBimSemanticColorMode();
+  void startBimClash(const container::ui::BimHardClashRunRequest&);
+  void pollBimClash(bool wait = false);
+  void cancelBimClash();
+  void publishBimClashUi();
+  void processBimClashUi();
+  void selectBimClash(size_t row);
+  void saveBimClashViewpoint(size_t row, const std::filesystem::path& path);
+  void applyCaptureBimClash(const container::temporal::CaptureBimClash&);
+  [[nodiscard]] bool bimClashMatchesScene() const;
+  [[nodiscard]] bool selectedBimClashMarker(BimCoordinationOverlayClashPair&) const;
+  void appendBimClashTelemetry(nlohmann::json&) const;
   void processEnvironmentLoad(bool wait = false);
 #ifdef CONTAINER_ENABLE_RENDERER_MCP
   void processMcpRequests();

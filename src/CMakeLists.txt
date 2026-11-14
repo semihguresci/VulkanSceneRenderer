@@ -87,6 +87,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendCameras.cpp
     renderer/core/RendererFrontendCameraPoses.cpp
     renderer/core/RendererFrontendCameraMotion.cpp
+    renderer/core/RendererFrontendBimClash.cpp
     renderer/core/RendererFrontendDeformation.cpp
     renderer/core/RendererFrontendDeformationTelemetry.cpp
     renderer/scene/SceneLightExport.cpp
@@ -220,6 +221,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/bim/BimStatisticsCache.cpp
     renderer/bim/BimObjectTransforms.cpp
     renderer/bim/BimManager.cpp
+    renderer/bim/BimHardClash.cpp
     renderer/bim/BimMetadataCatalog.cpp
     renderer/bim/BimMetadataIndex.cpp
     renderer/bim/BimPrimitivePassPlanner.cpp
@@ -288,6 +290,7 @@ target_link_libraries(VulkanSceneRenderer_renderer PUBLIC
     VulkanSceneRenderer_bim_ui_support
     VulkanSceneRenderer_ecs
 )
+target_link_libraries(VulkanSceneRenderer_renderer PRIVATE manifold::manifold)
 
 # Add subdirectories
 # CPU image decoding has no scene/UI dependency. Geometry image-source

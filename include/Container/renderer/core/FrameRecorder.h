@@ -222,6 +222,7 @@ struct FrameBimCoordinationMarkerState {
   bool issueMarkersEnabled{false};
   bool clashMarkersEnabled{false};
   bool depthTest{true};
+  bool clashDepthTest{true};
   glm::vec3 issueColor{0.12f, 0.48f, 1.0f};
   glm::vec3 clashColor{1.0f, 0.16f, 0.05f};
   float issueOpacity{0.9f};

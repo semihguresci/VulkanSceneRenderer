@@ -197,6 +197,14 @@ struct CaptureBimAnnotations {
   // A value enables Technical elevation lines and selects depth testing.
   std::optional<bool> technicalLines;
 };
+struct CaptureBimClash {
+  enum class Action { Start, Cancel, Wait, Select, Export };
+  Action action{};
+  std::string categoryA, categoryB, path;
+  std::vector<std::string> guidsA, guidsB;
+  size_t result{};
+  bool wait{};
+};
 
 struct CaptureEditorDiagnostics {
   bool vertices{};
@@ -227,6 +235,7 @@ struct CaptureEvent {
   std::optional<int> bimLodBias;
   std::optional<CaptureBimFloorPlan> bimFloorPlan;
   std::optional<CaptureBimAnnotations> bimAnnotations;
+  std::optional<CaptureBimClash> bimClash;
   std::optional<CaptureWireframe> wireframe;
   std::optional<CaptureEditorDiagnostics> editorDiagnostics;
   std::optional<glm::vec4> sectionPlane;
@@ -584,6 +593,8 @@ public:
         event.bimFloorPlan = bimFloorPlan(value.at("bimFloorPlan"));
       if (value.contains("bimAnnotations"))
         event.bimAnnotations = bimAnnotations(value.at("bimAnnotations"));
+      if (value.contains("bimClash"))
+        event.bimClash = bimClash(value.at("bimClash"));
       if (value.contains("wireframe"))
         event.wireframe = wireframe(value.at("wireframe"));
       if (value.contains("editorDiagnostics")) {
@@ -964,6 +975,51 @@ public:
   std::vector<uint32_t> sampleFrames;
 
 private:
+  static CaptureBimClash bimClash(const nlohmann::json& value) {
+    using Action = CaptureBimClash::Action;
+    nodeFields(value, {"action", "categoryA", "categoryB", "guidsA", "guidsB", "wait", "result", "path"}, "bimClash");
+    CaptureBimClash request;
+    const auto action = value.at("action").get<std::string>();
+    if (action == "start") {
+      nodeFields(value, {"action", "categoryA", "categoryB", "guidsA", "guidsB", "wait"}, "bimClash start");
+      request.action = Action::Start;
+      const auto group = [&](const char* categoryKey, const char* guidsKey, std::string& category,
+                             std::vector<std::string>& guids) {
+        if (value.contains(categoryKey) == value.contains(guidsKey))
+          throw std::invalid_argument("Each capture BIM clash group requires one category or GUID list");
+        if (value.contains(categoryKey)) {
+          category = value.at(categoryKey).get<std::string>();
+          if (category.empty()) throw std::invalid_argument("Capture BIM clash category cannot be empty");
+        } else {
+          guids = value.at(guidsKey).get<std::vector<std::string>>();
+          if (guids.empty() || std::ranges::any_of(guids, &std::string::empty))
+            throw std::invalid_argument("Capture BIM clash GUIDs cannot be empty");
+        }
+      };
+      group("categoryA", "guidsA", request.categoryA, request.guidsA);
+      group("categoryB", "guidsB", request.categoryB, request.guidsB);
+      request.wait = value.value("wait", false);
+    } else if (action == "select") {
+      nodeFields(value, {"action", "result"}, "bimClash select");
+      const auto& index = value.at("result");
+      if (!index.is_number_integer() || (!index.is_number_unsigned() && index.get<int64_t>() < 0))
+        throw std::invalid_argument("Capture bimClash result must be a nonnegative integer");
+      request.action = Action::Select;
+      request.result = index.get<size_t>();
+    } else if (action == "export") {
+      nodeFields(value, {"action", "path"}, "bimClash export");
+      request.action = Action::Export;
+      request.path = value.at("path").get<std::string>();
+      if (request.path.empty()) throw std::invalid_argument("Capture bimClash export requires a path");
+    } else if (action == "cancel" || action == "wait") {
+      nodeFields(value, {"action"}, "bimClash job control");
+      request.action = action == "cancel" ? Action::Cancel : Action::Wait;
+    } else {
+      throw std::invalid_argument("Unknown capture bimClash action");
+    }
+    return request;
+  }
+
   static CaptureBimAnnotations bimAnnotations(const nlohmann::json &value) {
     nodeFields(value, {"issuePin", "clash", "sectionVisual", "capFill", "capHatch",
                        "sectionMarkers", "hiddenLines", "technicalLines"}, "bimAnnotations");
