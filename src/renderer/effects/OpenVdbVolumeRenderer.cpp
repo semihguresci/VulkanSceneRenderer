@@ -84,14 +84,15 @@ OpenVdbVolumeRenderer::PreparedSceneBindings::operator bool() const noexcept {
 OpenVdbVolumeRenderer::PreparedSceneBindings OpenVdbVolumeRenderer::prepareSceneBindings(
     std::span<const container::gpu::AllocatedBuffer> lighting,
     std::span<const container::gpu::AllocatedBuffer> sceneClips,
-    const container::gpu::AllocatedBuffer& pointLights,
-    const container::gpu::AllocatedBuffer& areaLights) const {
+    std::span<const container::gpu::AllocatedBuffer> pointLights,
+    std::span<const container::gpu::AllocatedBuffer> areaLights) const {
   if(!device_ || device_->device()==VK_NULL_HANDLE || sets_.size()>64 || lighting.size()>64 ||
       descriptorBindingEpoch_==UINT64_MAX)
     throw std::invalid_argument("OpenVDB scene bindings require a valid bounded descriptor table");
   if(!sets_.empty()) {
     if(!descriptorPool_ || !setLayout_ || !pipeline_ || mediumBuffers_.size()!=sets_.size() ||
-        lighting.size()!=sets_.size() || sceneClips.size()!=sets_.size())
+        lighting.size()!=sets_.size() || sceneClips.size()!=sets_.size() ||
+        pointLights.size()!=sets_.size() || areaLights.size()!=sets_.size())
       throw std::invalid_argument("OpenVDB lighting and clipping bindings must cover every prepared frame");
     const auto requireBuffer=[](const container::gpu::AllocatedBuffer& buffer,VkDeviceSize bytes) {
       // Typed renderer buffers provide the logical range/usage contract. The
@@ -103,9 +104,9 @@ OpenVdbVolumeRenderer::PreparedSceneBindings OpenVdbVolumeRenderer::prepareScene
       if(!sets_[i]) throw std::invalid_argument("OpenVDB scene binding contains a null destination set");
       requireBuffer(lighting[i],sizeof(container::gpu::LightingData));
       requireBuffer(sceneClips[i],sizeof(container::gpu::SceneClipState));
+      requireBuffer(pointLights[i],sizeof(container::gpu::PointLightData)*container::gpu::kMaxClusteredLights);
+      requireBuffer(areaLights[i],sizeof(container::gpu::AreaLightData)*container::gpu::kMaxAreaLights);
     }
-    requireBuffer(pointLights,sizeof(container::gpu::PointLightData)*container::gpu::kMaxClusteredLights);
-    requireBuffer(areaLights,sizeof(container::gpu::AreaLightData)*container::gpu::kMaxAreaLights);
   }
   PreparedSceneBindings result;
   result.state_=std::make_unique<PreparedSceneBindings::State>();
@@ -117,8 +118,8 @@ OpenVdbVolumeRenderer::PreparedSceneBindings OpenVdbVolumeRenderer::prepareScene
     PreparedSceneBindings::State::Frame row;row.set=sets_[i];
     row.buffers={VkDescriptorBufferInfo{lighting[i].buffer,0,sizeof(container::gpu::LightingData)},
         VkDescriptorBufferInfo{sceneClips[i].buffer,0,sizeof(container::gpu::SceneClipState)},
-        VkDescriptorBufferInfo{pointLights.buffer,0,sizeof(container::gpu::PointLightData)*container::gpu::kMaxClusteredLights},
-        VkDescriptorBufferInfo{areaLights.buffer,0,sizeof(container::gpu::AreaLightData)*container::gpu::kMaxAreaLights}};
+        VkDescriptorBufferInfo{pointLights[i].buffer,0,sizeof(container::gpu::PointLightData)*container::gpu::kMaxClusteredLights},
+        VkDescriptorBufferInfo{areaLights[i].buffer,0,sizeof(container::gpu::AreaLightData)*container::gpu::kMaxAreaLights}};
     state.frames.push_back(row);
   }
   return result;
@@ -660,8 +661,8 @@ void OpenVdbVolumeRenderer::prepare(
     std::span<const container::gpu::AllocatedBuffer> cameras,
     std::span<const container::gpu::AllocatedBuffer> lighting,
     std::span<const container::gpu::AllocatedBuffer> sceneClips,
-    const container::gpu::AllocatedBuffer& pointLights,
-    const container::gpu::AllocatedBuffer& areaLights,
+    std::span<const container::gpu::AllocatedBuffer> pointLights,
+    std::span<const container::gpu::AllocatedBuffer> areaLights,
     const ShadowManager& shadows) {
   if(descriptorBindingEpoch_!=UINT64_MAX) ++descriptorBindingEpoch_;
   const auto device = device_->device();
@@ -676,7 +677,8 @@ void OpenVdbVolumeRenderer::prepare(
       std::ranges::any_of(sceneClips, [](const auto& buffer) {
         return !buffer.buffer || !buffer.allocation ||
                buffer.allocation_info.size < sizeof(container::gpu::SceneClipState);
-      }) || !pointLights.buffer || !areaLights.buffer || shadows.shadowUbos().size() < count ||
+      }) || pointLights.size() != count || areaLights.size() != count ||
+      shadows.shadowUbos().size() < count ||
       shadows.localShadowUbos().size() < count || !shadows.shadowAtlasArrayView() || !shadows.localShadowAtlasArrayView())
     throw std::runtime_error("Missing OpenVDB clipping, light or shadow resources");
   const VkDescriptorPoolSize sizes[] = {
@@ -702,7 +704,8 @@ void OpenVdbVolumeRenderer::prepare(
   mediumBuffers_.reserve(count);
   for (uint32_t index = 0; index < count; ++index) {
     const auto* frame = frames.frame(index);
-    if (!frame) throw std::runtime_error("Missing OpenVDB frame resources");
+    if (!frame || !pointLights[index].buffer || !areaLights[index].buffer)
+      throw std::runtime_error("Missing OpenVDB frame resources");
     mediumBuffers_.push_back(allocator_.createBuffer(
         sizeof(OpenVdbMediumGpuData) * kMaxOpenVdbVolumes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
         VMA_MEMORY_USAGE_AUTO, VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT));
@@ -710,11 +713,11 @@ void OpenVdbVolumeRenderer::prepare(
         {cameras[index].buffer, 0, sizeof(container::gpu::CameraData)},
         {lighting[index].buffer, 0, sizeof(container::gpu::LightingData)},
         {sceneClips[index].buffer, 0, sizeof(container::gpu::SceneClipState)},
-        {pointLights.buffer, 0, sizeof(container::gpu::PointLightData) * container::gpu::kMaxClusteredLights},
+        {pointLights[index].buffer, 0, sizeof(container::gpu::PointLightData) * container::gpu::kMaxClusteredLights},
         {mediumBuffers_.back().buffer, 0, sizeof(OpenVdbMediumGpuData) * kMaxOpenVdbVolumes},
         {shadows.shadowUbo(index).buffer, 0, sizeof(container::gpu::ShadowData)},
         {shadows.localShadowUbo(index).buffer, 0, sizeof(container::gpu::LocalShadowData)},
-        {areaLights.buffer, 0, sizeof(container::gpu::AreaLightData) * container::gpu::kMaxAreaLights},
+        {areaLights[index].buffer, 0, sizeof(container::gpu::AreaLightData) * container::gpu::kMaxAreaLights},
         {frame->oitNodeBuffer.buffer ? frame->oitNodeBuffer.buffer : dummySparseBuffer_.buffer, 0, VK_WHOLE_SIZE},
         {frame->oitMetadataBuffer.buffer ? frame->oitMetadataBuffer.buffer : dummySparseBuffer_.buffer, 0, sizeof(OitMetadata)}};
     const VkDescriptorImageInfo images[] = {

@@ -127,10 +127,12 @@ public:
     [[nodiscard]] const std::vector<container::gpu::PointLightData>& pointLightsSsbo() const;
     [[nodiscard]] const std::vector<container::gpu::AreaLightData>& areaLightsSsbo() const;
     [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> lightingBuffers() const noexcept;
-    [[nodiscard]] const container::gpu::AllocatedBuffer& pointLightBuffer() const;
-    [[nodiscard]] const container::gpu::AllocatedBuffer& areaLightBuffer() const;
+    [[nodiscard]] const container::gpu::AllocatedBuffer& pointLightBuffer(uint32_t image = 0) const;
+    [[nodiscard]] const container::gpu::AllocatedBuffer& areaLightBuffer(uint32_t image = 0) const;
+    [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> pointLightBuffers() const noexcept;
+    [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> areaLightBuffers() const noexcept;
     [[nodiscard]] VkDescriptorSet lightDescriptorSet(uint32_t) const noexcept;
-    [[nodiscard]] VkDescriptorSet tiledDescriptorSet() const noexcept;
+    [[nodiscard]] VkDescriptorSet tiledDescriptorSet(uint32_t image = 0) const noexcept;
     void updateRayShadowDescriptors(uint32_t,VkBuffer,VkDeviceSize,VkImageView);
   private:
     struct State;
@@ -163,10 +165,12 @@ public:
     [[nodiscard]] const std::vector<container::gpu::PointLightData>& pointLightsSsbo() const;
     [[nodiscard]] const std::vector<container::gpu::AreaLightData>& areaLightsSsbo() const;
     [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> lightingBuffers() const noexcept;
-    [[nodiscard]] const container::gpu::AllocatedBuffer& pointLightBuffer() const;
-    [[nodiscard]] const container::gpu::AllocatedBuffer& areaLightBuffer() const;
+    [[nodiscard]] const container::gpu::AllocatedBuffer& pointLightBuffer(uint32_t image = 0) const;
+    [[nodiscard]] const container::gpu::AllocatedBuffer& areaLightBuffer(uint32_t image = 0) const;
+    [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> pointLightBuffers() const noexcept;
+    [[nodiscard]] std::span<const container::gpu::AllocatedBuffer> areaLightBuffers() const noexcept;
     [[nodiscard]] VkDescriptorSet lightDescriptorSet(uint32_t imageIndex) const noexcept;
-    [[nodiscard]] VkDescriptorSet tiledDescriptorSet() const noexcept;
+    [[nodiscard]] VkDescriptorSet tiledDescriptorSet(uint32_t image = 0) const noexcept;
     [[nodiscard]] uint64_t ownedBytes() const noexcept;
     [[nodiscard]] uint64_t ownedGpuBytes() const noexcept;
     // Complete bindings 3/4 against the matching detached ray generation
@@ -262,14 +266,15 @@ public:
   void updateLightingData();
   void updateLightingData(const container::scene::BaseCamera *camera);
   void updateLightingDataForActiveCamera();
-  // Uploads the compact lighting UBO and the point-light SSBO once per frame.
+  // Uploads lighting UBO and point/area SSBO snapshots. Bulk upload requires
+  // every live reader to have retired. Indexed upload requires only that image.
   void uploadLightingData() const;
   void uploadLightingData(uint32_t imageIndex) const;
   void collectStats();
 
-  // Uploads point lights to the SSBO and dispatches the tile culling compute
-  // shader.  Must be called between G-Buffer and Lighting passes.
-  void dispatchTileCull(VkCommandBuffer cmd, VkExtent2D screenExtent,
+  // Dispatches the tile culling compute shader using this image's published
+  // light snapshot. Must be called between G-Buffer and Lighting passes.
+  void dispatchTileCull(VkCommandBuffer cmd, uint32_t imageIndex, VkExtent2D screenExtent,
                         VkBuffer cameraBuffer, VkDeviceSize cameraBufferSize,
                         VkImageView depthView, float cameraNear,
                         float cameraFar) const;
@@ -343,11 +348,17 @@ public:
   std::span<const container::gpu::AllocatedBuffer> lightingBuffers() const {
     return lightingBuffers_;
   }
-  const container::gpu::AllocatedBuffer& pointLightBuffer() const {
-    return lightSsbo_;
+  const container::gpu::AllocatedBuffer& pointLightBuffer(uint32_t image = 0) const {
+    return pointLightBuffers_.at(image);
   }
-  const container::gpu::AllocatedBuffer& areaLightBuffer() const {
-    return areaLightSsbo_;
+  const container::gpu::AllocatedBuffer& areaLightBuffer(uint32_t image = 0) const {
+    return areaLightBuffers_.at(image);
+  }
+  std::span<const container::gpu::AllocatedBuffer> pointLightBuffers() const noexcept {
+    return pointLightBuffers_;
+  }
+  std::span<const container::gpu::AllocatedBuffer> areaLightBuffers() const noexcept {
+    return areaLightBuffers_;
   }
 
   SceneLightingAnchor computeSceneLightingAnchor() const;
@@ -361,8 +372,7 @@ public:
   bool isTiledLightingReady() const noexcept {
     return tileCullPipeline_ != VK_NULL_HANDLE &&
            tileCullPipelineLayout_ != VK_NULL_HANDLE &&
-           tileCullSet0_ != VK_NULL_HANDLE && tileCullSet1_ != VK_NULL_HANDLE &&
-           tileCullSet2_ != VK_NULL_HANDLE && tiledDescriptorSet_ != VK_NULL_HANDLE &&
+           tiledSets_.size() == lightingBuffers_.size() && !tiledSets_.empty() &&
            tiledScratchResourcesReady();
   }
   [[nodiscard]] const ClusteredLightCapacity &clusteredLightCapacity() const noexcept {
@@ -372,7 +382,9 @@ public:
   VkDescriptorSetLayout tiledDescriptorSetLayout() const {
     return tiledDescriptorSetLayout_;
   }
-  VkDescriptorSet tiledDescriptorSet() const { return tiledDescriptorSet_; }
+  VkDescriptorSet tiledDescriptorSet(uint32_t image = 0) const noexcept {
+    return image < tiledSets_.size() ? tiledSets_[image][3] : VK_NULL_HANDLE;
+  }
   VkDescriptorSetLayout lightGizmoIconDescriptorSetLayout() const {
     return lightGizmoIconDescriptorSetLayout_;
   }
@@ -452,10 +464,14 @@ private:
   void assignLocalShadowLayerMetadata();
   void publishPointLights();
   void publishAreaLights();
-  void writeLightDescriptorStorageBuffers() const;
-  void writeLtcDescriptors() const;
+  void createLightingFrameResources(LightingManager& target, uint32_t imageCount,
+                                    bool inheritRayBindings) const;
+  void createTiledFrameDescriptors(LightingManager& target, uint32_t imageCount) const;
+  void swapFrameResources(LightingManager& target) noexcept;
+  void uploadLightingData(const LightingManager& source) const;
+  void uploadLightingData(uint32_t imageIndex, const LightingManager& source) const;
   void allocateClusterBuffers(VkExtent2D extent);
-  void writeTiledResourceDescriptors() const noexcept;
+  void writeTiledResourceDescriptors(const LightingManager& target) const noexcept;
   void destroyLightDescriptorPool() noexcept;
   void invalidateRayShadowBindingPreparations() noexcept;
   void destroyTileCullDescriptorPool() noexcept;
@@ -487,7 +503,6 @@ private:
   std::vector<container::gpu::AllocatedBuffer> lightingBuffers_{};
   VkDescriptorSetLayout lightDescriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool lightDescriptorPool_{VK_NULL_HANDLE};
-  bool ownsLightDescriptorPool_{false};
   std::vector<VkDescriptorSet> lightDescriptorSets_{};
   struct RayShadowBinding {
     VkBuffer settings{VK_NULL_HANDLE};
@@ -521,8 +536,8 @@ private:
   std::vector<container::gpu::AreaLightData> manualAreaLights_{};
 
   // SSBOs
-  container::gpu::AllocatedBuffer lightSsbo_{};
-  container::gpu::AllocatedBuffer areaLightSsbo_{};
+  std::vector<container::gpu::AllocatedBuffer> pointLightBuffers_{};
+  std::vector<container::gpu::AllocatedBuffer> areaLightBuffers_{};
   container::gpu::AllocatedBuffer tileGridSsbo_{};
   container::gpu::AllocatedBuffer lightIndexListSsbo_{};
   container::gpu::AllocatedBuffer lightStatsBuffer_{};
@@ -543,16 +558,12 @@ private:
   VkDescriptorSetLayout tileCullSet2Layout_{
       VK_NULL_HANDLE}; // tile grid + index list
   VkDescriptorPool tileCullDescriptorPool_{VK_NULL_HANDLE};
-  bool ownsTileCullDescriptorPool_{false};
-  VkDescriptorSet tileCullSet0_{VK_NULL_HANDLE};
-  VkDescriptorSet tileCullSet1_{VK_NULL_HANDLE};
-  VkDescriptorSet tileCullSet2_{VK_NULL_HANDLE};
+  // Three cull sets followed by the tiled fragment set for each image.
+  std::vector<std::array<VkDescriptorSet, 4>> tiledSets_{};
 
   // Descriptor for the tiled lighting fragment shader (set 1).
   // Contains light SSBO + tile grid + light index list.
   VkDescriptorSetLayout tiledDescriptorSetLayout_{VK_NULL_HANDLE};
-  VkDescriptorPool tiledDescriptorPool_{VK_NULL_HANDLE};
-  VkDescriptorSet tiledDescriptorSet_{VK_NULL_HANDLE};
 
   VkDescriptorSetLayout lightGizmoIconDescriptorSetLayout_{VK_NULL_HANDLE};
   VkDescriptorPool lightGizmoIconDescriptorPool_{VK_NULL_HANDLE};
@@ -566,8 +577,6 @@ private:
   ClusteredLightCapacity clusteredLightCapacity_{};
   mutable uint32_t lastDispatchClusterCount_{0};
 
-  void uploadLightSsbo() const;
-  void uploadAreaLightSsbo() const;
 };
 
 } // namespace container::renderer

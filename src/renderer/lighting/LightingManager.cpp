@@ -318,6 +318,67 @@ void writeTiledDescriptors(VkDevice device,
                          nullptr);
 }
 
+VkDescriptorPool createFrameDescriptorPool(VkDevice device,
+    std::span<const VkDescriptorPoolSize> sizes, uint32_t setCount) {
+  VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+  info.maxSets = setCount;
+  info.poolSizeCount = static_cast<uint32_t>(sizes.size());
+  info.pPoolSizes = sizes.data();
+  VkDescriptorPool pool{};
+  if (createOwnedDescriptorPool(device, &info, nullptr, &pool) != VK_SUCCESS)
+    throw std::runtime_error("Could not allocate lighting frame descriptor pool");
+  return pool;
+}
+
+void allocateFrameDescriptorSets(VkDevice device, VkDescriptorPool pool,
+    std::span<const VkDescriptorSetLayout> layouts, std::span<VkDescriptorSet> sets) {
+  VkDescriptorSetAllocateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+  info.descriptorPool = pool;
+  info.descriptorSetCount = static_cast<uint32_t>(layouts.size());
+  info.pSetLayouts = layouts.data();
+  if (vkAllocateDescriptorSets(device, &info, sets.data()) != VK_SUCCESS)
+    throw std::runtime_error("Could not allocate lighting frame descriptor sets");
+}
+
+std::array<VkDescriptorPoolSize, 4> lightDescriptorPoolSizes(uint32_t imageCount) {
+  return {{{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount * 2},
+           {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2},
+           {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount * 3},
+           {VK_DESCRIPTOR_TYPE_SAMPLER, imageCount}}};
+}
+
+void writeLightDescriptorSet(VkDevice device, VkDescriptorSet set,
+    VkBuffer uniform, VkBuffer point, VkBuffer area,
+    VkImageView matrixView, VkImageView amplitudeView, VkSampler sampler) noexcept {
+  const std::array<VkDescriptorBufferInfo, 3> buffers{{
+      {uniform, 0, sizeof(LightingData)},
+      {point, 0, sizeof(PointLightData) * kMaxClusteredLights},
+      {area, 0, sizeof(AreaLightData) * kMaxAreaLights}}};
+  const std::array<VkDescriptorImageInfo, 3> images{{
+      {VK_NULL_HANDLE, matrixView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {VK_NULL_HANDLE, amplitudeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
+      {sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED}}};
+  std::array<VkWriteDescriptorSet, 6> writes{};
+  for (uint32_t index = 0; index < writes.size(); ++index) {
+    auto& write = writes[index];
+    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    write.dstSet = set;
+    write.descriptorCount = 1;
+    if (index < buffers.size()) {
+      write.dstBinding = index;
+      write.descriptorType = index == 0 ? VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER
+                                         : VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+      write.pBufferInfo = &buffers[index];
+    } else {
+      write.dstBinding = index + 2;
+      write.descriptorType = index == 5 ? VK_DESCRIPTOR_TYPE_SAMPLER
+                                         : VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
+      write.pImageInfo = &images[index - buffers.size()];
+    }
+  }
+  vkUpdateDescriptorSets(device, static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+}
+
 void writeRayShadowBindings(VkDevice device, VkDescriptorSet set,
     VkBuffer settings, VkDeviceSize size, VkImageView visibility) noexcept {
   const VkDescriptorBufferInfo buffer{settings, 0, size};
@@ -435,8 +496,7 @@ struct LightingManager::PreparedRayShadowBindings::State {
   VkDescriptorSetLayout layout{};
   VkDescriptorPool sourcePool{}, pool{};
   std::vector<VkDescriptorSet> sets;
-  std::vector<VkBuffer> uniformBuffers;
-  VkBuffer pointBuffer{}, areaBuffer{};
+  std::vector<std::array<VkBuffer, 3>> lightBuffers;
   VkImageView matrixView{}, amplitudeView{};
   VkSampler sampler{};
   VkDeviceSize maxUniformRange{};
@@ -472,12 +532,13 @@ LightingManager::PreparedRayShadowBindings LightingManager::prepareRayShadowBind
   if (imageCount == 0 || imageCount > 64 || imageCount != lightingBuffers_.size() ||
       imageCount != lightDescriptorSets_.size() || imageCount != rayShadowBindings_.size() ||
       !device_ || device_->device() == VK_NULL_HANDLE || lightDescriptorSetLayout_ == VK_NULL_HANDLE ||
-      lightDescriptorPool_ == VK_NULL_HANDLE || lightSsbo_.buffer == VK_NULL_HANDLE ||
-      areaLightSsbo_.buffer == VK_NULL_HANDLE || !ltcLuts_ ||
+      lightDescriptorPool_ == VK_NULL_HANDLE || pointLightBuffers_.size() != imageCount ||
+      areaLightBuffers_.size() != imageCount || !ltcLuts_ ||
       descriptorBindingEpoch_ == std::numeric_limits<uint64_t>::max())
     throw std::invalid_argument("Ray-shadow staging requires matching initialized lighting frames");
   for (uint32_t image = 0; image < imageCount; ++image)
-    if (lightingBuffers_[image].buffer == VK_NULL_HANDLE || lightDescriptorSets_[image] == VK_NULL_HANDLE)
+    if (!lightingBuffers_[image].buffer || !pointLightBuffers_[image].buffer ||
+        !areaLightBuffers_[image].buffer || !lightDescriptorSets_[image])
       throw std::invalid_argument("Ray-shadow staging requires complete lighting buffers and sets");
   if (ltcLuts_->matrixView() == VK_NULL_HANDLE || ltcLuts_->amplitudeView() == VK_NULL_HANDLE ||
       ltcLuts_->sampler() == VK_NULL_HANDLE)
@@ -491,8 +552,6 @@ LightingManager::PreparedRayShadowBindings LightingManager::prepareRayShadowBind
   state.epoch = descriptorBindingEpoch_;
   state.layout = lightDescriptorSetLayout_;
   state.sourcePool = lightDescriptorPool_;
-  state.pointBuffer = lightSsbo_.buffer;
-  state.areaBuffer = areaLightSsbo_.buffer;
   state.matrixView = ltcLuts_->matrixView();
   state.amplitudeView = ltcLuts_->amplitudeView();
   state.sampler = ltcLuts_->sampler();
@@ -500,49 +559,18 @@ LightingManager::PreparedRayShadowBindings LightingManager::prepareRayShadowBind
   vkGetPhysicalDeviceProperties(device_->physicalDevice(), &properties);
   state.maxUniformRange = properties.limits.maxUniformBufferRange;
   state.sets.resize(imageCount, VK_NULL_HANDLE);
-  state.uniformBuffers.reserve(imageCount);
-  for (const auto& buffer : lightingBuffers_) state.uniformBuffers.push_back(buffer.buffer);
+  state.lightBuffers.reserve(imageCount);
   state.rayBindings = rayShadowBindings_;
-
-  const std::array<VkDescriptorPoolSize, 4> sizes{{
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount * 2u},
-      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2u},
-      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount * 3u},
-      {VK_DESCRIPTOR_TYPE_SAMPLER, imageCount}}};
-  VkDescriptorPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-  poolInfo.maxSets = imageCount;
-  poolInfo.poolSizeCount = static_cast<uint32_t>(sizes.size());
-  poolInfo.pPoolSizes = sizes.data();
-  if (createOwnedDescriptorPool(device_->device(), &poolInfo, nullptr, &state.pool) != VK_SUCCESS)
-    throw std::runtime_error("Failed to create staged ray-shadow light descriptor pool");
+  state.pool = createFrameDescriptorPool(device_->device(), lightDescriptorPoolSizes(imageCount), imageCount);
   const std::vector<VkDescriptorSetLayout> layouts(imageCount, state.layout);
-  VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  allocate.descriptorPool = state.pool;
-  allocate.descriptorSetCount = imageCount;
-  allocate.pSetLayouts = layouts.data();
-  if (vkAllocateDescriptorSets(device_->device(), &allocate, state.sets.data()) != VK_SUCCESS)
-    throw std::runtime_error("Failed to allocate staged ray-shadow light descriptor sets");
+  allocateFrameDescriptorSets(device_->device(), state.pool, layouts, state.sets);
 
-  const VkDescriptorBufferInfo point{state.pointBuffer, 0, sizeof(PointLightData) * kMaxClusteredLights};
-  const VkDescriptorBufferInfo area{state.areaBuffer, 0, sizeof(AreaLightData) * kMaxAreaLights};
-  const VkDescriptorImageInfo matrix{VK_NULL_HANDLE, state.matrixView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  const VkDescriptorImageInfo amplitude{VK_NULL_HANDLE, state.amplitudeView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-  const VkDescriptorImageInfo sampler{state.sampler, VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED};
   for (uint32_t image = 0; image < imageCount; ++image) {
-    const VkDescriptorBufferInfo uniform{state.uniformBuffers[image], 0, sizeof(LightingData)};
-    std::array<VkWriteDescriptorSet, 6> writes{};
-    for (auto& write : writes) {
-      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      write.dstSet = state.sets[image];
-      write.descriptorCount = 1;
-    }
-    writes[0].dstBinding = 0; writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[0].pBufferInfo = &uniform;
-    writes[1].dstBinding = 1; writes[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[1].pBufferInfo = &point;
-    writes[2].dstBinding = 2; writes[2].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER; writes[2].pBufferInfo = &area;
-    writes[3].dstBinding = 5; writes[3].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; writes[3].pImageInfo = &matrix;
-    writes[4].dstBinding = 6; writes[4].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE; writes[4].pImageInfo = &amplitude;
-    writes[5].dstBinding = 7; writes[5].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLER; writes[5].pImageInfo = &sampler;
-    vkUpdateDescriptorSets(device_->device(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+    state.lightBuffers.push_back({lightingBuffers_[image].buffer, pointLightBuffers_[image].buffer,
+                                  areaLightBuffers_[image].buffer});
+    const auto& buffers = state.lightBuffers.back();
+    writeLightDescriptorSet(device_->device(), state.sets[image], buffers[0], buffers[1], buffers[2],
+                            state.matrixView, state.amplitudeView, state.sampler);
     const auto& ray = state.rayBindings[image];
     if (ray.settings != VK_NULL_HANDLE && ray.settingsSize != 0 && ray.settingsSize <= state.maxUniformRange &&
         ray.visibility != VK_NULL_HANDLE)
@@ -557,13 +585,16 @@ bool LightingManager::canExchangeRayShadowBindings(const PreparedRayShadowBindin
       descriptorBindingEpoch_ == std::numeric_limits<uint64_t>::max()) return false;
   const auto& state = *value.state_;
   if (state.device != device_ || state.layout != lightDescriptorSetLayout_ || state.sourcePool != lightDescriptorPool_ ||
-      state.pointBuffer != lightSsbo_.buffer || state.areaBuffer != areaLightSsbo_.buffer || !ltcLuts_ ||
+      !ltcLuts_ || state.lightBuffers.size() != state.sets.size() ||
       state.matrixView != ltcLuts_->matrixView() || state.amplitudeView != ltcLuts_->amplitudeView() ||
       state.sampler != ltcLuts_->sampler() || state.sets.size() != lightingBuffers_.size() ||
-      state.sets.size() != lightDescriptorSets_.size() || state.sets.size() != rayShadowBindings_.size()) return false;
+      state.sets.size() != lightDescriptorSets_.size() || state.sets.size() != rayShadowBindings_.size() ||
+      state.sets.size() != pointLightBuffers_.size() || state.sets.size() != areaLightBuffers_.size()) return false;
   for (size_t image = 0; image < state.sets.size(); ++image) {
     const auto& ray = state.rayBindings[image];
-    if (state.uniformBuffers[image] != lightingBuffers_[image].buffer || state.sets[image] == VK_NULL_HANDLE ||
+    const auto& buffers = state.lightBuffers[image];
+    if (buffers[0] != lightingBuffers_[image].buffer || buffers[1] != pointLightBuffers_[image].buffer ||
+        buffers[2] != areaLightBuffers_[image].buffer || state.sets[image] == VK_NULL_HANDLE ||
         ray.settings == VK_NULL_HANDLE || ray.settingsSize == 0 || ray.settingsSize > state.maxUniformRange ||
         ray.visibility == VK_NULL_HANDLE) return false;
   }
@@ -574,11 +605,10 @@ bool LightingManager::exchangeRayShadowBindings(PreparedRayShadowBindings& value
   if (!canExchangeRayShadowBindings(value)) return false;
   auto& state = *value.state_;
   // GPU readers must already be retired. No allocation or descriptor write is
-  // permitted in this final publication phase; the old tracked/raw pool uses
-  // its existing owner path and never enters the detached token.
+  // permitted in this final publication phase. Retire the old pool before
+  // making the replacement sets live.
   destroyLightDescriptorPool();
   lightDescriptorPool_ = std::exchange(state.pool, VK_NULL_HANDLE);
-  ownsLightDescriptorPool_ = true;
   lightDescriptorSets_.swap(state.sets);
   rayShadowBindings_.swap(state.rayBindings);
   return true;
@@ -608,19 +638,27 @@ LightingManager::PreparedGeneration::lightingBuffers() const noexcept {
   return *this ? std::span<const container::gpu::AllocatedBuffer>(state_->payload->lightingBuffers_)
                : std::span<const container::gpu::AllocatedBuffer>{};
 }
-const container::gpu::AllocatedBuffer& LightingManager::PreparedGeneration::pointLightBuffer() const {
+const container::gpu::AllocatedBuffer& LightingManager::PreparedGeneration::pointLightBuffer(uint32_t image) const {
   if (!*this) throw std::logic_error("Empty lighting generation");
-  return state_->payload->lightSsbo_;
+  return state_->payload->pointLightBuffer(image);
 }
-const container::gpu::AllocatedBuffer& LightingManager::PreparedGeneration::areaLightBuffer() const {
+const container::gpu::AllocatedBuffer& LightingManager::PreparedGeneration::areaLightBuffer(uint32_t image) const {
   if (!*this) throw std::logic_error("Empty lighting generation");
-  return state_->payload->areaLightSsbo_;
+  return state_->payload->areaLightBuffer(image);
+}
+std::span<const container::gpu::AllocatedBuffer>
+LightingManager::PreparedGeneration::pointLightBuffers() const noexcept {
+  return *this ? state_->payload->pointLightBuffers() : std::span<const container::gpu::AllocatedBuffer>{};
+}
+std::span<const container::gpu::AllocatedBuffer>
+LightingManager::PreparedGeneration::areaLightBuffers() const noexcept {
+  return *this ? state_->payload->areaLightBuffers() : std::span<const container::gpu::AllocatedBuffer>{};
 }
 VkDescriptorSet LightingManager::PreparedGeneration::lightDescriptorSet(uint32_t image) const noexcept {
   return *this ? state_->payload->lightDescriptorSet(image) : VK_NULL_HANDLE;
 }
-VkDescriptorSet LightingManager::PreparedGeneration::tiledDescriptorSet() const noexcept {
-  return *this ? state_->payload->tiledDescriptorSet_ : VK_NULL_HANDLE;
+VkDescriptorSet LightingManager::PreparedGeneration::tiledDescriptorSet(uint32_t image) const noexcept {
+  return *this ? state_->payload->tiledDescriptorSet(image) : VK_NULL_HANDLE;
 }
 uint64_t LightingManager::PreparedGeneration::ownedBytes() const noexcept {return state_?state_->cpuBytes:0;}
 uint64_t LightingManager::PreparedGeneration::ownedGpuBytes() const noexcept {return state_?state_->gpuBytes:0;}
@@ -710,8 +748,10 @@ LightingManager::PreparedGeneration LightingManager::prepareGenerationImpl(
     // detached World's replacement point-light storage, including coexistence.
     budget.add(kMaxClusteredLights,2*sizeof(PointLightData)+2*sizeof(EditableLightEntity)+768);
     budget.add(kMaxAreaLights,2*sizeof(AreaLightData)+2*sizeof(EditableLightEntity)+256);
-    budget.add(imageCount,sizeof(container::gpu::AllocatedBuffer)+sizeof(VkDescriptorSet)+sizeof(RayShadowBinding)+64);
-    budget.device(imageCount,sizeof(LightingData));budget.device(kMaxClusteredLights,sizeof(PointLightData));budget.device(kMaxAreaLights,sizeof(AreaLightData));
+    budget.add(imageCount, 3 * sizeof(container::gpu::AllocatedBuffer) +
+        5 * sizeof(VkDescriptorSet) + sizeof(RayShadowBinding) + 64);
+    budget.device(imageCount, sizeof(LightingData) +
+        kMaxClusteredLights * sizeof(PointLightData) + kMaxAreaLights * sizeof(AreaLightData));
     cpuBytes=budget.cpu;gpuBytes=budget.gpu;
   }
 
@@ -778,78 +818,11 @@ LightingManager::PreparedGeneration LightingManager::prepareGenerationImpl(
         !finite4(light.directionType) || !finite4(light.tangentHalfSize) || !finite4(light.bitangentHalfSize))
       reject("evaluated area lighting is nonfinite");
 
-  constexpr auto host = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-      VMA_ALLOCATION_CREATE_MAPPED_BIT;
-  next.lightingBuffers_.resize(imageCount);
-  for (auto& buffer : next.lightingBuffers_)
-    buffer = allocationManager_.createBuffer(sizeof(LightingData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
-        VMA_MEMORY_USAGE_AUTO, host);
-  next.lightSsbo_ = allocationManager_.createBuffer(sizeof(PointLightData) * kMaxClusteredLights,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, host);
-  next.areaLightSsbo_ = allocationManager_.createBuffer(sizeof(AreaLightData) * kMaxAreaLights,
-      VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, host);
+  createLightingFrameResources(next, imageCount, true);
   next.uploadLightingData();
-  next.lightDescriptorSetLayout_ = lightDescriptorSetLayout_;
-  next.lightDescriptorSets_.resize(imageCount);
-  next.rayShadowBindings_.resize(imageCount);
-  const auto createPool = [&](std::span<const VkDescriptorPoolSize> sizes, uint32_t sets) {
-    VkDescriptorPoolCreateInfo create{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-    create.maxSets = sets; create.poolSizeCount = uint32_t(sizes.size()); create.pPoolSizes = sizes.data();
-    VkDescriptorPool pool{};
-    if (createOwnedDescriptorPool(device_->device(), &create, nullptr, &pool) != VK_SUCCESS)
-      throw std::runtime_error("Could not allocate detached lighting descriptor pool");
-    return pool;
-  };
-  const std::array sizes{VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount * 2},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 2},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount * 3},
-      VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLER, imageCount}};
-  next.lightDescriptorPool_ = createPool(sizes, imageCount); next.ownsLightDescriptorPool_ = true;
-  std::vector<VkDescriptorSetLayout> layouts(imageCount, lightDescriptorSetLayout_);
-  VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-  allocate.descriptorPool = next.lightDescriptorPool_; allocate.descriptorSetCount = imageCount;
-  allocate.pSetLayouts = layouts.data();
-  if (vkAllocateDescriptorSets(device_->device(), &allocate, next.lightDescriptorSets_.data()) != VK_SUCCESS)
-    throw std::runtime_error("Could not allocate detached lighting descriptor sets");
-  const std::array<VkDescriptorImageInfo, 3> images{{
-      {VK_NULL_HANDLE, ltcLuts_->matrixView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {VK_NULL_HANDLE, ltcLuts_->amplitudeView(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
-      {ltcLuts_->sampler(), VK_NULL_HANDLE, VK_IMAGE_LAYOUT_UNDEFINED}}};
-  for (uint32_t image = 0; image < imageCount; ++image) {
-    const VkDescriptorBufferInfo uniform{next.lightingBuffers_[image].buffer, 0, sizeof(LightingData)};
-    std::array<VkWriteDescriptorSet, 4> writes{};
-    writes[0] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET}; writes[0].dstSet = next.lightDescriptorSets_[image];
-    writes[0].dstBinding = 0; writes[0].descriptorCount = 1;
-    writes[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER; writes[0].pBufferInfo = &uniform;
-    for (uint32_t slot = 0; slot < 3; ++slot) {
-      writes[slot + 1] = {VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
-      writes[slot + 1].dstSet = next.lightDescriptorSets_[image]; writes[slot + 1].dstBinding = slot + 5;
-      writes[slot + 1].descriptorCount = 1; writes[slot + 1].pImageInfo = &images[slot];
-      writes[slot + 1].descriptorType = slot < 2 ? VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE : VK_DESCRIPTOR_TYPE_SAMPLER;
-    }
-    vkUpdateDescriptorSets(device_->device(), uint32_t(writes.size()), writes.data(), 0, nullptr);
-    if (image < rayShadowBindings_.size()) {
-      const auto& ray = rayShadowBindings_[image];
-      if (ray.settings != VK_NULL_HANDLE && ray.visibility != VK_NULL_HANDLE && ray.settingsSize)
-        next.updateRayShadowDescriptors(image, ray.settings, ray.settingsSize, ray.visibility);
-    }
-  }
-  next.writeLightDescriptorStorageBuffers();
   if (tiled) {
-    const std::array tileSizes{VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1},
-        VkDescriptorPoolSize{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7}};
-    next.tileCullDescriptorPool_ = createPool(tileSizes, 4); next.ownsTileCullDescriptorPool_ = true;
-    const std::array tileLayouts{tileCullSet0Layout_, tileCullSet1Layout_, tileCullSet2Layout_, tiledDescriptorSetLayout_};
-    std::array<VkDescriptorSet, 4> sets{};
-    allocate.descriptorPool = next.tileCullDescriptorPool_; allocate.descriptorSetCount = uint32_t(sets.size());
-    allocate.pSetLayouts = tileLayouts.data();
-    if (vkAllocateDescriptorSets(device_->device(), &allocate, sets.data()) != VK_SUCCESS)
-      throw std::runtime_error("Could not allocate detached tiled lighting descriptor sets");
-    next.tileCullSet0_ = sets[0]; next.tileCullSet1_ = sets[1]; next.tileCullSet2_ = sets[2];
-    next.tiledDescriptorSet_ = sets[3];
-    writeTiledDescriptors(device_->device(), next.tileCullSet1_, next.tileCullSet2_, next.tiledDescriptorSet_,
-        next.lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, clusteredLightCapacity_);
+    createTiledFrameDescriptors(next, imageCount);
+    writeTiledResourceDescriptors(next);
   }
   return result;
 }
@@ -875,16 +848,17 @@ bool LightingManager::generationResourcesReady(const PreparedGeneration& value) 
   if (!value || value.state_->owner != this ||
       descriptorBindingEpoch_ == std::numeric_limits<uint64_t>::max()) return false;
   const auto& state = *value.state_; const auto& next = *state.payload;
-  return next.lightSsbo_.buffer != VK_NULL_HANDLE && next.areaLightSsbo_.buffer != VK_NULL_HANDLE &&
-      next.lightDescriptorPool_ != VK_NULL_HANDLE &&
+  const auto imageCount = lightingBuffers_.size();
+  return imageCount != 0 && next.lightDescriptorPool_ != VK_NULL_HANDLE &&
+      next.lightingBuffers_.size() == imageCount &&
+      next.pointLightBuffers_.size() == imageCount && next.areaLightBuffers_.size() == imageCount &&
       state.lightLayout == lightDescriptorSetLayout_ && state.cull0Layout == tileCullSet0Layout_ &&
       state.cull1Layout == tileCullSet1Layout_ && state.cull2Layout == tileCullSet2Layout_ &&
       state.tiledLayout == tiledDescriptorSetLayout_ &&
-      next.lightDescriptorSets_.size() == lightingBuffers_.size() &&
+      next.lightDescriptorSets_.size() == imageCount &&
       (next.tileCullDescriptorPool_ != VK_NULL_HANDLE) == (tileCullPipeline_ != VK_NULL_HANDLE) &&
-      (tileCullPipeline_==VK_NULL_HANDLE || ((tiledCapacityLimited() || tiledScratchResourcesReady()) &&
-          next.tileCullSet0_!=VK_NULL_HANDLE && next.tileCullSet1_!=VK_NULL_HANDLE &&
-          next.tileCullSet2_!=VK_NULL_HANDLE && next.tiledDescriptorSet_!=VK_NULL_HANDLE));
+      (tileCullPipeline_ == VK_NULL_HANDLE || (next.tiledSets_.size() == imageCount &&
+          (tiledCapacityLimited() || tiledScratchResourcesReady())));
 }
 
 bool LightingManager::graphPoseGenerationMatches(const PreparedGeneration& value,bool prospective) const noexcept {
@@ -931,13 +905,11 @@ void LightingManager::exchangeGenerationPayload(PreparedGeneration& value) noexc
   // sets already reference these exact buffers. Keep its final boundary CPU
   // only. Legacy reversible generations still rebind after viewport resize.
   if (tileCullPipeline_ != VK_NULL_HANDLE && !value.state_->graphPose && !value.state_->lightOnly)
-    writeTiledDescriptors(device_->device(), next.tileCullSet1_, next.tileCullSet2_, next.tiledDescriptorSet_,
-        next.lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, clusteredLightCapacity_);
+    writeTiledResourceDescriptors(next);
   using std::swap;
   static_assert(std::is_nothrow_swappable_v<LightingData>);
   static_assert(std::is_nothrow_swappable_v<LightingSettings>);
   static_assert(std::is_nothrow_swappable_v<decltype(directionalOverride_)>);
-  static_assert(std::is_nothrow_swappable_v<decltype(lightSsbo_)>);
   swap(lightingData_, next.lightingData_); swap(lightingSettings_, next.lightingSettings_);
   swap(rootNode_, next.rootNode_); swap(lastStats_, next.lastStats_);
   if (tiledCapacityLimited())
@@ -950,17 +922,22 @@ void LightingManager::exchangeGenerationPayload(PreparedGeneration& value) noexc
   manualPointLights_.swap(next.manualPointLights_); manualAreaLights_.swap(next.manualAreaLights_);
   lightEditIdentities_.swap(next.lightEditIdentities_);
   swap(generatedLightRevision_,next.generatedLightRevision_);
-  lightingBuffers_.swap(next.lightingBuffers_); lightDescriptorSets_.swap(next.lightDescriptorSets_);
-  rayShadowBindings_.swap(next.rayShadowBindings_);
-  swap(lightDescriptorPool_, next.lightDescriptorPool_); swap(ownsLightDescriptorPool_, next.ownsLightDescriptorPool_);
-  swap(lightSsbo_, next.lightSsbo_); swap(areaLightSsbo_, next.areaLightSsbo_);
-  swap(tileCullDescriptorPool_, next.tileCullDescriptorPool_); swap(ownsTileCullDescriptorPool_, next.ownsTileCullDescriptorPool_);
-  swap(tileCullSet0_, next.tileCullSet0_); swap(tileCullSet1_, next.tileCullSet1_); swap(tileCullSet2_, next.tileCullSet2_);
-  swap(tiledDescriptorSet_, next.tiledDescriptorSet_);
+  swapFrameResources(next);
   lastDispatchClusterCount_ = 0; timingQueriesWritten_ = false;
   invalidateRayShadowBindingPreparations();
   if(value.state_->graphPose||value.state_->lightOnly) value.state_->consumed=true;
   if(!value.state_->lightOnly&&lightEditRevision_!=UINT64_MAX) ++lightEditRevision_;
+}
+
+void LightingManager::swapFrameResources(LightingManager& target) noexcept {
+  lightingBuffers_.swap(target.lightingBuffers_);
+  pointLightBuffers_.swap(target.pointLightBuffers_);
+  areaLightBuffers_.swap(target.areaLightBuffers_);
+  lightDescriptorSets_.swap(target.lightDescriptorSets_);
+  rayShadowBindings_.swap(target.rayShadowBindings_);
+  tiledSets_.swap(target.tiledSets_);
+  std::swap(lightDescriptorPool_, target.lightDescriptorPool_);
+  std::swap(tileCullDescriptorPool_, target.tileCullDescriptorPool_);
 }
 
 LightingManager::~LightingManager() {
@@ -980,22 +957,15 @@ LightingManager::~LightingManager() {
   allocationManager_.destroyBuffer(lightStatsBuffer_);
   allocationManager_.destroyBuffer(lightIndexListSsbo_);
   allocationManager_.destroyBuffer(tileGridSsbo_);
-  allocationManager_.destroyBuffer(areaLightSsbo_);
-  allocationManager_.destroyBuffer(lightSsbo_);
-  for (auto &lightingBuffer : lightingBuffers_) {
-    allocationManager_.destroyBuffer(lightingBuffer);
+  for (auto* buffers : {&lightingBuffers_, &pointLightBuffers_, &areaLightBuffers_}) {
+    for (auto& buffer : *buffers) allocationManager_.destroyBuffer(buffer);
   }
-  lightingBuffers_.clear();
 }
 
 void LightingManager::destroyLightDescriptorPool() noexcept {
   if (lightDescriptorPool_ == VK_NULL_HANDLE) return;
   invalidateRayShadowBindingPreparations();
-  if (ownsLightDescriptorPool_) {
-    destroyOwnedDescriptorPool(device_->device(), lightDescriptorPool_, nullptr);
-    lightDescriptorPool_ = VK_NULL_HANDLE;
-  } else pipelineManager_.destroyDescriptorPool(lightDescriptorPool_);
-  ownsLightDescriptorPool_ = false;
+  destroyOwnedDescriptorPool(device_->device(), std::exchange(lightDescriptorPool_, VK_NULL_HANDLE), nullptr);
 }
 
 void LightingManager::invalidateRayShadowBindingPreparations() noexcept {
@@ -1005,24 +975,21 @@ void LightingManager::invalidateRayShadowBindingPreparations() noexcept {
 }
 
 void LightingManager::destroyTileCullDescriptorPool() noexcept {
-  if (tileCullDescriptorPool_ == VK_NULL_HANDLE) return;
-  if (ownsTileCullDescriptorPool_) {
-    destroyOwnedDescriptorPool(device_->device(), tileCullDescriptorPool_, nullptr);
-    tileCullDescriptorPool_ = VK_NULL_HANDLE;
-  } else pipelineManager_.destroyDescriptorPool(tileCullDescriptorPool_);
-  ownsTileCullDescriptorPool_ = false;
+  if (tileCullDescriptorPool_ != VK_NULL_HANDLE)
+    destroyOwnedDescriptorPool(device_->device(), std::exchange(tileCullDescriptorPool_, VK_NULL_HANDLE), nullptr);
 }
 
 void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
   if (descriptorBindingEpoch_ == std::numeric_limits<uint64_t>::max())
     throw std::overflow_error("Lighting descriptor binding epoch exhausted");
-  invalidateRayShadowBindingPreparations();
   const uint32_t setCount = std::max<uint32_t>(1u, descriptorSetCount);
+  if (setCount > std::numeric_limits<uint32_t>::max() / 7u)
+    throw std::length_error("Lighting descriptor count is too large");
 
   if (!ltcLuts_) {
-    ltcLuts_ = std::make_unique<LtcLutResources>(
-        device_, *allocationManager_.memoryManager());
-    ltcLuts_->load(container::util::executableDirectory());
+    auto luts = std::make_unique<LtcLutResources>(device_, *allocationManager_.memoryManager());
+    luts->load(container::util::executableDirectory());
+    ltcLuts_ = std::move(luts);
   }
 
   if (lightDescriptorSetLayout_ == VK_NULL_HANDLE) {
@@ -1048,57 +1015,66 @@ void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
         {bindings.begin(), bindings.end()}, std::vector<VkDescriptorBindingFlags>(bindings.size(), 0));
   }
 
-  for (auto &buffer : lightingBuffers_) {
-    if (buffer.buffer != VK_NULL_HANDLE) {
-      allocationManager_.destroyBuffer(buffer);
+  LightingManager next(device_, allocationManager_, pipelineManager_, sceneManager_, sceneGraph_,
+                       world_, DetachedGraphTag{});
+  createLightingFrameResources(next, setCount, false);
+  next.uploadLightingData(*this);
+  if (tileCullSet0Layout_ != VK_NULL_HANDLE) {
+    createTiledFrameDescriptors(next, setCount);
+    writeTiledResourceDescriptors(next);
+  }
+  createLightGizmoIconDescriptorResources();
+  invalidateRayShadowBindingPreparations();
+  swapFrameResources(next);
+}
+
+void LightingManager::createLightingFrameResources(LightingManager& target, uint32_t imageCount,
+                                                    bool inheritRayBindings) const {
+  constexpr auto host = VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
+                        VMA_ALLOCATION_CREATE_MAPPED_BIT;
+  target.lightingBuffers_.resize(imageCount);
+  target.pointLightBuffers_.resize(imageCount);
+  target.areaLightBuffers_.resize(imageCount);
+  target.lightDescriptorSets_.resize(imageCount);
+  target.rayShadowBindings_.resize(imageCount);
+  target.lightDescriptorSetLayout_ = lightDescriptorSetLayout_;
+
+  const auto device = device_->device();
+  target.lightDescriptorPool_ = createFrameDescriptorPool(device, lightDescriptorPoolSizes(imageCount), imageCount);
+  const std::vector<VkDescriptorSetLayout> layouts(imageCount, lightDescriptorSetLayout_);
+  allocateFrameDescriptorSets(device, target.lightDescriptorPool_, layouts, target.lightDescriptorSets_);
+  for (uint32_t image = 0; image < imageCount; ++image) {
+    auto& uniform = target.lightingBuffers_[image];
+    auto& point = target.pointLightBuffers_[image];
+    auto& area = target.areaLightBuffers_[image];
+    uniform = allocationManager_.createBuffer(sizeof(LightingData), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
+                                               VMA_MEMORY_USAGE_AUTO, host);
+    point = allocationManager_.createBuffer(sizeof(PointLightData) * kMaxClusteredLights,
+                                             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, host);
+    area = allocationManager_.createBuffer(sizeof(AreaLightData) * kMaxAreaLights,
+                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO, host);
+    writeLightDescriptorSet(device, target.lightDescriptorSets_[image], uniform.buffer, point.buffer, area.buffer,
+                            ltcLuts_->matrixView(), ltcLuts_->amplitudeView(), ltcLuts_->sampler());
+    if (inheritRayBindings && image < rayShadowBindings_.size()) {
+      const auto& ray = rayShadowBindings_[image];
+      if (ray.settings && ray.visibility && ray.settingsSize)
+        target.updateRayShadowDescriptors(image, ray.settings, ray.settingsSize, ray.visibility);
     }
   }
-  lightingBuffers_.assign(setCount, {});
-  for (auto &buffer : lightingBuffers_) {
-    buffer = allocationManager_.createBuffer(
-        sizeof(container::gpu::LightingData),
-        VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
-        VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-            VMA_ALLOCATION_CREATE_MAPPED_BIT);
-  }
+}
 
-  destroyLightDescriptorPool();
-  lightDescriptorPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, setCount * 2u},
-       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, setCount * 3u},
-       {VK_DESCRIPTOR_TYPE_SAMPLER, setCount},
-       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, setCount * 2u}},
-      setCount, 0);
-
-  lightDescriptorSets_.assign(lightingBuffers_.size(), VK_NULL_HANDLE);
-  rayShadowBindings_.assign(lightingBuffers_.size(), {});
-  std::vector<VkDescriptorSetLayout> layouts(lightingBuffers_.size(),
-                                             lightDescriptorSetLayout_);
-  VkDescriptorSetAllocateInfo allocInfo{};
-  allocInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-  allocInfo.descriptorPool = lightDescriptorPool_;
-  allocInfo.descriptorSetCount = static_cast<uint32_t>(layouts.size());
-  allocInfo.pSetLayouts = layouts.data();
-  if (vkAllocateDescriptorSets(device_->device(), &allocInfo,
-                               lightDescriptorSets_.data()) != VK_SUCCESS) {
-    throw std::runtime_error("failed to allocate light descriptor sets");
-  }
-
-  for (size_t i = 0; i < lightingBuffers_.size(); ++i) {
-    VkDescriptorBufferInfo bufInfo{lightingBuffers_[i].buffer, 0,
-                                   sizeof(container::gpu::LightingData)};
-    VkWriteDescriptorSet write{};
-    write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    write.dstSet = lightDescriptorSets_[i];
-    write.dstBinding = 0;
-    write.descriptorCount = 1;
-    write.descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
-    write.pBufferInfo = &bufInfo;
-    vkUpdateDescriptorSets(device_->device(), 1, &write, 0, nullptr);
-  }
-  writeLightDescriptorStorageBuffers();
-  writeLtcDescriptors();
-  createLightGizmoIconDescriptorResources();
+void LightingManager::createTiledFrameDescriptors(LightingManager& target, uint32_t imageCount) const {
+  constexpr uint32_t setsPerImage = 4;
+  const std::array<VkDescriptorPoolSize, 3> sizes{{
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount},
+      {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, imageCount * 7}}};
+  const std::array layouts{tileCullSet0Layout_, tileCullSet1Layout_, tileCullSet2Layout_, tiledDescriptorSetLayout_};
+  const auto device = device_->device();
+  target.tiledSets_.resize(imageCount);
+  target.tileCullDescriptorPool_ = createFrameDescriptorPool(device, sizes, imageCount * setsPerImage);
+  for (auto& sets : target.tiledSets_)
+    allocateFrameDescriptorSets(device, target.tileCullDescriptorPool_, layouts, sets);
 }
 
 bool LightingManager::ltcReady() const {
@@ -1110,66 +1086,6 @@ const std::string &LightingManager::ltcStatus() const {
 }
 uint64_t LightingManager::ltcMemoryBytes() const {
   return ltcLuts_ ? ltcLuts_->allocatedBytes() : 0;
-}
-
-void LightingManager::writeLtcDescriptors() const {
-  if (!ltcLuts_)
-    return;
-  const std::array info{
-      vk::DescriptorImageInfo({}, ltcLuts_->matrixView(),
-                               vk::ImageLayout::eShaderReadOnlyOptimal),
-      vk::DescriptorImageInfo({}, ltcLuts_->amplitudeView(),
-                               vk::ImageLayout::eShaderReadOnlyOptimal),
-      vk::DescriptorImageInfo(ltcLuts_->sampler(), {}, {})};
-  std::vector<vk::WriteDescriptorSet> writes;
-  writes.reserve(lightDescriptorSets_.size() * info.size());
-  for (const auto set : lightDescriptorSets_)
-    for (uint32_t i = 0; i < info.size(); ++i)
-      writes.emplace_back(set, 5u + i, 0, 1,
-                          i < 2 ? vk::DescriptorType::eSampledImage
-                                : vk::DescriptorType::eSampler,
-                          &info[i]);
-  device_->raii().updateDescriptorSets(writes, {});
-}
-
-void LightingManager::writeLightDescriptorStorageBuffers() const {
-  if (lightDescriptorSets_.empty()) {
-    return;
-  }
-
-  VkDescriptorBufferInfo lightInfo{
-      lightSsbo_.buffer, 0, sizeof(PointLightData) * kMaxClusteredLights};
-  VkDescriptorBufferInfo areaLightInfo{areaLightSsbo_.buffer, 0,
-                                       sizeof(AreaLightData) * kMaxAreaLights};
-  std::vector<VkWriteDescriptorSet> writes;
-  writes.reserve(lightDescriptorSets_.size() * 2u);
-  for (VkDescriptorSet descriptorSet : lightDescriptorSets_) {
-    if (lightSsbo_.buffer != VK_NULL_HANDLE) {
-      VkWriteDescriptorSet &write = writes.emplace_back();
-      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      write.dstSet = descriptorSet;
-      write.dstBinding = 1;
-      write.descriptorCount = 1;
-      write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      write.pBufferInfo = &lightInfo;
-    }
-    if (areaLightSsbo_.buffer != VK_NULL_HANDLE) {
-      VkWriteDescriptorSet &write = writes.emplace_back();
-      write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-      write.dstSet = descriptorSet;
-      write.dstBinding = 2;
-      write.descriptorCount = 1;
-      write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-      write.pBufferInfo = &areaLightInfo;
-    }
-  }
-
-  if (writes.empty()) {
-    return;
-  }
-  vkUpdateDescriptorSets(device_->device(),
-                         static_cast<uint32_t>(writes.size()), writes.data(), 0,
-                         nullptr);
 }
 
 void LightingManager::updateRayShadowDescriptors(uint32_t imageIndex,
@@ -1328,30 +1244,30 @@ glm::vec3 LightingManager::directionalLightPosition() const {
 }
 
 void LightingManager::uploadLightingData() const {
-  if (lightingBuffers_.empty())
-    return;
-  for (const auto &lightingBuffer : lightingBuffers_) {
-    if (lightingBuffer.buffer != VK_NULL_HANDLE) {
-      SceneController::writeToBuffer(allocationManager_, lightingBuffer,
-                                     &lightingData_,
-                                     sizeof(container::gpu::LightingData));
-    }
-  }
-  uploadLightSsbo();
-  uploadAreaLightSsbo();
+  uploadLightingData(*this);
+}
+
+void LightingManager::uploadLightingData(const LightingManager& source) const {
+  for (uint32_t image = 0; image < lightingBuffers_.size(); ++image)
+    uploadLightingData(image, source);
 }
 
 void LightingManager::uploadLightingData(uint32_t imageIndex) const {
-  if (imageIndex >= lightingBuffers_.size())
-    return;
-  const auto &lightingBuffer = lightingBuffers_[imageIndex];
-  if (lightingBuffer.buffer != VK_NULL_HANDLE) {
-    SceneController::writeToBuffer(allocationManager_, lightingBuffer,
-                                   &lightingData_,
-                                   sizeof(container::gpu::LightingData));
-  }
-  uploadLightSsbo();
-  uploadAreaLightSsbo();
+  uploadLightingData(imageIndex, *this);
+}
+
+void LightingManager::uploadLightingData(uint32_t imageIndex, const LightingManager& source) const {
+  if (imageIndex >= lightingBuffers_.size()) return;
+  SceneController::writeToBuffer(allocationManager_, lightingBuffers_[imageIndex],
+                                 &source.lightingData_, sizeof(LightingData));
+  const auto points = std::min<size_t>(source.pointLightsSsbo_.size(), kMaxClusteredLights);
+  const auto areas = std::min<size_t>(source.areaLightsSsbo_.size(), kMaxAreaLights);
+  if (points)
+    SceneController::writeToBuffer(allocationManager_, pointLightBuffers_[imageIndex],
+                                   source.pointLightsSsbo_.data(), sizeof(PointLightData) * points);
+  if (areas)
+    SceneController::writeToBuffer(allocationManager_, areaLightBuffers_[imageIndex],
+                                   source.areaLightsSsbo_.data(), sizeof(AreaLightData) * areas);
 }
 
 void LightingManager::setLightingSettings(const LightingSettings &settings) {
@@ -2162,45 +2078,32 @@ void LightingManager::allocateClusterBuffers(VkExtent2D extent) {
       VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE);
 }
 
-void LightingManager::writeTiledResourceDescriptors() const noexcept {
-  writeTiledDescriptors(device_->device(), tileCullSet1_, tileCullSet2_, tiledDescriptorSet_,
-      lightSsbo_, tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, clusteredLightCapacity_);
+void LightingManager::writeTiledResourceDescriptors(const LightingManager& target) const noexcept {
+  for (size_t image = 0; image < target.tiledSets_.size(); ++image) {
+    const auto& sets = target.tiledSets_[image];
+    writeTiledDescriptors(device_->device(), sets[1], sets[2], sets[3], target.pointLightBuffers_[image],
+        tileGridSsbo_, lightIndexListSsbo_, lightStatsBuffer_, clusteredLightCapacity_);
+  }
 }
 
 void LightingManager::resizeTiledResources(VkExtent2D extent) {
-  if (lightSsbo_.buffer == VK_NULL_HANDLE ||
-      lightStatsBuffer_.buffer == VK_NULL_HANDLE) {
-    return;
-  }
+  if (pointLightBuffers_.empty() || lightStatsBuffer_.buffer == VK_NULL_HANDLE) return;
 
   const uint64_t previousBindingEpoch = descriptorBindingEpoch_;
   allocateClusterBuffers(extent);
   if (descriptorBindingEpoch_ != previousBindingEpoch) {
-    writeTiledResourceDescriptors();
+    writeTiledResourceDescriptors(*this);
   }
 }
 
 void LightingManager::createTiledResources(
     const std::filesystem::path &shaderDir, VkExtent2D initialExtent) {
+  if (lightingBuffers_.empty())
+    throw std::logic_error("Initialize lighting descriptor resources before tiled lighting");
   if (descriptorBindingEpoch_ == std::numeric_limits<uint64_t>::max())
     throw std::overflow_error("Lighting descriptor binding epoch exhausted");
   invalidateRayShadowBindingPreparations();
   loadLightGizmoIconResources(shaderDir / "materials" / "gizmos" / "lights");
-
-  // ---- Allocate SSBOs -------------------------------------------------------
-  const VkDeviceSize lightSsboSize =
-      sizeof(PointLightData) * kMaxClusteredLights;
-  lightSsbo_ = allocationManager_.createBuffer(
-      lightSsboSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-          VMA_ALLOCATION_CREATE_MAPPED_BIT);
-
-  const VkDeviceSize areaLightSsboSize = sizeof(AreaLightData) * kMaxAreaLights;
-  areaLightSsbo_ = allocationManager_.createBuffer(
-      areaLightSsboSize, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO,
-      VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
-          VMA_ALLOCATION_CREATE_MAPPED_BIT);
 
   lightStatsBuffer_ = allocationManager_.createBuffer(
       sizeof(uint32_t) * 4,
@@ -2301,32 +2204,9 @@ void LightingManager::createTiledResources(
         {bindings.begin(), bindings.end()}, flags);
   }
 
-  // ---- Descriptor pools & sets ----------------------------------------------
-  tileCullDescriptorPool_ = pipelineManager_.createDescriptorPool(
-      {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1},
-       {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1},
-       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 7}},
-      4, 0);
-
-  auto allocSet = [&](VkDescriptorSetLayout layout) {
-    VkDescriptorSet set = VK_NULL_HANDLE;
-    VkDescriptorSetAllocateInfo ai{
-        VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-    ai.descriptorPool = tileCullDescriptorPool_;
-    ai.descriptorSetCount = 1;
-    ai.pSetLayouts = &layout;
-    if (vkAllocateDescriptorSets(device_->device(), &ai, &set) != VK_SUCCESS)
-      throw std::runtime_error("failed to allocate tiled descriptor set");
-    return set;
-  };
-
-  tileCullSet0_ = allocSet(tileCullSet0Layout_);
-  tileCullSet1_ = allocSet(tileCullSet1Layout_);
-  tileCullSet2_ = allocSet(tileCullSet2Layout_);
-  tiledDescriptorSet_ = allocSet(tiledDescriptorSetLayout_);
-
-  resizeTiledResources(initialExtent);
-  writeLightDescriptorStorageBuffers();
+  LightingManager next(device_, allocationManager_, pipelineManager_, sceneManager_, sceneGraph_,
+                       world_, DetachedGraphTag{});
+  createTiledFrameDescriptors(next, static_cast<uint32_t>(lightingBuffers_.size()));
 
   // ---- Compute pipeline -----------------------------------------------------
   {
@@ -2343,41 +2223,23 @@ void LightingManager::createTiledResources(
     tileCullPipeline_ = pipelineManager_.createComputePipeline(
         compPath, tileCullPipelineLayout_, "tile_light_cull");
   }
+
+  resizeTiledResources(initialExtent);
+  std::swap(tileCullDescriptorPool_, next.tileCullDescriptorPool_);
+  tiledSets_.swap(next.tiledSets_);
+  writeTiledResourceDescriptors(*this);
 }
 
-void LightingManager::uploadLightSsbo() const {
-  if (lightSsbo_.buffer == VK_NULL_HANDLE)
-    return;
-  const uint32_t count = std::min(
-      static_cast<uint32_t>(pointLightsSsbo_.size()), kMaxClusteredLights);
-  if (count == 0)
-    return;
-  SceneController::writeToBuffer(allocationManager_, lightSsbo_,
-                                 pointLightsSsbo_.data(),
-                                 sizeof(PointLightData) * count);
-}
-
-void LightingManager::uploadAreaLightSsbo() const {
-  if (areaLightSsbo_.buffer == VK_NULL_HANDLE)
-    return;
-  const uint32_t count =
-      std::min(static_cast<uint32_t>(areaLightsSsbo_.size()), kMaxAreaLights);
-  if (count == 0)
-    return;
-  SceneController::writeToBuffer(allocationManager_, areaLightSsbo_,
-                                 areaLightsSsbo_.data(),
-                                 sizeof(AreaLightData) * count);
-}
-
-void LightingManager::dispatchTileCull(VkCommandBuffer cmd,
+void LightingManager::dispatchTileCull(VkCommandBuffer cmd, uint32_t imageIndex,
                                        VkExtent2D screenExtent,
                                        VkBuffer cameraBuffer,
                                        VkDeviceSize cameraBufferSize,
                                        VkImageView depthView, float cameraNear,
                                        float cameraFar) const {
-  if (!isTiledLightingReady())
+  if (!isTiledLightingReady() || imageIndex >= tiledSets_.size())
     return;
 
+  const auto& sets = tiledSets_[imageIndex];
   const auto dispatch = planClusteredLightCapacity(
       screenExtent, clusteredStorageRangeLimit_, clusteredDispatchLimits_);
   if (!dispatch.available() ||
@@ -2415,7 +2277,7 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd,
                        VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 1,
                        &statsClearBarrier, 0, nullptr, 0, nullptr);
 
-  // Update tileCullSet0_ with the current frame's camera + depth resources.
+  // Update this image's set 0 with its camera and depth resources.
   {
     VkDescriptorBufferInfo camInfo{cameraBuffer, 0, cameraBufferSize};
     VkDescriptorImageInfo depthInfo{};
@@ -2425,14 +2287,14 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd,
 
     std::array<VkWriteDescriptorSet, 2> w{};
     w[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w[0].dstSet = tileCullSet0_;
+    w[0].dstSet = sets[0];
     w[0].dstBinding = 0;
     w[0].descriptorCount = 1;
     w[0].descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
     w[0].pBufferInfo = &camInfo;
 
     w[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    w[1].dstSet = tileCullSet0_;
+    w[1].dstSet = sets[0];
     w[1].dstBinding = 1;
     w[1].descriptorCount = 1;
     w[1].descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE;
@@ -2452,11 +2314,8 @@ void LightingManager::dispatchTileCull(VkCommandBuffer cmd,
 
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tileCullPipeline_);
 
-  std::array<VkDescriptorSet, 3> sets = {tileCullSet0_, tileCullSet1_,
-                                         tileCullSet2_};
-  vkCmdBindDescriptorSets(
-      cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tileCullPipelineLayout_, 0,
-      static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, tileCullPipelineLayout_, 0,
+                          3, sets.data(), 0, nullptr);
 
   vkCmdPushConstants(cmd, tileCullPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
                      0, sizeof(TileCullPushConstants), &pc);
@@ -2806,10 +2665,26 @@ const LightingData& LightingManager::PreparedLightEdit::lightingData() const {if
 const std::vector<PointLightData>& LightingManager::PreparedLightEdit::pointLightsSsbo() const {if(!*this) throw std::logic_error("Empty light edit");return state_->generation.pointLightsSsbo();}
 const std::vector<AreaLightData>& LightingManager::PreparedLightEdit::areaLightsSsbo() const {if(!*this) throw std::logic_error("Empty light edit");return state_->generation.areaLightsSsbo();}
 std::span<const container::gpu::AllocatedBuffer> LightingManager::PreparedLightEdit::lightingBuffers() const noexcept {return *this?state_->generation.lightingBuffers():std::span<const container::gpu::AllocatedBuffer>{};}
-const container::gpu::AllocatedBuffer& LightingManager::PreparedLightEdit::pointLightBuffer() const {if(!*this) throw std::logic_error("Empty light edit");return state_->generation.pointLightBuffer();}
-const container::gpu::AllocatedBuffer& LightingManager::PreparedLightEdit::areaLightBuffer() const {if(!*this) throw std::logic_error("Empty light edit");return state_->generation.areaLightBuffer();}
+const container::gpu::AllocatedBuffer& LightingManager::PreparedLightEdit::pointLightBuffer(uint32_t image) const {
+  if (!*this) throw std::logic_error("Empty light edit");
+  return state_->generation.pointLightBuffer(image);
+}
+const container::gpu::AllocatedBuffer& LightingManager::PreparedLightEdit::areaLightBuffer(uint32_t image) const {
+  if (!*this) throw std::logic_error("Empty light edit");
+  return state_->generation.areaLightBuffer(image);
+}
+std::span<const container::gpu::AllocatedBuffer>
+LightingManager::PreparedLightEdit::pointLightBuffers() const noexcept {
+  return *this ? state_->generation.pointLightBuffers() : std::span<const container::gpu::AllocatedBuffer>{};
+}
+std::span<const container::gpu::AllocatedBuffer>
+LightingManager::PreparedLightEdit::areaLightBuffers() const noexcept {
+  return *this ? state_->generation.areaLightBuffers() : std::span<const container::gpu::AllocatedBuffer>{};
+}
 VkDescriptorSet LightingManager::PreparedLightEdit::lightDescriptorSet(uint32_t i) const noexcept {return *this?state_->generation.lightDescriptorSet(i):VK_NULL_HANDLE;}
-VkDescriptorSet LightingManager::PreparedLightEdit::tiledDescriptorSet() const noexcept {return *this?state_->generation.tiledDescriptorSet():VK_NULL_HANDLE;}
+VkDescriptorSet LightingManager::PreparedLightEdit::tiledDescriptorSet(uint32_t image) const noexcept {
+  return *this ? state_->generation.tiledDescriptorSet(image) : VK_NULL_HANDLE;
+}
 void LightingManager::PreparedLightEdit::updateRayShadowDescriptors(uint32_t i,VkBuffer b,VkDeviceSize n,VkImageView v) {if(!*this) throw std::logic_error("Empty light edit");state_->generation.updateRayShadowDescriptors(i,b,n,v);}
 LightingManager::PreparedLightEdit LightingManager::prepareLightEdit(const LightEditTarget& target,const LightEditPatch& patch,
     const LightEditCommand* gesture,const LightEditLimits& limits) const {

@@ -1612,6 +1612,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
              .cameraFar = p.camera.farPlane});
     static_cast<void>(recordDeferredRasterTileCullCommands(
         cmd, {.lightingManager = deferred->lightingManager(),
+              .imageIndex = p.runtime.imageIndex,
               .plan = tileCullPlan}));
   });
 
