@@ -1793,6 +1793,351 @@ double checkSectionedMesh(const Model &model, glm::dvec3 up = {0, 0, 1}) {
   return area;
 }
 
+const std::string guideSectionedFixture =
+    "#2=IFCCARTESIANPOINT((0.,0.,0.)); #3=IFCCARTESIANPOINT((10.,0.,0.));"
+    "#4=IFCPOLYLINE((#2,#3));"
+    "#20=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(0.),$,$,$,#4);"
+    "#21=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(10.),$,$,$,#4);"
+    "#22=IFCAXIS2PLACEMENTLINEAR(#20,$,$); "
+    "#23=IFCAXIS2PLACEMENTLINEAR(#21,$,$);"
+    "#24=IFCCARTESIANPOINT((-2.,0.));"
+    "#30=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,2.),(0.,0.),"
+    "('left','crown','right'),#24);"
+    "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#30));";
+
+struct GuideSectionFixture {
+  std::string definitions = guideSectionedFixture;
+  uint32_t next = 100;
+
+  std::string add(const std::string &value) {
+    const auto ref = "#" + std::to_string(next++);
+    definitions += ref + "=" + value + ";";
+    return ref;
+  }
+
+  std::string point(double x, double y, double z) {
+    return add("IFCCARTESIANPOINT((" + scalar(x) + "," + scalar(y) + "," +
+               scalar(z) + "))");
+  }
+
+  struct OffsetSample {
+    double station, lateral, vertical;
+  };
+
+  std::string guide(std::string_view tag, std::string_view basis,
+                    std::initializer_list<OffsetSample> offsets) {
+    std::string positions;
+    for (const auto &[station, lateral, vertical] : offsets) {
+      if (!positions.empty())
+        positions += ',';
+      positions += add("IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(" +
+                       scalar(station) + ")," + scalar(lateral) + "," +
+                       scalar(vertical) + ",$," + std::string(basis) + ")");
+    }
+    return add("IFCOFFSETCURVEBYDISTANCES(" + std::string(basis) + ",(" +
+               positions + "),'" + std::string(tag) + "')");
+  }
+
+  void product(std::string_view guid, const std::string &axisItems = {},
+               std::string_view bodyItem = "#40") {
+    auto reps = add("IFCSHAPEREPRESENTATION($,'Body','SectionedSurface',(" +
+                    std::string(bodyItem) + "))");
+    if (!axisItems.empty())
+      reps +=
+          "," + add("IFCSHAPEREPRESENTATION($,'Axis','GeometricCurveSet',(" +
+                    axisItems + "))");
+    const auto pds = add("IFCPRODUCTDEFINITIONSHAPE($,$,(" + reps + "))");
+    add("IFCBUILDINGELEMENTPROXY('" + std::string(guid) + "',$,'Road',$,$,$," +
+        pds + ",$,$)");
+  }
+
+  Model load() const {
+    return container::geometry::ifc::LoadFromStep(
+        "ISO-10303-21; DATA; #1=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);" +
+        definitions + "ENDSEC; END-ISO-10303-21;");
+  }
+
+private:
+  static std::string scalar(double value) {
+    std::ostringstream text;
+    text.precision(17);
+    text << value;
+    return text.str();
+  }
+};
+
+// Axis curves and Body triangles occupy the same model buffers. Use the
+// product's draw ranges so a valid guide alone cannot satisfy the mesh test.
+Model sectionedProductMesh(const Model &model, std::string_view guid) {
+  Model body;
+  body.importReport = model.importReport;
+  body.vertices = model.vertices;
+  for (const auto &element : model.elements) {
+    if (element.guid != guid ||
+        element.geometryKind != container::geometry::dotbim::GeometryKind::Mesh)
+      continue;
+    for (const auto &range : model.meshRanges) {
+      if (range.meshId != element.meshId)
+        continue;
+      for (size_t i = range.firstIndex;
+           i < size_t(range.firstIndex) + range.indexCount; ++i) {
+        const auto index = model.indices.at(i);
+        auto &vertex = body.vertices.at(index);
+        // Undo the renderer's IFC Z-up to glTF Y-up conversion so these
+        // bounds remain in the authored axes, including mapped translations.
+        const auto p =
+            element.transform * glm::vec4(model.vertices.at(index).position, 1);
+        vertex.position = {p.x, -p.z, p.y};
+        body.indices.push_back(index);
+      }
+    }
+  }
+  return body;
+}
+
+double maximumBodyHeight(const Model &body) {
+  double height = -std::numeric_limits<double>::infinity();
+  for (uint32_t i : body.indices)
+    height = std::max(height, double(body.vertices.at(i).position.z));
+  return height;
+}
+
+TEST(IfcCurveFamilies, SectionedGuidesKeepIndependentBasisAndIntermediateRow) {
+  for (const bool independent : {false, true}) {
+    SCOPED_TRACE(independent);
+    GuideSectionFixture step;
+    std::string basis = "#4";
+    if (independent) {
+      // Source guide parameter decreases across the surface and has a
+      // different station origin and scale from the primary directrix.
+      const auto a = step.point(15, 0, 0), b = step.point(-5, 0, 0);
+      basis = step.add("IFCPOLYLINE((" + a + "," + b + "))");
+    }
+    std::string guides;
+    for (const auto &[tag, lateral] :
+         std::array<std::pair<const char *, double>, 3>{
+             {{"left", -2}, {"crown", 0}, {"right", 2}}}) {
+      const double signedOffset = independent ? -lateral : lateral;
+      const auto guide = independent ? step.guide(tag, basis,
+                                                  {{5, signedOffset, 0},
+                                                   {11, signedOffset, 3},
+                                                   {15, signedOffset, 0}})
+                                     : step.guide(tag, basis,
+                                                  {{0, signedOffset, 0},
+                                                   {4, signedOffset, 3},
+                                                   {10, signedOffset, 0}});
+      if (!guides.empty())
+        guides += ',';
+      guides += guide;
+    }
+    const auto geometricSet =
+        step.add("IFCGEOMETRICCURVESET((" + guides + "))");
+    step.definitions +=
+        "#45=IFCCARTESIANPOINT((0.4,0.)); #46=IFCCARTESIANPOINT((0.4,1.));"
+        "#47=IFCPOLYLINE((#45,#46)); #48=IFCPCURVE(#40,#47);"
+        "#49=IFCCARTESIANPOINT((0.,0.5)); #50=IFCCARTESIANPOINT((1.,0.5));"
+        "#51=IFCPOLYLINE((#49,#50)); #52=IFCPCURVE(#40,#51);";
+    step.product("guided-road", geometricSet + ",#48,#52");
+    const auto model = step.load();
+    EXPECT_FALSE(model.nativeCurveRanges.empty());
+    const auto body = sectionedProductMesh(model, "guided-road");
+    // Two planar strips of width 4 and sloped lengths (4,3) and (6,3).
+    EXPECT_NEAR(checkSectionedMesh(body), 4 * (5 + std::sqrt(45.)), 1e-5);
+    EXPECT_NEAR(maximumBodyHeight(body), 3., 1e-6);
+    std::array<bool, 3> crest{};
+    for (const auto i : body.indices) {
+      const glm::dvec3 p = body.vertices.at(i).position;
+      EXPECT_GE(p.x, -1e-6);
+      EXPECT_LE(p.x, 10 + 1e-6);
+      EXPECT_LE(std::abs(p.y), 2 + 1e-6);
+      EXPECT_NEAR(p.z, std::min(.75 * p.x, .5 * (10 - p.x)), 1e-6);
+      if (std::abs(p.x - 4) < 1e-6)
+        for (size_t i = 0; i < crest.size(); ++i)
+          crest[i] |= std::abs(p.y - (2. * i - 2.)) < 1e-6;
+    }
+    EXPECT_TRUE(
+        std::ranges::all_of(crest, [](bool present) { return present; }));
+    size_t crosswisePcurves = 0, longitudinalPcurves = 0;
+    for (const auto &range : model.nativeCurveRanges) {
+      const auto &first =
+          model.vertices.at(model.indices.at(range.firstIndex)).position;
+      const auto &last =
+          model.vertices
+              .at(model.indices.at(range.firstIndex + range.indexCount - 1))
+              .position;
+      if (glm::length(first - glm::vec3(4, -2, 3)) < 1e-6 &&
+          glm::length(last - glm::vec3(4, 2, 3)) < 1e-6)
+        ++crosswisePcurves;
+      if (glm::length(first - glm::vec3(0, 0, 0)) > 1e-6 ||
+          glm::length(last - glm::vec3(10, 0, 0)) > 1e-6)
+        continue;
+      // Both the authored Axis guide and the lifted chart reach this crest
+      // with at least one line segment on each side of the offset knot.
+      double distance = 0.;
+      bool includesCrest = false;
+      for (size_t i = range.firstIndex;
+           i < size_t(range.firstIndex) + range.indexCount; i += 2) {
+        const auto a = model.vertices.at(model.indices.at(i)).position;
+        const auto b = model.vertices.at(model.indices.at(i + 1)).position;
+        distance += glm::length(glm::dvec3(b - a));
+        includesCrest |= glm::length(a - glm::vec3(4, 0, 3)) < 1e-6 ||
+                         glm::length(b - glm::vec3(4, 0, 3)) < 1e-6;
+      }
+      EXPECT_TRUE(includesCrest);
+      EXPECT_NEAR(distance, 5 + std::sqrt(45.), 1e-5);
+      ++longitudinalPcurves;
+    }
+    EXPECT_EQ(crosswisePcurves, 1u);
+    // The independent guide has different authored endpoints and direction.
+    EXPECT_EQ(longitudinalPcurves, independent ? 1u : 2u);
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedGuidesBindByTagWithinProductRepresentations) {
+  GuideSectionFixture step;
+  const auto high =
+      step.guide("crown", "#4", {{0, 0, 0}, {4, 0, 3}, {10, 0, 0}});
+  const auto low =
+      step.guide("crown", "#4", {{0, 0, 0}, {4, 0, 1}, {10, 0, 0}});
+  const auto otherTag =
+      step.guide("unused", "#4", {{0, 0, 0}, {4, 0, 8}, {10, 0, 0}});
+  step.guide("crown", "#4", {{0, 0, 0}, {4, 0, 9}, {10, 0, 0}}); // orphan
+  step.product("high", high + "," + high + "," + otherTag);
+  step.product("low", low);
+  step.product("unguided", otherTag);
+  const auto model = step.load();
+  for (const auto &diagnostic : model.importReport.diagnostics)
+    ADD_FAILURE() << diagnostic.productGuid << " #" << diagnostic.entityId
+                  << ": " << diagnostic.reason;
+  ASSERT_EQ(model.importReport.completeness, ImportCompleteness::Complete);
+  EXPECT_EQ(model.importReport.importedProductCount, 3u);
+  EXPECT_FALSE(model.nativeCurveRanges.empty());
+  for (const auto &[guid, height] :
+       std::array<std::pair<const char *, double>, 3>{
+           {{"high", 3.}, {"low", 1.}, {"unguided", 0.}}}) {
+    SCOPED_TRACE(guid);
+    const auto body = sectionedProductMesh(model, guid);
+    EXPECT_FALSE(body.indices.empty());
+    EXPECT_NEAR(maximumBodyHeight(body), height, 1e-6);
+    if (!height)
+      EXPECT_NEAR(checkSectionedMesh(body), 40., 1e-6);
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedGuidesRequireMatchingRepresentationFrame) {
+  GuideSectionFixture step;
+  const auto guide =
+      step.guide("crown", "#4", {{0, 0, 0}, {4, 0, 3}, {10, 0, 0}});
+  const auto mappedAxis = step.add(
+      "IFCSHAPEREPRESENTATION($,'Axis','GeometricCurveSet',(" + guide + "))");
+  const auto origin =
+      step.add("IFCAXIS2PLACEMENT3D(" + step.point(0, 0, 0) + ",$,$)");
+  const auto map =
+      step.add("IFCREPRESENTATIONMAP(" + origin + "," + mappedAxis + ")");
+  const auto target = step.add("IFCCARTESIANTRANSFORMATIONOPERATOR3D($,$," +
+                               step.point(0, 1, 0) + ",1.,$)");
+  const auto mapped = step.add("IFCMAPPEDITEM(" + map + "," + target + ")");
+  step.product("different-frame", mapped);
+  step.product("same-frame", guide);
+  const auto localBody =
+      step.add("IFCSHAPEREPRESENTATION($,'Body','SectionedSurface',(#40))");
+  const auto bodyMap =
+      step.add("IFCREPRESENTATIONMAP(" + origin + "," + localBody + ")");
+  const auto mappedBody =
+      step.add("IFCMAPPEDITEM(" + bodyMap + "," + target + ")");
+  step.product("both-mapped", mapped, mappedBody);
+  const auto model = step.load();
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+  EXPECT_TRUE(sectionedProductMesh(model, "different-frame").indices.empty());
+  EXPECT_NEAR(maximumBodyHeight(sectionedProductMesh(model, "same-frame")), 3.,
+              1e-6);
+  const auto translated = sectionedProductMesh(model, "both-mapped");
+  EXPECT_NEAR(maximumBodyHeight(translated), 3., 1e-6);
+  float minY = std::numeric_limits<float>::infinity(), maxY = -minY;
+  for (const auto index : translated.indices) {
+    const auto p = translated.vertices.at(index).position;
+    minY = std::min(minY, p.y);
+    maxY = std::max(maxY, p.y);
+  }
+  EXPECT_NEAR(minY, -1., 1e-6);
+  EXPECT_NEAR(maxY, 3., 1e-6);
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u)
+      << (model.importReport.diagnostics.empty()
+              ? "Missing expected diagnostic"
+              : model.importReport.diagnostics.back().reason);
+  EXPECT_EQ(model.importReport.diagnostics.front().entityId, 40u);
+  EXPECT_EQ(model.importReport.diagnostics.front().productGuid,
+            "different-frame");
+  EXPECT_NE(model.importReport.diagnostics.front().reason.find("frame"),
+            std::string::npos);
+}
+
+TEST(IfcCurveFamilies, MalformedSectionedGuidesRetainAxisAndUnaffectedBody) {
+  for (const std::string_view reason : {"disconnected", "duplicate", "crossing",
+                                        "endpoint mismatch", "repeated tag"}) {
+    SCOPED_TRACE(reason);
+    GuideSectionFixture step;
+    const auto crown =
+        step.guide("crown", "#4", {{0, 0, 0}, {4, 0, 1}, {10, 0, 0}});
+    auto guides = crown + ",";
+    if (reason == "disconnected") {
+      const auto a = step.point(2, 0, 0), b = step.point(8, 0, 0);
+      const auto basis = step.add("IFCPOLYLINE((" + a + "," + b + "))");
+      guides += step.guide("left", basis, {{0, -2, 0}, {6, -2, 0}});
+    } else if (reason == "duplicate") {
+      guides += step.guide("crown", "#4", {{0, 0, 0}, {4, 0, 2}, {10, 0, 0}});
+    } else if (reason == "crossing") {
+      guides += step.guide("left", "#4", {{0, -2, 0}, {4, .5, 0}, {10, -2, 0}});
+    } else if (reason == "endpoint mismatch") {
+      guides += step.guide("left", "#4", {{0, -2, -.25}, {10, -2, -.25}});
+    } else {
+      step.definitions +=
+          "#31=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,0.,2.),(0.,0.,0.),"
+          "('left','crown','crown','right'),#24);"
+          "#41=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#31));";
+      guides = crown;
+    }
+    step.product("rejected-body", guides,
+                 reason == "repeated tag" ? "#41" : "#40");
+    step.product("fallback");
+    const auto model = step.load();
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+    EXPECT_FALSE(model.nativeCurveRanges.empty());
+    EXPECT_TRUE(sectionedProductMesh(model, "rejected-body").indices.empty());
+    EXPECT_NEAR(maximumBodyHeight(sectionedProductMesh(model, "fallback")), 0.,
+                1e-6);
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    EXPECT_EQ(model.importReport.diagnostics.front().entityId,
+              reason == "repeated tag" ? 41u : 40u);
+    EXPECT_EQ(model.importReport.diagnostics.front().productGuid,
+              "rejected-body");
+    EXPECT_FALSE(model.importReport.diagnostics.front().reason.empty());
+  }
+}
+
+TEST(IfcCurveFamilies,
+     SectionedHorizontalWidthsPreserveReversedProfileDirection) {
+  auto definitions = guideSectionedFixture;
+  replace(definitions, "((-2.,0.))", "((2.,0.))");
+  // Project angle units are degrees. Widths remain positive even when
+  // slopes direct both cross-section segments toward negative local X.
+  replace(definitions, "(2.,2.),(0.,0.)", "(2.,2.),(180.,180.)");
+  replace(definitions, "#30=", "#60=");
+  replace(definitions, "(#30,#30)", "(#60,#60)");
+  definitions += sweptDegreeUnits;
+  const auto model =
+      container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+  EXPECT_NEAR(checkSectionedMesh(model, {0, 0, -1}), 40., 1e-6);
+  std::set<float> widthAnchors;
+  for (const auto &vertex : model.vertices) {
+    EXPECT_NEAR(vertex.position.z, 0., 1e-6);
+    widthAnchors.insert(vertex.position.y);
+  }
+  EXPECT_TRUE(widthAnchors.contains(-2));
+  EXPECT_TRUE(widthAnchors.contains(0));
+  EXPECT_TRUE(widthAnchors.contains(2));
+}
+
 TEST(IfcCurveFamilies, SectionedTagsSplitAndMergeWithoutLosingBreaklines) {
   for (bool merge : {false, true}) {
     auto definitions = branchingSectionedFixture;

@@ -56,7 +56,7 @@ checks are free of validation and synchronization errors.
 | Boolean/clipping results | Nested union/difference/intersection of supported closed, oriented mesh solids; plane, boxed and polygon-bounded half-space difference/intersection honors IFC agreement flags. Cycles, invalid operators, open/nonmanifold operands and unbounded unions are rejected with diagnostics. Styled results override operand colors; otherwise source face colors are retained. |
 | `IfcSweptDiskSolid` | Solid/hollow disks on bounded 3D curves, including splines, closed loops and mitered C0 joins. Explicit extents retain the directrix's source parameter domain. Straight and open tangential line/arc paths retain their analytic conversion. Disconnected paths, detected tube overlaps, curvature folds, turns above 120 degrees and segments too short for their miters reject atomically. |
 | `IfcSweptDiskSolidPolygonal` | Polyline or omitted-segment indexed-polycurve directrices, optional circular fillets, hollow walls and closed seams. Omitted fillets retain mitered joins. Radius/segment constraints and tangent-extent overlap are checked; adjacent fillets may meet exactly. |
-| `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Arbitrary open curves and width/slope profiles are supported. Ordered tag runs support splits, merges and multiway branches using linear station interpolation. Planar piecewise-linear sharp joins use shared half-angle miters. Guide curves, crossing/reordered tags and other sharp-join configurations remain unsupported. |
+| `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Ordered tags support piecewise-linear splits and merges or guide-driven transitions. Tagged offset guides can share the directrix or use an independently parameterized path. Planar piecewise-linear sharp joins without guides use shared half-angle miters. |
 | `IfcSurfaceOfLinearExtrusion`, `IfcSurfaceOfRevolution` | Drawable open surface charts and pcurve/advanced-face bases. Centerlines, rounded rectangles, hollow circles and rectangles, and disjoint composite `CURVE` members retain their own domains and placements. Standalone revolution requires a regular, one-sided meridian. |
 | Auxiliary curves | Native Vulkan line lists for the concrete IFC 4.3 curve families listed below, including curves inside `IFCGEOMETRICCURVESET`. Closed paths retain their final segment; independent paths remain separate. Mapped instances, placements, units, curve colors and product identity are retained. Unbounded curves require explicit trims or segments. |
 
@@ -401,7 +401,7 @@ nonfinite output positions reject before geometry buffers are changed.
 Sectioned surfaces allow up to 128 ordered cross sections with no position
 offsets. The profile X axis faces left and Y follows the placed upward axis;
 authored reference directions are retained. Widths must be nonnegative;
-horizontal widths cannot use vertical slopes. Zero-width segments retain their
+horizontal widths follow the direction of the slope angle and cannot use vertical slopes. Zero-width segments retain their
 coincident source points, including tagged/untagged branch tips, while entirely
 collapsed cross sections reject. Repeated tags form contiguous ordered runs;
 all sections must retain the same ordered run names. Different run multiplicities
@@ -412,7 +412,33 @@ station endpoints are preserved exactly during distance conversion. The native
 UV convention above is explicit because IFC 4.3 provides construction rules
 without an analytic UV formula for this class; other parameter conventions are
 not inferred. Missing, introduced, crossing or reordered tag runs are diagnosed.
-Guide-curve transitions are not resolved.
+
+Tagged `IfcOffsetCurveByDistances` items bind by exact tag inside the same
+product definition shape and representation frame, including its sibling
+Axis or GeometricCurveSet representation. Mapped copies of an assembly use
+the guides in their own matching frame. Unguided tags continue to interpolate
+along the directrix. A guide on the directrix evaluates at its native station
+parameter. An independent guide intersects the placed cross-section plane at
+each station, with a unique transverse intersection and a consistent order
+along the guide. Its authored breakpoints map back into the directrix domain
+for both mesh and pcurve sampling. The published IFC authoring examples use
+this representation scope. [IFC profile tags](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcOpenCrossProfileDef.htm)
+· [Guide hosting and examples](https://github.com/RickBrice/IFC-Alignment-Geometry-Implementation-Guide/blob/main/10_Sectioned_Surfaces_and_Solids.md#1052-guide-curve-hosting-and-tag-resolution)
+
+Guide anchors must match authored profile points within 1 mm. Accepted
+rounding differences are blended between consecutive authored sections so
+their positions remain exact. Contradictory anchors, duplicate matches, guides
+in different frames, and detected folds, crossings or gaps produce diagnostics
+with source IDs. A guide can control one point per cross section for each tag.
+Guides on repeated tags, indexed-curve tag lists and sharp directrix joins
+remain outside guide coverage. There is a 128-guide limit per surface and a
+4,097-sample limit per guide. Independent intersection searches use bounded
+chord-refined support and require a monotone projection on the section normal.
+
+Enable `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` and run
+`ctest -R '^ifc_sectioned_guides_gpu_regression$' --output-on-failure` in the
+configured build directory. The fixed-camera fixture checks the guided crown,
+narrowing and widening in Forward and Deferred raster with TAA off and on.
 
 Sharp joins use the half-angle miter prescribed by the
 [sectioned-surface construction rules](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSectionedSurface.htm).
@@ -699,7 +725,7 @@ The remaining capabilities below and IFC source curve fonts/widths are tracked
 in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
 implementation tasks and independent geometry/rendering acceptance criteria.
 
-Guide-curve transitions, missing/reordered tag runs, curved or nonplanar sharp joins,
+Missing/reordered tag runs, guided or nonplanar sharp joins, curved sharp joins,
 non-spherical singular charts and edge loops through spherical poles remain
 outside native coverage. Swept surface limits include profiles with arbitrary
 `AREA` voids, standalone revolutions without a regular one-sided meridian, and

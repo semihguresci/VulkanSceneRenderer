@@ -1,5 +1,6 @@
 #include "IfcCurveReader.h"
 #include "Container/utility/ModelImportCancellation.h"
+#include "IfcSectionedGuide.h"
 #include "IfcSweptProfileCurves.h"
 
 #include <algorithm>
@@ -280,9 +281,12 @@ ParametricCurve transformedProfile(ParametricCurve parent,
 class Reader {
 public:
   Reader(const std::unordered_map<uint32_t, Entity> &entities, double units,
-         std::optional<double> angle, std::stop_token stop = {})
+         std::optional<double> angle, std::stop_token stop = {},
+         std::span<const uint32_t> guides = {},
+         std::span<const uint32_t> differentFrameGuides = {})
       : entities_(entities), tolerance_(1e-5 / units),
-        chordError_(.001 / units), angle_(angle), stop_(stop) {}
+        chordError_(.001 / units), angle_(angle), stop_(stop), guides_(guides),
+        differentFrameGuides_(differentFrameGuides) {}
   ParametricCurve read(uint32_t id, double spiralLength = 0,
                        CurveWitness witness = {});
   ParametricCurve readImpl(uint32_t id, double spiralLength,
@@ -358,6 +362,7 @@ private:
   double tolerance_, chordError_;
   std::optional<double> angle_;
   std::stop_token stop_;
+  std::span<const uint32_t> guides_, differentFrameGuides_;
   std::unordered_set<uint32_t> visiting_;
   size_t nodes_{0};
   size_t sourcePoints_{0};
@@ -1154,6 +1159,20 @@ ParametricCurve Reader::offset(const Entity &e) {
     c.breaks.push_back(t);
   }
   const double tolerance = tolerance_ * .01;
+  if (std::ranges::all_of(offsets, [&](const Offset &offset) {
+        return offset.values == offsets.front().values;
+      })) {
+    const auto values = offsets.front().values;
+    c.point = [basis, values](double t) -> std::optional<glm::dvec3> {
+      if (values == glm::dvec3(0))
+        return basis.point(t);
+      const auto f = curveFrame(basis, t);
+      return f ? std::optional(f->origin + values.x * f->y + values.y * f->z +
+                               values.z * f->x)
+               : std::nullopt;
+    };
+    return c;
+  }
   c.point = [basis, offsets, origin,
              tolerance](double t) -> std::optional<glm::dvec3> {
     auto f = curveFrame(basis, t);
@@ -1300,11 +1319,10 @@ ParametricCurve Reader::profileImpl(uint32_t id) {
       const double radians = slopes[i] * *angle_, cosine = std::cos(radians);
       if (widths[i] < 0 || (horizontal && std::abs(cosine) < 1e-12))
         throw std::runtime_error("Degenerate open cross profile width/slope");
+      const double length =
+          horizontal ? widths[i] / std::abs(cosine) : widths[i];
       points.push_back(points.back() +
-                       glm::dvec3(horizontal ? widths[i] : widths[i] * cosine,
-                                  horizontal ? widths[i] * std::tan(radians)
-                                             : widths[i] * std::sin(radians),
-                                  0));
+                       length * glm::dvec3(cosine, std::sin(radians), 0));
       knots.push_back(double(i + 1));
     }
     knots.push_back(double(widths.size()));
@@ -1864,6 +1882,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
                            std::move(tags)});
     }
     bool branching = false;
+    std::map<std::string, std::pair<double, bool>> taggedColumns;
     if (sections->front().tags.empty()) {
       for (const auto &s : *sections)
         if (!s.tags.empty() || s.curve.breaks != sections->front().curve.breaks)
@@ -1913,6 +1932,13 @@ Surface Reader::surfaceImpl(uint32_t id) {
       if (total > 4097)
         throw std::runtime_error(
             "Sectioned tag branches exceed their point budget");
+      size_t column = 0;
+      for (size_t j = 0; j < divisions.size(); ++j) {
+        taggedColumns.emplace(
+            runs.front()[j].first,
+            std::pair(double(column) / (total - 1), divisions[j].size() == 1));
+        column += divisions[j].size();
+      }
       for (size_t i = 0; i < sections->size(); ++i) {
         auto &s = (*sections)[i];
         std::vector<double> parameters;
@@ -1969,44 +1995,64 @@ Surface Reader::surfaceImpl(uint32_t id) {
             "Sectioned directrix miter exceeds its 10x extension limit");
       miters[t] = normalized(*a + *b) / halfCosine;
     }
+    struct CrossSection {
+      size_t index;
+      double fraction;
+      glm::dvec3 origin, up, normal, lateral;
+    };
+    const auto sectionAt = [directrix, sections, tolerance = tolerance_ * .01](
+                               double u) -> std::optional<CrossSection> {
+      if (!std::isfinite(u) || u < sections->front().parameter ||
+          u > sections->back().parameter)
+        return std::nullopt;
+      const auto upper = std::upper_bound(
+          sections->begin(), sections->end(), u,
+          [](double t, const Section &s) { return t < s.parameter; });
+      const size_t i = upper == sections->end()
+                           ? sections->size() - 2
+                           : size_t(upper - sections->begin() - 1);
+      const auto &a = (*sections)[i], &b = (*sections)[i + 1];
+      const auto distance = curveLength(directrix, a.parameter, u, tolerance);
+      const auto f = curveFrame(directrix, u);
+      if (!distance || !f || b.station <= a.station)
+        return std::nullopt;
+      const double fraction =
+          std::clamp(*distance / (b.station - a.station), 0., 1.);
+      const auto world = [f](glm::dvec3 d) {
+        return f->x * d.x + f->y * d.y + f->z * d.z;
+      };
+      auto up = world(a.up * (1 - fraction) + b.up * fraction),
+           normal = world(a.normal * (1 - fraction) + b.normal * fraction);
+      if (glm::length(up) <= 1e-12 || glm::length(normal) <= 1e-12)
+        return std::nullopt;
+      up = glm::normalize(up);
+      normal -= up * glm::dot(normal, up);
+      if (glm::length(normal) <= 1e-12)
+        return std::nullopt;
+      normal = glm::normalize(normal);
+      return CrossSection{i,  fraction, f->origin,
+                          up, normal,   glm::cross(up, normal)};
+    };
+    const auto templatePoint =
+        [sections](const CrossSection &frame,
+                   double v) -> std::optional<glm::dvec3> {
+      const auto p = (*sections)[frame.index].curve.point(v);
+      const auto q = (*sections)[frame.index + 1].curve.point(v);
+      if (!p || !q)
+        return std::nullopt;
+      const auto local = *p * (1 - frame.fraction) + *q * frame.fraction;
+      const auto point =
+          frame.origin + frame.lateral * local.x + frame.up * local.y;
+      return finite(point) ? std::optional(point) : std::nullopt;
+    };
     Surface result{
-        .point = [directrix, sections, tolerance = tolerance_ * .01](
-                     double u, double v) -> std::optional<glm::dvec3> {
-          if (!std::isfinite(u) || !std::isfinite(v) || v < 0 || v > 1 ||
-              u < sections->front().parameter || u > sections->back().parameter)
-            return std::nullopt;
-          auto upper = std::upper_bound(
-              sections->begin(), sections->end(), u,
-              [](double t, const Section &s) { return t < s.parameter; });
-          const size_t i =
-              upper == sections->end()
-                  ? sections->size() - 2
-                  : std::max(size_t(1), size_t(upper - sections->begin())) - 1;
-          const auto &a = (*sections)[i], &b = (*sections)[i + 1];
-          auto distance = curveLength(directrix, a.parameter, u, tolerance);
-          auto f = curveFrame(directrix, u);
-          auto p = a.curve.point(v), q = b.curve.point(v);
-          if (!distance || !f || !p || !q || b.station <= a.station)
-            return std::nullopt;
-          const double fraction =
-              std::clamp(*distance / (b.station - a.station), 0., 1.);
-          const auto world = [f](glm::dvec3 d) {
-            return f->x * d.x + f->y * d.y + f->z * d.z;
-          };
-          auto up = world(a.up * (1 - fraction) + b.up * fraction),
-               normal = world(a.normal * (1 - fraction) + b.normal * fraction);
-          if (glm::length(up) <= 1e-12 || glm::length(normal) <= 1e-12)
-            return std::nullopt;
-          up = glm::normalize(up);
-          normal -= up * glm::dot(normal, up);
-          if (glm::length(normal) <= 1e-12)
-            return std::nullopt;
-          normal = glm::normalize(normal);
-          const auto x = glm::cross(up, normal),
-                     local = *p * (1 - fraction) + *q * fraction;
-          const auto point = f->origin + x * local.x + up * local.y;
-          return finite(point) ? std::optional(point) : std::nullopt;
-        },
+        .point =
+            [sectionAt, templatePoint](double u, double v) {
+              if (!std::isfinite(v) || v < 0 || v > 1)
+                return std::optional<glm::dvec3>{};
+              const auto section = sectionAt(u);
+              return section ? templatePoint(*section, v) : std::nullopt;
+            },
         .angularScale = {directrix.period ? 2 * pi / directrix.period : 0, 0},
         .uDomain = {{first, last}},
         .vDomain = {{0, 1}}};
@@ -2138,6 +2184,217 @@ Surface Reader::surfaceImpl(uint32_t id) {
       result.meshUp = end->x > start->x ? up : -up;
     }
     const auto vBreaks = sections->front().curve.breaks;
+    std::map<std::string, uint32_t> matchingGuides;
+    const auto guideTag = [&](uint32_t ref) -> std::string {
+      const auto &guide = get(ref);
+      const auto *tag = arg(guide, 2);
+      return guide.type == "IFCOFFSETCURVEBYDISTANCES" && tag &&
+                     tag->kind == StepValue::Kind::String
+                 ? tag->text
+                 : std::string{};
+    };
+    for (uint32_t ref : guides_) {
+      const auto tag = guideTag(ref);
+      if (!taggedColumns.contains(tag))
+        continue;
+      const auto [match, inserted] = matchingGuides.try_emplace(tag, ref);
+      if (!inserted && match->second != ref)
+        throw std::runtime_error(
+            "Duplicate guides for tag '" + tag + "' in curves #" +
+            std::to_string(match->second) + " and #" + std::to_string(ref));
+    }
+    for (uint32_t ref : differentFrameGuides_) {
+      const auto tag = guideTag(ref);
+      if (taggedColumns.contains(tag) && !matchingGuides.contains(tag))
+        throw std::runtime_error("Guide #" + std::to_string(ref) +
+                                 " for tag '" + tag +
+                                 "' uses a different representation frame");
+    }
+    if (!matchingGuides.empty()) {
+      if (!miters.empty())
+        throw std::runtime_error(
+            "Guided sectioned surfaces require a smooth directrix at guide #" +
+            std::to_string(matchingGuides.begin()->second));
+      if (matchingGuides.size() > 128)
+        throw std::runtime_error(
+            "Sectioned surface exceeds its guide count budget");
+      const auto planeAt =
+          [sectionAt](double u) -> std::optional<IfcSectionPlane> {
+        const auto frame = sectionAt(u);
+        return frame ? std::optional(
+                           IfcSectionPlane{frame->origin, frame->normal})
+                     : std::nullopt;
+      };
+      // IFC exporters independently round guides and authored profile points.
+      const double planeTolerance = tolerance_, anchorTolerance = chordError_;
+      const auto stationBreaks = uBreaks;
+      std::vector<double> columns{0};
+      columns.insert(columns.end(), vBreaks.begin(), vBreaks.end());
+      columns.push_back(1);
+      std::ranges::sort(columns);
+      columns.erase(std::unique(columns.begin(), columns.end()), columns.end());
+      struct GuidedColumn {
+        IfcSectionedGuide guide;
+        std::vector<glm::dvec2> anchorCorrections;
+      };
+      std::vector<std::optional<GuidedColumn>> guides(columns.size());
+      for (const auto &[tag, ref] : matchingGuides) {
+        container::util::checkModelImportCancellation(stop_);
+        const auto [v, uniqueColumn] = taggedColumns.at(tag);
+        if (!uniqueColumn)
+          throw std::runtime_error("Guide #" + std::to_string(ref) +
+                                   " has a repeated profile tag '" + tag + "'");
+        const auto column = std::ranges::lower_bound(columns, v);
+        if (column == columns.end() || *column != v)
+          throw std::runtime_error("Guide #" + std::to_string(ref) +
+                                   " does not identify a section vertex");
+        const bool sharedBasis = reference(arg(get(ref), 0)) == directrixId;
+        auto guide =
+            resolveIfcSectionedGuide(ref, read(ref), sharedBasis, stationBreaks,
+                                     planeAt, planeTolerance, stop_);
+        std::vector<glm::dvec2> corrections;
+        corrections.reserve(sections->size());
+        for (const auto &section : *sections) {
+          const auto frame = sectionAt(section.parameter);
+          const auto point = guide.point(section.parameter);
+          const auto expected = frame ? templatePoint(*frame, v) : std::nullopt;
+          if (!point || !expected ||
+              glm::length(*point - *expected) > anchorTolerance)
+            throw std::runtime_error("Guide #" + std::to_string(ref) +
+                                     " for tag '" + tag +
+                                     " disagrees with its authored "
+                                     "cross-section point at parameter " +
+                                     std::to_string(section.parameter));
+          const auto residual = *expected - *point;
+          corrections.push_back({glm::dot(residual, frame->lateral),
+                                 glm::dot(residual, frame->up)});
+        }
+        uBreaks.insert(uBreaks.end(), guide.breaks.begin(), guide.breaks.end());
+        result.creaseU.insert(result.creaseU.end(), guide.breaks.begin(),
+                              guide.breaks.end());
+        guides[column - columns.begin()] =
+            GuidedColumn{std::move(guide), std::move(corrections)};
+      }
+      std::ranges::sort(uBreaks);
+      uBreaks.erase(std::unique(uBreaks.begin(), uBreaks.end()), uBreaks.end());
+      std::ranges::sort(result.creaseU);
+      result.creaseU.erase(
+          std::unique(result.creaseU.begin(), result.creaseU.end()),
+          result.creaseU.end());
+      if (uBreaks.size() > 4097 || uBreaks.size() * columns.size() > 262144)
+        throw std::runtime_error(
+            "Sectioned guide grid exceeds its validation budget");
+      const auto adjacent = [sections, columns, guides, templatePoint,
+                             planeTolerance](const CrossSection &frame,
+                                             double u, size_t left) {
+        std::array<glm::dvec3, 2> points;
+        std::array<glm::dvec3, 2> authored;
+        for (unsigned side = 0; side < 2; ++side) {
+          const size_t i = left + side;
+          const auto original = templatePoint(frame, columns[i]);
+          if (!original)
+            throw std::runtime_error("Undefined tagged cross-section point");
+          authored[side] = *original;
+          if (!guides[i]) {
+            points[side] = *original;
+            continue;
+          }
+          const auto &binding = *guides[i];
+          const auto guided = binding.guide.point(u);
+          if (!guided)
+            throw std::runtime_error("Undefined section point on guide #" +
+                                     std::to_string(binding.guide.sourceId));
+          const auto &a = (*sections)[frame.index],
+                     &b = (*sections)[frame.index + 1];
+          if (u == a.parameter || u == b.parameter) {
+            points[side] = *original;
+            continue;
+          }
+          const auto correction =
+              binding.anchorCorrections[frame.index] * (1 - frame.fraction) +
+              binding.anchorCorrections[frame.index + 1] * frame.fraction;
+          const auto local = *guided - frame.origin;
+          points[side] =
+              frame.origin +
+              frame.lateral * (glm::dot(local, frame.lateral) + correction.x) +
+              frame.up * (glm::dot(local, frame.up) + correction.y);
+        }
+        if (guides[left] || guides[left + 1]) {
+          const double before =
+              glm::dot(authored[1] - authored[0], frame.lateral);
+          const double after = glm::dot(points[1] - points[0], frame.lateral);
+          const bool crossing =
+              std::abs(before) > planeTolerance
+                  ? after * std::copysign(1., before) <= planeTolerance
+                  : glm::length(points[1] - points[0]) <= planeTolerance &&
+                        glm::length(authored[1] - authored[0]) > planeTolerance;
+          if (crossing) {
+            std::string ids;
+            for (size_t i : {left, left + 1})
+              if (guides[i])
+                ids += " #" + std::to_string(guides[i]->guide.sourceId);
+            throw std::runtime_error(
+                "Sectioned guide columns cross or collapse at guide" + ids);
+          }
+        }
+        return points;
+      };
+      for (size_t i = 1; i < uBreaks.size(); ++i) {
+        container::util::checkModelImportCancellation(stop_);
+        for (double t : {0., .25, .5, .75, 1.}) {
+          const double u = std::lerp(uBreaks[i - 1], uBreaks[i], t);
+          const auto frame = sectionAt(u);
+          if (!frame)
+            throw std::runtime_error(
+                "Undefined section at guide validation station");
+          for (size_t j = 0; j + 1 < columns.size(); ++j)
+            if (guides[j] || guides[j + 1])
+              adjacent(*frame, u, j);
+        }
+      }
+      // The drawable mesh samples many V values on the same station. Keep
+      // its section rows local to this synchronous meshing pass.
+      auto rows =
+          meshing_
+              ? std::make_shared<
+                    std::map<double, std::vector<std::array<glm::dvec3, 2>>>>()
+              : nullptr;
+      result.point = [sectionAt, columns, adjacent,
+                      rows](double u, double v) -> std::optional<glm::dvec3> {
+        if (!std::isfinite(u) || !std::isfinite(v) || v < 0 || v > 1)
+          return std::nullopt;
+        const auto upper = std::ranges::upper_bound(columns, v);
+        const size_t left = upper == columns.end()
+                                ? columns.size() - 2
+                                : upper - columns.begin() - 1;
+        std::array<glm::dvec3, 2> p;
+        if (rows) {
+          auto [row, inserted] = rows->try_emplace(u);
+          if (inserted) {
+            const auto section = sectionAt(u);
+            if (!section)
+              return std::nullopt;
+            if (rows->size() > 262144 / columns.size())
+              throw std::runtime_error(
+                  "Sectioned guide mesh exceeds its row budget");
+            for (size_t i = 0; i + 1 < columns.size(); ++i)
+              row->second.push_back(adjacent(*section, u, i));
+          }
+          if (row->second.empty())
+            return std::nullopt;
+          p = row->second[left];
+        } else {
+          const auto section = sectionAt(u);
+          if (!section)
+            return std::nullopt;
+          p = adjacent(*section, u, left);
+        }
+        const double fraction =
+            (v - columns[left]) / (columns[left + 1] - columns[left]);
+        return p[0] * (1 - fraction) + p[1] * fraction;
+      };
+      result.ruledSectionPanels = true;
+    }
     if (meshing_) {
       auto samples =
           sampleCurve(directrix, first, last, chordError_ * .25, 4097);
@@ -2149,6 +2406,33 @@ Surface Reader::surfaceImpl(uint32_t id) {
                     [first, last](double t) { return t < first || t > last; });
       for (const auto &p : samples)
         result.meshU.push_back(p.parameter);
+      if (result.ruledSectionPanels) {
+        // Distance conversion and curve sampling can generate different
+        // parameters for one station. Give priority to authored sections,
+        // then guide knots, then the generated mesh seeds.
+        std::vector<double> guideMeshStations;
+        for (const auto &section : *sections)
+          guideMeshStations.push_back(section.parameter);
+        const auto sameStation = [&](double a, double b) {
+          const auto p = directrix.point(a), q = directrix.point(b);
+          return p && q && glm::length(*p - *q) <= tolerance_ * .05;
+        };
+        const auto include = [&](double station) {
+          const auto after =
+              std::ranges::lower_bound(guideMeshStations, station);
+          if ((after != guideMeshStations.end() &&
+               sameStation(station, *after)) ||
+              (after != guideMeshStations.begin() &&
+               sameStation(station, *(after - 1))))
+            return;
+          guideMeshStations.insert(after, station);
+        };
+        for (double station : result.creaseU)
+          include(station);
+        for (double station : result.meshU)
+          include(station);
+        result.meshU = std::move(guideMeshStations);
+      }
       result.meshV = {0, 1};
       for (const auto &section : *sections) {
         auto points = sampleCurve(section.curve, 0, 1, chordError_ * .25, 4097);
@@ -2742,6 +3026,8 @@ std::vector<std::array<glm::dvec3, 3>> Reader::sectionedMesh(uint32_t id) {
       return it->second;
     if (cache.size() >= 262144)
       throw std::runtime_error("Sectioned surface evaluation budget exceeded");
+    if (cache.size() % 1024 == 0)
+      container::util::checkModelImportCancellation(stop_);
     auto p = s.point(a, b);
     if (!p || !finite(*p))
       throw std::runtime_error("Undefined sectioned surface mesh point");
@@ -2785,16 +3071,51 @@ std::vector<std::array<glm::dvec3, 3>> Reader::sectionedMesh(uint32_t id) {
         const auto a = eval(u[i - 1], v[j - 1]), b = eval(u[i], v[j - 1]),
                    c = eval(u[i], v[j]), d = eval(u[i - 1], v[j]);
         bool splitU = false, splitV = false;
-        for (double x : {0., .25, .5, .75, 1.})
-          for (double y : {0., .25, .5, .75, 1.}) {
-            const auto actual = eval(std::lerp(u[i - 1], u[i], x),
-                                     std::lerp(v[j - 1], v[j], y));
-            if (std::min(distance(actual, a, b, c), distance(actual, a, c, d)) >
-                chordError_ * .25) {
-              splitU = splitU || (x > 0 && x < 1);
-              splitV = splitV || (y > 0 && y < 1);
-            }
+        const double chord = chordError_ * .25;
+        if (s.ruledSectionPanels) {
+          // Across a tagged panel V is exactly linear. Probe longitudinal
+          // chord error at both edges before testing its interior twist.
+          double longitudinal = 0;
+          for (double x : {.25, .5, .75})
+            for (const auto &[at, first, last] :
+                 {std::tuple(v[j - 1], a, b), std::tuple(v[j], d, c)})
+              longitudinal =
+                  std::max(longitudinal,
+                           glm::length(eval(std::lerp(u[i - 1], u[i], x), at) -
+                                       (first * (1 - x) + last * x)));
+          // The difference between a bilinear panel and the two triangles
+          // is bounded by one quarter of its mixed term. Probe physical
+          // chord distance when the bound is inconclusive.
+          if (longitudinal > chord)
+            splitU = true;
+          else if (longitudinal + glm::length((a - b) + (c - d)) * .25 >
+                   chord) {
+            bool twist = false;
+            for (double x : {.25, .5, .75})
+              for (double y : {.25, .5, .75}) {
+                const auto p = eval(std::lerp(u[i - 1], u[i], x),
+                                    std::lerp(v[j - 1], v[j], y));
+                twist |= std::min(distance(p, a, b, c), distance(p, a, c, d)) >
+                         chord;
+              }
+            // Either axis halves the mixed term. Split only one axis on
+            // each iteration so a warped ruled strip does not grow a full
+            // grid in both directions at the same time.
+            splitU = twist && (depth % 2 == 0);
+            splitV = twist && !splitU;
           }
+        } else {
+          for (double x : {0., .25, .5, .75, 1.})
+            for (double y : {0., .25, .5, .75, 1.}) {
+              const auto actual = eval(std::lerp(u[i - 1], u[i], x),
+                                       std::lerp(v[j - 1], v[j], y));
+              if (std::min(distance(actual, a, b, c),
+                           distance(actual, a, c, d)) > chord) {
+                splitU = splitU || (x > 0 && x < 1);
+                splitV = splitV || (y > 0 && y < 1);
+              }
+            }
+        }
         if (splitU)
           addU.push_back(u[i - 1] + (u[i] - u[i - 1]) * .5);
         if (splitV)
@@ -3421,11 +3742,14 @@ readIfcProfileTransform(const std::unordered_map<uint32_t, Entity> &entities,
 }
 std::optional<ParametricCurve>
 readIfcCurve(const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,
-             double units, std::optional<double> angle, std::string &error) {
+             double units, std::optional<double> angle, std::string &error,
+             std::span<const uint32_t> guides, std::stop_token stop,
+             std::span<const uint32_t> differentFrameGuides) {
   try {
     if (!std::isfinite(units) || units <= 0)
       throw std::runtime_error("Invalid curve length units");
-    return Reader(entities, units, angle).read(id);
+    return Reader(entities, units, angle, stop, guides, differentFrameGuides)
+        .read(id);
   } catch (const std::runtime_error &e) {
     error = e.what();
     return std::nullopt;
@@ -3476,11 +3800,14 @@ readIfcSurface(const std::unordered_map<uint32_t, Entity> &entities,
 }
 std::vector<std::array<glm::dvec3, 3>> readIfcSectionedSurfaceMesh(
     const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,
-    double units, std::optional<double> angle, std::string &error) {
+    double units, std::optional<double> angle, std::string &error,
+    std::span<const uint32_t> guides, std::stop_token stop,
+    std::span<const uint32_t> differentFrameGuides) {
   try {
     if (!std::isfinite(units) || units <= 0)
       throw std::runtime_error("Invalid sectioned surface length units");
-    return Reader(entities, units, angle).sectionedMesh(id);
+    return Reader(entities, units, angle, stop, guides, differentFrameGuides)
+        .sectionedMesh(id);
   } catch (const std::runtime_error &e) {
     error = e.what();
     return {};

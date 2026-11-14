@@ -25,6 +25,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -57,6 +58,8 @@ struct GeometryInstance {
   uint32_t geometryId{0};
   glm::mat4 transform{1.0f};
   std::optional<glm::vec4> curveColor{};
+  // Sectioned surfaces and their pcurves can vary with the product's guides.
+  const MeshGroup *contextualGroup{};
 };
 
 struct StoreyMetadata {
@@ -4531,9 +4534,11 @@ private:
     return points;
   }
 
-  std::vector<glm::vec3> readRenderCurve(uint32_t ref, std::string &error,
-                                         size_t limit = 65536,
-                                         double samplingScale = 1) const {
+  std::vector<glm::vec3>
+  readRenderCurve(uint32_t ref, std::string &error, size_t limit = 65536,
+                  double samplingScale = 1,
+                  std::span<const uint32_t> guides = {},
+                  std::span<const uint32_t> differentFrame = {}) const {
     const auto *source = entity(ref);
     const bool scaledArcs =
         source && source->type == "IFCINDEXEDPOLYCURVE" && samplingScale != 1 &&
@@ -4550,7 +4555,9 @@ private:
       return points;
     }
     const auto curve = detail::readIfcCurve(entities_, ref, unitScale_,
-                                            projectPlaneAngleScale(), error);
+                                            projectPlaneAngleScale(), error,
+                                            guides, stop_, differentFrame);
+    checkCancellation();
     if (!curve)
       return {};
     if (!curve->domain) {
@@ -5574,12 +5581,225 @@ private:
     ReferenceWalkBudget budget{65'536};
     std::unordered_set<uint32_t> visiting;
     bool exceeded{};
+    uint32_t scope{};
+    bool gatheredGuides{};
+    bool invalidGuideScope{};
+    struct Guide {
+      uint32_t id, context;
+      glm::mat4 transform;
+    };
+    std::vector<Guide> guides;
   };
+
+  uint32_t representationContext(const Entity &rep) const {
+    auto ref = firstRef(rep, 0);
+    for (unsigned depth = 0; ref && depth < 64; ++depth) {
+      const auto *context = entity(*ref);
+      if (!context || context->type != "IFCGEOMETRICREPRESENTATIONSUBCONTEXT")
+        break;
+      ref = firstRef(*context, 6);
+    }
+    return ref.value_or(0);
+  }
+
+  glm::mat4 representationMapFrame(const Entity &map) const {
+    const auto origin = firstRef(map, 0);
+    return origin ? glm::inverse(axis2Placement3D(*origin)) : glm::mat4(1);
+  }
+
+  glm::mat4 mappedItemFrame(const Entity &item) const {
+    const auto target = firstRef(item, 1);
+    return target ? cartesianTransformationOperator3D(*target) : glm::mat4(1);
+  }
+
+  // Follow only representation ownership links. In particular an offset's
+  // BasisCurve and a pcurve's BasisSurface do not introduce sibling guides.
+  void gatherGuides(uint32_t ref, const glm::mat4 &transform, uint32_t context,
+                    ReferenceWalkBudget &budget,
+                    std::unordered_set<uint32_t> &visiting,
+                    RepresentationWalk &walk) const {
+    if (walk.invalidGuideScope || !entity(ref))
+      return;
+    if (!budget.visit(visiting.size()) || !visiting.insert(ref).second) {
+      walk.invalidGuideScope = true;
+      return;
+    }
+    if (budget.remaining % 1024 == 0)
+      checkCancellation();
+    const auto &source = *entity(ref);
+    const auto child = [&](uint32_t id, const glm::mat4 &frame, uint32_t ctx) {
+      gatherGuides(id, frame, ctx, budget, visiting, walk);
+    };
+    const auto children = [&](size_t index, uint32_t ctx) {
+      for (const auto &item : asList(argAt(source, index))) {
+        if (walk.invalidGuideScope)
+          break;
+        if (item.kind == StepValue::Kind::Ref)
+          child(item.ref, transform, ctx);
+      }
+    };
+    if (source.type == "IFCPRODUCTDEFINITIONSHAPE") {
+      children(2, context);
+    } else if (source.type == "IFCSHAPEREPRESENTATION") {
+      children(3, context ? context : representationContext(source));
+    } else if (source.type == "IFCGEOMETRICSET" ||
+               source.type == "IFCGEOMETRICCURVESET") {
+      children(0, context);
+    } else if (source.type == "IFCMAPPEDITEM") {
+      if (const auto map = firstRef(source, 0))
+        child(*map, transform * mappedItemFrame(source), context);
+    } else if (source.type == "IFCREPRESENTATIONMAP") {
+      if (const auto rep = firstRef(source, 1))
+        child(*rep, transform * representationMapFrame(source), context);
+    } else if (source.type == "IFCSTYLEDITEM") {
+      if (const auto item = firstRef(source, 0))
+        child(*item, transform, context);
+    } else if (source.type == "IFCOFFSETCURVEBYDISTANCES") {
+      const auto *tag = argAt(source, 2);
+      if (tag && tag->kind == StepValue::Kind::String && !tag->text.empty()) {
+        if (walk.guides.size() >= 1024)
+          walk.invalidGuideScope = true;
+        else
+          walk.guides.push_back({ref, context, transform});
+      }
+    }
+    visiting.erase(ref);
+  }
+
+  struct SectionedGuides {
+    std::vector<uint32_t> sameFrame, differentFrame;
+  };
+
+  SectionedGuides sectionedGuides(RepresentationWalk &walk,
+                                  const glm::mat4 &transform,
+                                  uint32_t context) const {
+    if (!walk.gatheredGuides) {
+      walk.gatheredGuides = true;
+      ReferenceWalkBudget budget{65'536};
+      std::unordered_set<uint32_t> visiting;
+      gatherGuides(walk.scope, glm::mat4(1), 0, budget, visiting, walk);
+    }
+    SectionedGuides result;
+    for (const auto &guide : walk.guides) {
+      if (guide.context == context && guide.transform == transform)
+        result.sameFrame.push_back(guide.id);
+      else
+        result.differentFrame.push_back(guide.id);
+    }
+    for (auto *ids : {&result.sameFrame, &result.differentFrame}) {
+      std::ranges::sort(*ids);
+      const auto duplicates = std::ranges::unique(*ids);
+      ids->erase(duplicates.begin(), duplicates.end());
+    }
+    // A mapped assembly can be instanced in several frames. A guide from the
+    // same source occurrence belongs to this instance if a local copy exists.
+    std::erase_if(result.differentFrame, [&](uint32_t id) {
+      return std::ranges::binary_search(result.sameFrame, id);
+    });
+    return result;
+  }
+
+  static bool curveMayContainPcurve(std::string_view type) {
+    return type == "IFCPCURVE" || type == "IFCSURFACECURVE" ||
+           type == "IFCINTERSECTIONCURVE" || type == "IFCSEAMCURVE" ||
+           type == "IFCTRIMMEDCURVE" || type == "IFCCURVESEGMENT" ||
+           type == "IFCCOMPOSITECURVE" || type == "IFCOFFSETCURVE2D" ||
+           type == "IFCOFFSETCURVE3D" || type == "IFCOFFSETCURVEBYDISTANCES" ||
+           type == "IFCCOMPOSITECURVEONSURFACE" || type == "IFCBOUNDARYCURVE" ||
+           type == "IFCOUTERBOUNDARYCURVE" || type == "IFCGRADIENTCURVE" ||
+           type == "IFCSEGMENTEDREFERENCECURVE";
+  }
+
+  bool curveUsesSectionedSurface(uint32_t ref) {
+    const auto [cached, fresh] =
+        sectionedCurveDependencies_.try_emplace(ref, false);
+    if (!fresh)
+      return cached->second;
+    std::unordered_set<uint32_t> seen;
+    std::vector<uint32_t> pending{ref};
+    for (size_t visits = 0; !pending.empty() && visits < 4096; ++visits) {
+      const auto id = pending.back();
+      pending.pop_back();
+      const auto *source = entity(id);
+      if (!source || !seen.insert(id).second)
+        continue;
+      const auto &type = source->type;
+      if (type == "IFCSECTIONEDSURFACE") {
+        cached->second = true;
+        break;
+      }
+      if (type == "IFCPCURVE" || type == "IFCRECTANGULARTRIMMEDSURFACE" ||
+          type == "IFCCURVEBOUNDEDSURFACE") {
+        if (const auto basis = firstRef(*source, 0))
+          pending.push_back(*basis);
+      } else if (curveMayContainPcurve(type) ||
+                 type == "IFCCOMPOSITECURVESEGMENT" ||
+                 type == "IFCREPARAMETRISEDCOMPOSITECURVESEGMENT") {
+        for (const auto &value : source->args.list) {
+          if (value.kind == StepValue::Kind::Ref)
+            pending.push_back(value.ref);
+          else if (value.kind == StepValue::Kind::List)
+            for (const auto &member : value.list) {
+              if (pending.size() >= 4096)
+                break;
+              if (member.kind == StepValue::Kind::Ref)
+                pending.push_back(member.ref);
+            }
+        }
+      }
+    }
+    return cached->second;
+  }
+
+  const MeshGroup *contextualGeometry(const Entity &source,
+                                      SectionedGuides guides,
+                                      std::string &error) {
+    const auto [entry, fresh] = contextualGeometry_.try_emplace(
+        std::tuple(source.id, std::move(guides.sameFrame),
+                   std::move(guides.differentFrame)));
+    auto &[group, reason] = entry->second;
+    if (!fresh) {
+      error = reason;
+      return group ? &*group : nullptr;
+    }
+    const auto &[id, sameFrame, differentFrame] = entry->first;
+    const auto color = styleColorByItem_.contains(id) ? styleColorByItem_.at(id)
+                                                      : defaultColor();
+    if (source.type == "IFCSECTIONEDSURFACE") {
+      const auto points = detail::readIfcSectionedSurfaceMesh(
+          entities_, id, unitScale_, projectPlaneAngleScale(), reason,
+          sameFrame, stop_, differentFrame);
+      checkCancellation();
+      if (!points.empty()) {
+        std::vector<TriangleVertices> triangles;
+        triangles.reserve(points.size());
+        for (const auto &t : points)
+          triangles.push_back(
+              {{glm::vec3(t[0]), glm::vec3(t[1]), glm::vec3(t[2])}});
+        group = appendTriangleMesh(triangles, color);
+        if (!group)
+          reason =
+              "Sectioned surface collapses at renderer coordinate precision";
+      }
+    } else {
+      const auto points =
+          readRenderCurve(id, reason, 65536, 1, sameFrame, differentFrame);
+      const std::array<size_t, 1> counts{points.size()};
+      if (appendPolylineGeometry(model_, points, counts, nextMeshId_,
+                                 .005f / unitScale_, stop_))
+        group = MeshGroup{nextMeshId_++, color, dotbim::GeometryKind::Curves};
+      else if (reason.empty())
+        reason = "Invalid or excessive surface curve tessellation";
+    }
+    error = reason;
+    return group ? &*group : nullptr;
+  }
 
   void collectGeometryInstances(uint32_t ref, const glm::mat4 &transform,
                                 std::vector<GeometryInstance> &instances,
                                 const Entity *product = nullptr) {
     RepresentationWalk walk;
+    walk.scope = ref;
     const auto originalSize = instances.size();
     collectGeometryInstances(ref, transform, instances, walk, product);
     if (walk.exceeded) {
@@ -5594,7 +5814,8 @@ private:
   collectGeometryInstances(uint32_t ref, const glm::mat4 &transform,
                            std::vector<GeometryInstance> &instances,
                            RepresentationWalk &walk, const Entity *product,
-                           std::optional<glm::vec4> curveColor = std::nullopt) {
+                           std::optional<glm::vec4> curveColor = std::nullopt,
+                           uint32_t context = 0) {
     if (!walk.budget.visit(walk.visiting.size())) {
       walk.exceeded = true;
       return;
@@ -5617,6 +5838,36 @@ private:
     if (const auto style = styleColorByItem_.find(ref);
         style != styleColorByItem_.end())
       curveColor = style->second;
+
+    const auto *tag = argAt(*source, 2);
+    const bool isGuide = source->type == "IFCOFFSETCURVEBYDISTANCES" && tag &&
+                         tag->kind == StepValue::Kind::String &&
+                         !tag->text.empty();
+    const bool sectioned = source->type == "IFCSECTIONEDSURFACE";
+    if (sectioned || (curveMayContainPcurve(source->type) && !isGuide &&
+                      curveUsesSectionedSurface(ref))) {
+      auto guides = sectionedGuides(walk, transform, context);
+      if (walk.invalidGuideScope) {
+        reportGeometryIssue(ref, product,
+                            "Invalid or excessive sectioned-surface guide "
+                            "representation scope");
+        return;
+      }
+      if (sectioned || !guides.sameFrame.empty() ||
+          !guides.differentFrame.empty()) {
+        std::string error;
+        const auto *group =
+            contextualGeometry(*source, std::move(guides), error);
+        if (group)
+          instances.push_back({ref, transform, curveColor, group});
+        else
+          reportGeometryIssue(
+              ref, product,
+              error.empty() ? "Sectioned surface produced no drawable geometry"
+                            : std::move(error));
+        return;
+      }
+    }
 
     if (detail::isCurveEntity(source->type)) {
       if (!groupsByItem_.contains(ref) && !conversionErrors_.contains(ref)) {
@@ -5657,7 +5908,7 @@ private:
           return;
         if (item.kind == StepValue::Kind::Ref)
           collectGeometryInstances(item.ref, transform, instances, walk,
-                                   product, curveColor);
+                                   product, curveColor, context);
         else if (!walk.budget.visit(walk.visiting.size()))
           walk.exceeded = true;
         else
@@ -5744,29 +5995,6 @@ private:
         reportGeometryIssue(ref, product, conversionErrors_.at(ref));
       return;
     }
-    if (source->type == "IFCSECTIONEDSURFACE" && !groupsByItem_.contains(ref) &&
-        !conversionErrors_.contains(ref)) {
-      std::string error;
-      auto points = detail::readIfcSectionedSurfaceMesh(
-          entities_, ref, unitScale_, projectPlaneAngleScale(), error);
-      if (!points.empty()) {
-        std::vector<TriangleVertices> triangles;
-        triangles.reserve(points.size());
-        for (const auto &t : points)
-          triangles.push_back(
-              {{glm::vec3(t[0]), glm::vec3(t[1]), glm::vec3(t[2])}});
-        if (auto group =
-                appendTriangleMesh(triangles, styleColorByItem_.contains(ref)
-                                                  ? styleColorByItem_.at(ref)
-                                                  : defaultColor()))
-          groupsByItem_[ref] = {*group};
-        else
-          error =
-              "Sectioned surface collapses at renderer coordinate precision";
-      }
-      if (!groupsByItem_.contains(ref))
-        conversionErrors_[ref] = error;
-    }
     if (source->type == "IFCTRIANGULATEDFACESET" ||
         source->type == "IFCPOLYGONALFACESET" ||
         source->type == "IFCFACETEDBREP" ||
@@ -5775,8 +6003,7 @@ private:
         source->type == "IFCADVANCEDBREPWITHVOIDS" ||
         source->type == "IFCEXTRUDEDAREASOLID" ||
         source->type == "IFCSWEPTDISKSOLID" ||
-        source->type == "IFCSWEPTDISKSOLIDPOLYGONAL" ||
-        source->type == "IFCSECTIONEDSURFACE") {
+        source->type == "IFCSWEPTDISKSOLIDPOLYGONAL") {
       if (groupsByItem_.contains(ref))
         instances.push_back({ref, transform, curveColor});
       else {
@@ -5801,8 +6028,8 @@ private:
       for (const auto &rep : asList(argAt(*source, 2))) {
         if (walk.exceeded) return;
         if (rep.kind == StepValue::Kind::Ref)
-          collectGeometryInstances(rep.ref, transform, instances, walk,
-                                   product, curveColor);
+          collectGeometryInstances(rep.ref, transform, instances, walk, product,
+                                   curveColor, context);
         else if (!walk.budget.visit(walk.visiting.size()))
           walk.exceeded = true;
         else
@@ -5812,11 +6039,13 @@ private:
     }
 
     if (source->type == "IFCSHAPEREPRESENTATION") {
+      if (!context)
+        context = representationContext(*source);
       for (const auto &item : asList(argAt(*source, 3))) {
         if (walk.exceeded) return;
         if (item.kind == StepValue::Kind::Ref)
           collectGeometryInstances(item.ref, transform, instances, walk,
-                                   product, curveColor);
+                                   product, curveColor, context);
         else if (!walk.budget.visit(walk.visiting.size()))
           walk.exceeded = true;
         else
@@ -5828,16 +6057,12 @@ private:
 
     if (source->type == "IFCMAPPEDITEM") {
       const auto sourceRef = firstRef(*source, 0);
-      const auto targetRef = firstRef(*source, 1);
       if (!sourceRef.has_value()) {
         reportGeometryIssue(ref, product, "Missing mapped representation");
         return;
       }
-      const glm::mat4 target =
-          targetRef.has_value() ? cartesianTransformationOperator3D(*targetRef)
-                                : glm::mat4(1.0f);
-      collectGeometryInstances(*sourceRef, transform * target, instances,
-                               walk, product, curveColor);
+      collectGeometryInstances(*sourceRef, transform * mappedItemFrame(*source),
+                               instances, walk, product, curveColor, context);
       return;
     }
 
@@ -5847,19 +6072,16 @@ private:
         reportGeometryIssue(ref, product, "Missing mapped representation");
         return;
       }
-      glm::mat4 origin(1.0f);
-      if (const auto originRef = firstRef(*source, 0); originRef.has_value()) {
-        origin = axis2Placement3D(*originRef);
-      }
-      collectGeometryInstances(*mappedRepRef, transform * glm::inverse(origin),
-                               instances, walk, product, curveColor);
+      collectGeometryInstances(*mappedRepRef,
+                               transform * representationMapFrame(*source),
+                               instances, walk, product, curveColor, context);
       return;
     }
 
     if (source->type == "IFCSTYLEDITEM") {
       if (const auto itemRef = firstRef(*source, 0); itemRef.has_value()) {
-        collectGeometryInstances(*itemRef, transform, instances, walk,
-                                 product, curveColor);
+        collectGeometryInstances(*itemRef, transform, instances, walk, product,
+                                 curveColor, context);
       }
       return;
     }
@@ -5925,8 +6147,9 @@ private:
       collectGeometryInstances(*openingRepresentationRef, glm::mat4(1.0f),
                                openingInstances);
       std::erase_if(openingInstances, [&](const auto &instance) {
-        return groupsByItem_.at(instance.geometryId).front().geometryKind !=
-               dotbim::GeometryKind::Mesh;
+        return instance.contextualGroup ||
+               groupsByItem_.at(instance.geometryId).front().geometryKind !=
+                   dotbim::GeometryKind::Mesh;
       });
       if (openingInstances.size() != 1u) {
         return false;
@@ -6018,8 +6241,9 @@ private:
       const size_t warningStart = model_.importReport.diagnostics.size();
       collectGeometryInstances(*rep, glm::mat4(1), openingInstances, &product);
       std::erase_if(openingInstances, [&](const auto &instance) {
-        return groupsByItem_.at(instance.geometryId).front().geometryKind !=
-               dotbim::GeometryKind::Mesh;
+        return instance.contextualGroup ||
+               groupsByItem_.at(instance.geometryId).front().geometryKind !=
+                   dotbim::GeometryKind::Mesh;
       });
       if (openingInstances.empty() ||
           model_.importReport.diagnostics.size() != warningStart)
@@ -6121,8 +6345,9 @@ private:
       const size_t elementStart = model_.elements.size();
       auto solidInstances = instances;
       std::erase_if(solidInstances, [&](const auto &instance) {
-        return groupsByItem_.at(instance.geometryId).front().geometryKind !=
-               dotbim::GeometryKind::Mesh;
+        return instance.contextualGroup ||
+               groupsByItem_.at(instance.geometryId).front().geometryKind !=
+                   dotbim::GeometryKind::Mesh;
       });
       const bool voided =
           appendVoidedProductElement(*product, placement, solidInstances,
@@ -6134,12 +6359,13 @@ private:
             product->id, product,
             "Opening subtraction is unsupported for this host or opening");
       for (const auto &instance : instances) {
-        const auto groupIt = groupsByItem_.find(instance.geometryId);
-        if (groupIt == groupsByItem_.end()) {
-          continue;
-        }
-        for (const auto &group : groupIt->second) {
-          if (voided && group.geometryKind == dotbim::GeometryKind::Mesh)
+        const auto groups = instance.contextualGroup
+                                ? std::span(instance.contextualGroup, 1)
+                                : std::span<const MeshGroup>(
+                                      groupsByItem_.at(instance.geometryId));
+        for (const auto &group : groups) {
+          if (voided && !instance.contextualGroup &&
+              group.geometryKind == dotbim::GeometryKind::Mesh)
             continue;
           container::geometry::dotbim::Element element{};
           element.meshId = group.meshId;
@@ -6262,6 +6488,11 @@ private:
   std::unordered_map<uint32_t, std::optional<glm::vec4>> styleColorByReference_{};
   std::unordered_map<uint32_t, std::vector<glm::vec4>> faceColorsByFaceSet_{};
   std::unordered_map<uint32_t, std::vector<MeshGroup>> groupsByItem_{};
+  // Node-owned groups keep GeometryInstance references valid as the map grows.
+  std::map<std::tuple<uint32_t, std::vector<uint32_t>, std::vector<uint32_t>>,
+           std::pair<std::optional<MeshGroup>, std::string>>
+      contextualGeometry_{};
+  std::unordered_map<uint32_t, bool> sectionedCurveDependencies_{};
   std::unordered_map<uint32_t, manifold::Manifold> solidCache_{};
   std::unordered_set<uint32_t> failedSolids_{};
   std::unordered_map<uint32_t, std::string> conversionErrors_{};
