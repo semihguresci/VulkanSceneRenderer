@@ -2893,8 +2893,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
     const double x = glm::dot(d, f.x), y = glm::dot(d, f.y),
                  z = glm::dot(d, f.z), r = std::hypot(x, y);
     if (!finite(d) || r <= radius * 1e-12)
-      return std::nullopt; // Polar singularities need explicit vertex-loop
-                           // charts.
+      return std::nullopt; // Spherical faces resolve poles in local charts.
     const double u = wrapped(std::atan2(y, x) / radians, 2 * pi / radians);
     const double v =
         type == "IFCCYLINDRICALSURFACE" ? z

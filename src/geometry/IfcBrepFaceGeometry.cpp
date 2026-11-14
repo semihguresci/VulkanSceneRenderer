@@ -993,6 +993,32 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
   return result;
 }
 
+ParametricSurface sphericalChart(const SphericalSurface &sphere,
+                                 const CurveFrame &axes, double tolerance) {
+  const auto origin = sphere.frame.origin;
+  const double radius = sphere.radius;
+  const auto x = axes.x, y = axes.y, z = axes.z;
+  ParametricSurface chart;
+  // Project from the antipode of z. The right-handed basis keeps the
+  // parameter normal outward, regardless of the sphere's authored pole.
+  chart.point = [=](double u, double v) -> std::optional<Point> {
+    const double squared = u * u + v * v, denominator = 1 + squared;
+    if (!std::isfinite(denominator))
+      return std::nullopt;
+    return origin +
+           (radius / denominator) * (2 * u * x + 2 * v * y + (1 - squared) * z);
+  };
+  chart.inverse = [=](Point p) -> std::optional<UV> {
+    const auto d = p - origin;
+    const double denominator = radius + glm::dot(d, z);
+    if (std::abs(glm::length(d) - radius) > tolerance ||
+        denominator <= radius * 1e-12)
+      return std::nullopt;
+    return UV(glm::dot(d, x), glm::dot(d, y)) / denominator;
+  };
+  return chart;
+}
+
 std::vector<CurvedFaceTriangle>
 meshSphericalPoleFace(const ParametricSurface &surface,
                       const std::vector<std::vector<glm::vec3>> &boundaries,
@@ -1028,27 +1054,9 @@ meshSphericalPoleFace(const ParametricSurface &surface,
       (ring && explicitOuter && boundaries.front().size() == 1))
     throw std::runtime_error("Spherical cap outer bound must be its edge loop");
   const auto chart = [&](int sign) {
-    ParametricSurface s;
-    // Stereographic coordinates stay regular at the selected pole. Reflecting
-    // the southern chart's V axis keeps both charts' normals outward.
-    s.point = [=](double u, double v) -> std::optional<Point> {
-      const double squared = u * u + v * v, denominator = 1 + squared;
-      const auto p = f.origin + radius / denominator *
-                                    (2 * u * f.x + 2 * sign * v * f.y +
-                                     sign * (1 - squared) * f.z);
-      return std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)
-                 ? std::optional(p)
-                 : std::nullopt;
-    };
-    s.inverse = [=](Point p) -> std::optional<UV> {
-      const auto d = p - f.origin;
-      const double denominator = radius + sign * glm::dot(d, f.z);
-      if (std::abs(glm::length(d) - radius) > tolerance ||
-          denominator <= radius * 1e-12)
-        return std::nullopt;
-      return UV(glm::dot(d, f.x), sign * glm::dot(d, f.y)) / denominator;
-    };
-    return s;
+    return sphericalChart(
+        sphere, {f.origin, f.x, double(sign) * f.y, double(sign) * f.z},
+        tolerance);
   };
   const auto cap = [&](const auto &loop, int sign, glm::vec3 pole) {
     const auto s = chart(sign);
@@ -1135,13 +1143,315 @@ meshSphericalPoleFace(const ParametricSurface &surface,
   north.insert(north.end(), south.begin(), south.end());
   return north;
 }
+
+bool meetsSphericalPole(const SphericalSurface &sphere,
+                        const std::vector<std::vector<glm::vec3>> &loops,
+                        double units) {
+  const auto &f = sphere.frame;
+  const double r = sphere.radius;
+  const double tolerance = std::max(.0005 / units, r * 4e-7);
+  for (const auto &loop : loops)
+    for (size_t i = 0; i < loop.size(); ++i) {
+      const Point a(loop[i]), b(loop[(i + 1) % loop.size()]);
+      for (double sign : {-1., 1.})
+        if (segmentDistanceSquared(f.origin + sign * r * f.z, a, b) <=
+            tolerance * tolerance)
+          return true;
+    }
+  return false;
+}
+
+std::vector<CurvedFaceTriangle>
+meshSphericalEdgeLoops(const SphericalSurface &sphere,
+                       const std::vector<std::vector<glm::vec3>> &boundaries,
+                       bool explicitOuter, bool sameSense, double units) {
+  const auto &f = sphere.frame;
+  const double radius = sphere.radius;
+  const double tolerance = std::max(1e-7 / units, radius * 4e-7);
+  const double sense = sameSense ? 1. : -1.;
+  std::vector<std::vector<Point>> directions;
+  std::vector<Point> centers{f.x, -f.x, f.y, -f.y, f.z, -f.z};
+  size_t samples = 0;
+  for (const auto &loop : boundaries) {
+    if (loop.size() < 3 || (samples += loop.size()) > 8192)
+      throw std::runtime_error("Invalid spherical edge-loop sample count");
+    auto &ring = directions.emplace_back();
+    ring.reserve(loop.size());
+    for (auto p : loop) {
+      const auto relative = Point(p) - f.origin;
+      const auto length = glm::length(relative);
+      if (!std::isfinite(length) || length <= 0 ||
+          std::abs(length - radius) > tolerance)
+        throw std::runtime_error("Spherical edge loop leaves its face surface");
+      ring.push_back(relative / length);
+    }
+  }
+  // Try the source axes and finite projection centers derived from each trim.
+  // A step to the exterior of an oriented edge proposes an excluded point.
+  // This also finds charts for faces larger than a hemisphere.
+  for (const auto &ring : directions) {
+    Point area(0);
+    for (size_t i = 0; i < ring.size(); ++i)
+      area += glm::cross(ring[i], ring[(i + 1) % ring.size()]);
+    if (glm::length(area) > 1e-10) {
+      const auto normal = glm::normalize(area);
+      centers.push_back(normal);
+      centers.push_back(-normal);
+    }
+    const size_t probes = std::min(size_t(12), ring.size());
+    for (size_t i = 0; i < probes; ++i) {
+      const size_t edgeIndex = i * ring.size() / probes;
+      const auto &a = ring[edgeIndex], &b = ring[(edgeIndex + 1) % ring.size()];
+      const auto midpoint = a + b;
+      const auto inside = glm::cross(a, b);
+      if (glm::length(midpoint) <= 1e-10 || glm::length(inside) <= 1e-10)
+        continue;
+      for (double offset : {.03, .15, .5})
+        centers.push_back(
+            glm::normalize(sense * offset * glm::normalize(inside) -
+                           glm::normalize(midpoint)));
+    }
+    if (centers.size() >= 128)
+      break;
+  }
+  struct Choice {
+    CurveFrame axes;
+    size_t outer;
+    double clearance;
+  };
+  std::vector<Choice> choices;
+  for (const auto z : centers) {
+    const auto reference = std::abs(glm::dot(z, f.x)) < .8 ? f.x : f.y;
+    const auto y = glm::normalize(glm::cross(z, reference));
+    const CurveFrame axes{f.origin, glm::cross(y, z), y, z};
+    double clearance = 4.;
+    size_t outer = boundaries.size(), positive = 0;
+    bool valid = true;
+    for (size_t j = 0; j < directions.size() && valid; ++j) {
+      const auto &ring = directions[j];
+      double area = 0.;
+      std::optional<UV> previous;
+      UV first(0);
+      for (size_t i = 0; i < ring.size(); ++i) {
+        const auto &p = ring[i];
+        const double denominator = 1 + glm::dot(p, z);
+        const auto &next = ring[(i + 1) % ring.size()];
+        clearance = std::min(clearance, segmentDistanceSquared(-z, p, next));
+        if (denominator <= 1e-5 || clearance <= 2e-5) {
+          valid = false;
+          break;
+        }
+        const UV uv =
+            UV(glm::dot(p, axes.x), glm::dot(p, axes.y)) / denominator;
+        if (previous)
+          area += cross(*previous, uv);
+        else
+          first = uv;
+        previous = uv;
+      }
+      if (!valid)
+        break;
+      area += cross(*previous, first);
+      if (std::abs(area) <= 1e-12)
+        valid = false;
+      else if (area * sense > 0) {
+        outer = j;
+        ++positive;
+      }
+    }
+    if (valid && positive == 1 && (!explicitOuter || outer == 0))
+      choices.push_back({axes, outer, clearance});
+  }
+  std::ranges::stable_sort(choices, std::greater<>(), &Choice::clearance);
+  if (choices.empty())
+    throw std::runtime_error(
+        "No spherical chart agrees with the oriented edge loops");
+  std::vector<CurveFrame> tried;
+  std::string reason = "no projection agrees with the oriented boundaries";
+  for (const auto &choice : choices) {
+    if (std::ranges::any_of(tried, [&](const CurveFrame &frame) {
+          return glm::dot(frame.z, choice.axes.z) > 1 - 1e-10;
+        }))
+      continue;
+    if (tried.size() == 6)
+      break;
+    tried.push_back(choice.axes);
+    try {
+      auto ordered = boundaries;
+      std::swap(ordered.front(), ordered[choice.outer]);
+      const auto chart = sphericalChart(sphere, choice.axes, tolerance);
+      return Mesher(chart, units, 2 * radius).run(ordered, true, sameSense);
+    } catch (const std::runtime_error &error) {
+      reason = error.what();
+    }
+  }
+  throw std::runtime_error("Spherical edge-loop chart failed: " + reason);
+}
+
+std::vector<CurvedFaceTriangle>
+meshTrimmedSphericalSeam(const SphericalSurface &sphere,
+                         const std::vector<std::vector<glm::vec3>> &boundaries,
+                         std::span<const glm::vec3> seam, bool sameSense,
+                         double units, double sign, double tolerance) {
+  const auto &f = sphere.frame;
+  const double radius = sphere.radius;
+  const auto polarAxis = sign * f.z;
+  const double direction = (sameSense ? 1. : -1.) * sign;
+  const auto &rim = boundaries.front();
+  const auto seamEnd = std::ranges::find(rim, seam.back());
+  if (rim.size() < 3 || seamEnd == rim.end())
+    throw std::runtime_error("Spherical seam must end at an exact rim sample");
+  std::vector<glm::vec3> rimFromSeam(rim);
+  std::rotate(rimFromSeam.begin(),
+              rimFromSeam.begin() + (seamEnd - rim.begin()), rimFromSeam.end());
+  const auto nativeAngle = [&](glm::vec3 position) {
+    const auto p = Point(position) - f.origin;
+    const double x = glm::dot(p, f.x), y = glm::dot(p, f.y);
+    if (std::hypot(x, y) <= tolerance)
+      throw std::runtime_error("Spherical seam rim or hole meets a pole");
+    return std::atan2(y, x);
+  };
+  const double seamAngle = nativeAngle(seam.back());
+  constexpr double period = 2 * std::numbers::pi;
+  const auto azimuth = [&](glm::vec3 position) {
+    const double angle =
+        std::remainder(direction * (nativeAngle(position) - seamAngle), period);
+    return angle < 0 ? angle + period : angle;
+  };
+  size_t cutIndex = 0;
+  double cutAngle = 0, previous = 0;
+  // This cut requires a rim with one radial intersection per meridian.
+  // Use an existing rim sample so the adjoining face keeps its exact boundary.
+  for (size_t i = 1; i < rimFromSeam.size(); ++i) {
+    const double angle = azimuth(rimFromSeam[i]);
+    if (angle <= previous || angle - previous >= std::numbers::pi)
+      throw std::runtime_error(
+          "Spherical seam rim must wind once monotonically");
+    if (!cutIndex || std::abs(angle - std::numbers::pi) <
+                         std::abs(cutAngle - std::numbers::pi)) {
+      cutIndex = i;
+      cutAngle = angle;
+    }
+    previous = angle;
+  }
+  if (previous <= std::numbers::pi ||
+      std::abs(cutAngle - std::numbers::pi) > std::numbers::pi / 4.)
+    throw std::runtime_error("Cannot find an opposite spherical rim cut");
+  const auto cutDirection =
+      glm::normalize(Point(rimFromSeam[cutIndex]) - f.origin);
+  const double cosine = std::clamp(glm::dot(polarAxis, cutDirection), -1., 1.);
+  const auto radial = glm::normalize(cutDirection - cosine * polarAxis);
+  const double end = std::acos(cosine);
+  ParametricCurve meridian;
+  meridian.domain = {{0, end}};
+  meridian.point = [=](double t) -> std::optional<Point> {
+    return f.origin + radius * (std::cos(t) * polarAxis + std::sin(t) * radial);
+  };
+  const auto samples = sampleCurve(meridian, 0, end, .0005 / units, 4097);
+  if (samples.size() < 2)
+    throw std::runtime_error("Spherical rim cut exceeds its sample budget");
+  std::vector<glm::vec3> cut;
+  cut.reserve(samples.size());
+  for (const auto &sample : samples)
+    cut.emplace_back(sample.point);
+  cut.front() = seam.front();
+  cut.back() = rimFromSeam[cutIndex];
+  std::array<std::vector<std::vector<glm::vec3>>, 2> pieces;
+  auto &first = pieces[0].emplace_back(seam.begin(), seam.end());
+  first.insert(first.end(), rimFromSeam.begin() + 1,
+               rimFromSeam.begin() + cutIndex + 1);
+  first.insert(first.end(), cut.rbegin() + 1, cut.rend() - 1);
+  auto &second = pieces[1].emplace_back(cut.begin(), cut.end());
+  second.insert(second.end(), rimFromSeam.begin() + cutIndex + 1,
+                rimFromSeam.end());
+  second.insert(second.end(), seam.rbegin(), seam.rend() - 1);
+  for (const auto &hole : std::span(boundaries).subspan(1)) {
+    if (hole.size() < 3)
+      throw std::runtime_error("Invalid trimmed spherical seam hole");
+    const auto side = azimuth(hole.front()) < cutAngle ? 0 : 1;
+    if (!std::ranges::all_of(hole, [&](glm::vec3 position) {
+          const auto angle = azimuth(position);
+          return std::min(angle, period - angle) > 1e-8 &&
+                 std::abs(angle - cutAngle) > 1e-8 &&
+                 (angle < cutAngle ? 0 : 1) == side;
+        }))
+      throw std::runtime_error(
+          "Spherical seam or its opposite cut meets a hole");
+    pieces[side].push_back(hole);
+  }
+  auto result =
+      meshSphericalEdgeLoops(sphere, pieces[0], true, sameSense, units);
+  auto remainder =
+      meshSphericalEdgeLoops(sphere, pieces[1], true, sameSense, units);
+  result.insert(result.end(), remainder.begin(), remainder.end());
+  return result;
+}
+
+std::vector<CurvedFaceTriangle>
+meshSphericalSeam(const SphericalSurface &sphere,
+                  const std::vector<std::vector<glm::vec3>> &boundaries,
+                  std::span<const glm::vec3> seam, bool sameSense,
+                  double units) {
+  const auto &f = sphere.frame;
+  const double radius = sphere.radius;
+  const double tolerance = std::max(1e-7 / units, radius * 4e-7);
+  if (seam.size() < 3 || seam.size() > 4097)
+    throw std::runtime_error("Invalid spherical seam sample count");
+  const double sign =
+      glm::dot(Point(seam.front()) - f.origin, f.z) > 0 ? 1 : -1;
+  if (glm::length(Point(seam.front()) - f.origin - sign * radius * f.z) >
+      tolerance)
+    throw std::runtime_error("Spherical seam must start at a surface pole");
+  if (glm::length(Point(seam.back()) - f.origin + sign * radius * f.z) >
+      tolerance)
+    return meshTrimmedSphericalSeam(sphere, boundaries, seam, sameSense, units,
+                                    sign, tolerance);
+  ParametricCurve meridian;
+  meridian.domain = {{0, std::numbers::pi}};
+  meridian.point = [=](double t) -> std::optional<Point> {
+    return f.origin - radius * (std::sin(t) * f.x + sign * std::cos(t) * f.z);
+  };
+  const auto samples =
+      sampleCurve(meridian, 0, std::numbers::pi, .0005 / units, 4097);
+  if (samples.size() < 3)
+    throw std::runtime_error(
+        "Spherical seam partition exceeds its sample budget");
+  std::vector<glm::vec3> ring(seam.begin(), seam.end());
+  for (size_t i = 1; i + 1 < samples.size(); ++i)
+    ring.emplace_back(samples[i].point);
+  std::array<std::vector<std::vector<glm::vec3>>, 2> pieces;
+  pieces[0].push_back(ring);
+  pieces[1].emplace_back(ring.rbegin(), ring.rend());
+  for (const auto &hole : std::span(boundaries).subspan(1)) {
+    if (hole.size() < 3)
+      throw std::runtime_error("Invalid spherical seam hole");
+    const auto side = [&](glm::vec3 p) {
+      return glm::dot(Point(p) - f.origin, f.y) *
+             (sign * (sameSense ? 1. : -1.));
+    };
+    const size_t piece = side(hole.front()) > 0 ? 0 : 1;
+    if (!std::ranges::all_of(hole, [&](glm::vec3 p) {
+          return side(p) * (piece == 0 ? 1. : -1.) > tolerance;
+        }))
+      throw std::runtime_error(
+          "Spherical seam or its opposite cut meets a hole");
+    pieces[piece].push_back(hole);
+  }
+  auto result =
+      meshSphericalEdgeLoops(sphere, pieces[0], true, sameSense, units);
+  auto remainder =
+      meshSphericalEdgeLoops(sphere, pieces[1], true, sameSense, units);
+  result.insert(result.end(), remainder.begin(), remainder.end());
+  return result;
+}
 } // namespace
 
 std::optional<std::vector<CurvedFaceTriangle>>
 meshIfcCurvedFace(const ParametricSurface &surface,
                   const std::vector<std::vector<glm::vec3>> &boundaries,
                   bool explicitOuter, bool sameSense, double units,
-                  std::string &error) {
+                  std::string &error,
+                  std::span<const glm::vec3> sphericalSeam) {
   try {
     if (boundaries.empty() || !std::isfinite(units) || units <= 0 ||
         !surface.point)
@@ -1150,6 +1460,12 @@ meshIfcCurvedFace(const ParametricSurface &surface,
     double extent = 0;
     if (boundaries.front().empty())
       throw std::runtime_error("Empty curved face outer loop");
+    if (!sphericalSeam.empty()) {
+      if (!surface.sphere)
+        throw std::runtime_error("Spherical seam requires a spherical face");
+      return meshSphericalSeam(*surface.sphere, boundaries, sphericalSeam,
+                               sameSense, units);
+    }
     if (std::ranges::any_of(
             boundaries, [](const auto &loop) { return loop.size() == 1; })) {
       if (!surface.sphere)
@@ -1157,6 +1473,10 @@ meshIfcCurvedFace(const ParametricSurface &surface,
       return meshSphericalPoleFace(surface, boundaries, explicitOuter,
                                    sameSense, units);
     }
+    if (surface.sphere &&
+        meetsSphericalPole(*surface.sphere, boundaries, units))
+      return meshSphericalEdgeLoops(*surface.sphere, boundaries, explicitOuter,
+                                    sameSense, units);
     const Point origin(boundaries.front().front());
     for (const auto &loop : boundaries)
       for (auto p : loop)

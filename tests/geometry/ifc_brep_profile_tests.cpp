@@ -1549,6 +1549,366 @@ TEST(IfcCurvedBrep, SphericalVertexLoopVoidsKeepInwardNormalsAndVolume) {
   }
 }
 
+struct SphericalMeridians {
+  std::string north, south;
+  double radius;
+
+  SphericalMeridians(CurvedBuilder &step, double r)
+      : north(step.point({0, 0, r})), south(step.point({0, 0, -r})), radius(r) {
+  }
+
+  std::array<CurvedBuilder::Use, 2> arc(CurvedBuilder &step,
+                                        glm::dvec3 radial) const {
+    // The 3D circle's local X points toward the equator and its local Y
+    // toward the north pole. These are two separately authored EDGE_CURVEs.
+    const auto axis = glm::cross(radial, glm::dvec3(0, 0, 1));
+    const auto basis =
+        step.add("IFCCIRCLE(" + step.placement({}, axis, radial) + "," +
+                 number(radius) + ")");
+    const auto equator = step.point(radial * radius);
+    return {{{step.edge(equator, north, basis), false},
+             {step.edge(south, equator, basis), false}}};
+  }
+};
+
+std::string explicitSphericalShell(CurvedBuilder &step, double radius,
+                                   bool outward) {
+  const SphericalMeridians meridians(step, radius);
+  const auto east = meridians.arc(step, {1, 0, 0});
+  const auto west = meridians.arc(step, {-1, 0, 0});
+  const auto surface =
+      step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + "," +
+               number(radius) + ")");
+  const auto start = step.faces.size();
+  for (bool positive : {false, true}) {
+    const auto &down = positive ? west : east;
+    const auto &up = positive ? east : west;
+    std::vector<CurvedBuilder::Use> edges{down[0],
+                                          down[1],
+                                          {up[1].first, !up[1].second},
+                                          {up[0].first, !up[0].second}};
+    if (!outward) {
+      std::ranges::reverse(edges);
+      for (auto &use : edges)
+        use.second = !use.second;
+    }
+    // Use equivalent opposing authored bound senses on the two faces.
+    step.face({step.bound(edges, true, !positive)}, surface, outward);
+  }
+  return step.add("IFCCLOSEDSHELL((" + step.faces[start] + "," +
+                  step.faces[start + 1] + "))");
+}
+
+TEST(IfcCurvedBrep, SphericalEdgeLoopsJoinTwoHemispheresAtBothPoles) {
+  CurvedBuilder step;
+  constexpr double radius = 2.;
+  const auto shell = explicitSphericalShell(step, radius, true);
+  const auto brep = step.add("IFCADVANCEDBREP(" + shell + ")");
+  const auto source = fixture(step.definitions, brep);
+  const auto model = LoadFromStep(source);
+  complete(model);
+  ASSERT_FALSE(model.indices.empty());
+  watertight(model);
+  EXPECT_NEAR(volume(model), 32 * pi / 3, .06);
+  std::array<bool, 2> poles{};
+  for (const auto &vertex : model.vertices) {
+    const auto p = glm::dvec3(vertex.position);
+    EXPECT_NEAR(glm::length(p), radius, .0011);
+    EXPECT_GT(glm::dot(p / radius, glm::dvec3(vertex.normal)), .99999);
+    poles[0] |= p == glm::dvec3(0, 0, -radius);
+    poles[1] |= p == glm::dvec3(0, 0, radius);
+  }
+  EXPECT_TRUE(poles[0] && poles[1]);
+  exportCurvedFixture("sphere-edge-loop-hemispheres", source);
+}
+
+TEST(IfcCurvedBrep, SphericalEdgeLoopInsertsInteriorPolesOnSharedMeridian) {
+  for (bool rational : {false, true}) {
+    SCOPED_TRACE(rational);
+    CurvedBuilder step;
+    const double angle = .193;
+    const glm::dvec3 start(2 * std::cos(angle), 0, 2 * std::sin(angle));
+    const auto seam = step.point(start);
+    std::string meridian;
+    if (rational) {
+      // Four exact rational quadratic spans with their knots rotated away
+      // from the poles. Both poles lie strictly inside source spans.
+      const glm::dvec3 tangent(start.z, 0, -start.x);
+      const std::vector controls{seam,
+                                 step.point(start + tangent),
+                                 step.point(tangent),
+                                 step.point(-start + tangent),
+                                 step.point(-start),
+                                 step.point(-start - tangent),
+                                 step.point(-tangent),
+                                 step.point(start - tangent),
+                                 seam};
+      const auto weight = number(1 / std::sqrt(2.));
+      meridian = step.add("IFCRATIONALBSPLINECURVEWITHKNOTS(2,(" +
+                          step.refs(controls) +
+                          "),.UNSPECIFIED.,.T.,.F.,"
+                          "(3,2,2,2,3),(0.,1.,2.,3.,4.),.UNSPECIFIED.,(1.," +
+                          weight + ",1.," + weight + ",1.," + weight + ",1.," +
+                          weight + ",1.))");
+    } else {
+      const auto equator = step.placement({0, 0, 0}, {0, 1, 0});
+      meridian = step.add("IFCCIRCLE(" + equator + ",2.)");
+    }
+    const auto boundary = step.edge(seam, seam, meridian);
+    const auto surface =
+        step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
+    step.face({step.bound({{boundary, true}})}, surface);
+    step.face({step.bound({{boundary, false}})}, surface);
+    const auto brep = step.finish();
+    const auto model = LoadFromStep(fixture(step.definitions, brep));
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    EXPECT_NEAR(volume(model), 32 * pi / 3, .06);
+    std::array<bool, 2> poles{};
+    for (const auto &vertex : model.vertices) {
+      poles[0] |= vertex.position == glm::vec3(0, 0, -2);
+      poles[1] |= vertex.position == glm::vec3(0, 0, 2);
+    }
+    EXPECT_TRUE(poles[0] && poles[1]);
+  }
+}
+
+std::string sphericalMeridianSeam(CurvedBuilder &step,
+                                  const std::string &surface,
+                                  const std::string &first,
+                                  const std::string &last, double fromLatitude,
+                                  double toLatitude,
+                                  std::string_view otherLongitude = "360.") {
+  const auto frame = step.placement({0, 0, 0}, {0, -1, 0});
+  const auto circle = step.add("IFCCIRCLE(" + frame + ",2.)");
+  const auto from = number(fromLatitude), to = number(toLatitude);
+  const auto curve =
+      step.add("IFCTRIMMEDCURVE(" + circle + ",(IFCPARAMETERVALUE(" + from +
+               ")),(IFCPARAMETERVALUE(" + to + ")),.T.,.PARAMETER.)");
+  const auto pcurve = [&](std::string_view u) {
+    const auto a =
+        step.add("IFCCARTESIANPOINT((" + std::string(u) + "," + from + "))");
+    const auto b =
+        step.add("IFCCARTESIANPOINT((" + std::string(u) + "," + to + "))");
+    const auto line = step.add("IFCPOLYLINE((" + a + "," + b + "))");
+    return step.add("IFCPCURVE(" + surface + "," + line + ")");
+  };
+  const auto left = pcurve("0."), right = pcurve(otherLongitude);
+  const auto seam = step.add("IFCSEAMCURVE(" + curve + ",(" + left + "," +
+                             right + "),.CURVE3D.)");
+  return step.edge(first, last, seam);
+}
+
+TEST(IfcCurvedBrep, SphericalEdgeLoopAcceptsTheSameAuthoredMeridianSeamTwice) {
+  CurvedBuilder step;
+  const auto north = step.point({0, 0, 2}), south = step.point({0, 0, -2});
+  const auto surface =
+      step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
+  const auto edge =
+      sphericalMeridianSeam(step, surface, south, north, -90., 90.);
+  step.face({step.bound({{edge, true}, {edge, false}})}, surface);
+  const auto brep = step.finish();
+  const auto source = fixture(step.definitions + degrees(), brep);
+  const auto model = LoadFromStep(source);
+  complete(model);
+  ASSERT_FALSE(model.indices.empty());
+  watertight(model);
+  EXPECT_NEAR(volume(model), 32 * pi / 3, .06);
+  std::set<float> meridianHeights;
+  for (const auto &vertex : model.vertices) {
+    const auto p = glm::dvec3(vertex.position);
+    EXPECT_NEAR(glm::length(p), 2., .0011);
+    EXPECT_GT(glm::dot(p / 2., glm::dvec3(vertex.normal)), .99999);
+    if (p.x > 1.8 && p.y == 0)
+      meridianHeights.insert(float(p.z));
+  }
+  ASSERT_GE(meridianHeights.size(), 12u);
+  EXPECT_LT(*meridianHeights.begin(), -.25f);
+  EXPECT_GT(*meridianHeights.rbegin(), .25f);
+  exportCurvedFixture("sphere-edge-loop-explicit-seam", source);
+}
+
+TEST(IfcCurvedBrep, SphericalEdgeLoopKeepsTrimmedMeridianSeamAndRimWithDisk) {
+  for (unsigned variant : {0u, 1u, 2u}) {
+    SCOPED_TRACE(variant);
+    const bool reverseBound = variant == 1, invalid = variant == 2;
+    CurvedBuilder step;
+    constexpr double radius = 2., z = 1.;
+    const auto north = step.point({0, 0, radius});
+    const auto rim = step.circle(std::sqrt(radius * radius - z * z), z);
+    const auto surface =
+        step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
+    const auto seam = sphericalMeridianSeam(
+        step, surface, rim.point, north, 30., 90., invalid ? "180." : "360.");
+    step.face({step.bound({{seam, false}, {rim.edge, true}, {seam, true}}, true,
+                          !reverseBound)},
+              surface);
+    step.plane({{rim.edge, false}}, {0, 0, z}, {0, 0, -1});
+    const auto brep = step.finish();
+    const auto model =
+        LoadFromStep(fixture(step.definitions + degrees(), brep));
+    if (invalid) {
+      EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+      EXPECT_TRUE(model.vertices.empty());
+      EXPECT_TRUE(model.indices.empty());
+      ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+      EXPECT_NE(model.importReport.diagnostics.front().reason.find("seam"),
+                std::string::npos)
+          << model.importReport.diagnostics.front().reason;
+      continue;
+    }
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    EXPECT_NEAR(volume(model), 5 * pi / 3, .015);
+    std::set<float> seamHeights;
+    bool disk = false;
+    for (const auto &vertex : model.vertices) {
+      const auto p = vertex.position;
+      if (p.y == 0.f && p.x > 0.f && p.z > 1.f && p.z < 2.f)
+        seamHeights.insert(p.z);
+      disk |= p.z == 1.f && vertex.normal.z < -.99999f;
+    }
+    EXPECT_GE(seamHeights.size(), 16u);
+    EXPECT_TRUE(disk);
+  }
+}
+
+TEST(IfcCurvedBrep, SphericalFullMeridianSeamRetainsAnOffCutHoleAndDisk) {
+  CurvedBuilder step;
+  const auto north = step.point({0, 0, 2}), south = step.point({0, 0, -2});
+  const auto surface =
+      step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
+  const auto seam =
+      sphericalMeridianSeam(step, surface, south, north, -90., 90.);
+  // Trim an off-seam cap at y=1.6. Its authored ring is shared by a disk.
+  constexpr double plane = 1.6, radius = 1.2;
+  const auto circle = step.add(
+      "IFCCIRCLE(" + step.placement({0, plane, 0}, {0, 1, 0}) + ",1.2)");
+  const auto start = step.point({radius, plane, 0});
+  const auto rim = step.edge(start, start, circle);
+  step.face({step.bound({{seam, true}, {seam, false}}),
+             step.bound({{rim, false}}, false)},
+            surface);
+  step.plane({{rim, true}}, {0, plane, 0}, {0, 1, 0});
+  const auto brep = step.finish();
+  const auto model = LoadFromStep(fixture(step.definitions + degrees(), brep));
+  complete(model);
+  ASSERT_FALSE(model.indices.empty());
+  watertight(model);
+  constexpr double capHeight = 2. - plane;
+  EXPECT_NEAR(volume(model),
+              32 * pi / 3 - pi * capHeight * capHeight * (2. - capHeight / 3),
+              .06);
+  bool disk = false;
+  for (const auto &vertex : model.vertices) {
+    EXPECT_LE(vertex.position.y, static_cast<float>(plane) + 1e-6f);
+    disk |= vertex.position.y == static_cast<float>(plane) &&
+            vertex.normal.y > .99999f;
+  }
+  EXPECT_TRUE(disk);
+}
+
+TEST(IfcCurvedBrep, SphericalEdgeLoopCapThroughPoleRetainsHoleAndDisk) {
+  for (bool hole : {false, true}) {
+    SCOPED_TRACE(hole);
+    CurvedBuilder step;
+    constexpr double r = 2., h = .8, holePlane = 1.97;
+    const double rho = std::sqrt(r * r - h * h);
+    const auto north = step.point({0, 0, r});
+    const auto east = step.point({0, rho, h}), west = step.point({0, -rho, h});
+    const auto meridian =
+        step.add("IFCCIRCLE(" +
+                 step.placement({0, 0, 0}, {1, 0, 0}, {0, 1, 0}) + ",2.)");
+    const auto toNorth = step.edge(east, north, meridian);
+    const auto fromNorth = step.edge(north, west, meridian);
+    const auto flatEdge = step.line(east, west);
+    const auto latitude = step.add(
+        "IFCCIRCLE(" + step.placement({0, 0, h}, {0, 0, 1}, {0, -1, 0}) + "," +
+        number(rho) + ")");
+    const auto hemisphereRim = step.edge(west, east, latitude);
+    const auto surface =
+        step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
+    std::vector bounds{step.bound(
+        {{toNorth, true}, {fromNorth, true}, {hemisphereRim, true}})};
+    if (hole) {
+      const double holeRadius = std::sqrt(r * r - holePlane * holePlane);
+      // The cutting axis stays 30 degrees from north and the ring's polar
+      // opening is less than 10 degrees. The hole touches neither boundary.
+      const double angle = pi / 6, s = std::sin(angle), c = std::cos(angle);
+      const glm::dvec3 normal(s, 0, c);
+      const glm::dvec3 tangent(0, 1, 0);
+      const auto cut = step.placement(holePlane * normal, normal, tangent);
+      const auto ring =
+          step.add("IFCCIRCLE(" + cut + "," + number(holeRadius) + ")");
+      const auto ringStart =
+          step.point(holePlane * normal + holeRadius * tangent);
+      const auto ringEdge = step.edge(ringStart, ringStart, ring);
+      bounds.push_back(step.bound({{ringEdge, false}}, false));
+      step.plane({{ringEdge, true}}, holePlane * normal, normal);
+    }
+    step.face(bounds, surface);
+    step.plane({{flatEdge, true}, {fromNorth, false}, {toNorth, false}},
+               {0, 0, 0}, {-1, 0, 0});
+    step.plane({{hemisphereRim, false}, {flatEdge, false}}, {0, 0, h},
+               {0, 0, -1});
+    const auto brep = step.finish();
+    const auto model = LoadFromStep(fixture(step.definitions, brep));
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    const auto capVolume = [](double depth) {
+      return pi * depth * depth * (r - depth / 3.);
+    };
+    EXPECT_NEAR(volume(model),
+                .5 * capVolume(r - h) - (hole ? capVolume(r - holePlane) : 0.),
+                .015);
+    std::array<bool, 3> features{};
+    const glm::dvec3 cutAxis(.5, 0, std::sqrt(3.) / 2);
+    for (const auto &vertex : model.vertices) {
+      const glm::dvec3 p(vertex.position), n(vertex.normal);
+      if (glm::length(p - glm::dvec3(0, 0, r)) < 1e-6 && n.z > .99999)
+        features[0] = true;
+      if (glm::dot(n, cutAxis) > .99999 &&
+          std::abs(glm::dot(p, cutAxis) - holePlane) < 1e-6)
+        features[1] = true;
+      if (n.z < -.99999 && std::abs(p.z - h) < 1e-6)
+        features[2] = true;
+    }
+    EXPECT_TRUE(features[0] && features[2]);
+    EXPECT_EQ(features[1], hole);
+  }
+}
+
+TEST(IfcCurvedBrep, SphericalEdgeLoopCavityRetainsInwardWindingAtPoles) {
+  CurvedBuilder step;
+  const auto outer = explicitSphericalShell(step, 2., true);
+  const auto inner = explicitSphericalShell(step, .75, false);
+  const auto brep =
+      step.add("IFCADVANCEDBREPWITHVOIDS(" + outer + ",(" + inner + "))");
+  const auto model = LoadFromStep(fixture(step.definitions, brep));
+  complete(model);
+  ASSERT_FALSE(model.indices.empty());
+  watertight(model);
+  EXPECT_NEAR(volume(model), 4 * pi * (8 - .75 * .75 * .75) / 3, .065);
+  std::array<bool, 2> inwardPoles{};
+  for (const auto &vertex : model.vertices) {
+    const auto p = glm::dvec3(vertex.position);
+    const double radius = glm::length(p);
+    const bool cavity = radius < 1.;
+    EXPECT_NEAR(radius, cavity ? .75 : 2., .0011);
+    EXPECT_GT((cavity ? -1 : 1) *
+                  glm::dot(p / radius, glm::dvec3(vertex.normal)),
+              .99999);
+    if (cavity) {
+      inwardPoles[0] |= p == glm::dvec3(0, 0, -.75);
+      inwardPoles[1] |= p == glm::dvec3(0, 0, .75);
+    }
+  }
+  EXPECT_TRUE(inwardPoles[0] && inwardPoles[1]);
+}
+
 TEST(IfcCurvedBrep, MalformedAndUnsupportedVertexLoopsRejectAtomically) {
   for (unsigned invalid = 0; invalid < 5; ++invalid) {
     CurvedBuilder step;
