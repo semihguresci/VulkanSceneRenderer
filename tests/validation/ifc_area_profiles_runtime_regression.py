@@ -1,6 +1,8 @@
-"""Render six extruded IFC area profiles in both raster routes and TAA modes."""
+"""Render extruded IFC area or structural profiles in both raster routes and TAA modes."""
 
 import argparse
+from collections.abc import Callable
+from dataclasses import dataclass
 import json
 import math
 import os
@@ -14,15 +16,29 @@ from display_capture_test_support import validation_log_error
 WIDTH, HEIGHT = 640, 384
 DISTANCE, FOV, DEPTH = 11., 43., .8
 TECHNIQUES = ("deferred-raster", "forward-raster")
-CENTERS = ((-2.8, 1.25), (0., 1.25), (2.8, 1.25), (-2.8, -1.25), (0., -1.25), (2.8, -1.25))
-COLORS = ((.12, .72, .83), (.85, .25, .09), (.7, .19, .79), (.18, .82, .31), (.88, .67, .10), (.26, .42, .91))
-NAMES = ("Rounded rectangle", "Mapped hollow rectangle", "Ellipse", "Trapezium", "Butt-ended centreline", "Composite islands")
-TURN = math.radians(27.)
+
+
+@dataclass(frozen=True)
+class Profile:
+    name: str
+    center: tuple[float, float]
+    color: tuple[float, float, float]
+    map_turn: float = 0.
+
+
+@dataclass(frozen=True)
+class Fixture:
+    products: tuple[Profile, ...]
+    witnesses: tuple[tuple[int, str, tuple[float, float], bool], ...]
+    step_profiles: Callable
+    footprint: Callable
+
+
 # Analytic outer/inner path envelopes around an orthogonal, open, 0.32 m strip.
 STRIP = ((-.94, -.76), (.51, -.76), (.51, .46), (.94, .46), (.94, .78), (.19, .78), (.19, -.44), (-.94, -.44))
 TRAPEZIUM = ((-1.05, -.73), (1.05, -.73), (.56, .73), (-.56, .73))
 ISLANDS = ((-.64, -.20), (.64, .20))
-WITNESSES = (
+AREA_WITNESSES = (
     (0, "flat center", (0., 0.), True), (0, "rounded corner", (.99, .76), False),
     (1, "mapped right rim", (.94, 0.), True), (1, "mapped top rim", (0., .69), True),
     (1, "clear void", (0., 0.), False), (1, "clear mapped corner", (1.035, .815), False),
@@ -32,6 +48,23 @@ WITNESSES = (
     (4, "open interior", (-.28, .14), False), (4, "past butt end", (-1.08, -.6), False),
     (5, "left island", ISLANDS[0], True), (5, "right island", ISLANDS[1], True),
     (5, "unbridged gap", (0., 0.), False),
+)
+
+STRUCTURAL_WITNESSES = (
+    (0, "back web", (-.77, 0.), True), (0, "upper lip", (.76, .39), True),
+    (0, "lower lip", (.76, -.39), True), (0, "concave fillet", (-.592, .592), True),
+    (0, "channel cavity", (.2, 0.), False), (0, "opening between lips", (.78, 0.), False),
+    (0, "rounded outer corner", (.9, .9), False),
+    (1, "mapped top left flange", (-.76, .79), True), (1, "mapped bottom right flange", (.76, -.79), True),
+    (1, "mapped web", (0., 0.), True), (1, "mapped opposite top", (.67, .78), False),
+    (1, "mapped opposite bottom", (-.67, -.78), False), (1, "beyond specified flange width", (1.12, -.82), False),
+    (2, "wider bottom flange", (.86, -.92), True), (2, "narrower top flange", (.49, .97), True),
+    (2, "positive bottom flange taper", (.40, -.73), True), (2, "negative top flange taper", (.37, .806), False),
+    (2, "outside narrow flange", (.86, .74), False), (2, "open side of web", (-.58, .06), False),
+    (3, "flange center", (0., .79), True), (3, "flange span", (.81, .83), True),
+    (3, "tapered web neck", (.313, .39), True), (3, "concave fillet", (.395, .594), True),
+    (3, "tapered web foot gap", (.24, -.60), False), (3, "sloping flange underside", (.90, .63), False),
+    (3, "wide open side", (-.72, 0.), False),
 )
 
 
@@ -68,17 +101,12 @@ class StepFixture:
         return self.add("IFCSHAPEREPRESENTATION", "$", "'Body'", f"'{kind}'", f"({item})")
 
 
-def fixture(path):
-    step = StepFixture()
-    step.add("IFCSIUNIT", "*", ".LENGTHUNIT.", "$", ".METRE.")
-    origin = step.add("IFCAXIS2PLACEMENT3D", step.point(0., 0., 0.), "$", "$")
-    up = step.direction(0., 0., 1.)
-    ax, ay = step.direction(1., 0., 0.), step.direction(0., -1., 0.)
+def area_step_profiles(step):
     line_points = [step.point(*p) for p in ((-.94, -.6), (.35, -.6), (.35, .62), (.94, .62))]
     line = step.add("IFCPOLYLINE", f"({','.join(line_points)})")
     left = step.add("IFCRECTANGLEPROFILEDEF", ".AREA.", "$", step.profile_placement(ISLANDS[0]), .7, .88)
     right = step.add("IFCELLIPSEPROFILEDEF", ".AREA.", "$", step.profile_placement(ISLANDS[1]), .38, .58)
-    profiles = (
+    return (
         step.add("IFCROUNDEDRECTANGLEPROFILEDEF", ".AREA.", "$", "$", 2.02, 1.6, .36),
         step.add("IFCRECTANGLEHOLLOWPROFILEDEF", ".AREA.", "$", "$", 2.1, 1.66, .27, .13, .4),
         step.add("IFCELLIPSEPROFILEDEF", ".AREA.", "$", "$", 1.03, .69),
@@ -86,16 +114,36 @@ def fixture(path):
         step.add("IFCCENTERLINEPROFILEDEF", ".AREA.", "$", line, .32),
         step.add("IFCCOMPOSITEPROFILEDEF", ".AREA.", "$", f"({left},{right})", "$"),
     )
-    for index, (name, center, color, profile) in enumerate(zip(NAMES, CENTERS, COLORS, profiles, strict=True)):
+
+
+def structural_step_profiles(step):
+    return (
+        step.add("IFCCSHAPEPROFILEDEF", ".AREA.", "$", "$", 1.92, 1.92, .34, .72, .22),
+        step.add("IFCZSHAPEPROFILEDEF", ".AREA.", "$", "$", 1.94, 1.19, .4, .34, .12, .1),
+        step.add("IFCASYMMETRICISHAPEPROFILEDEF", ".AREA.", "$", "$", 1.9, 2.22, .42, .30, .075,
+                 1.2, .35, .12, .07, .27, .05, -.43),
+        step.add("IFCTSHAPEPROFILEDEF", ".AREA.", "$", "$", 1.9, 2.2, .55, .31, .24, .12, .07, .17, .13),
+    )
+
+
+def write_fixture(path, fixture):
+    step = StepFixture()
+    step.add("IFCSIUNIT", "*", ".LENGTHUNIT.", "$", ".METRE.")
+    origin = step.add("IFCAXIS2PLACEMENT3D", step.point(0., 0., 0.), "$", "$")
+    up = step.direction(0., 0., 1.)
+    ax, ay = step.direction(1., 0., 0.), step.direction(0., -1., 0.)
+    profiles = fixture.step_profiles(step)
+    for index, (product, profile) in enumerate(zip(fixture.products, profiles, strict=True)):
+        name, center = product.name, product.center
         solid = step.add("IFCEXTRUDEDAREASOLID", profile, origin, up, DEPTH)
-        rgb = step.add("IFCCOLOURRGB", "$", *color)
+        rgb = step.add("IFCCOLOURRGB", "$", *product.color)
         style = step.add("IFCSURFACESTYLERENDERING", rgb, "0.", "$", "$", "$", "$", "$", "$", ".NOTDEFINED.")
         material = step.add("IFCSURFACESTYLE", f"'{name}'", ".BOTH.", f"({style})")
         step.add("IFCSTYLEDITEM", solid, f"({material})", "$")
         represented = step.representation("SweptSolid", solid)
-        if index == 1:
+        if product.map_turn:
             mapped = step.add("IFCREPRESENTATIONMAP", origin, represented)
-            c, s = math.cos(TURN), math.sin(TURN)
+            c, s = math.cos(product.map_turn), math.sin(product.map_turn)
             transform = step.add("IFCCARTESIANTRANSFORMATIONOPERATOR3D", step.direction(c, s, 0.),
                                  step.direction(-s, c, 0.), step.point(0., 0., 0.), 1., up)
             instance = step.add("IFCMAPPEDITEM", mapped, transform)
@@ -107,7 +155,8 @@ def fixture(path):
         guid = f"{index + 1:022d}"
         step.add("IFCBUILDINGELEMENTPROXY", f"'{guid}'", "$", f"'{name}'", "$", "$", local, shape, "$", "$")
     header = "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('ViewDefinition [DesignTransferView]'),'2;1');\n"
-    header += "FILE_NAME('area-profiles.ifc','2026-11-14T00:00:00',(''),(''),'Container','','');\nFILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n"
+    header += (f"FILE_NAME('{path.name}','2026-11-14T00:00:00',(''),(''),'Container','','');\n"
+               "FILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n")
     path.write_text(header + "\n".join(step.elements) + "\nENDSEC;\nEND-ISO-10303-21;\n", encoding="ascii")
 
 
@@ -116,17 +165,17 @@ def rotated(x, y, angle):
     return c * x - s * y, s * x + c * y
 
 
-def project(index, point):
-    x, y = rotated(*point, TURN) if index == 1 else point
-    x, y = x + CENTERS[index][0], y + CENTERS[index][1]
+def project(product, point):
+    x, y = rotated(*point, product.map_turn)
+    x, y = x + product.center[0], y + product.center[1]
     scale = HEIGHT / (2. * (DISTANCE - DEPTH) * math.tan(math.radians(FOV / 2.)))
     return [int(WIDTH / 2. + x * scale), int(HEIGHT / 2. - y * scale)]
 
 
-def write_sequence(path):
-    frames = list(range(16, 16 + len(WITNESSES)))
-    events = [dict(frame=frame, depthProbe=project(index, point))
-              for frame, (index, _, point, _) in zip(frames, WITNESSES, strict=True)]
+def write_sequence(path, fixture):
+    frames = list(range(16, 16 + len(fixture.witnesses)))
+    events = [dict(frame=frame, depthProbe=project(fixture.products[index], point))
+              for frame, (index, _, point, _) in zip(frames, fixture.witnesses, strict=True)]
     save_json(path, dict(schemaVersion=1, frames=frames[-1] + 1, sampleFrames=[frames[-1] + 1],
                          telemetryFrames=frames, events=events))
     return frames
@@ -142,18 +191,20 @@ def polygon(x, y, vertices):
     return inside
 
 
-def footprint(index, x, y):
+def rounded_rectangle(x, y, half_width, half_height, radius):
     import numpy as np
 
-    def rounded(u, v, hw, hh, r):
-        dx, dy = np.abs(u) - hw + r, np.abs(v) - hh + r
-        return np.hypot(np.maximum(dx, 0.), np.maximum(dy, 0.)) <= r
+    dx, dy = np.abs(x) - half_width + radius, np.abs(y) - half_height + radius
+    return np.hypot(np.maximum(dx, 0.), np.maximum(dy, 0.)) <= radius
+
+
+def area_footprint(index, x, y):
+    import numpy as np
 
     if index == 0:
-        return rounded(x, y, 1.01, .8, .36)
+        return rounded_rectangle(x, y, 1.01, .8, .36)
     if index == 1:
-        u, v = rotated(x, y, -TURN)
-        return rounded(u, v, 1.05, .83, .4) & ~rounded(u, v, .78, .56, .13)
+        return rounded_rectangle(x, y, 1.05, .83, .4) & ~rounded_rectangle(x, y, .78, .56, .13)
     if index == 2:
         return (x / 1.03) ** 2 + (y / .69) ** 2 <= 1.
     if index == 3:
@@ -164,18 +215,70 @@ def footprint(index, x, y):
             (((x - ISLANDS[1][0]) / .38) ** 2 + ((y - ISLANDS[1][1]) / .58) ** 2 <= 1.))
 
 
-def interior_mask(index, x, y):
+def structural_footprint(index, x, y):
+    import numpy as np
+
+    if index == 0:
+        cavity = rounded_rectangle(x, y, .62, .62, .22)
+        opening = (x >= .62) & (np.abs(y) < .24)
+        return rounded_rectangle(x, y, .96, .96, .56) & ~cavity & ~opening
+
+    # Check the straight interiors well outside the convex tip fillets, where
+    # the solid is the union of the web and the two/one flange strips.
+    if index == 1:
+        top = (x >= -.99) & (x <= .2) & (y >= .63)
+        bottom = (x >= -.2) & (x <= .99) & (y <= -.63)
+        tip = np.hypot(x + .99, y - .63) < .14
+        other_tip = np.hypot(x - .99, y + .63) < .14
+        return (np.abs(y) <= .97) & ((np.abs(x) <= .2) | top | bottom) & ~tip & ~other_tip
+
+    u = np.abs(x)
+    if index == 2:
+        bottom_face = -.81 + (.95 - u) * math.tan(.27)
+        top_face = .76 - (.60 - u) * math.tan(-.43)
+        bottom = (u <= .95) & (y <= bottom_face)
+        top = (u <= .60) & (y >= top_face)
+        tip = (np.hypot(u - .95, y + .81) < .12) | (np.hypot(u - .60, y - .76) < .12)
+        return (np.abs(y) <= 1.11) & ((u <= .21) | top | bottom) & ~tip
+
+    underside = .64 + (u - .55) * math.tan(.13)
+    flange = (u <= 1.1) & (y >= underside)
+    web = u <= .275 + y * math.tan(.17)
+    flange_tip = np.hypot(u - 1.1, y - (.64 + .55 * math.tan(.13))) < .18
+    web_tip = np.hypot(u - (.275 - .95 * math.tan(.17)), y + .95) < .11
+    return (np.abs(y) <= .95) & (flange | web) & ~flange_tip & ~web_tip
+
+
+FIXTURES = {
+    "area": Fixture((
+        Profile("Rounded rectangle", (-2.8, 1.25), (.12, .72, .83)),
+        Profile("Mapped hollow rectangle", (0., 1.25), (.85, .25, .09), math.radians(27.)),
+        Profile("Ellipse", (2.8, 1.25), (.7, .19, .79)),
+        Profile("Trapezium", (-2.8, -1.25), (.18, .82, .31)),
+        Profile("Butt-ended centreline", (0., -1.25), (.88, .67, .10)),
+        Profile("Composite islands", (2.8, -1.25), (.26, .42, .91)),
+    ), AREA_WITNESSES, area_step_profiles, area_footprint),
+    "structural": Fixture((
+        Profile("Lipped C channel", (-1.85, 1.35), (.12, .72, .83)),
+        Profile("Mapped Z section", (1.85, 1.35), (.85, .25, .09), math.radians(18.)),
+        Profile("Asymmetric I section", (-1.85, -1.35), (.7, .19, .79)),
+        Profile("Sloped T section", (1.85, -1.35), (.18, .82, .31)),
+    ), STRUCTURAL_WITNESSES, structural_step_profiles, structural_footprint),
+}
+
+
+def interior_mask(fixture, index, x, y):
     # Classify only pixels at least three pixels from the analytic boundary.
     # This allows the fixed-pitch conic tessellation and subpixel TAA motion.
     pixels = 2. * (DISTANCE - DEPTH) * math.tan(math.radians(FOV / 2.)) / HEIGHT
     d = 3. * pixels
-    solid = footprint(index, x, y)
+    solid = fixture.footprint(index, x, y)
     for dx, dy in ((d, 0.), (-d, 0.), (0., d), (0., -d), (d, d), (d, -d), (-d, d), (-d, -d)):
-        solid = solid & footprint(index, x + dx, y + dy)
+        solid = solid & fixture.footprint(index, x + dx, y + dy)
     return solid
 
 
-def check_pixels(image):
+def check_pixels(image, fixture):
     import numpy as np
     from PIL import Image
 
@@ -189,14 +292,17 @@ def check_pixels(image):
     yy, xx = np.mgrid[:HEIGHT, :WIDTH]
     x, y = (xx + .5 - WIDTH / 2.) * dx, (HEIGHT / 2. - yy - .5) * dx
     results = {}
-    for index, (cx, cy) in enumerate(CENTERS):
-        solid = interior_mask(index, x - cx, y - cy)
+    for index, product in enumerate(fixture.products):
+        cx, cy = product.center
+        u, v = rotated(x - cx, y - cy, -product.map_turn)
+        solid = interior_mask(fixture, index, u, v)
         lit = pixels[solid].mean(axis=0)
         contrast = float(lit.max() - lit.min())
         coverage = float(np.mean(visible[solid]))
-        require(coverage >= .97 and contrast >= 20. and int(np.sum(solid)) >= 350,
-                f"Missing, unlit, or unstyled {NAMES[index]} interior: {coverage}, {lit.tolist()}")
-        results[NAMES[index]] = {"interiorPixels": int(np.sum(solid)), "visibleFraction": coverage,
+        interior_pixels = int(np.sum(solid))
+        require(interior_pixels >= 350 and coverage >= .97 and contrast >= 20.,
+                f"Missing, unlit, or unstyled {product.name} interior: {coverage}, {lit.tolist()}")
+        results[product.name] = {"interiorPixels": interior_pixels, "visibleFraction": coverage,
                                  "meanRgb8": lit.tolist(), "meanChannelContrast": contrast}
     return results
 
@@ -205,7 +311,7 @@ def read_state(path):
     return json.loads(path.with_suffix(".telemetry.json").read_bytes())
 
 
-def record(renderer, output, model, sequence, frames, technique, taa):
+def record(renderer, output, model, sequence, frames, technique, taa, fixture):
     import numpy as np
 
     base = output / f"{technique}-taa{int(taa)}.png"
@@ -232,30 +338,32 @@ def record(renderer, output, model, sequence, frames, technique, taa):
     scene = state["scene"]
     require(not scene["primary"] and Path(scene["auxiliary"]).resolve() == model, f"Wrong IFC model: {scene}")
     report = scene["import"]
-    require(report["status"] == "Complete" and report["sourceProducts"] == report["importedProducts"] == len(NAMES) and
+    require(report["status"] == "Complete" and report["sourceProducts"] == report["importedProducts"] == len(fixture.products) and
             report["skippedProducts"] == report["partialProducts"] == 0 and not report["representationWarnings"], report)
     witnesses = {}
-    for frame, (index, label, point, positive) in zip(frames, WITNESSES, strict=True):
+    for frame, (index, label, point, positive) in zip(frames, fixture.witnesses, strict=True):
+        product = fixture.products[index]
         frame_path = base.with_name(f"{base.stem}.frame-{frame:04d}.png")
         sample = read_state(frame_path)
         depth = sample["depthProbe"]["opaque"]
-        require(sample["depthProbe"]["pixel"] == project(index, point), sample["depthProbe"])
+        require(sample["depthProbe"]["pixel"] == project(product, point), sample["depthProbe"])
         if positive:
             matrix = np.asarray(sample["camera"]["viewProjColumns"]).T
             clip = matrix @ [0., 0., DEPTH, 1.]
             require(depth is not None and abs(depth - clip[2] / clip[3]) < 2e-6,
-                    f"{NAMES[index]} {label} misses the front cap: {depth}")
+                    f"{product.name} {label} misses the front cap: {depth}")
         else:
-            require(depth is None or depth < 1e-7, f"{NAMES[index]} {label} is unexpectedly filled: {depth}")
-        witnesses[f"{NAMES[index]} {label}"] = depth
+            require(depth is None or depth < 1e-7, f"{product.name} {label} is unexpectedly filled: {depth}")
+        witnesses[f"{product.name} {label}"] = depth
     return dict(technique=technique, taa=taa, revision=state["build"]["revision"], imported=report,
-                footprints=check_pixels(base), depthWitnesses=witnesses, command=command, log=str(log))
+                footprints=check_pixels(base, fixture), depthWitnesses=witnesses, command=command, log=str(log))
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--fixture", choices=FIXTURES, default="area")
     parser.add_argument("--managed-output", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
     args = parser.parse_args()
@@ -268,18 +376,20 @@ def main():
         output = Path(tempfile.mkdtemp(prefix="run-", dir=output))
     else:
         output.mkdir(parents=True)
-    model, sequence = output / "area-profiles.ifc", output / "depth-witnesses.json"
-    fixture(model)
-    frames = write_sequence(sequence)
+    fixture = FIXTURES[args.fixture]
+    model, sequence = output / f"{args.fixture}-profiles.ifc", output / "depth-witnesses.json"
+    write_fixture(model, fixture)
+    frames = write_sequence(sequence, fixture)
     if args.generate_only:
         return 0
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     results = []
     for technique in TECHNIQUES:
         for taa in (False, True):
-            results.append(record(renderer, output, model, sequence, frames, technique, taa))
+            results.append(record(renderer, output, model, sequence, frames, technique, taa, fixture))
             save_json(output / "results.json", results)
-            print(f"PASS {technique}, TAA {taa}: six IFC4 profile footprints and {len(frames)} depth samples", flush=True)
+            print(f"PASS {technique}, TAA {taa}: {len(fixture.products)} {args.fixture} IFC4 profile footprints and "
+                  f"{len(frames)} depth samples", flush=True)
     return 0
 
 

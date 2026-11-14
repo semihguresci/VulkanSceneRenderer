@@ -8,6 +8,7 @@
 #include "IfcAreaProfileGeometry.h"
 #include "IfcBrepFaceGeometry.h"
 #include "IfcCurveReader.h"
+#include "IfcStructuralAreaShapes.h"
 
 #include <algorithm>
 #include <array>
@@ -380,6 +381,101 @@ bool isIdentChar(char c) {
   return std::isalnum(static_cast<unsigned char>(c)) != 0 || c == '_';
 }
 
+enum class ProfileSchema { Unspecified, Ifc2x3, Ifc4 };
+
+// Read FILE_SCHEMA only from top-level header statements. A model name,
+// description or STEP comment may contain the same text.
+ProfileSchema profileSchema(std::string_view step, std::stop_token stop) {
+  step = step.substr(0, std::min<size_t>(step.size(), 1u << 20));
+  bool inHeader = false;
+  size_t statement = 0;
+  size_t nextCancellationCheck = 0;
+  bool literal = false;
+  for (size_t pos = 0; pos < step.size(); ++pos) {
+    if (pos >= nextCancellationCheck) {
+      container::util::checkModelImportCancellation(stop);
+      nextCancellationCheck = pos + 4096;
+    }
+    const char c = step[pos];
+    if (c == '\'') {
+      if (literal && pos + 1 < step.size() && step[pos + 1] == '\'')
+        ++pos;
+      else
+        literal = !literal;
+      continue;
+    }
+    if (literal)
+      continue;
+    if (step.substr(pos, 2) == "/*") {
+      const auto end = step.find("*/", pos + 2);
+      if (end == std::string_view::npos)
+        break;
+      if (statement == pos)
+        statement = end + 2;
+      pos = end + 1;
+      continue;
+    }
+    if (pos == statement && std::isspace(static_cast<unsigned char>(c))) {
+      ++statement;
+      continue;
+    }
+    if (c == '#' && !inHeader)
+      break;
+    if (c != ';')
+      continue;
+    auto row = step.substr(statement, pos - statement);
+    statement = pos + 1;
+    const auto keywordEnd = row.find_first_not_of("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_0123456789");
+    const auto keyword = upperAscii(std::string(row.substr(0, keywordEnd)));
+    if (keyword == "HEADER")
+      inHeader = true;
+    if (!inHeader)
+      continue;
+    if (keyword == "ENDSEC")
+      break;
+    if (keyword != "FILE_SCHEMA")
+      continue;
+    row.remove_prefix(keyword.size());
+    const auto skipTrivia = [&] {
+      while (!row.empty()) {
+        if (std::isspace(static_cast<unsigned char>(row.front()))) {
+          row.remove_prefix(1);
+        } else if (row.starts_with("/*")) {
+          const auto end = row.find("*/", 2);
+          row.remove_prefix(end == std::string_view::npos ? row.size() : end + 2);
+        } else {
+          break;
+        }
+      }
+    };
+    const auto take = [&](char delimiter) {
+      skipTrivia();
+      if (row.empty() || row.front() != delimiter)
+        return false;
+      row.remove_prefix(1);
+      return true;
+    };
+    if (!take('(') || !take('(') || !take('\''))
+      break;
+    const auto quote = row.find('\'');
+    if (quote == std::string_view::npos || quote > 64)
+      break;
+    const auto schema = upperAscii(std::string(row.substr(0, quote)));
+    row.remove_prefix(quote + 1);
+    if (!take(')') || !take(')'))
+      break;
+    skipTrivia();
+    if (!row.empty())
+      break;
+    if (schema == "IFC2X3" || schema.starts_with("IFC2X3_"))
+      return ProfileSchema::Ifc2x3;
+    if (schema == "IFC4" || schema.starts_with("IFC4_") || schema.starts_with("IFC4X"))
+      return ProfileSchema::Ifc4;
+    break;
+  }
+  return ProfileSchema::Unspecified;
+}
+
 size_t findMatchingParen(std::string_view text, size_t openPos, std::stop_token stop) {
   size_t depth = 0;
   bool inString = false;
@@ -607,9 +703,9 @@ struct ReferenceWalkBudget {
 class IfcModelBuilder {
 public:
   IfcModelBuilder(std::unordered_map<uint32_t, Entity> entities,
-                  float importScale, std::stop_token stop)
+                  float importScale, std::stop_token stop, ProfileSchema schema)
       : entities_(std::move(entities)),
-        importScale_(sanitizeImportScale(importScale)), stop_(stop) {
+        importScale_(sanitizeImportScale(importScale)), stop_(stop), profileSchema_(schema) {
     sortedEntityIds_.reserve(entities_.size());
     for (const auto &[id, _] : entities_) {
       checkCancellation();
@@ -1013,6 +1109,20 @@ private:
         profile->type == "IFCTRAPEZIUMPROFILEDEF") {
       return readExtendedAreaProfile(*profile, error, samplingScale);
     }
+    if (profile->type == "IFCCSHAPEPROFILEDEF" ||
+        profile->type == "IFCZSHAPEPROFILEDEF" ||
+        profile->type == "IFCTSHAPEPROFILEDEF" ||
+        profile->type == "IFCASYMMETRICISHAPEPROFILEDEF") {
+      if (enumValue(argAt(*profile, 0)) != "AREA") {
+        error = "expected a structural AREA profile";
+        return {};
+      }
+      auto loop = readAdditionalStructuralProfile(*profile, error, samplingScale);
+      if (loop.empty())
+        return {};
+      ProfileLoops loops{std::move(loop)};
+      return placeAreaProfile(*profile, loops, error) ? std::move(loops) : ProfileLoops{};
+    }
     if (profile->type == "IFCRECTANGLEPROFILEDEF" ||
         profile->type == "IFCCIRCLEPROFILEDEF" ||
         profile->type == "IFCCIRCLEHOLLOWPROFILEDEF" ||
@@ -1185,6 +1295,10 @@ private:
           return {};
       }
     }
+    return placeAreaProfile(profile, loops, error) ? std::move(loops) : ProfileLoops{};
+  }
+
+  bool placeAreaProfile(const Entity &profile, ProfileLoops &loops, std::string &error) const {
     glm::dvec2 origin(0), xAxis(1, 0);
     if (const auto *arg = argAt(profile, 2); arg && arg->kind != StepValue::Kind::Omitted) {
       const auto positionRef = refValue(arg);
@@ -1192,7 +1306,7 @@ private:
       if (!position || position->type != "IFCAXIS2PLACEMENT2D" ||
           !readProfilePosition(*position, origin, xAxis)) {
         error = "invalid profile placement, expected a finite 2D origin and nonzero 2D direction";
-        return {};
+        return false;
       }
     }
     const glm::dvec2 yAxis(-xAxis.y, xAxis.x);
@@ -1202,11 +1316,11 @@ private:
         point = {float(placed.x), float(placed.y), 0};
         if (!std::isfinite(point.x) || !std::isfinite(point.y)) {
           error = "profile exceeds renderer coordinate precision";
-          return {};
+          return false;
         }
       }
     }
-    return loops;
+    return true;
   }
 
   bool readProfilePosition(const Entity &position, glm::dvec2 &origin, glm::dvec2 &xAxis) const {
@@ -1348,6 +1462,141 @@ private:
       radii = {0, 0, *edge, *fillet, *fillet, *edge,
                0, 0, *edge, *fillet, *fillet, *edge};
     }
+    std::string error;
+    return sampleStructuralProfile({std::move(corners), std::move(radii)}, samplingScale, error);
+  }
+
+  std::vector<glm::vec3> readAdditionalStructuralProfile(
+      const Entity &profile, std::string &error, double samplingScale) const {
+    const auto specified = [&](size_t index) {
+      const auto *arg = argAt(profile, index);
+      return arg && arg->kind != StepValue::Kind::Omitted;
+    };
+    const auto value = [&](size_t index, std::string_view name,
+                           std::optional<double> fallback = std::nullopt) {
+      const auto number = specified(index) ? numberValue(argAt(profile, index)) : fallback;
+      if (!number || !std::isfinite(*number)) {
+        if (error.empty())
+          error = std::string(name) + " must be a finite number";
+        return 0.0;
+      }
+      return *number;
+    };
+    const auto slope = [&](size_t index, std::string_view name) {
+      const auto angle = value(index, name, 0);
+      if (angle == 0)
+        return 0.0;
+      const auto angleScale = projectPlaneAngleScale();
+      const double radians = angle * angleScale.value_or(1.0);
+      if (!angleScale || !std::isfinite(radians) ||
+          std::abs(radians) >= std::acos(-1.0) * .5) {
+        if (error.empty())
+          error = std::string(name) + " must resolve to a finite angle between -90 and 90 degrees";
+        return 0.0;
+      }
+      return radians;
+    };
+    std::optional<detail::IfcStructuralAreaShape> shape;
+    if (profile.type == "IFCASYMMETRICISHAPEPROFILEDEF") {
+      const size_t fields = profile.args.list.size();
+      const bool legacy = profileSchema_ == ProfileSchema::Ifc2x3;
+      if (fields > (legacy ? 12u : 15u)) {
+        error = "asymmetric I profile has unexpected flange fields for the declared schema";
+        return {};
+      }
+      if (profileSchema_ == ProfileSchema::Unspecified && fields == 12 && specified(11)) {
+        error = "ambiguous centroid or bottom edge radius; declare an IFC2X3 or IFC4 FILE_SCHEMA";
+        return {};
+      }
+      const double depth = value(4, "OverallDepth"), web = value(5, "WebThickness");
+      detail::IfcAsymmetricIFlange bottom{
+          value(3, "BottomFlangeWidth"), value(6, "BottomFlangeThickness"),
+          value(7, "BottomFlangeFilletRadius", 0), 0, 0};
+      detail::IfcAsymmetricIFlange top{
+          value(8, "TopFlangeWidth"), value(9, "TopFlangeThickness", bottom.thickness),
+          value(10, "TopFlangeFilletRadius", legacy ? bottom.filletRadius : 0), 0, 0};
+      if (!legacy) {
+        bottom.edgeRadius = value(11, "BottomFlangeEdgeRadius", 0);
+        bottom.slopeRadians = slope(12, "BottomFlangeSlope");
+        top.edgeRadius = value(13, "TopFlangeEdgeRadius", 0);
+        top.slopeRadians = slope(14, "TopFlangeSlope");
+      }
+      if (error.empty())
+        shape = detail::makeIfcAsymmetricIShapeArea(depth, web, bottom, top, error);
+    } else {
+      const auto depth = value(3, "Depth");
+      const bool channel = profile.type == "IFCCSHAPEPROFILEDEF";
+      const auto width = value(4, channel ? "Width" : "FlangeWidth");
+      const auto web = value(5, channel ? "WallThickness" : "WebThickness");
+      const auto flange = value(6, channel ? "Girth" : "FlangeThickness");
+      const auto root = value(7, channel ? "InternalFilletRadius" : "FilletRadius", 0);
+      if (channel) {
+        if (error.empty())
+          shape = detail::makeIfcCShapeArea(
+              depth, width, web, flange,
+              specified(7) || profileSchema_ == ProfileSchema::Ifc2x3 ? std::optional(root) : std::nullopt,
+              error);
+      } else {
+        const auto flangeEdge = value(8, profile.type == "IFCZSHAPEPROFILEDEF" ? "EdgeRadius" : "FlangeEdgeRadius", 0);
+        if (profile.type == "IFCZSHAPEPROFILEDEF") {
+          if (error.empty())
+            shape = detail::makeIfcZShapeArea(depth, width, web, flange, root, flangeEdge, error);
+        } else {
+          const auto webEdge = value(9, "WebEdgeRadius", 0);
+          const auto webSlope = slope(10, "WebSlope");
+          const auto flangeSlope = slope(11, "FlangeSlope");
+          if (error.empty())
+            shape = makeTShapeArea(depth, width, web, flange, root, flangeEdge, webEdge,
+                                   webSlope, flangeSlope, error);
+        }
+      }
+    }
+    return shape ? sampleStructuralProfile(*shape, samplingScale, error) : std::vector<glm::vec3>{};
+  }
+
+  static std::optional<detail::IfcStructuralAreaShape> makeTShapeArea(
+      double depth, double width, double web, double flange, double rootRadius,
+      double flangeRadius, double webRadius, double webSlope, double flangeSlope,
+      std::string &error) {
+    if (depth <= 0 || width <= 0 || web <= 0 || web >= width || flange <= 0 || flange >= depth) {
+      error = "T profile needs positive dimensions, WebThickness < FlangeWidth and FlangeThickness < Depth";
+      return std::nullopt;
+    }
+    if (rootRadius < 0 || flangeRadius < 0 || webRadius < 0) {
+      error = "T profile fillet and edge radii must be nonnegative";
+      return std::nullopt;
+    }
+    // In the buildingSMART section diagram the web thickness is taken at
+    // y=0 and the flange thickness is taken a quarter-width in from a tip.
+    // Solve the two inner faces together before fitting their root fillet.
+    const double halfWidth = width / 2, halfDepth = depth / 2;
+    const double webTaper = std::tan(webSlope), flangeTaper = std::tan(flangeSlope);
+    const double flangeIntercept = halfDepth - flange - (halfWidth / 2) * flangeTaper;
+    const double denominator = 1 - webTaper * flangeTaper;
+    if (std::abs(denominator) < 1e-10) {
+      error = "T profile web and flange faces are nearly parallel";
+      return std::nullopt;
+    }
+    const double rootY = (flangeIntercept + web * .5 * flangeTaper) / denominator;
+    const double rootX = web * .5 + rootY * webTaper;
+    const double toeX = web * .5 - halfDepth * webTaper;
+    const double tipY = flangeIntercept + halfWidth * flangeTaper;
+    if (!std::isfinite(rootX) || !std::isfinite(rootY) ||
+        !(0 < rootX && rootX < halfWidth && 0 < toeX && toeX < halfWidth &&
+          -halfDepth < rootY && rootY < halfDepth && -halfDepth < tipY && tipY < halfDepth)) {
+      error = "T profile slopes collapse or invert the flange, web or junction";
+      return std::nullopt;
+    }
+    return detail::IfcStructuralAreaShape{
+        {{toeX, -halfDepth}, {rootX, rootY}, {halfWidth, tipY}, {halfWidth, halfDepth},
+         {-halfWidth, halfDepth}, {-halfWidth, tipY}, {-rootX, rootY}, {-toeX, -halfDepth}},
+        {webRadius, rootRadius, flangeRadius, 0, 0, flangeRadius, rootRadius, webRadius}};
+  }
+
+  std::vector<glm::vec3> sampleStructuralProfile(const detail::IfcStructuralAreaShape &shape,
+                                                 double samplingScale, std::string &error) const {
+    const auto &corners = shape.corners;
+    const auto &radii = shape.radii;
     std::vector<double> tangentDistance(corners.size(), 0);
     for (size_t i = 0; i < corners.size(); ++i) {
       if (radii[i] == 0)
@@ -1359,15 +1608,20 @@ private:
       const double halfAngle =
           std::acos(std::clamp(glm::dot(toPrevious, toNext), -1.0, 1.0)) / 2;
       tangentDistance[i] = radii[i] / std::tan(halfAngle);
-      if (!std::isfinite(tangentDistance[i]))
+      if (!std::isfinite(tangentDistance[i])) {
+        error = "fillet cannot fit a degenerate corner";
         return {};
+      }
     }
     for (size_t i = 0; i < corners.size(); ++i)
       if (tangentDistance[i] + tangentDistance[(i + 1) % corners.size()] >=
-          glm::length(corners[(i + 1) % corners.size()] - corners[i]))
+          glm::length(corners[(i + 1) % corners.size()] - corners[i])) {
+        error = "fillet or edge radii consume a profile edge";
         return {};
+      }
     std::vector<glm::vec3> loop;
     for (size_t i = 0; i < corners.size(); ++i) {
+      checkCancellation();
       const auto &corner = corners[i];
       if (radii[i] == 0) {
         loop.emplace_back(corner.x, corner.y, 0);
@@ -1388,8 +1642,10 @@ private:
       const double sweep =
           std::atan2(va.x * vb.y - va.y * vb.x, glm::dot(va, vb));
       const auto circleSegments = circleSegmentCount(radii[i], samplingScale);
-      if (!circleSegments)
+      if (!circleSegments) {
+        error = "fillet exceeds the profile tessellation budget";
         return {};
+      }
       const size_t segments = std::max(
           size_t(1), size_t(std::ceil(*circleSegments * std::abs(sweep) /
                                       (2 * std::acos(-1.0)))));
@@ -5900,6 +6156,7 @@ private:
   std::vector<uint32_t> sortedEntityIds_{};
   float importScale_{1.0f};
   std::stop_token stop_;
+  ProfileSchema profileSchema_{};
   LengthUnitMetadata unitMetadata_{};
   float unitScale_{1.0f};
   uint32_t nextMeshId_{1};
@@ -5931,7 +6188,8 @@ private:
 Model LoadFromStep(std::string_view stepText, float importScale,
                    std::stop_token stop) {
   container::util::checkModelImportCancellation(stop);
-  return IfcModelBuilder(parseEntities(stepText, stop), importScale, stop).build();
+  return IfcModelBuilder(parseEntities(stepText, stop), importScale, stop,
+                        profileSchema(stepText, stop)).build();
 }
 
 Model LoadFromFile(const std::filesystem::path &path, float importScale,

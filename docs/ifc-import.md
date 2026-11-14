@@ -48,7 +48,7 @@ checks are free of validation and synchronization errors.
 | `IFCFACETEDBREP` | Connected closed shells with planar `IFCFACE`/polyloop bounds, inner loops, bound orientation and per-face surface colors. Closed topology and outward shell orientation are checked before buffer mutation. |
 | `IFCFACETEDBREPWITHVOIDS` | Faceted outer shells with inward-facing cavity shells. Cavities must be strictly enclosed, disjoint and unnested. Repeated shells/faces, open shells and incorrect winding reject atomically. |
 | `IFCADVANCEDBREP`, `IFCADVANCEDBREPWITHVOIDS` | Planar and regular curved `IFCADVANCEDFACE` geometry on planes, cylinders, spheres, tori, explicit-knot polynomial/rational spline surfaces and supported extrusion/revolution surfaces. Shared `IFCEDGECURVE`/`IFCORIENTEDEDGE` topology, face holes, periodic bands with independent seams, seam curves and the same cavity validation are retained. Spherical pole `IFCVERTEXLOOP` bounds mesh closed spheres and caps. Edge vertices trim their native 3D curves; SameSense, boundary orientation, surface membership and opposite edge reuse are checked. Other singular charts and some periodic charts remain unsupported. |
-| `IFCEXTRUDEDAREASOLID` | Arbitrary supported closed 2D curves with voids, sharp/rounded/hollow rectangles, circles/hollow circles, ellipses, trapezia, capped linear centerlines, disjoint area composites, and L/U/I profiles with slopes and fillets. Caps and side walls face outward, including negative extrusion directions. |
+| `IFCEXTRUDEDAREASOLID` | Arbitrary supported closed 2D curves with voids, sharp/rounded/hollow rectangles, circles/hollow circles, ellipses, trapezia, capped linear centerlines, disjoint area composites and L/U/I/asymmetric I/C/T/Z sections. Caps and side walls face outward, including negative extrusion directions. |
 | Profile curves | Closed 2D polylines/indexed arcs, conics, B-splines, trims and composites use the shared curve evaluator, with at most 4,097 sampled points. Repeated consecutive polyline points are removed. Profiles must pass planarity, closure, intersection and triangulation checks. |
 | `IfcDerivedProfileDef`, `IfcMirroredProfileDef` | Transform already-supported parent profiles after their 2D placement. Translation, rotation, uniform/non-uniform positive scales and axis mirroring are supported, including nested chains. Extruded profiles retain inner loops and outward winding; swept-surface curves retain source domains, periods and section tags. Parent/profile types must agree. |
 | Opening relations | Analytic rectangular through-openings, with Manifold subtraction for supported closed solids including circular, rotated and overlapping cuts. Source placements/mapped transforms are applied in host coordinates. Failed cuts retain the original host with diagnostics; cut faces inherit the host material. |
@@ -57,7 +57,6 @@ checks are free of validation and synchronization errors.
 | `IfcSweptDiskSolid` | Solid/hollow disks on bounded 3D curves, including splines, closed loops and mitered C0 joins. Explicit extents retain the directrix's source parameter domain. Straight and open tangential line/arc paths retain their analytic conversion. Disconnected paths, detected tube overlaps, curvature folds, turns above 120 degrees and segments too short for their miters reject atomically. |
 | `IfcSweptDiskSolidPolygonal` | Polyline or omitted-segment indexed-polycurve directrices, optional circular fillets, hollow walls and closed seams. Omitted fillets retain mitered joins. Radius/segment constraints and tangent-extent overlap are checked; adjacent fillets may meet exactly. |
 | `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Arbitrary open curves and width/slope profiles are supported. Ordered tag runs support splits, merges and multiway branches using linear station interpolation. Planar piecewise-linear sharp joins use shared half-angle miters. Guide curves, crossing/reordered tags and other sharp-join configurations remain unsupported. |
-| Other parameterized profiles | Asymmetric I, C, T and Z profiles are diagnosed as unsupported for area extrusion. |
 | Auxiliary curves | Native Vulkan line lists for the concrete IFC 4.3 curve families listed below, including curves inside `IFCGEOMETRICCURVESET`. Closed paths retain their final segment; independent paths remain separate. Mapped instances, placements, units, curve colors and product identity are retained. Unbounded curves require explicit trims or segments. |
 
 Polygon triangulation uses Mapbox Earcut, a header-only vcpkg dependency
@@ -149,6 +148,27 @@ No additional library was introduced for these features.
 
 ### Extended area profiles
 
+The C and Z sections retain lip or flange handedness and the authored
+2D placement. The Z flange width includes the web thickness. An authored C
+internal radius produces concentric outer bends and square free lip ends.
+With an omitted radius, IFC4 uses sharp corners and IFC2X3 uses its zero
+inside-radius default. A C section must have enough girth for both lips.
+[C profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcCShapeProfileDef.htm)
+· [Z profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcZShapeProfileDef.htm)
+
+The T section intersects the sloped web and flange before applying the root,
+flange-tip and web-toe radii. The web thickness is measured on the horizontal
+centreline and the flange thickness one quarter of the full flange width in
+from each tip. The asymmetric I section retains independent top and bottom
+widths, thicknesses, and IFC4 radii and slopes. IFC2X3 uses the bottom flange
+values for omitted top thickness and fillet radius. Declare `FILE_SCHEMA`
+for the twelve-field form when its final field is present so that the importer
+can distinguish IFC2X3 centroid metadata from an IFC4 edge radius.
+Signed slopes honor project angle units. Folded sections and fillets that
+consume an edge produce profile diagnostics.
+[T profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcTShapeProfileDef.htm)
+· [Asymmetric I profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcAsymmetricIShapeProfileDef.htm)
+
 Hollow rectangles keep the inner and outer corner radii and the authored
 wall thickness. Rounded rectangles allow radii up to the smaller half-extent.
 Ellipse sampling uses the larger semiaxis for its chord bound. Trapezia keep
@@ -180,6 +200,8 @@ Forward and Deferred raster, with TAA off and on. Enable it with
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` and run
 `ctest -R '^ifc_area_profiles_gpu_regression$' --output-on-failure`
 from the configured build directory.
+Run `ifc_structural_area_profiles_gpu_regression` with the same switch for
+the C, Z, T and asymmetric I fixture.
 
 The archived 2014 buildingSMART `basin-faceted-brep.ifc` now reports its invalid
 closed shell (`#851`, B-rep `#852`). An independent inspection finds 120 repeated

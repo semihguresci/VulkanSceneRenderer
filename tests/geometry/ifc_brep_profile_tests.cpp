@@ -87,6 +87,34 @@ void watertight(const Model &model) {
     EXPECT_EQ(edge.second, 0);
   }
 }
+
+void expectProfileBounds(const Model &model, glm::dvec3 minimum,
+                         glm::dvec3 maximum, double divisor = 1) {
+  ASSERT_FALSE(model.vertices.empty());
+  glm::dvec3 actualMin(std::numeric_limits<double>::infinity());
+  glm::dvec3 actualMax(-actualMin);
+  for (const auto &vertex : model.vertices) {
+    const glm::dvec3 point = glm::dvec3(vertex.position) / divisor;
+    actualMin = glm::min(actualMin, point);
+    actualMax = glm::max(actualMax, point);
+  }
+  EXPECT_LT(glm::length(actualMin - minimum), 1e-5);
+  EXPECT_LT(glm::length(actualMax - maximum), 1e-5);
+}
+
+void expectProfileArc(const Model &model, glm::dvec2 center, double radius,
+                      glm::dvec2 toward) {
+  SCOPED_TRACE(::testing::Message() << "Arc center " << center.x << ", "
+                                    << center.y << " with radius " << radius);
+  const auto bisector = glm::normalize(toward);
+  EXPECT_TRUE(std::any_of(
+      model.vertices.begin(), model.vertices.end(), [&](const auto &vertex) {
+        const auto delta = glm::dvec2(vertex.position) - center;
+        return std::abs(glm::length(delta) - radius) < 1e-5 &&
+               glm::dot(delta, bisector) > .92 * radius;
+      }));
+}
+
 std::string degrees() {
   return "#70=IFCSIUNIT(*,.PLANEANGLEUNIT.,$,.RADIAN.);"
          "#71=IFCMEASUREWITHUNIT(IFCPLANEANGLEMEASURE(0.017453292519943295),#"
@@ -411,6 +439,229 @@ TEST(IfcStructuralProfiles, CollapsedAndAmbiguousSlopesRejectAtomically) {
   EXPECT_TRUE(invalidUnits.vertices.empty());
 }
 
+TEST(IfcStructuralProfiles, CShapeBendsPreserveWallThicknessAndGirth) {
+  constexpr double corner = 1 - pi / 4;
+  for (const std::string radius : {"$", "0.", "0.4"}) {
+    SCOPED_TRACE(radius);
+    const auto source =
+        fixture("#5=IFCCSHAPEPROFILEDEF(.AREA.,$,$,10.,6.,0.5,2.," + radius +
+                "); #10=IFCEXTRUDEDAREASOLID(#5,$,$,3.);");
+    const auto model = LoadFromStep(source);
+    complete(model);
+    watertight(model);
+    expectProfileBounds(model, {-3, -5, 0}, {3, 5, 3});
+
+    // The sharp section consists of a back web, two shelves and two lips.
+    // Concentric bends add the inner corner deficit and subtract the outer one.
+    const double inner = radius == "0.4" ? .4 : 0.;
+    const double outer = radius == "$" ? 0. : inner + .5;
+    const double sharpArea = .5 * 10 + 2 * .5 * (6 - .5) + 2 * .5 * (2 - .5);
+    EXPECT_NEAR(volume(model),
+                (sharpArea + 4 * corner * (inner * inner - outer * outer)) * 3,
+                outer > 0 ? .03 : 1e-5);
+    if (outer > 0) {
+      for (double x : {-1., 1.})
+        for (double y : {-1., 1.}) {
+          const glm::dvec2 center(x * (3 - outer), y * (5 - outer));
+          expectProfileArc(model, center, outer, {x, y});
+          if (inner > 0)
+            expectProfileArc(model, center, inner, {x, y});
+        }
+    }
+    if (inner > 0)
+      exportProfileFixture("area-c-channel", source);
+  }
+}
+
+TEST(IfcStructuralProfiles, ZShapeFlangeWidthRunsToOppositeWebFace) {
+  const auto source =
+      fixture("#5=IFCZSHAPEPROFILEDEF(.AREA.,$,$,10.,5.,2.,1.,0.6,0.25);"
+              "#10=IFCEXTRUDEDAREASOLID(#5,$,$,3.);");
+  const auto model = LoadFromStep(source);
+  complete(model);
+  watertight(model);
+  expectProfileBounds(model, {-4, -5, 0}, {4, 5, 3});
+  const double sharpArea = 2 * 10 + 2 * (5 - 2);
+  EXPECT_NEAR(volume(model),
+              (sharpArea + 2 * (1 - pi / 4) * (.6 * .6 - .25 * .25)) * 3, .02);
+  for (double sign : {-1., 1.}) {
+    expectProfileArc(model, sign * glm::dvec2(-1.6, 3.4), .6,
+                     sign * glm::dvec2(1, 1));
+    expectProfileArc(model, sign * glm::dvec2(3.75, -4.25), .25,
+                     sign * glm::dvec2(1, 1));
+  }
+  exportProfileFixture("area-z-section", source);
+}
+
+TEST(IfcStructuralProfiles, NestedZShapePlacementRetainsMillimetreBounds) {
+  auto source = fixture(
+      "#2=IFCCARTESIANPOINT((1000.,2000.)); #3=IFCDIRECTION((0.,1.));"
+      "#4=IFCAXIS2PLACEMENT2D(#2,#3);"
+      "#5=IFCZSHAPEPROFILEDEF(.AREA.,$,#4,10000.,5000.,2000.,1000.,$,$);"
+      "#6=IFCMIRROREDPROFILEDEF(.AREA.,$,#5,*,$);"
+      "#7=IFCCARTESIANPOINT((8000.,-3000.));"
+      "#8=IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM($,$,#7,1.5,0.5);"
+      "#9=IFCDERIVEDPROFILEDEF(.AREA.,$,#6,#8,$);"
+      "#11=IFCDIRECTION((0.,0.,-1.));"
+      "#10=IFCEXTRUDEDAREASOLID(#9,$,#11,3000.);");
+  const auto unit = source.find(".LENGTHUNIT.,$,.METRE.");
+  ASSERT_NE(unit, std::string::npos);
+  source.replace(unit, std::string_view(".LENGTHUNIT.,$,.METRE.").size(),
+                 ".LENGTHUNIT.,.MILLI.,.METRE.");
+  const auto model = LoadFromStep(source);
+  complete(model);
+  watertight(model);
+  // In metres the 2D transformations map (x,y) to (6.5+1.5*y,-2+.5*x).
+  expectProfileBounds(model, {-1, -4, -3}, {14, 0, 0}, 1000);
+  EXPECT_NEAR(volume(model) / 1e9, 26 * 3 * .75, 1e-5);
+}
+
+TEST(IfcStructuralProfiles, TShapeRoundsWebAndFlangeEdgesIndependently) {
+  const auto source = fixture(
+      "#5=IFCTSHAPEPROFILEDEF(.AREA.,$,$,8.,6.,2.,1.,0.55,0.25,0.35,$,$);"
+      "#10=IFCEXTRUDEDAREASOLID(#5,$,$,3.);");
+  const auto model = LoadFromStep(source);
+  complete(model);
+  watertight(model);
+  expectProfileBounds(model, {-3, -4, 0}, {3, 4, 3});
+  const double sharpArea = 6 + 7 * 2;
+  EXPECT_NEAR(
+      volume(model),
+      (sharpArea + 2 * (1 - pi / 4) * (.55 * .55 - .25 * .25 - .35 * .35)) * 3,
+      .02);
+  for (double sign : {-1., 1.}) {
+    expectProfileArc(model, {sign * 1.55, 2.45}, .55, {-sign, 1});
+    expectProfileArc(model, {sign * 2.75, 3.25}, .25, {sign, -1});
+    expectProfileArc(model, {sign * .65, -3.65}, .35, {sign, -1});
+  }
+  exportProfileFixture("area-t-section", source);
+}
+
+TEST(IfcStructuralProfiles, TShapeSignedSlopesHonorReferenceThicknesses) {
+  for (const auto &[web, flange] :
+       std::array<std::pair<double, double>, 2>{{{.08, -.11}, {-.07, .12}}}) {
+    for (bool degreeUnits : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << web << ", " << flange << ", degrees " << degreeUnits);
+      const double angleUnit = degreeUnits ? 180 / pi : 1;
+      const auto source =
+          fixture("#5=IFCTSHAPEPROFILEDEF(.AREA.,$,$,8.,6.,2.,1.,$,$,$," +
+                  number(std::atan(web) * angleUnit) + "," +
+                  number(std::atan(flange) * angleUnit) +
+                  "); #10=IFCEXTRUDEDAREASOLID(#5,$,$,3.);" +
+                  (degreeUnits ? degrees() : ""));
+      const auto model = LoadFromStep(source);
+      complete(model);
+      watertight(model);
+      expectProfileBounds(model, {-3, -4, 0}, {3, 4, 3});
+
+      // The thickness markers in the IFC figure sit at y=0 on the web and
+      // one quarter of the flange width from the tip, at x=1.5 here.
+      const double yRoot = (3 - flange / 2) / (1 - web * flange);
+      const double xRoot = 1 + yRoot * web;
+      const double xBottom = 1 - 4 * web;
+      const double yTip = 3 + 1.5 * flange;
+      const double webArea = (4 + yRoot) * (xBottom + xRoot);
+      const double centralFlangeArea = (4 - yRoot) * 2 * xRoot;
+      const double overhangArea = (3 - xRoot) * (8 - yRoot - yTip);
+      EXPECT_NEAR(volume(model),
+                  (webArea + centralFlangeArea + overhangArea) * 3, 2e-5);
+    }
+  }
+}
+
+TEST(IfcStructuralProfiles,
+     AsymmetricIShapeUsesIndependentFlangeSlopesAndRadii) {
+  constexpr double bottomSlope = .12, topSlope = -.18;
+  constexpr double bottomRoot = .7, bottomEdge = .18;
+  constexpr double topRoot = .45, topEdge = .27;
+  for (bool degreeUnits : {false, true}) {
+    const double angleUnit = degreeUnits ? 180 / pi : 1;
+    const auto source =
+        fixture("#5=IFCASYMMETRICISHAPEPROFILEDEF(.AREA.,$,$,9.,10.,2.,1.4,0.7,"
+                "6.,1.,0.45,0.18," +
+                number(std::atan(bottomSlope) * angleUnit) + ",0.27," +
+                number(std::atan(topSlope) * angleUnit) +
+                "); #10=IFCEXTRUDEDAREASOLID(#5,$,$,3.);" +
+                (degreeUnits ? degrees() : ""));
+    const auto model = LoadFromStep(source);
+    complete(model);
+    watertight(model);
+    expectProfileBounds(model, {-4.5, -5, 0}, {4.5, 5, 3});
+
+    // Begin with the whole web and the uniform-thickness flange overhangs.
+    // Each sloped flange adds two triangular wedges. Circular fillets add
+    // tangent-minus-sector areas at the web roots and remove them at the tips.
+    const double sharpArea = 2 * 10 + (9 - 2) * 1.4 + (6 - 2) * 1. +
+                             3.5 * 3.5 * bottomSlope + 2 * 2 * topSlope;
+    const auto cornerFactor = [](double taper) {
+      const double halfTurn = (pi / 2 - std::atan(taper)) / 2;
+      return std::tan(halfTurn) - halfTurn;
+    };
+    const double area =
+        sharpArea +
+        2 * cornerFactor(bottomSlope) *
+            (bottomRoot * bottomRoot - bottomEdge * bottomEdge) +
+        2 * cornerFactor(topSlope) * (topRoot * topRoot - topEdge * topEdge);
+    EXPECT_NEAR(volume(model), area * 3, .025);
+
+    const auto checkFlange = [&](double halfWidth, double thickness,
+                                 double taper, double root, double edge,
+                                 double ySign) {
+      const auto underside = [&](double x) {
+        return -5 + thickness + taper * (halfWidth - x);
+      };
+      const double perpendicular = std::hypot(1., taper);
+      const glm::dvec2 rootCenter(1 + root,
+                                  underside(1 + root) + root * perpendicular);
+      const glm::dvec2 edgeCenter(
+          halfWidth - edge, underside(halfWidth - edge) - edge * perpendicular);
+      for (double side : {-1., 1.}) {
+        const glm::dvec2 orient(side, ySign);
+        expectProfileArc(model, orient * rootCenter, root,
+                         orient * (glm::dvec2(1, underside(1)) - rootCenter));
+        expectProfileArc(model, orient * edgeCenter, edge,
+                         orient * (glm::dvec2(halfWidth, underside(halfWidth)) -
+                                   edgeCenter));
+      }
+    };
+    checkFlange(4.5, 1.4, bottomSlope, bottomRoot, bottomEdge, 1);
+    checkFlange(3, 1, topSlope, topRoot, topEdge, -1);
+    if (!degreeUnits)
+      exportProfileFixture("area-asymmetric-i-section", source);
+  }
+}
+
+TEST(IfcStructuralProfiles,
+     AsymmetricIShapeReadsIfc2x3DefaultsAndCentroidMetadata) {
+  for (bool explicitTop : {false, true}) {
+    SCOPED_TRACE(explicitTop);
+    const std::string upperFlange = explicitTop ? "1.,0.35," : "$,$,";
+    auto source = fixture(
+        "#2=IFCCARTESIANPOINT((0.,0.)); #4=IFCAXIS2PLACEMENT2D(#2,$);"
+        "#5=IFCASYMMETRICISHAPEPROFILEDEF(.AREA.,$,#4,9.,10.,2.,1.5,0.6,6.," +
+        upperFlange + "2.4); #10=IFCEXTRUDEDAREASOLID(#5,$,$,3.);");
+    source.insert(source.find("DATA;"),
+                  "HEADER; FILE_SCHEMA(('IFC2X3')); ENDSEC; ");
+    const auto model = LoadFromStep(source);
+    complete(model);
+    watertight(model);
+    expectProfileBounds(model, {-4.5, -5, 0}, {4.5, 5, 3});
+
+    const double topThickness = explicitTop ? 1. : 1.5;
+    const double topRadius = explicitTop ? .35 : .6;
+    const double area = 2 * 10 + (9 - 2) * 1.5 + (6 - 2) * topThickness +
+                        2 * (1 - pi / 4) * (.6 * .6 + topRadius * topRadius);
+    EXPECT_NEAR(volume(model), area * 3, .015);
+    for (double side : {-1., 1.}) {
+      expectProfileArc(model, {side * 1.6, -2.9}, .6, {-side, -1});
+      expectProfileArc(model,
+                       {side * (1 + topRadius), 5 - topThickness - topRadius},
+                       topRadius, {-side, 1});
+    }
+  }
+}
+
 TEST(IfcStructuralProfiles, RoundedAndHollowRectanglesPreserveIndependentCornerRadii) {
   const auto roundedArea = [](double width, double height, double radius) {
     return width * height - (4 - pi) * radius * radius;
@@ -660,6 +911,28 @@ TEST(IfcStructuralProfiles, InvalidExtendedProfilesRetireEveryFragmentAndKeepFal
     const char *definition;
   };
   const std::array cases{
+      Case{"IFCCSHAPEPROFILEDEF",
+           "#5=IFCCSHAPEPROFILEDEF(.AREA.,$,$,10.,6.,0.5,0.5,$);"},
+      Case{"IFCCSHAPEPROFILEDEF",
+           "#5=IFCCSHAPEPROFILEDEF(.AREA.,$,$,10.,6.,0.5,2.,2.6);"},
+      Case{"IFCZSHAPEPROFILEDEF",
+           "#5=IFCZSHAPEPROFILEDEF(.AREA.,$,$,10.,2.,2.,1.,$,$);"},
+      Case{"IFCZSHAPEPROFILEDEF",
+           "#5=IFCZSHAPEPROFILEDEF(.AREA.,$,$,10.,5.,2.,1.,0.6,1.1);"},
+      Case{"IFCTSHAPEPROFILEDEF",
+           "#5=IFCTSHAPEPROFILEDEF(.AREA.,$,$,8.,6.,2.,1.,$,$,$,0.3,$);"},
+      Case{"IFCTSHAPEPROFILEDEF",
+           "#5=IFCTSHAPEPROFILEDEF(.AREA.,$,$,8.,6.,2.,1.,0.5,1.1,0.3,$,$);"},
+      Case{"IFCASYMMETRICISHAPEPROFILEDEF",
+           "#5=IFCASYMMETRICISHAPEPROFILEDEF(.AREA.,$,$,9.,8.,1.,1.5,$,3.,6.,$,"
+           "$,0.6435011087932844,$,-1.2587542052323633);"},
+      Case{"IFCASYMMETRICISHAPEPROFILEDEF",
+           "#5=IFCASYMMETRICISHAPEPROFILEDEF(.AREA.,$,$,9.,10.,2.,1.5,0.6,6.,$,"
+           "$,2.4);"},
+      Case{"IFCASYMMETRICISHAPEPROFILEDEF",
+           "/* FILE_SCHEMA(('IFC2X3')); */"
+           "#5=IFCASYMMETRICISHAPEPROFILEDEF(.AREA.,'FILE_SCHEMA((''IFC2X3''));"
+           "',$,9.,10.,2.,1.5,0.6,6.,$,$,2.4);"},
       Case{"IFCELLIPSEPROFILEDEF", "#5=IFCELLIPSEPROFILEDEF(.AREA.,$,$,3.,0.);"},
       Case{"IFCTRAPEZIUMPROFILEDEF", "#5=IFCTRAPEZIUMPROFILEDEF(.AREA.,$,$,0.,3.,4.,1.);"},
       Case{"IFCROUNDEDRECTANGLEPROFILEDEF", "#5=IFCROUNDEDRECTANGLEPROFILEDEF(.AREA.,$,$,8.,6.,3.5);"},
