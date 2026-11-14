@@ -1,6 +1,7 @@
 #include "IfcCurveReader.h"
 #include "Container/utility/ModelImportCancellation.h"
 #include "IfcSectionedGuide.h"
+#include "IfcSectionedTagRows.h"
 #include "IfcSweptProfileCurves.h"
 
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <cmath>
 #include <glm/geometric.hpp>
 #include <glm/vec2.hpp>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <memory>
@@ -1811,9 +1813,9 @@ Surface Reader::surfaceImpl(uint32_t id) {
       double parameter, station;
       ParametricCurve curve;
       glm::dvec3 up, normal;
-      std::vector<std::string> tags;
     };
     auto sections = std::make_shared<std::vector<Section>>();
+    std::vector<IfcSectionTagRow> tagRows;
     std::string family;
     bool coincidentEdges = false;
     for (size_t i = 0; i < positions.size(); ++i) {
@@ -1850,8 +1852,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
       if (!start || !end || glm::length(*start - *end) <= tolerance_)
         throw std::runtime_error(
             "Sectioned surface requires regular open cross sections");
-      c = remap(std::move(c), endpoints.first, endpoints.second, 1);
-      std::vector<std::string> tags;
+      IfcSectionTagRow tagRow{p.id, {}, {}};
+      auto &tags = tagRow.tags;
       const auto &baseProfile = profileBasis(p);
       if (baseProfile.type == "IFCOPENCROSSPROFILEDEF")
         for (const auto &width : list(arg(baseProfile, 3), 4096))
@@ -1866,6 +1868,15 @@ Surface Reader::surfaceImpl(uint32_t id) {
         if (tags.size() != list(arg(baseProfile, 3), 4096).size() + 1)
           throw std::runtime_error(
               "Sectioned profile tag count differs from points");
+        tagRow.points.reserve(tags.size());
+        for (size_t k = 0; k < tags.size(); ++k) {
+          const auto point = c.point(double(k));
+          if (!point)
+            throw std::runtime_error(
+                "Undefined tagged section point in profile #" +
+                std::to_string(p.id));
+          tagRow.points.push_back(*point);
+        }
       }
       const auto up = omitted(arg(position, 1))
                           ? base->z
@@ -1878,94 +1889,53 @@ Surface Reader::surfaceImpl(uint32_t id) {
         return glm::dvec3(glm::dot(p, base->x), glm::dot(p, base->y),
                           glm::dot(p, base->z));
       };
-      sections->push_back({t, *station, std::move(c), local(up), local(normal),
-                           std::move(tags)});
+      c = remap(std::move(c), endpoints.first, endpoints.second, 1);
+      sections->push_back(
+          {t, *station, std::move(c), local(up), local(normal)});
+      tagRows.push_back(std::move(tagRow));
     }
-    bool branching = false;
-    std::map<std::string, std::pair<double, bool>> taggedColumns;
-    if (sections->front().tags.empty()) {
-      for (const auto &s : *sections)
-        if (!s.tags.empty() || s.curve.breaks != sections->front().curve.breaks)
+    IfcSectionTagLayout tagLayout;
+    if (tagRows.front().tags.empty()) {
+      for (size_t i = 0; i < sections->size(); ++i)
+        if (!tagRows[i].tags.empty() ||
+            (*sections)[i].curve.breaks != sections->front().curve.breaks)
           throw std::runtime_error(
               "Untagged section profiles require matching topology");
     } else {
-      // Consecutive occurrences of one tag identify a split/merge breakline.
-      // Refine each ordered run at every authored occurrence fraction. A
-      // single source point becomes the common tip of all its branches, while
-      // larger runs retain their original corners when multiplicities differ.
-      using Run = std::pair<std::string, size_t>;
-      std::vector<std::vector<Run>> runs;
-      std::vector<std::set<double>> divisions;
-      for (const auto &s : *sections) {
-        auto &current = runs.emplace_back();
-        std::unordered_set<std::string> seen;
-        for (const auto &tag : s.tags) {
-          if (!current.empty() && current.back().first == tag) {
-            ++current.back().second;
-          } else {
-            if (!seen.insert(tag).second)
-              throw std::runtime_error(
-                  "Crossing or reordered sectioned tag branches");
-            current.push_back({tag, 1});
-          }
-        }
-        if (current.size() < 2 ||
-            (!divisions.empty() && current.size() != divisions.size()))
-          throw std::runtime_error(
-              "Sectioned tag transitions require matching ordered runs");
-        if (divisions.empty())
-          divisions.resize(current.size());
-        for (size_t j = 0; j < current.size(); ++j) {
-          if (current[j].first != runs.front()[j].first)
-            throw std::runtime_error(
-                "Sectioned tag transitions require matching ordered runs");
-          divisions[j].insert(0);
-          if (current[j].second > 1)
-            for (size_t k = 0; k < current[j].second; ++k)
-              divisions[j].insert(double(k) / (current[j].second - 1));
-          branching |= current[j].second != runs.front()[j].second;
-        }
-      }
-      size_t total = 0;
-      for (const auto &run : divisions)
-        total += run.size();
-      if (total > 4097)
-        throw std::runtime_error(
-            "Sectioned tag branches exceed their point budget");
-      size_t column = 0;
-      for (size_t j = 0; j < divisions.size(); ++j) {
-        taggedColumns.emplace(
-            runs.front()[j].first,
-            std::pair(double(column) / (total - 1), divisions[j].size() == 1));
-        column += divisions[j].size();
-      }
+      tagLayout = alignIfcSectionTagRows(tagRows, tolerance_ * .01, stop_);
+      const size_t columns = tagLayout.rows.front().size();
+      std::vector<double> knots{0, 0};
+      for (size_t k = 1; k < columns; ++k)
+        knots.push_back(double(k) / (columns - 1));
+      knots.push_back(1);
       for (size_t i = 0; i < sections->size(); ++i) {
-        auto &s = (*sections)[i];
-        std::vector<double> parameters;
-        size_t source = 0;
-        for (size_t j = 0; j < divisions.size(); ++j) {
-          for (double fraction : divisions[j])
-            parameters.push_back((source + fraction * (runs[i][j].second - 1)) /
-                                 (s.tags.size() - 1));
-          source += runs[i][j].second;
-        }
-        std::vector<glm::dvec3> points;
-        std::vector<double> knots{0, 0};
-        for (size_t k = 0; k < total; ++k) {
-          const auto p = s.curve.point(parameters[k]);
-          if (!p)
-            throw std::runtime_error("Undefined sectioned branch point");
-          points.push_back(*p);
-          if (k)
-            knots.push_back(double(k) / (total - 1));
-        }
-        knots.push_back(1);
-        consumePoints(points.size());
-        auto aligned =
-            makeBSplineCurve(1, std::move(points), std::move(knots), {}, 2);
+        consumePoints(columns);
+        auto points = std::move(tagLayout.rows[i]);
+        const bool hasTip = std::ranges::adjacent_find(points) != points.end();
+        auto aligned = makeBSplineCurve(1, hasTip ? points : std::move(points),
+                                        knots, {}, 2);
         if (!aligned)
-          throw std::runtime_error("Invalid sectioned branch profile");
-        s.curve = sharedCurve(std::move(*aligned));
+          throw std::runtime_error("Invalid sectioned branch profile #" +
+                                   std::to_string(tagRows[i].profileId));
+        if (hasTip) {
+          // A zero-width slot is a single position along its whole parameter
+          // interval. A weighted sum of equal controls can round differently
+          // on each side and leave triangles that collapse only after casting.
+          aligned->point = [points = std::move(points), knots,
+                            evaluate = aligned->point](double v) {
+            if (v == 1)
+              return std::optional(points.back());
+            if (v >= 0 && v < 1) {
+              const auto upper =
+                  std::upper_bound(knots.begin() + 1, knots.end() - 1, v);
+              const size_t k = size_t(upper - knots.begin() - 2);
+              if (v == knots[k + 1] || points[k] == points[k + 1])
+                return std::optional(points[k]);
+            }
+            return evaluate(v);
+          };
+        }
+        (*sections)[i].curve = sharedCurve(std::move(*aligned));
       }
     }
     const double first = sections->front().parameter,
@@ -1978,6 +1948,27 @@ Surface Reader::surfaceImpl(uint32_t id) {
       uBreaks.push_back(s.parameter);
     std::ranges::sort(uBreaks);
     uBreaks.erase(std::unique(uBreaks.begin(), uBreaks.end()), uBreaks.end());
+    std::vector<double> tagTransitionStations;
+    if (!tagLayout.intermittentTags.empty()) {
+      const auto isIntermittent = [&](const std::string &tag) {
+        return std::ranges::binary_search(tagLayout.intermittentTags, tag);
+      };
+      std::set<std::string> before;
+      std::ranges::copy_if(tagRows.front().tags,
+                           std::inserter(before, before.end()), isIntermittent);
+      for (size_t i = 1; i < sections->size(); ++i) {
+        std::set<std::string> after;
+        std::ranges::copy_if(tagRows[i].tags, std::inserter(after, after.end()),
+                             isIntermittent);
+        if (std::ranges::any_of(
+                before, [&](const auto &tag) { return !after.contains(tag); }))
+          tagTransitionStations.push_back((*sections)[i - 1].parameter);
+        if (std::ranges::any_of(
+                after, [&](const auto &tag) { return !before.contains(tag); }))
+          tagTransitionStations.push_back((*sections)[i].parameter);
+        before = std::move(after);
+      }
+    }
     std::map<double, glm::dvec3> miters;
     for (size_t i = 1; i + 1 < uBreaks.size(); ++i) {
       const double t = uBreaks[i],
@@ -2056,7 +2047,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
         .angularScale = {directrix.period ? 2 * pi / directrix.period : 0, 0},
         .uDomain = {{first, last}},
         .vDomain = {{0, 1}}};
-    result.allowCoincidentEdges = branching || coincidentEdges;
+    result.allowCoincidentEdges = tagLayout.coincidentEdges || coincidentEdges;
+    result.creaseU = std::move(tagTransitionStations);
     if (!miters.empty()) {
       if (uBreaks.size() > 4097)
         throw std::runtime_error("Sectioned miter exceeds its anchor budget");
@@ -2184,6 +2176,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
       result.meshUp = end->x > start->x ? up : -up;
     }
     const auto vBreaks = sections->front().curve.breaks;
+    const auto &taggedColumns = tagLayout.taggedColumns;
     std::map<std::string, uint32_t> matchingGuides;
     const auto guideTag = [&](uint32_t ref) -> std::string {
       const auto &guide = get(ref);
@@ -2233,6 +2226,11 @@ Surface Reader::surfaceImpl(uint32_t id) {
       columns.push_back(1);
       std::ranges::sort(columns);
       columns.erase(std::unique(columns.begin(), columns.end()), columns.end());
+      std::vector<bool> intermittentColumns(columns.size());
+      for (const auto &row : tagLayout.retainedColumns)
+        for (size_t column = 0; column < row.size(); ++column)
+          if (row[column])
+            intermittentColumns[column] = true;
       struct GuidedColumn {
         IfcSectionedGuide guide;
         std::vector<glm::dvec2> anchorCorrections;
@@ -2241,6 +2239,10 @@ Surface Reader::surfaceImpl(uint32_t id) {
       for (const auto &[tag, ref] : matchingGuides) {
         container::util::checkModelImportCancellation(stop_);
         const auto [v, uniqueColumn] = taggedColumns.at(tag);
+        if (std::ranges::binary_search(tagLayout.intermittentTags, tag))
+          throw std::runtime_error("Guide #" + std::to_string(ref) +
+                                   " references intermittent profile tag '" +
+                                   tag + "' with no authored guide extent");
         if (!uniqueColumn)
           throw std::runtime_error("Guide #" + std::to_string(ref) +
                                    " has a repeated profile tag '" + tag + "'");
@@ -2277,29 +2279,43 @@ Surface Reader::surfaceImpl(uint32_t id) {
       }
       std::ranges::sort(uBreaks);
       uBreaks.erase(std::unique(uBreaks.begin(), uBreaks.end()), uBreaks.end());
-      std::ranges::sort(result.creaseU);
-      result.creaseU.erase(
-          std::unique(result.creaseU.begin(), result.creaseU.end()),
-          result.creaseU.end());
       if (uBreaks.size() > 4097 || uBreaks.size() * columns.size() > 262144)
         throw std::runtime_error(
             "Sectioned guide grid exceeds its validation budget");
       const auto adjacent = [sections, columns, guides, templatePoint,
+                             intermittentColumns,
+                             retainedColumns =
+                                 std::move(tagLayout.retainedColumns),
                              planeTolerance](const CrossSection &frame,
                                              double u, size_t left) {
         std::array<glm::dvec3, 2> points;
         std::array<glm::dvec3, 2> authored;
+        std::array<uint32_t, 2> guideIds{};
         for (unsigned side = 0; side < 2; ++side) {
           const size_t i = left + side;
           const auto original = templatePoint(frame, columns[i]);
           if (!original)
             throw std::runtime_error("Undefined tagged cross-section point");
           authored[side] = *original;
-          if (!guides[i]) {
+          size_t guidedColumn = i;
+          if (intermittentColumns[i]) {
+            // Either end may be the first authored tip, with a real tag
+            // at that row and a collapsed placeholder at the other end.
+            const auto before = retainedColumns[frame.index][i];
+            const auto after = retainedColumns[frame.index + 1][i];
+            const auto anchor = before ? before : after;
+            if (anchor && guides[*anchor]) {
+              const auto retained = templatePoint(frame, columns[*anchor]);
+              if (retained && *retained == *original)
+                guidedColumn = *anchor;
+            }
+          }
+          if (!guides[guidedColumn]) {
             points[side] = *original;
             continue;
           }
-          const auto &binding = *guides[i];
+          const auto &binding = *guides[guidedColumn];
+          guideIds[side] = binding.guide.sourceId;
           const auto guided = binding.guide.point(u);
           if (!guided)
             throw std::runtime_error("Undefined section point on guide #" +
@@ -2319,7 +2335,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
               frame.lateral * (glm::dot(local, frame.lateral) + correction.x) +
               frame.up * (glm::dot(local, frame.up) + correction.y);
         }
-        if (guides[left] || guides[left + 1]) {
+        if (guideIds[0] || guideIds[1]) {
           const double before =
               glm::dot(authored[1] - authored[0], frame.lateral);
           const double after = glm::dot(points[1] - points[0], frame.lateral);
@@ -2330,9 +2346,9 @@ Surface Reader::surfaceImpl(uint32_t id) {
                         glm::length(authored[1] - authored[0]) > planeTolerance;
           if (crossing) {
             std::string ids;
-            for (size_t i : {left, left + 1})
-              if (guides[i])
-                ids += " #" + std::to_string(guides[i]->guide.sourceId);
+            for (uint32_t guideId : guideIds)
+              if (guideId)
+                ids += " #" + std::to_string(guideId);
             throw std::runtime_error(
                 "Sectioned guide columns cross or collapse at guide" + ids);
           }
@@ -2348,7 +2364,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
             throw std::runtime_error(
                 "Undefined section at guide validation station");
           for (size_t j = 0; j + 1 < columns.size(); ++j)
-            if (guides[j] || guides[j + 1])
+            if (guides[j] || guides[j + 1] || intermittentColumns[j] ||
+                intermittentColumns[j + 1])
               adjacent(*frame, u, j);
         }
       }
@@ -2395,6 +2412,10 @@ Surface Reader::surfaceImpl(uint32_t id) {
       };
       result.ruledSectionPanels = true;
     }
+    std::ranges::sort(result.creaseU);
+    result.creaseU.erase(
+        std::unique(result.creaseU.begin(), result.creaseU.end()),
+        result.creaseU.end());
     if (meshing_) {
       auto samples =
           sampleCurve(directrix, first, last, chordError_ * .25, 4097);
@@ -2406,7 +2427,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
                     [first, last](double t) { return t < first || t > last; });
       for (const auto &p : samples)
         result.meshU.push_back(p.parameter);
-      if (result.ruledSectionPanels) {
+      if (!tagLayout.intermittentTags.empty() || result.ruledSectionPanels) {
         // Distance conversion and curve sampling can generate different
         // parameters for one station. Give priority to authored sections,
         // then guide knots, then the generated mesh seeds.
@@ -3145,16 +3166,17 @@ std::vector<std::array<glm::dvec3, 3>> Reader::sectionedMesh(uint32_t id) {
     for (size_t j = 1; j < v.size(); ++j) {
       const auto a = eval(u[i - 1], v[j - 1]), b = eval(u[i], v[j - 1]),
                  c = eval(u[i], v[j]), d = eval(u[i - 1], v[j]);
-      for (const std::array<glm::dvec3, 3> triangle :
-           {std::array{a, b, c}, std::array{a, c, d}}) {
+      const std::array trianglesInCell{std::array{a, b, c},
+                                       std::array{a, c, d}};
+      // A branch tip can collapse the transverse edge of either triangle.
+      // Longitudinal or diagonal coincidences indicate a collapsed sweep.
+      const std::array collapsedRow{b == c && a != b, a == d && a != c};
+      for (size_t side = 0; side < trianglesInCell.size(); ++side) {
+        const auto &triangle = trianglesInCell[side];
         const auto normal =
             glm::cross(triangle[1] - triangle[0], triangle[2] - triangle[0]);
         if (glm::length(normal) <= 1e-15) {
-          if (s.allowCoincidentEdges && triangle[0] != triangle[1] &&
-              (triangle[0] == triangle[2] || triangle[1] == triangle[2]))
-            continue;
-          if (s.allowCoincidentEdges && triangle[0] == triangle[1] &&
-              triangle[0] != triangle[2])
+          if (s.allowCoincidentEdges && collapsedRow[side])
             continue;
           throw std::runtime_error(
               "Sectioned surface has a collapsed mesh triangle");

@@ -1793,14 +1793,17 @@ double checkSectionedMesh(const Model &model, glm::dvec3 up = {0, 0, 1}) {
   return area;
 }
 
-const std::string guideSectionedFixture =
+const std::string sectionedStraightBase =
     "#2=IFCCARTESIANPOINT((0.,0.,0.)); #3=IFCCARTESIANPOINT((10.,0.,0.));"
     "#4=IFCPOLYLINE((#2,#3));"
     "#20=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(0.),$,$,$,#4);"
     "#21=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(10.),$,$,$,#4);"
     "#22=IFCAXIS2PLACEMENTLINEAR(#20,$,$); "
     "#23=IFCAXIS2PLACEMENTLINEAR(#21,$,$);"
-    "#24=IFCCARTESIANPOINT((-2.,0.));"
+    "#24=IFCCARTESIANPOINT((-2.,0.));";
+
+const std::string guideSectionedFixture =
+    sectionedStraightBase +
     "#30=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,2.),(0.,0.),"
     "('left','crown','right'),#24);"
     "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#30));";
@@ -2136,6 +2139,234 @@ TEST(IfcCurveFamilies,
   EXPECT_TRUE(widthAnchors.contains(-2));
   EXPECT_TRUE(widthAnchors.contains(0));
   EXPECT_TRUE(widthAnchors.contains(2));
+}
+
+// Flat profiles keep these topology and pcurve oracles independent of curved
+// surface tessellation. The temporary D column splits from retained B at x=4.
+const std::string transitionSections =
+    sectionedStraightBase +
+    "#25=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(4.),$,$,$,#4);"
+    "#26=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(7.),$,$,$,#4);"
+    "#27=IFCAXIS2PLACEMENTLINEAR(#25,$,$); "
+    "#28=IFCAXIS2PLACEMENTLINEAR(#26,$,$);"
+    "#29=IFCCARTESIANPOINT((2.,0.));"
+    "#30=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,2.),(0.,0.),('A','B','C'),#"
+    "24);"
+    "#31=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,0.,2.),(0.,0.,0.),('A','B','"
+    "D','C'),#24);"
+    "#32=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,1.,1.),(0.,0.,0.),('A','B','"
+    "D','C'),#24);";
+
+std::set<std::array<float, 3>> sectionedPoints(const Model &mesh) {
+  std::set<std::array<float, 3>> points;
+  for (const auto index : mesh.indices) {
+    const auto p = mesh.vertices.at(index).position;
+    points.insert({p.x, p.y, p.z});
+  }
+  return points;
+}
+
+std::vector<glm::dvec3> sectionedColumn(const std::string &definitions,
+                                        double v) {
+  std::ostringstream uv;
+  uv.precision(17);
+  uv << "#41=IFCCARTESIANPOINT((0.," << v << "));"
+     << "#42=IFCCARTESIANPOINT((1.," << v << "));"
+     << "#43=IFCPOLYLINE((#41,#42)); #10=IFCPCURVE(#40,#43);";
+  const auto model =
+      container::geometry::ifc::LoadFromStep(fixture(definitions + uv.str()));
+  complete(model);
+  return vertices(model);
+}
+
+TEST(IfcCurveFamilies, SectionedTemporaryLaneStartsAndEndsAtAuthoredTips) {
+  for (bool birth : {false, true}) {
+    SCOPED_TRACE(birth);
+    const auto definitions =
+        transitionSections +
+        (birth ? "#40=IFCSECTIONEDSURFACE(#4,(#22,#27,#23),(#30,#31,#32));"
+               : "#40=IFCSECTIONEDSURFACE(#4,(#22,#27,#23),(#32,#31,#30));");
+    const auto model =
+        container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+    EXPECT_NEAR(checkSectionedMesh(model), 40., 1e-6);
+    EXPECT_EQ(model.indices.size(), 27u);
+    const auto points = sectionedPoints(model);
+    EXPECT_EQ(points.size(), 10u);
+    EXPECT_TRUE(points.contains({4, 0, 0}));
+    EXPECT_TRUE(points.contains({birth ? 10.f : 0.f, 1, 0}));
+    EXPECT_FALSE(points.contains({birth ? 0.f : 10.f, 1, 0}));
+    const auto d = sectionedColumn(definitions, 2. / 3);
+    ASSERT_FALSE(d.empty());
+    for (const auto &p : d) {
+      EXPECT_NEAR(
+          p.y, birth ? std::max(0., (p.x - 4) / 6) : std::max(0., 1 - p.x / 4),
+          1e-6);
+      EXPECT_NEAR(p.z, 0., 1e-6);
+    }
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedRepeatedRunsAnchorAnAdjacentTemporaryLane) {
+  const auto definitions =
+      transitionSections +
+      "#33=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(1.,1.,2.),(0.,0.,0.),('A','B',"
+      "'B','C'),#24);"
+      "#34=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(1.,1.,0.,2.),(0.,0.,0.,0.),('"
+      "A','B','B','D','C'),#24);"
+      "#35=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(1.,1.,1.,1.),(0.,0.,0.,0.),('"
+      "A','B','B','D','C'),#24);"
+      "#40=IFCSECTIONEDSURFACE(#4,(#22,#27,#23),(#33,#34,#35));";
+  const auto model =
+      container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+  EXPECT_NEAR(checkSectionedMesh(model), 40., 1e-6);
+  EXPECT_EQ(model.indices.size(), 39u);
+  EXPECT_EQ(sectionedPoints(model).size(), 13u);
+  for (double v : {.25, .5, .75}) {
+    const auto column = sectionedColumn(definitions, v);
+    ASSERT_FALSE(column.empty());
+    for (const auto &p : column) {
+      const double expected = v == .25  ? -1.
+                              : v == .5 ? 0.
+                                        : std::max(0., (p.x - 4) / 6);
+      EXPECT_NEAR(p.y, expected, 1e-6) << v;
+    }
+  }
+}
+
+TEST(IfcCurveFamilies,
+     SectionedCoincidentTipSwapAndFullReversalKeepCorrespondence) {
+  const auto definitions =
+      transitionSections +
+      "#33=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,0.,2.),(0.,0.,0.),('A','D',"
+      "'B','C'),#24);"
+      "#34=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(1.,1.,2.),"
+      "(3.141592653589793,3.141592653589793,3.141592653589793),('C','D','B','A'"
+      "),#29);"
+      "#40=IFCSECTIONEDSURFACE(#4,(#22,#27,#23),(#32,#33,#34));";
+  const auto model =
+      container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+  EXPECT_NEAR(checkSectionedMesh(model), 40., 1e-6);
+  EXPECT_EQ(model.indices.size(), 30u);
+  EXPECT_EQ(sectionedPoints(model).size(), 11u);
+  const auto b = sectionedColumn(definitions, 1. / 3);
+  const auto d = sectionedColumn(definitions, 2. / 3);
+  ASSERT_FALSE(b.empty());
+  ASSERT_FALSE(d.empty());
+  for (const auto &p : b)
+    EXPECT_NEAR(p.y, 0., 1e-6);
+  for (const auto &p : d)
+    EXPECT_NEAR(p.y, p.x < 4 ? (4 - p.x) / 4 : (p.x - 4) / 6, 1e-6);
+}
+
+TEST(IfcCurveFamilies, InvalidSectionedTagTransitionsRejectAtomically) {
+  constexpr auto crossed = "#33=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,1.,1.)"
+                           ",(0.,0.,0.),('A','D','B','C'),#24);";
+  constexpr auto atC = "#34=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.,2.,0.),(0."
+                       ",0.,0.),('A','B','D','C'),#24);";
+  for (const auto &[positions, profiles] :
+       std::array<std::pair<const char *, const char *>, 3>{
+           {{"(#22,#27,#23)", "(#30,#32,#32)"},
+            {"(#22,#27,#23)", "(#32,#33,#32)"},
+            {"(#22,#27,#28,#23)", "(#31,#30,#30,#34)"}}}) {
+    SCOPED_TRACE(profiles);
+    const auto definitions = transitionSections + crossed + atC +
+                             "#40=IFCSECTIONEDSURFACE(#4," + positions + "," +
+                             profiles + ");";
+    const auto result =
+        container::geometry::ifc::LoadFromStep(fixture(definitions, "#40"));
+    EXPECT_EQ(result.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(result.vertices.empty());
+    EXPECT_TRUE(result.indices.empty());
+    EXPECT_TRUE(result.meshRanges.empty());
+    ASSERT_EQ(result.importReport.diagnostics.size(), 1u);
+    EXPECT_EQ(result.importReport.diagnostics.front().entityId, 40u);
+    EXPECT_FALSE(result.importReport.diagnostics.front().reason.empty());
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedGuideRequiresTagPresentAtEveryAuthoredSection) {
+  for (bool temporary : {false, true}) {
+    SCOPED_TRACE(temporary);
+    GuideSectionFixture step;
+    step.definitions =
+        transitionSections +
+        "#40=IFCSECTIONEDSURFACE(#4,(#22,#27,#23),(#30,#31,#32));";
+    const auto guide =
+        temporary ? step.guide("D", "#4", {{0, 0, 0}, {4, 0, 0}, {10, 1, 0}})
+                  : step.guide("B", "#4",
+                               {{0, 0, 0},
+                                {2, -.25, 0},
+                                {4, 0, 0},
+                                {7, -.5, 0},
+                                {10, 0, 0}});
+    auto axis = guide;
+    if (!temporary) {
+      // Lift both longitudinal columns between x=2, where D is collapsed
+      // onto B, and x=7, where the columns must again be distinct.
+      step.definitions += "#41=IFCCARTESIANPOINT((0.2,0.33333333333333333));"
+                          "#42=IFCCARTESIANPOINT((0.2,0.66666666666666667));"
+                          "#46=IFCCARTESIANPOINT((0.7,0.33333333333333333));"
+                          "#47=IFCCARTESIANPOINT((0.7,0.66666666666666667));"
+                          "#43=IFCPOLYLINE((#41,#46)); #45=IFCPCURVE(#40,#43);"
+                          "#48=IFCPOLYLINE((#42,#47)); #49=IFCPCURVE(#40,#48);";
+      axis += ",#45,#49";
+    }
+    step.product("branching", axis);
+    const auto result = step.load();
+    const auto body = sectionedProductMesh(result, "branching");
+    EXPECT_FALSE(result.nativeCurveRanges.empty());
+    if (temporary) {
+      EXPECT_EQ(result.importReport.completeness, ImportCompleteness::Partial);
+      EXPECT_TRUE(body.indices.empty());
+      ASSERT_EQ(result.importReport.diagnostics.size(), 1u);
+      EXPECT_EQ(result.importReport.diagnostics.front().entityId, 40u);
+      EXPECT_FALSE(result.importReport.diagnostics.front().reason.empty());
+    } else {
+      EXPECT_NEAR(checkSectionedMesh(body), 40., 1e-6);
+      const auto points = sectionedPoints(body);
+      EXPECT_TRUE(points.contains({2, -.25f, 0}));
+      EXPECT_FALSE(points.contains({2, 0, 0}));
+      EXPECT_TRUE(points.contains({7, -.5f, 0}));
+      EXPECT_TRUE(points.contains({7, .5f, 0}));
+      std::set<float> liftedEndpoints;
+      for (const auto &range : result.nativeCurveRanges) {
+        const auto first =
+            result.vertices.at(result.indices.at(range.firstIndex)).position;
+        const auto last =
+            result.vertices
+                .at(result.indices.at(range.firstIndex + range.indexCount - 1))
+                .position;
+        if (first.x != 2.f || last.x != 7.f)
+          continue;
+        EXPECT_EQ(first, glm::vec3(2, -.25f, 0));
+        EXPECT_EQ(last.z, 0.f);
+        liftedEndpoints.insert(last.y);
+        const bool stableColumn = last.y < 0.f;
+        const std::array stations{3., 4., 4.01, 5., 6.};
+        std::array<bool, stations.size()> observed{};
+        for (size_t i = range.firstIndex;
+             i < size_t(range.firstIndex) + range.indexCount; i += 2) {
+          const auto a = result.vertices.at(result.indices.at(i)).position;
+          const auto b = result.vertices.at(result.indices.at(i + 1)).position;
+          for (size_t j = 0; j < stations.size(); ++j) {
+            const double x = stations[j];
+            if (x < a.x || x > b.x || a.x == b.x)
+              continue;
+            observed[j] = true;
+            const auto y =
+                std::lerp(double(a.y), double(b.y), (x - a.x) / (b.x - a.x));
+            const auto expected = x <= 4         ? (x - 4) / 8
+                                  : stableColumn ? -(x - 4) / 6
+                                                 : (x - 4) / 6;
+            EXPECT_NEAR(y, expected, 1e-6) << x << " " << stableColumn;
+          }
+        }
+        EXPECT_TRUE(std::ranges::all_of(observed,
+                                        [](bool present) { return present; }));
+      }
+      EXPECT_EQ(liftedEndpoints, (std::set<float>{-.5f, .5f}));
+    }
+  }
 }
 
 TEST(IfcCurveFamilies, SectionedTagsSplitAndMergeWithoutLosingBreaklines) {
