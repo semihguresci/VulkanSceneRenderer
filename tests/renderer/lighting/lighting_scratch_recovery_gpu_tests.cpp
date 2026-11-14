@@ -21,7 +21,7 @@ struct LightingScratchRecoveryTestAccess {
   static const auto& grid(const LightingManager& manager) {return manager.tileGridSsbo_;}
   static const auto& indices(const LightingManager& manager) {return manager.lightIndexListSsbo_;}
   static const auto& stats(const LightingManager& manager) {return manager.lightStatsBuffer_;}
-  static VkDescriptorSet published(const LightingManager& manager) {return manager.tileCullSet2_;}
+  static VkDescriptorSet published(const LightingManager& manager) {return manager.tiledSets_.front()[2];}
   static VkDescriptorSetLayout layout(const LightingManager& manager) {return manager.tileCullSet2Layout_;}
 };
 }

@@ -81,8 +81,8 @@ public:
                std::span<const container::gpu::AllocatedBuffer> cameras,
                std::span<const container::gpu::AllocatedBuffer> lighting,
                std::span<const container::gpu::AllocatedBuffer> sceneClips,
-               const container::gpu::AllocatedBuffer& pointLights,
-               const container::gpu::AllocatedBuffer& areaLights,
+               std::span<const container::gpu::AllocatedBuffer> pointLights,
+               std::span<const container::gpu::AllocatedBuffer> areaLights,
                const ShadowManager& shadows);
   // Stage only bindings 1/6/7/15 against typed lighting/clip/point/area buffers.
   // No media upload, pool replacement, live write or medium-buffer changes.
@@ -92,8 +92,8 @@ public:
   [[nodiscard]] PreparedSceneBindings prepareSceneBindings(
       std::span<const container::gpu::AllocatedBuffer> lighting,
       std::span<const container::gpu::AllocatedBuffer> sceneClips,
-      const container::gpu::AllocatedBuffer& pointLights,
-      const container::gpu::AllocatedBuffer& areaLights) const;
+      std::span<const container::gpu::AllocatedBuffer> pointLights,
+      std::span<const container::gpu::AllocatedBuffer> areaLights) const;
   [[nodiscard]] bool canPublishSceneBindings(const PreparedSceneBindings&) const noexcept;
   // Caller retires graphics/DDGI readers. All identity checks precede writes;
   // success consumes the token using fixed stack Vulkan writes, with no

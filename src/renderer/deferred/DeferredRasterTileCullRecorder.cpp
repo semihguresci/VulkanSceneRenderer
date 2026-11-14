@@ -15,7 +15,7 @@ bool recordDeferredRasterTileCullCommands(
 
   inputs.lightingManager->beginClusterCullTimer(cmd);
   inputs.lightingManager->dispatchTileCull(
-      cmd, plan.screenExtent, plan.cameraBuffer, plan.cameraBufferSize,
+      cmd, inputs.imageIndex, plan.screenExtent, plan.cameraBuffer, plan.cameraBufferSize,
       plan.depthSamplingView, plan.cameraNear, plan.cameraFar);
   inputs.lightingManager->endClusterCullTimer(cmd);
   return true;

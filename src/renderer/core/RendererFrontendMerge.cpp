@@ -415,7 +415,7 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
   std::optional<OpenVdbVolumeRenderer::PreparedSceneBindings> volumeBindings;
   if(subs_.openVdbVolumeRenderer)
     volumeBindings=subs_.openVdbVolumeRenderer->prepareSceneBindings(lighting.lightingBuffers(),
-        manager.sceneClipBuffers(),lighting.pointLightBuffer(),lighting.areaLightBuffer());
+        manager.sceneClipBuffers(),lighting.pointLightBuffers(),lighting.areaLightBuffers());
 
   std::optional<GpuCullManager::PreparedGeneration> culling;
   const auto cullDraws=controller.opaqueSingleSidedDrawCommands();
@@ -512,7 +512,7 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
   const auto bind=[&](RenderTechniqueId technique,uint32_t image) {
     runtime.bindDescriptorSet(technique,"scene-descriptor-set",image,{manager.descriptorSet(image)});
     runtime.bindDescriptorSet(technique,"light-descriptor-set",image,{lighting.lightDescriptorSet(image)});
-    runtime.bindDescriptorSet(technique,"tiled-lighting-descriptor-set",image,{lighting.tiledDescriptorSet()});
+    runtime.bindDescriptorSet(technique,"tiled-lighting-descriptor-set",image,{lighting.tiledDescriptorSet(image)});
     if(subs_.bimManager && subs_.bimManager->hasScene())
       runtime.bindDescriptorSet(technique,"bim-scene-descriptor-set",image,{manager.auxiliaryDescriptorSet(image)});
     runtime.bindBuffer(technique,"scene-object-buffer",image,

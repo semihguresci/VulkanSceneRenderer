@@ -189,7 +189,7 @@ bool RendererFrontend::publishLightEdit(LightEditPublication& publication) {
   FrameResourceRegistry before=*subs_.frameRuntimeResourceRegistry,runtime=before;
   const auto bind=[&](RenderTechniqueId technique,uint32_t image) {
     runtime.bindDescriptorSet(technique,"light-descriptor-set",image,{edit.lightDescriptorSet(image)});
-    runtime.bindDescriptorSet(technique,"tiled-lighting-descriptor-set",image,{edit.tiledDescriptorSet()});
+    runtime.bindDescriptorSet(technique,"tiled-lighting-descriptor-set",image,{edit.tiledDescriptorSet(image)});
   };
   for(uint32_t image=0;image<images;++image) {
     bind(RenderTechniqueId::DeferredRaster,image);bind(RenderTechniqueId::ForwardRaster,image);
@@ -198,7 +198,7 @@ bool RendererFrontend::publishLightEdit(LightEditPublication& publication) {
   }
   std::optional<OpenVdbVolumeRenderer::PreparedSceneBindings> volume;
   if(subs_.openVdbVolumeRenderer) volume=subs_.openVdbVolumeRenderer->prepareSceneBindings(
-      edit.lightingBuffers(),scene.sceneClipBuffers(),edit.pointLightBuffer(),edit.areaLightBuffer());
+      edit.lightingBuffers(),scene.sceneClipBuffers(),edit.pointLightBuffers(),edit.areaLightBuffers());
   std::optional<DdgiManager::PreparedSceneHistoryReset> ddgi;
   std::optional<DdgiManager::PreparedLightSnapshotCapacity> capacity;
   if(subs_.ddgiManager) {

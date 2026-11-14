@@ -2005,7 +2005,6 @@ void RendererFrontend::processMcpRequests() {
         subs_.lightingManager->setLightingSettings(settings);
         if (subs_.guiManager) subs_.guiManager->setLightingSettings(settings);
         subs_.lightingManager->updateLightingData();
-        updateFrameDescriptorSets();
       }
       return {{"lighting", lighting()}};
     }
@@ -6390,8 +6389,8 @@ void RendererFrontend::createFrameResources() {
         *subs_.frameResourceManager, buffers_.cameras,
         subs_.lightingManager->lightingBuffers(),
         subs_.sceneManager->sceneClipBuffers(),
-        subs_.lightingManager->pointLightBuffer(),
-        subs_.lightingManager->areaLightBuffer(), *subs_.shadowManager);
+        subs_.lightingManager->pointLightBuffers(),
+        subs_.lightingManager->areaLightBuffers(), *subs_.shadowManager);
   if (subs_.rayShadowManager)
     subs_.rayShadowManager->prepare(
         sceneExtent,
@@ -8866,7 +8865,6 @@ void RendererFrontend::presentSceneControls() {
         subs_.ddgiManager->resetSceneHistory();
       subs_.lightingManager->setLightingSettings(guiLightingSettings);
       subs_.lightingManager->updateLightingData();
-      updateFrameDescriptorSets();
     }
   }
 
@@ -9150,7 +9148,7 @@ void RendererFrontend::publishFrameRuntimeResourceBindings(
   bindDeferredDescriptorSet(
       "tiled-lighting-descriptor-set",
       (subs_.lightingManager && subs_.lightingManager->isTiledLightingReady())
-          ? subs_.lightingManager->tiledDescriptorSet()
+          ? subs_.lightingManager->tiledDescriptorSet(imageIndex)
           : VK_NULL_HANDLE);
   bindSharedDescriptorSet("shadow-descriptor-set",
                     subs_.shadowManager

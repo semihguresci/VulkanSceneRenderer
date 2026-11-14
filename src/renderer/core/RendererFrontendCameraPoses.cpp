@@ -321,7 +321,7 @@ bool RendererFrontend::publishCameraViewPose(CameraViewPosePublication& publicat
   auto auxiliaryBindings=subs_.frameResourceManager->prepareAuxiliaryBindings(anisotropy,diffuse);
   std::optional<OpenVdbVolumeRenderer::PreparedSceneBindings> volumeBindings;
   if(subs_.openVdbVolumeRenderer) volumeBindings=subs_.openVdbVolumeRenderer->prepareSceneBindings(
-      nextLighting.lightingBuffers(),manager.sceneClipBuffers(),nextLighting.pointLightBuffer(),nextLighting.areaLightBuffer());
+      nextLighting.lightingBuffers(),manager.sceneClipBuffers(),nextLighting.pointLightBuffers(),nextLighting.areaLightBuffers());
   std::optional<GpuCullManager::PreparedGeneration> culling;
   const auto cullDraws=nextController.opaqueSingleSidedDrawCommands();
   if(subs_.gpuCullManager) culling=subs_.gpuCullManager->prepareGeneration(nextController.objectBuffers(),
@@ -390,7 +390,7 @@ bool RendererFrontend::publishCameraViewPose(CameraViewPosePublication& publicat
   const auto bind=[&](RenderTechniqueId technique,uint32_t image) {
     runtime.bindDescriptorSet(technique,"scene-descriptor-set",image,{sceneBindings.descriptorSet(image)});
     runtime.bindDescriptorSet(technique,"light-descriptor-set",image,{nextLighting.lightDescriptorSet(image)});
-    runtime.bindDescriptorSet(technique,"tiled-lighting-descriptor-set",image,{nextLighting.tiledDescriptorSet()});
+    runtime.bindDescriptorSet(technique,"tiled-lighting-descriptor-set",image,{nextLighting.tiledDescriptorSet(image)});
     if(subs_.bimManager && subs_.bimManager->hasScene()) runtime.bindDescriptorSet(technique,"bim-scene-descriptor-set",image,{sceneBindings.auxiliaryDescriptorSet(image)});
     runtime.bindBuffer(technique,"scene-object-buffer",image,{nextController.objectBuffers()[image].buffer,
         sizeof(container::gpu::ObjectData)*nextController.objectBufferCapacities()[image],VK_BUFFER_USAGE_STORAGE_BUFFER_BIT});

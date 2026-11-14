@@ -146,6 +146,39 @@ TEST_F(LightEditGenerationGpu, ImportedPointPublishesActualDescriptorsForEveryIm
   EXPECT_EQ(world.registry().ctx().find<std::string>(),&context);
 }
 
+TEST_F(LightEditGenerationGpu, AcquiredImageUploadLeavesOtherLightDescriptorsOnPriorSnapshot) {
+  const auto before = read(0);
+  exactProbe(read(1), before);
+  EXPECT_NE(lighting->pointLightBuffer(0).buffer, lighting->pointLightBuffer(1).buffer);
+  EXPECT_NE(lighting->areaLightBuffer(0).buffer, lighting->areaLightBuffer(1).buffer);
+  ASSERT_NE(lighting->tiledDescriptorSet(0), VK_NULL_HANDLE);
+  ASSERT_NE(lighting->tiledDescriptorSet(1), VK_NULL_HANDLE);
+  EXPECT_NE(lighting->tiledDescriptorSet(0), lighting->tiledDescriptorSet(1));
+
+  auto edits = lighting->snapshotSceneLightEdits();
+  ASSERT_FALSE(lighting->pointLightsSsbo().empty());
+  ASSERT_FALSE(lighting->areaLightsSsbo().empty());
+  auto point = lighting->pointLightsSsbo().front();
+  auto area = lighting->areaLightsSsbo().front();
+  point.colorIntensity.a = 17.0f;
+  area.colorIntensity.a = 13.0f;
+  edits.importedPointOverrides.resize(1);
+  edits.importedAreaOverrides.resize(1);
+  edits.importedPointOverrides.front() = point;
+  edits.importedAreaOverrides.front() = area;
+  lighting->restoreSceneLightEdits(edits);
+  lighting->updateLightingData();
+  lighting->uploadLightingData(1);
+
+  exactProbe(read(0), before);
+  const auto updated = read(1);
+  EXPECT_FLOAT_EQ(floats(updated[6]).w, 17.0f);
+  EXPECT_FLOAT_EQ(floats(updated[10]).w, 13.0f);
+  lighting->uploadLightingData();
+  exactProbe(read(0), updated);
+  exactProbe(read(1), updated);
+}
+
 TEST_F(LightEditGenerationGpu, ImportedPointHistorySurvivesVisibilityAndRejectsSourceReplacement) {
   const auto pointNode=node(5);
   ASSERT_NE(pointNode,SceneGraph::kInvalidNode);

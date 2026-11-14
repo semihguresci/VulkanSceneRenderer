@@ -9,6 +9,7 @@ class LightingManager;
 
 struct DeferredRasterTileCullRecordInputs {
   const LightingManager *lightingManager{nullptr};
+  uint32_t imageIndex{};
   DeferredRasterTileCullPlan plan{};
 };
 
