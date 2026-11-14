@@ -116,3 +116,67 @@ accepted convergence baseline byte for byte. [Windows Vulkan results](../tests/v
 
 Adapted tone curves retain their permissive notices in
 `tone-curves-Apache-2.0.txt`; Windows packages include that license.
+
+## Render a queue of stills and turntables
+
+Save the scenes using the editor's **Save As** command. Create a JSON job
+list like the example below. Paths are relative to the list's directory.
+`cameraNode` is the glTF source node index of a camera in the saved default
+scene. An orbit uses a world-space target, a horizontal radius, and a
+vertical offset from the target, in scene units with +Y up.
+
+```json
+{
+  "schemaVersion": 1,
+  "jobs": [
+    {
+      "name": "Interior still",
+      "scene": "interior.glb",
+      "renderer": "path-tracing",
+      "width": 1280,
+      "height": 720,
+      "output": "renders/interior.exr",
+      "cameraNode": 4,
+      "sampling": { "samples": 64, "samplesPerFrame": 8, "bounces": 6, "seed": 1 }
+    },
+    {
+      "name": "Turntable",
+      "scene": "interior.glb",
+      "renderer": "forward-raster",
+      "width": 960,
+      "height": 540,
+      "output": "renders/orbit.png",
+      "orbit": { "target": [0, 1, 0], "radius": 6, "height": 2, "frames": 24 }
+    }
+  ]
+}
+```
+
+From the repository root, use Python 3.10 or newer and a built renderer.
+The capture runner needs a desktop session and Vulkan. Add `--validation`
+to enable the Vulkan validation layer.
+
+```powershell
+python tools/render_queue.py validate jobs.json
+python tools/render_queue.py run --renderer out/build/windows-release/VulkanSceneRenderer.exe jobs.json
+```
+
+Use `validate --save-as another-folder/jobs.json` to save a copy with paths
+that still point to the original scenes and destinations. Keep the source
+scenes and external assets available when reopening the list.
+
+Choose `forward-raster`, `deferred-raster`, or `path-tracing` for either
+output format. Raster jobs default to one sample, TAA off, and no warm-up.
+Set `sampling.msaa`, `sampling.taa`, or `sampling.warmupFrames` to change
+those settings. TAA requires 1× MSAA. Path-tracing jobs default to 64 samples
+per pixel, four per frame, eight bounces, and a seed of one. Each view
+starts a fresh accumulation. Orbit `fov` defaults to 45 vertical degrees.
+
+Turntables write `orbit.0001.png`, `orbit.0002.png`, and so on, with one
+view per angle and no duplicate closing frame. Each image has the standard
+capture and telemetry sidecars. The queue checks every planned image and
+sidecar before rendering. Jobs with existing or duplicate destinations
+fail while the other jobs can run. Ctrl+C cancels the active job and keeps
+completed frames. The queue then advances to the next job and returns 130
+when it finishes. For a retry, choose an unused destination or move the
+completed frames and their sidecars before rendering that job again.
