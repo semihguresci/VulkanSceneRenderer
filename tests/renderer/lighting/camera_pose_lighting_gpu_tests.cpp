@@ -77,7 +77,7 @@ TEST_F(CameraPoseLightingGpu, CandidateLightsBoundsAndMappedFramesAreIsolatedThe
   {
     auto source=pose(view);ASSERT_TRUE(source);ASSERT_TRUE(source.changed());auto detached=world.cloneStateWithoutContext();
     auto prepared=stage(source,*detached);ASSERT_TRUE(prepared);EXPECT_GT(prepared.ownedBytes(),0u);EXPECT_GT(prepared.ownedGpuBytes(),0u);
-    ASSERT_TRUE(lighting->canExchangeGeneration(prepared));EXPECT_EQ(allocations(),baseline+4);
+    ASSERT_TRUE(lighting->canExchangeGeneration(prepared));EXPECT_EQ(allocations(),baseline+3*prepared.lightingBuffers().size());
     ASSERT_EQ(prepared.pointLightsSsbo().size(),2u);ASSERT_EQ(prepared.areaLightsSsbo().size(),1u);
     near3(glm::vec3(prepared.pointLightsSsbo()[0].positionRadius),eye);
     near3(glm::vec3(prepared.pointLightsSsbo()[1].positionRadius),eye+2.f*right+back);
@@ -183,7 +183,7 @@ TEST_F(CameraPoseLightingGpu, BoundsLimitsLiveAliasesDeniedPreparationAndAbandon
   {material_publication_test::AllocationGuard deny(true);try {(void)lighting->prepareGraphPoseGeneration(*manager,source.candidateGraph(),*detached,root,
       source.candidateLights(),source.candidateBounds(),edits,2);}catch(const std::bad_alloc&){denied=true;}}
   EXPECT_TRUE(denied);EXPECT_EQ(allocations(),baseline);
-  {auto prepared=stage(source,*detached);ASSERT_TRUE(prepared);EXPECT_EQ(allocations(),baseline+4);}
+  {auto prepared=stage(source,*detached);ASSERT_TRUE(prepared);EXPECT_EQ(allocations(),baseline+3*prepared.lightingBuffers().size());}
   EXPECT_EQ(allocations(),baseline);EXPECT_EQ(lighting->pointLightBuffer().buffer,oldPoint);EXPECT_EQ(lighting->lightDescriptorSet(0),oldSet);
   EXPECT_EQ(world.pointLightCount(),count);EXPECT_TRUE(manager->canExchangeCameraViewPoseEdit(source,graph,player.get(),2.f,&view));
 }

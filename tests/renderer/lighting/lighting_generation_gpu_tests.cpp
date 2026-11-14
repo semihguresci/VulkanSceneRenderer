@@ -170,7 +170,7 @@ TEST_F(LightingGenerationGpu, PreparationIsIsolatedAndPublicationReusesOwnedGene
   const auto count = allocationCount(); const auto desired = edits();
   auto next = lighting->prepareGeneration(*detachedScene, detachedGraph, *nextWorld, root, desired, 2);
   ASSERT_TRUE(next); ASSERT_TRUE(lighting->canExchangeGeneration(next));
-  EXPECT_EQ(allocationCount(), count + 4); // two UBOs and two SSBOs; no image/LTC reload
+  EXPECT_EQ(allocationCount(), count + 3 * next.lightingBuffers().size()); // UBO and two SSBOs per image
   EXPECT_EQ(world.pointLightCount(), 0u); EXPECT_EQ(nextWorld->pointLightCount(), 1u); EXPECT_TRUE(nextWorld->hasActiveCamera());
   EXPECT_EQ(lighting->pointLightsSsbo().size(), 0u); EXPECT_EQ(lighting->lightDescriptorSet(0), oldSet);
   EXPECT_EQ(lighting->pointLightBuffer().buffer, oldPoint); EXPECT_EQ(lighting->tileGridBuffer(), grid);
@@ -179,8 +179,8 @@ TEST_F(LightingGenerationGpu, PreparationIsIsolatedAndPublicationReusesOwnedGene
   EXPECT_EQ(next.pointLightsSsbo()[0].colorIntensity, desired.manualPointLights[0].colorIntensity);
   EXPECT_FLOAT_EQ(next.pointLightsSsbo()[0].coneOuterCosType.z, 1); EXPECT_FLOAT_EQ(next.pointLightsSsbo()[0].coneOuterCosType.w, 6);
   EXPECT_EQ(next.areaLightsSsbo()[0].colorIntensity, desired.manualAreaLights[0].colorIntensity);
-  EXPECT_EQ(read<PointLightData>(next.pointLightBuffer()).positionRadius, glm::vec4(3, 2, 1, 4));
-  EXPECT_EQ(read<AreaLightData>(next.areaLightBuffer()).positionRange, glm::vec4(-2, 1, 3, 5));
+  EXPECT_EQ(read<PointLightData>(next.pointLightBuffer(1)).positionRadius, glm::vec4(3, 2, 1, 4));
+  EXPECT_EQ(read<AreaLightData>(next.areaLightBuffer(1)).positionRange, glm::vec4(-2, 1, 3, 5));
   const auto stagedUniform = read<LightingData>(next.lightingBuffers()[1]);
   EXPECT_EQ(stagedUniform.pointLightCount, 1u); EXPECT_EQ(stagedUniform.areaLightCount, 1u);
   EXPECT_FLOAT_EQ(stagedUniform.environmentIntensity, .375f); EXPECT_FLOAT_EQ(stagedUniform.bounceIntensity, .25f);
@@ -202,7 +202,7 @@ TEST_F(LightingGenerationGpu, PreparationIsIsolatedAndPublicationReusesOwnedGene
   ASSERT_TRUE(lighting->exchangeGeneration(moved)); EXPECT_EQ(lighting->pointLightBuffer().buffer, oldPoint);
   ASSERT_TRUE(lighting->exchangeGeneration(moved)); EXPECT_EQ(lighting->pointLightBuffer().buffer, freshPoint);
   EXPECT_EQ(read<LightingData>(lighting->lightingBuffer(1)).pointLightCount, 1u);
-  EXPECT_EQ(lighting->lightDescriptorSet(0), freshSet); EXPECT_EQ(allocationCount(), count + 4);
+  EXPECT_EQ(lighting->lightDescriptorSet(0), freshSet); EXPECT_EQ(allocationCount(), count + 3 * lighting->lightingBuffers().size());
   nextWorld->clearPointLights();
   lighting->updateLightingData();
   EXPECT_EQ(world.pointLightCount(), 1u); EXPECT_EQ(nextWorld->pointLightCount(), 0u);
@@ -232,7 +232,7 @@ TEST_F(LightingGenerationGpu, InvalidAndAbandonedStagesCannotMutateLiveBuffersOr
   EXPECT_EQ(allocationCount(), count); desired = edits();
   {
     auto abandoned = lighting->prepareGeneration(*detachedScene, detachedGraph, *nextWorld, root, desired, 2);
-    EXPECT_EQ(allocationCount(), count + 4);
+    EXPECT_EQ(allocationCount(), count + 3 * lighting->lightingBuffers().size());
     LightingManager foreign(device, *allocations, *pipelines, scene.get(), graph, world);
     EXPECT_FALSE(foreign.canExchangeGeneration(abandoned)); EXPECT_FALSE(foreign.exchangeGeneration(abandoned));
     EXPECT_EQ(lighting->lightDescriptorSet(0), oldSet); EXPECT_EQ(lighting->lightingBuffer(0).buffer, oldBuffer);
