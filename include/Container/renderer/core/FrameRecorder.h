@@ -289,6 +289,8 @@ struct FrameRegistryState {
 struct FrameDebugState {
   ScreenReflectionMode screenReflections{};
   DeferredLightingWireframeSettings wireframe{};
+  container::gpu::NormalValidationSettings normalValidation{};
+  bool geometryOverlay{false};
   bool temporalForceReactive{false};
   uint32_t displayMode{0};
   bool debugDirectionalOnly{false};

@@ -1,4 +1,4 @@
-"""Verify live raster wireframe controls, visible depth behavior and scene-linear export."""
+"""Verify live raster wireframe and diagnostic overlays, including raw export."""
 
 import argparse
 from collections import defaultdict
@@ -62,6 +62,13 @@ def write_fixtures(output):
 
 def phase_plan(kind):
     clear_selection = {"viewportPointer": {"action": "select", "pixel": [4, 4]}}
+    if kind.startswith("diagnostics-"):
+        return ((4, DEFERRED, "off", 1, clear_selection), (6, DEFERRED, "vertices", 5, {}),
+                (8, DEFERRED, "normals", 7, {}),
+                (12, FORWARD, "normals", 9, {"technique": FORWARD, "editorDiagnostics": None}),
+                (14, FORWARD, "off", 13, {}), (16, FORWARD, "vertices", 15, {}),
+                (18, FORWARD, "off-again", 17, {}),
+                (22, DEFERRED, "off-again", 19, {"technique": DEFERRED}))
     if kind == "taa":
         return ((8, DEFERRED, "off", 1, clear_selection), (16, DEFERRED, "overlay-depth", 9, {}),
                 (24, FORWARD, "overlay-depth", 17, {"technique": FORWARD, "wireframe": None}),
@@ -82,12 +89,15 @@ def phase_plan(kind):
     return tuple(phases)
 
 
-def write_sequence(path, phases):
+def write_sequence(path, phases, kind):
     events = []
+    diagnostics = kind.startswith("diagnostics-")
+    control = "editorDiagnostics" if diagnostics else "wireframe"
     for _, _, mode, event_frame, options in phases:
-        event = {"frame": event_frame, "wireframe": wireframe(mode), **options}
-        if event["wireframe"] is None:
-            del event["wireframe"]
+        settings = {"vertices": mode == "vertices", "normalValidation": mode == "normals"} if diagnostics else wireframe(mode)
+        event = {"frame": event_frame, control: settings, **options}
+        if event[control] is None:
+            del event[control]
         events.append(event)
     path.write_text(json.dumps({"schemaVersion": 1, "frames": phases[-1][0],
                                 "sampleFrames": [phase[0] for phase in phases], "events": events}, indent=2) + "\n",
@@ -96,11 +106,12 @@ def write_sequence(path, phases):
 
 def capture(renderer, folder, gltf, bim, kind, report):
     phases = phase_plan(kind)
-    extension = "exr" if kind == "exr" else "png"
+    extension = "exr" if kind.endswith("exr") else "png"
+    msaa = 4 if kind == "diagnostics-png" else 1
     sequence, final, log = folder / f"{kind}.json", folder / f"{kind}.{extension}", folder / f"{kind}.log"
-    write_sequence(sequence, phases)
+    write_sequence(sequence, phases, kind)
     command = [str(renderer), "--model", str(gltf), "--bim-model", str(bim), "--import-scale", "1", "--hidden",
-               "--validation", "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1", "--no-bloom", "--no-ray-query",
+               "--validation", "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", str(msaa), "--no-bloom", "--no-ray-query",
                "--no-ddgi", "--render-technique", DEFERRED, "--display-mode", "lit", "--camera-position", "0", "0", "8",
                "--camera-target", "0", "0", "0", "--camera-fov", "45", "--sky", "plain", "--sky-horizon", "0", "0", "0",
                "--exposure", "1", "--tone-map", "reinhard", "--directional-intensity", "2", "--directional-direction",
@@ -135,10 +146,12 @@ def capture(renderer, folder, gltf, bim, kind, report):
                 state["scene"]["auxiliaryObjectCount"] >= 2 and Path(state["scene"]["auxiliary"]).resolve() == bim and
                 (metadata["width"], metadata["height"], metadata["includesUi"]) == (WIDTH, HEIGHT, False),
                 f"Incorrect capture state for {image}")
+        require(msaa not in state["supportedMsaaSamples"] or state["msaaSamples"] == msaa,
+                f"Incorrect sample count for {image}")
         camera = state["camera"]["unjitteredViewProjColumns"]
         require(row.setdefault("camera", camera) == camera, f"Camera changed in {image}")
         passes = sorted(item["name"] for item in state["passes"] if item["active"])
-        if kind == "exr":
+        if extension == "exr":
             require(metadata["source"] == "raster-scene-composite" and metadata["colorSpace"] == "linear-sRGB" and
                     not metadata["exposureApplied"] and not metadata["toneMappingApplied"], f"Invalid EXR metadata in {image}")
             bgr = cv2.imdecode(np.frombuffer(image.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
@@ -153,6 +166,7 @@ def capture(renderer, folder, gltf, bim, kind, report):
         images[technique][mode] = pixels
         item = {"frame": frame, "technique": technique, "mode": mode, "image": str(image), "passes": passes,
                 "revision": state["build"]["revision"],
+                "msaaSamples": state["msaaSamples"],
                 "wireframeWideLinesSupported": state.get("wireframeWideLinesSupported", False),
                 "decodedSha256": hashlib.sha256(pixels.tobytes()).hexdigest()}
         row["captures"].append(item)
@@ -233,6 +247,29 @@ def inspect_taa(images, records, expect_missing_forward):
                     f"Unexpected TAA transparency fill after wireframe change in {technique}")
 
 
+def inspect_diagnostics(images, records, *, scene_linear):
+    import numpy as np
+
+    for technique, captures in images.items():
+        before = captures["off"]
+        np.testing.assert_array_equal(captures["off-again"], before,
+                                      err_msg=f"Stale diagnostic overlay in {technique}")
+        for mode in ("vertices", "normals"):
+            after = captures[mode]
+            if scene_linear:
+                np.testing.assert_array_equal(after, before,
+                                              err_msg=f"{mode} changed scene-linear radiance in {technique}")
+                continue
+            changed = np.max(np.abs(after - before), axis=-1) > 20
+            if mode == "normals":
+                changed &= after[:, :, 2] - after[:, :, 0] > 30
+            counts = {key: int(changed[y0:y1, x0:x1].sum())
+                      for key, (x0, y0, x1, y1) in WINDOWS.items()}
+            records[technique][mode]["diagnosticPixels"] = counts
+            require(min(counts.values()) >= (100 if mode == "normals" else 12),
+                    f"Missing scene/BIM {mode} diagnostics in {technique}: {counts}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
@@ -257,7 +294,10 @@ def main():
     report = {"passed": False, "generateOnly": args.generate_only, "expectedMissingForward": args.expect_missing_forward,
               "executableSha256": None if args.generate_only else hashlib.sha256(renderer.read_bytes()).hexdigest(), "runs": []}
     try:
-        for kind in ("png", "exr", "taa"):
+        lanes = ["png", "exr", "taa"]
+        if not args.expect_missing_forward:
+            lanes += ["diagnostics-png", "diagnostics-exr"]
+        for kind in lanes:
             images, records = capture(renderer, output, gltf, bim, kind, report)
             if args.generate_only:
                 continue
@@ -265,9 +305,11 @@ def main():
                 inspect_png(images, records, args.expect_missing_forward)
             elif kind == "exr":
                 inspect_exr(images, records)
-            else:
+            elif kind == "taa":
                 inspect_taa(images, records, args.expect_missing_forward)
-            print(f"{kind}: Forward and Deferred wireframe behavior verified", flush=True)
+            else:
+                inspect_diagnostics(images, records, scene_linear=kind.endswith("exr"))
+            print(f"{kind}: Forward and Deferred overlay behavior verified", flush=True)
         report["passed"] = True
     finally:
         (output / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")

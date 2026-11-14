@@ -196,6 +196,39 @@ TEST(TemporalCapture, RejectsIncompleteOrMalformedWireframeSettings) {
   EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
 }
 
+TEST(TemporalCapture, EditorDiagnosticsAreTypedAndOneShot) {
+  auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+    {"frame":1,"editorDiagnostics":{"vertices":true,"normalValidation":false}},
+    {"frame":2,"technique":"forward-raster"},
+    {"frame":3,"editorDiagnostics":{"vertices":false,"normalValidation":true}},
+    {"frame":4,"editorDiagnostics":{"vertices":false,"normalValidation":false}}
+  ]})");
+  const CaptureSequence sequence(input);
+  const auto vertices = sequence.sample(1).event.editorDiagnostics;
+  ASSERT_TRUE(vertices);
+  EXPECT_TRUE(vertices->vertices);
+  EXPECT_FALSE(vertices->normalValidation);
+  EXPECT_EQ(sequence.sample(2).event.technique, "forward-raster");
+  EXPECT_FALSE(sequence.sample(2).event.editorDiagnostics);
+  const auto normals = sequence.sample(3).event.editorDiagnostics;
+  ASSERT_TRUE(normals);
+  EXPECT_FALSE(normals->vertices);
+  EXPECT_TRUE(normals->normalValidation);
+  const auto disabled = sequence.sample(4).event.editorDiagnostics;
+  ASSERT_TRUE(disabled);
+  EXPECT_FALSE(disabled->vertices);
+  EXPECT_FALSE(disabled->normalValidation);
+
+  auto &event = input["events"][0]["editorDiagnostics"];
+  for (const auto &invalid : {json(nullptr), json{{"vertices", true}},
+                              json{{"vertices", 1}, {"normalValidation", false}},
+                              json{{"vertices", true}, {"normalValidation", "false"}},
+                              json{{"vertices", true}, {"normalValidation", false}, {"extra", true}}}) {
+    event = invalid;
+    EXPECT_THROW(CaptureSequence{input}, std::invalid_argument) << invalid;
+  }
+}
+
 TEST(TemporalCapture, BimAnnotationPreviewEventCarriesIndependentRoutes) {
   const CaptureSequence sequence(json::parse(R"({"schemaVersion":1,"frames":6,"events":[
     {"frame":1,"sectionPlane":[0,0,-1,0],"bimAnnotations":{"issuePin":[1,2,3],

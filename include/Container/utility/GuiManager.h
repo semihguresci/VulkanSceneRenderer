@@ -999,6 +999,10 @@ public:
   [[nodiscard]] bool showGeometryOverlay() const {
     return editorOverlaysEnabled() && showGeometryOverlay_;
   }
+  void setEditorDiagnostics(bool vertices, bool normalValidation) {
+    showGeometryOverlay_ = vertices;
+    normalValidationSettings_.enabled = normalValidation;
+  }
   [[nodiscard]] bool showLightGizmos() const {
     return editorOverlaysEnabled() && showLightGizmos_;
   }

@@ -190,6 +190,11 @@ struct CaptureBimAnnotations {
   std::optional<bool> technicalLines;
 };
 
+struct CaptureEditorDiagnostics {
+  bool vertices{};
+  bool normalValidation{};
+};
+
 struct CaptureEvent {
   uint32_t frame{0};
   bool reset{false}, skip{false};
@@ -215,6 +220,7 @@ struct CaptureEvent {
   std::optional<CaptureBimFloorPlan> bimFloorPlan;
   std::optional<CaptureBimAnnotations> bimAnnotations;
   std::optional<CaptureWireframe> wireframe;
+  std::optional<CaptureEditorDiagnostics> editorDiagnostics;
   std::optional<glm::vec4> sectionPlane;
   std::optional<glm::vec3> areaLightPosition;
   std::optional<float> exposure;
@@ -570,6 +576,16 @@ public:
         event.bimAnnotations = bimAnnotations(value.at("bimAnnotations"));
       if (value.contains("wireframe"))
         event.wireframe = wireframe(value.at("wireframe"));
+      if (value.contains("editorDiagnostics")) {
+        const auto &diagnostics = value.at("editorDiagnostics");
+        nodeFields(diagnostics, {"vertices", "normalValidation"}, "editorDiagnostics");
+        if (!diagnostics.contains("vertices") || !diagnostics.at("vertices").is_boolean() ||
+            !diagnostics.contains("normalValidation") || !diagnostics.at("normalValidation").is_boolean())
+          throw std::invalid_argument("Capture editorDiagnostics requires boolean vertices and normalValidation");
+        event.editorDiagnostics = CaptureEditorDiagnostics{
+            diagnostics.at("vertices").get<bool>(),
+            diagnostics.at("normalValidation").get<bool>()};
+      }
       if (value.contains("sectionPlane")) {
         const auto &plane = value.at("sectionPlane");
         if (!plane.is_array() || plane.size() != 4)

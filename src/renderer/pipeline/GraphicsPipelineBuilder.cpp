@@ -1230,7 +1230,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   snPCI.pRasterizationState = &normalLineRaster;
   snPCI.pColorBlendState = &overlayBlend;
   snPCI.pDepthStencilState = &normalLineDS;
-  snPCI.pDynamicState = &dynState;
+  snPCI.pDynamicState = &lineDynState;
   snPCI.layout = layouts.surfaceNormal;
   snPCI.renderPass = renderPasses.lighting;
   pipelines.surfaceNormalLine = pipelineManager_.createGraphicsPipeline(
