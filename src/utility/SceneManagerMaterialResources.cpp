@@ -252,7 +252,7 @@ SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSourceBy
     archivePrefix=i<archiveTextureToEvaluated_.size() && archiveTextureToEvaluated_[i]==
         (sourceResourceActive({container::util::ResourceDomainKind::Archive,container::util::ResourceKind::Texture,uint32_t(i)})?int32_t(i):-1);
   if(!archivePrefix && !sourceMaterialToRuntime_.empty() && materialBuffer_.buffer!=VK_NULL_HANDLE && textureMetadataBuffer_.buffer!=VK_NULL_HANDLE &&
-      sceneClipStateBuffer_.buffer!=VK_NULL_HANDLE && materialSamplers_.size()==container::material::kMaterialSamplerKeyCount) {
+      !sceneClipBuffers().empty() && materialSamplers_.size()==container::material::kMaterialSamplerKeyCount) {
     // Editor resource promotion permits independent authored/evaluated image
     // domains. Reuse its detached path when a later BIM immediate import can
     // no longer use the old initialization-only archive-prefix promotion.
@@ -781,7 +781,8 @@ struct SceneManager::PreparedMaterialResources::State {
   int32_t sourceMaterial{-1};
   std::array<uint32_t,2> inputArchives{UINT32_MAX,UINT32_MAX};
   VkDescriptorPool pool{};VkDescriptorSetLayout layout{};
-  VkBuffer materialBuffer{},metadataBefore{},clip{};
+  VkBuffer materialBuffer{},metadataBefore{};
+  std::shared_ptr<const uint8_t> clipFrames;
   VmaAllocation metadataAllocationBefore{};
   MaterialResourcesLimits limits;
   ResourceBudget budget;
@@ -1026,7 +1027,7 @@ SceneManager::PreparedMaterialResources SceneManager::prepareMaterialResourcesBa
     throw std::invalid_argument("Material resource source/runtime mapping is unavailable");
   if(!allocationManager_ || !deviceWrapper_ || materialResourceRevision_==UINT64_MAX ||
       descriptorSetLayout_==VK_NULL_HANDLE || textureMetadataBuffer_.buffer==VK_NULL_HANDLE ||
-      materialBuffer_.buffer==VK_NULL_HANDLE || sceneClipStateBuffer_.buffer==VK_NULL_HANDLE ||
+      materialBuffer_.buffer==VK_NULL_HANDLE || sceneClipBuffers().empty() ||
       materialSamplers_.size()!=container::material::kMaterialSamplerKeyCount)
     throw std::invalid_argument("Live material resource state is unavailable");
   // An immediate producer can append CPU resources before it requests a fresh
@@ -1074,7 +1075,7 @@ SceneManager::PreparedMaterialResources SceneManager::prepareMaterialResourcesBa
   s.expectedVacancy=materialResourceVacancy_;
   s.textureCapacity=textureDescriptorCapacity_;s.samplerCapacity=materialSamplerDescriptorCapacity_;s.pool=descriptorPool_;s.layout=descriptorSetLayout_;
   s.materialBuffer=materialBuffer_.buffer;s.metadataBefore=textureMetadataBuffer_.buffer;s.metadataAllocationBefore=textureMetadataBuffer_.allocation;
-  s.beforeMetadataCount=textureMetadata_.size();s.clip=sceneClipStateBuffer_.buffer;s.limits=limits;s.budget=budget;
+  s.beforeMetadataCount=textureMetadata_.size();s.clipFrames=sceneClipFrameIdentity();s.limits=limits;s.budget=budget;
   s.samplingRevisionBefore=textureSamplingPlan_.textureRevision;s.samplingRowsBefore=textureSamplingPlan_.rows.size();
   auto& b=s.before;
   b.aImages=exportSource_.images;b.eImages=gltfModel_.images;b.aSamplers=exportSource_.samplers;b.eSamplers=gltfModel_.samplers;
@@ -1884,13 +1885,13 @@ void SceneManager::PreparedMaterialResources::finishPreparation() {
   s.ready=true;
 }
 
-void SceneManager::PreparedMaterialResources::writeDescriptorSetContents(VkDescriptorSet set,
+void SceneManager::PreparedMaterialResources::writeDescriptorSetContents(VkDescriptorSet set,size_t imageIndex,
     const container::gpu::AllocatedBuffer& camera,const container::gpu::AllocatedBuffer& objects,
     const container::gpu::AllocatedBuffer& materials,size_t materialCount) const {
   if(!*this || !state_->ready || !state_->owner->canExchangeMaterialResources(*this))
     throw std::invalid_argument("Material resources are not current and ready for descriptors");
   const auto& s=*state_;
-  s.owner->writeTextureDescriptorSetContents(set,camera,objects,materials,materialCount,
+  s.owner->writeTextureDescriptorSetContents(set,imageIndex,camera,objects,materials,materialCount,
       s.metadataBuffer,s.metadata.size(),s.images,s.descriptorSamplers);
 }
 
@@ -1976,13 +1977,13 @@ void SceneManager::exchangeTextureDescriptorState(PreparedTextureDescriptorState
   state.createdSamplers.clear();baseColorSampler_=materialSamplers_[0];
 }
 
-void SceneManager::writeTextureDescriptorSetContents(VkDescriptorSet set,
+void SceneManager::writeTextureDescriptorSetContents(VkDescriptorSet set,size_t imageIndex,
     const container::gpu::AllocatedBuffer& camera,const container::gpu::AllocatedBuffer& objects,
     const container::gpu::AllocatedBuffer& materials,size_t materialCount,const PreparedTextureDescriptorState& state) const {
-  writeTextureDescriptorSetContents(set,camera,objects,materials,materialCount,state.metadataBuffer,state.metadata.size(),state.images,state.descriptorSamplers);
+  writeTextureDescriptorSetContents(set,imageIndex,camera,objects,materials,materialCount,state.metadataBuffer,state.metadata.size(),state.images,state.descriptorSamplers);
 }
 
-void SceneManager::writeTextureDescriptorSetContents(VkDescriptorSet set,
+void SceneManager::writeTextureDescriptorSetContents(VkDescriptorSet set,size_t imageIndex,
     const container::gpu::AllocatedBuffer& camera,const container::gpu::AllocatedBuffer& objects,
     const container::gpu::AllocatedBuffer& materials,size_t materialCount,const container::gpu::AllocatedBuffer& metadata,
     size_t metadataCount,std::span<const VkDescriptorImageInfo> images,std::span<const VkSampler> descriptorSamplers) const {
@@ -1993,7 +1994,7 @@ void SceneManager::writeTextureDescriptorSetContents(VkDescriptorSet set,
       VkDescriptorBufferInfo{objects.buffer,0,VK_WHOLE_SIZE},
       VkDescriptorBufferInfo{materials.buffer,0,sizeof(container::gpu::GpuMaterial)*materialCount},
       VkDescriptorBufferInfo{metadata.buffer,0,sizeof(container::gpu::GpuTextureMetadata)*metadataCount},
-      VkDescriptorBufferInfo{sceneClipStateBuffer_.buffer,0,sizeof(container::gpu::SceneClipState)}};
+      VkDescriptorBufferInfo{sceneClipBuffer(imageIndex).buffer,0,sizeof(container::gpu::SceneClipState)}};
   std::array<VkWriteDescriptorSet,7> writes{};size_t count{};
   constexpr std::array<uint32_t,5> bindings{0,1,3,4,6};
   for(size_t i=0;i<buffers.size();++i) {
@@ -2028,7 +2029,7 @@ bool SceneManager::canPrepareMaterialResources(const PreparedMaterialResources& 
       s.sourceMaterial<0 || size_t(s.sourceMaterial)>=sourceMaterialToRuntime_.size() ||
       s.pool!=descriptorPool_ || s.layout!=descriptorSetLayout_ || s.materialBuffer!=materialBuffer_.buffer ||
       s.metadataBefore!=textureMetadataBuffer_.buffer || s.metadataAllocationBefore!=textureMetadataBuffer_.allocation ||
-      s.beforeMetadataCount!=textureMetadata_.size() || s.clip!=sceneClipStateBuffer_.buffer ||
+      s.beforeMetadataCount!=textureMetadata_.size() || s.clipFrames!=sceneClipFrameIdentity() ||
       s.samplingRevisionBefore!=textureSamplingPlan_.textureRevision || s.samplingRowsBefore!=textureSamplingPlan_.rows.size() ||
       s.textureCapacity!=textureDescriptorCapacity_ || s.samplerCapacity!=materialSamplerDescriptorCapacity_ ||
       !s.fallback || !s.fallback->lease || s.fallback!=textureSamplingFallback_ ||

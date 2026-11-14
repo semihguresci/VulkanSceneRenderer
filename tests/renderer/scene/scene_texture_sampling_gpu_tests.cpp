@@ -299,6 +299,40 @@ TEST_F(SceneTextureSamplingGpu,ZeroAndAllDeadCatalogsHaveExplicitPrivateFallback
   EXPECT_EQ(manager->materialTextureResourceCount(),3u);EXPECT_EQ(Access::table(*manager).activeTextureCount(),0u);
 }
 
+TEST_F(SceneTextureSamplingGpu, PrimaryAndStagedSceneSetsSampleTheirImageClipState) {
+  manager->updateAuxiliaryDescriptorSets(cameras, objects);
+  container::gpu::SceneClipState clip{};
+  clip.boxClipEnabled = 1;
+  clip.boxClipPlaneCount = 1;
+  clip.boxClipPlanes[0] = {1, 0, 0, -1};
+  auto invertedClip = clip;
+  invertedClip.boxClipInvert = 1;
+  manager->updateSceneClipState(0, clip);
+  manager->updateSceneClipState(1, invertedClip);
+
+  const auto expectClip = [&](VkDescriptorSet set, float expected) {
+    const auto values = sample(*manager, set, 1);
+    ASSERT_EQ(values.size(), 2u);
+    EXPECT_FLOAT_EQ(values[1].z, expected);
+  };
+  expectClip(manager->descriptorSet(0), 1.0f);
+  expectClip(manager->descriptorSet(1), 0.0f);
+  expectClip(manager->auxiliaryDescriptorSet(0), 1.0f);
+  expectClip(manager->auxiliaryDescriptorSet(1), 0.0f);
+
+  auto bindings = manager->prepareSceneBindings();
+  bindings.prepareDescriptorFrames(cameras, objects);
+  expectClip(bindings.descriptorSet(0), 1.0f);
+  expectClip(bindings.auxiliaryDescriptorSet(1), 0.0f);
+
+  GltfMaterialPatch patch;
+  patch.values = {{GltfMaterialProperty::Roughness, .25}};
+  auto material = manager->prepareMaterialGeneration(manager->planMaterialEdit(0, patch), nullptr);
+  material.prepareDescriptorFrames(cameras, objects);
+  expectClip(material.auxiliaryDescriptorSet(0), 1.0f);
+  expectClip(material.descriptorSet(1), 0.0f);
+}
+
 TEST_F(SceneTextureSamplingGpu,ActiveInvalidCapabilityRejectsInsteadOfResolvingFallback) {
   installThree();const auto descriptor=manager->descriptorSet(0);auto bad=*Access::table(*manager).getTexture(0);bad.imageView=VK_NULL_HANDLE;
   material::TextureManager table;table.registerTexture(bad);

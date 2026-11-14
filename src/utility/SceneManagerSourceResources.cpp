@@ -211,12 +211,12 @@ TextureResourceReferenceOwnerPtr SceneManager::PreparedSourceResourceRetirement:
   }
   return state_->mutation.selectAll(pinClass,maxBytes);
 }
-void SceneManager::PreparedSourceResourceRetirement::writeDescriptorSetContents(VkDescriptorSet set,
+void SceneManager::PreparedSourceResourceRetirement::writeDescriptorSetContents(VkDescriptorSet set,size_t imageIndex,
     const container::gpu::AllocatedBuffer& camera,const container::gpu::AllocatedBuffer& objects,
     const container::gpu::AllocatedBuffer& materials,size_t materialCount,const AnimationPlayer* currentPlayer) const {
   if(!*this || !publicationMatches(*state_->owner,false,currentPlayer)) sourceFailure("Prepared resource descriptors are stale");
-  if(state_->descriptors) state_->owner->writeTextureDescriptorSetContents(set,camera,objects,materials,materialCount,*state_->descriptors);
-  else state_->owner->writeMaterialDescriptorSetContents(set,camera,objects,materials,materialCount);
+  if(state_->descriptors) state_->owner->writeTextureDescriptorSetContents(set,imageIndex,camera,objects,materials,materialCount,*state_->descriptors);
+  else state_->owner->writeMaterialDescriptorSetContents(set,imageIndex,camera,objects,materials,materialCount);
 }
 bool SceneManager::PreparedSourceResourceRetirement::publicationMatches(const SceneManager& current,bool consumed,const AnimationPlayer* currentPlayer) const noexcept {
   if(!state_) return false;const auto& s=*state_;

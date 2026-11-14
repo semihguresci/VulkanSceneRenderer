@@ -80,18 +80,18 @@ public:
   void prepare(const FrameResourceManager& frames,
                std::span<const container::gpu::AllocatedBuffer> cameras,
                std::span<const container::gpu::AllocatedBuffer> lighting,
-               const container::gpu::AllocatedBuffer& sceneClip,
+               std::span<const container::gpu::AllocatedBuffer> sceneClips,
                const container::gpu::AllocatedBuffer& pointLights,
                const container::gpu::AllocatedBuffer& areaLights,
                const ShadowManager& shadows);
   // Stage only bindings 1/6/7/15 against typed lighting/clip/point/area buffers.
   // No media upload, pool replacement, live write or medium-buffer changes.
-  // Active descriptor tables require one lighting buffer per existing set;
+  // Active descriptor tables require one lighting and clip buffer per existing set;
   // a renderer with no prepared sets produces a valid no-op token.
   // Buffers are borrowed: retain their owning generations through GPU readers.
   [[nodiscard]] PreparedSceneBindings prepareSceneBindings(
       std::span<const container::gpu::AllocatedBuffer> lighting,
-      const container::gpu::AllocatedBuffer& sceneClip,
+      std::span<const container::gpu::AllocatedBuffer> sceneClips,
       const container::gpu::AllocatedBuffer& pointLights,
       const container::gpu::AllocatedBuffer& areaLights) const;
   [[nodiscard]] bool canPublishSceneBindings(const PreparedSceneBindings&) const noexcept;

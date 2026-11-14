@@ -2060,7 +2060,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     ++modelLoad_->preparationFrames;
   const auto frameStart = TelemetryClock::now();
   const auto concurrencyPolicy = FrameConcurrencyPolicy::serializedGpuResources(
-      "shared BIM object and clip uploads, clustered lighting, and shadow atlas access");
+      "shared BIM resources and clustered lighting");
   auto *telemetry = subs_.rendererTelemetry.get();
   if (telemetry) {
     telemetry->beginFrame(frame_.submittedFrameCount, frame_.currentFrame,
@@ -4022,6 +4022,7 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
   }
   if (subs_.exposureManager && previousImageCount != imageCount)
     subs_.exposureManager->resizeFrameResources(imageCount);
+  subs_.sceneManager->resizeDescriptorFrames(imageCount);
   createFrameResources();
   if (subs_.bloomManager)
     subs_.bloomManager->createTextures(extent.width, extent.height, imageCount);
@@ -6388,7 +6389,7 @@ void RendererFrontend::createFrameResources() {
     subs_.openVdbVolumeRenderer->prepare(
         *subs_.frameResourceManager, buffers_.cameras,
         subs_.lightingManager->lightingBuffers(),
-        subs_.sceneManager->sceneClipBuffer(),
+        subs_.sceneManager->sceneClipBuffers(),
         subs_.lightingManager->pointLightBuffer(),
         subs_.lightingManager->areaLightBuffer(), *subs_.shadowManager);
   if (subs_.rayShadowManager)
@@ -9610,7 +9611,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     pushConstants_.bindless.sectionPlane = activeSectionPlane;
   }
   if (subs_.sceneManager != nullptr) {
-    subs_.sceneManager->updateSceneClipState(sceneClipState);
+    subs_.sceneManager->updateSceneClipState(imageIndex, sceneClipState);
   }
   if (subs_.bimManager != nullptr && (captureBimAnnotations_ || subs_.guiManager != nullptr)) {
     auto sectionPlane = subs_.guiManager ? subs_.guiManager->sectionPlaneState()

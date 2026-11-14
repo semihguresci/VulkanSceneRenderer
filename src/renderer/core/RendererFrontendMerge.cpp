@@ -415,7 +415,7 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
   std::optional<OpenVdbVolumeRenderer::PreparedSceneBindings> volumeBindings;
   if(subs_.openVdbVolumeRenderer)
     volumeBindings=subs_.openVdbVolumeRenderer->prepareSceneBindings(lighting.lightingBuffers(),
-        manager.sceneClipBuffer(),lighting.pointLightBuffer(),lighting.areaLightBuffer());
+        manager.sceneClipBuffers(),lighting.pointLightBuffer(),lighting.areaLightBuffer());
 
   std::optional<GpuCullManager::PreparedGeneration> culling;
   const auto cullDraws=controller.opaqueSingleSidedDrawCommands();

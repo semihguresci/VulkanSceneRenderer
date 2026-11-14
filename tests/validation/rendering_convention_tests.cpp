@@ -10346,7 +10346,7 @@ TEST(RenderingConventionTests, BimSectionClipCapsExposeShaderStyleContract) {
   EXPECT_TRUE(contains(sceneData, "struct SceneClipState"));
   EXPECT_TRUE(contains(sceneData, "boxClipPlanes[6]"));
   EXPECT_TRUE(contains(sceneManagerHeader, "updateSceneClipState"));
-  EXPECT_TRUE(contains(sceneManager, "createSceneClipStateBuffer"));
+  EXPECT_TRUE(contains(sceneManager, "SceneClipFrames"));
   EXPECT_TRUE(contains(sceneManager, "dstBinding = 6"));
   EXPECT_TRUE(contains(sceneManager, "VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER"));
 

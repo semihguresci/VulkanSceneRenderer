@@ -631,7 +631,8 @@ struct SceneManager::PreparedMaterialGeneration::State {
   VkDescriptorPool expectedPool{},pool{};
   bool ownsPool{true};
   VkDescriptorSetLayout layout{};
-  VkBuffer expectedMaterial{},textureMetadata{},clip{};
+  VkBuffer expectedMaterial{},textureMetadata{};
+  std::shared_ptr<const uint8_t> clipFrames;
   container::gpu::AllocatedBuffer buffer{};
   size_t capacity{};
   std::vector<VkDescriptorSet> primary,auxiliary;
@@ -1073,8 +1074,9 @@ struct SceneManager::PreparedSceneBindings::State {
   size_t materialCount{},metadataCount{};
   VkDescriptorPool expectedPool{},pool{};
   VkDescriptorSetLayout layout{};
-  VkBuffer materialBuffer{},metadataBuffer{},clipBuffer{};
-  VmaAllocation materialAllocation{},metadataAllocation{},clipAllocation{};
+  VkBuffer materialBuffer{},metadataBuffer{};
+  VmaAllocation materialAllocation{},metadataAllocation{};
+  std::shared_ptr<const uint8_t> clipFrames;
   uint32_t textureCapacity{},samplerCapacity{};
   std::shared_ptr<const TextureSamplingFallback> samplingFallback;
   container::material::TextureImageOwnershipPtr images;
@@ -1111,7 +1113,7 @@ VkDescriptorSet SceneManager::PreparedSceneBindings::auxiliaryDescriptorSet(uint
 SceneManager::PreparedSceneBindings SceneManager::prepareSceneBindings(const SceneBindingsLimits& limits) const try {
   if(!deviceWrapper_ || !pipelineManager_ || descriptorPool_==VK_NULL_HANDLE || descriptorSetLayout_==VK_NULL_HANDLE ||
       materialBuffer_.buffer==VK_NULL_HANDLE || textureMetadataBuffer_.buffer==VK_NULL_HANDLE ||
-      sceneClipStateBuffer_.buffer==VK_NULL_HANDLE || generationEpoch_==UINT64_MAX)
+      sceneClipBuffers().empty() || generationEpoch_==UINT64_MAX)
     invalid("Live scene descriptor resources or publication epoch are unavailable");
   if(!limits.maxPreparedCpuBytes || limits.maxPreparedCpuBytes==UINT64_MAX ||
       !limits.maxDescriptorFrames || limits.maxDescriptorFrames>1024)
@@ -1152,7 +1154,7 @@ SceneManager::PreparedSceneBindings SceneManager::prepareSceneBindings(const Sce
   s.expectedPool=descriptorPool_;s.expectedOwnsPool=ownsDescriptorPool_;s.layout=descriptorSetLayout_;
   s.materialBuffer=materialBuffer_.buffer;s.materialAllocation=materialBuffer_.allocation;s.materialCount=gpuMaterials_.size();
   s.metadataBuffer=textureMetadataBuffer_.buffer;s.metadataAllocation=textureMetadataBuffer_.allocation;s.metadataCount=textureMetadata_.size();
-  s.clipBuffer=sceneClipStateBuffer_.buffer;s.clipAllocation=sceneClipStateBuffer_.allocation;
+  s.clipFrames=sceneClipFrameIdentity();
   s.textureCapacity=textureDescriptorCapacity_;s.samplerCapacity=materialSamplerDescriptorCapacity_;
   s.samplingFallback=textureSamplingFallback_;s.sampling=std::move(sampling);s.images=textureImageOwnership_;
   s.resourceGeneration=resourceGeneration;s.readerReferences=std::move(readerReferences);s.references=std::move(references);
@@ -1201,8 +1203,7 @@ bool SceneManager::sceneBindingsMatch(const PreparedSceneBindings& token,const A
         s.images!=s.prospectiveResources->textureImageOwnership() || s.expectedPool!=descriptorPool_ ||
         s.expectedOwnsPool!=ownsDescriptorPool_ || s.layout!=descriptorSetLayout_ || s.materialBuffer!=materialBuffer_.buffer ||
         s.materialAllocation!=materialBuffer_.allocation || s.materialCount!=gpuMaterials_.size() ||
-        s.materialCount!=materialManager_.materialCount() || s.clipBuffer!=sceneClipStateBuffer_.buffer ||
-        s.clipAllocation!=sceneClipStateBuffer_.allocation || s.textureCapacity!=textureDescriptorCapacity_ ||
+        s.materialCount!=materialManager_.materialCount() || s.clipFrames!=sceneClipFrameIdentity() || s.textureCapacity!=textureDescriptorCapacity_ ||
         s.samplerCapacity!=materialSamplerDescriptorCapacity_) return false;
     if(before) {
       const auto& resources=*s.prospectiveResources;
@@ -1241,7 +1242,7 @@ bool SceneManager::sceneBindingsMatch(const PreparedSceneBindings& token,const A
       s.materialBuffer!=materialBuffer_.buffer || s.materialAllocation!=materialBuffer_.allocation ||
       s.materialCount!=gpuMaterials_.size() || s.materialCount!=materialManager_.materialCount() ||
       s.metadataBuffer!=textureMetadataBuffer_.buffer || s.metadataAllocation!=textureMetadataBuffer_.allocation ||
-      s.metadataCount!=textureMetadata_.size() || s.clipBuffer!=sceneClipStateBuffer_.buffer || s.clipAllocation!=sceneClipStateBuffer_.allocation ||
+      s.metadataCount!=textureMetadata_.size() || s.clipFrames!=sceneClipFrameIdentity() ||
       s.textureCapacity!=textureDescriptorCapacity_ || s.samplerCapacity!=materialSamplerDescriptorCapacity_ ||
       materialSamplerSlots_.keys.size()>s.samplers.size() || !textureSamplingStateValid() ||
       !container::material::TextureSamplingPlanMatches(s.sampling,textureManager_,textureSamplingFallback_->resource,*allocationManager_)) return false;
@@ -1261,7 +1262,7 @@ void SceneManager::PreparedSceneBindings::prepareDescriptorFrames(
     std::span<const container::gpu::AllocatedBuffer> auxiliaryObjects,const AnimationPlayer* currentPlayer) {
   if(!*this) invalid("Scene descriptor generation is empty or consumed");auto& s=*state_;const auto& owner=*s.owner;
   if(s.pool!=VK_NULL_HANDLE) invalid("Scene descriptor generation has already been prepared");
-  if(cameras.empty() || cameras.size()>s.limits.maxDescriptorFrames || objects.empty() ||
+  if(cameras.empty() || cameras.size()>s.limits.maxDescriptorFrames || cameras.size()!=owner.sceneClipBuffers().size() || objects.empty() ||
       (objects.size()!=1 && objects.size()!=cameras.size()) ||
       (!auxiliaryObjects.empty() && auxiliaryObjects.size()!=1 && auxiliaryObjects.size()!=cameras.size()))
     invalid("Scene descriptor frame tables have incompatible shapes");
@@ -1297,11 +1298,11 @@ void SceneManager::PreparedSceneBindings::prepareDescriptorFrames(
   s.primary.assign(allocated.begin(),allocated.begin()+frames);s.auxiliary.assign(allocated.begin()+frames,allocated.end());
   for(uint32_t i=0;i<frames;++i) {
     if(s.prospectiveResources) {
-      s.prospectiveResources->writeDescriptorSetContents(s.primary[i],cameras[i],objects[std::min<size_t>(i,objects.size()-1)],owner.materialBuffer_,s.materialCount,currentPlayer);
-      s.prospectiveResources->writeDescriptorSetContents(s.auxiliary[i],cameras[i],auxiliaryObjects[std::min<size_t>(i,auxiliaryObjects.size()-1)],owner.materialBuffer_,s.materialCount,currentPlayer);
+      s.prospectiveResources->writeDescriptorSetContents(s.primary[i],i,cameras[i],objects[std::min<size_t>(i,objects.size()-1)],owner.materialBuffer_,s.materialCount,currentPlayer);
+      s.prospectiveResources->writeDescriptorSetContents(s.auxiliary[i],i,cameras[i],auxiliaryObjects[std::min<size_t>(i,auxiliaryObjects.size()-1)],owner.materialBuffer_,s.materialCount,currentPlayer);
     } else {
-      owner.writeMaterialDescriptorSetContents(s.primary[i],cameras[i],objects[std::min<size_t>(i,objects.size()-1)],owner.materialBuffer_,s.materialCount);
-      owner.writeMaterialDescriptorSetContents(s.auxiliary[i],cameras[i],auxiliaryObjects[std::min<size_t>(i,auxiliaryObjects.size()-1)],owner.materialBuffer_,s.materialCount);
+      owner.writeMaterialDescriptorSetContents(s.primary[i],i,cameras[i],objects[std::min<size_t>(i,objects.size()-1)],owner.materialBuffer_,s.materialCount);
+      owner.writeMaterialDescriptorSetContents(s.auxiliary[i],i,cameras[i],auxiliaryObjects[std::min<size_t>(i,auxiliaryObjects.size()-1)],owner.materialBuffer_,s.materialCount);
     }
   }
   if(s.prospectiveResources) {
@@ -1561,7 +1562,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialGeneration
     invalid("Material generation requires current active lifecycle identities");
   if(!allocationManager_ || !pipelineManager_ || !deviceWrapper_ || descriptorPool_==VK_NULL_HANDLE ||
       descriptorSetLayout_==VK_NULL_HANDLE || materialBuffer_.buffer==VK_NULL_HANDLE ||
-      textureMetadataBuffer_.buffer==VK_NULL_HANDLE || sceneClipStateBuffer_.buffer==VK_NULL_HANDLE ||
+      textureMetadataBuffer_.buffer==VK_NULL_HANDLE || sceneClipBuffers().empty() ||
       generationEpoch_==UINT64_MAX || materialRevision_==UINT64_MAX || authoredMaterialRevision_==UINT64_MAX ||
       sceneRootCatalogIdentity_==UINT64_MAX) invalid("Live material resources or publication revisions are unavailable");
   if(!limits.maxPreparedCpuBytes || limits.maxPreparedCpuBytes==UINT64_MAX || !limits.maxMaterialBufferBytes ||
@@ -1702,7 +1703,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialGeneration
   }
   s.authoredTextureCount=exportSource_.textures.size();s.textureCount=gltfModel_.textures.size();s.runtimeTextures=textureManager_.textureCount();
   s.layout=descriptorSetLayout_;s.expectedPool=descriptorPool_;s.expectedMaterial=materialBuffer_.buffer;
-  s.textureMetadata=textureMetadataBuffer_.buffer;s.clip=sceneClipStateBuffer_.buffer;s.beforeImages=textureImageOwnership_;s.images=images;
+  s.textureMetadata=textureMetadataBuffer_.buffer;s.clipFrames=sceneClipFrameIdentity();s.beforeImages=textureImageOwnership_;s.images=images;
   s.beforeResourceGeneration=beforeResourceGeneration;s.resourceGeneration=resources?resources->resourceLifecycleGeneration():dependencyChange->next();
   s.beforeReferences=std::move(beforeReferences);s.references=std::move(references);
   s.beforeDependencies=materialResourceDependencies_;s.dependencies=materialResourceDependencies_;s.dependencies.resize(futureCount);
@@ -1951,7 +1952,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialTailChange
 
   if(!allocationManager_ || !pipelineManager_ || !deviceWrapper_ || descriptorPool_==VK_NULL_HANDLE ||
       descriptorSetLayout_==VK_NULL_HANDLE || materialBuffer_.buffer==VK_NULL_HANDLE ||
-      textureMetadataBuffer_.buffer==VK_NULL_HANDLE || sceneClipStateBuffer_.buffer==VK_NULL_HANDLE ||
+      textureMetadataBuffer_.buffer==VK_NULL_HANDLE || sceneClipBuffers().empty() ||
       generationEpoch_==UINT64_MAX || materialRevision_==UINT64_MAX || authoredMaterialRevision_==UINT64_MAX ||
       sceneRootCatalogIdentity_==UINT64_MAX) invalid("Live material resources or revisions are unavailable");
   if(!limits.maxMaterialBufferBytes || limits.maxMaterialBufferBytes==UINT64_MAX || !limits.maxDescriptorFrames ||
@@ -2036,7 +2037,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialTailChange
   s.provenance.resize(futureCount);
   s.authoredTextureCount=exportSource_.textures.size();s.textureCount=gltfModel_.textures.size();s.runtimeTextures=textureManager_.textureCount();
   s.layout=descriptorSetLayout_;s.expectedPool=descriptorPool_;s.expectedMaterial=materialBuffer_.buffer;
-  s.textureMetadata=textureMetadataBuffer_.buffer;s.clip=sceneClipStateBuffer_.buffer;s.beforeImages=textureImageOwnership_;s.images=textureImageOwnership_;
+  s.textureMetadata=textureMetadataBuffer_.buffer;s.clipFrames=sceneClipFrameIdentity();s.beforeImages=textureImageOwnership_;s.images=textureImageOwnership_;
   s.beforeResourceGeneration=resourceGeneration;s.resourceGeneration=dependencyChange.next();
   s.beforeReferences=std::move(beforeReferences);s.references=std::move(references);
   s.beforeDependencies=materialResourceDependencies_;s.dependencies.assign(s.beforeDependencies.begin(),s.beforeDependencies.begin()+futureCount);
@@ -2162,7 +2163,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialRetirement
     invalid("Material retirement belongs to a stale, foreign or replaced incarnation");
   if(!allocationManager_ || !pipelineManager_ || !deviceWrapper_ || descriptorPool_==VK_NULL_HANDLE ||
       descriptorSetLayout_==VK_NULL_HANDLE || materialBuffer_.buffer==VK_NULL_HANDLE ||
-      textureMetadataBuffer_.buffer==VK_NULL_HANDLE || sceneClipStateBuffer_.buffer==VK_NULL_HANDLE ||
+      textureMetadataBuffer_.buffer==VK_NULL_HANDLE || sceneClipBuffers().empty() ||
       generationEpoch_==UINT64_MAX || materialRevision_==UINT64_MAX || authoredMaterialRevision_==UINT64_MAX)
     invalid("Live material retirement publication resources are unavailable");
   if(!limits.maxPreparedCpuBytes || limits.maxPreparedCpuBytes==UINT64_MAX || !limits.maxMaterialCount ||
@@ -2224,7 +2225,7 @@ SceneManager::PreparedMaterialGeneration SceneManager::prepareMaterialRetirement
   s.expectedVacancy=materialTailVacancy_;s.ownersBefore=materialEntryOwners_.size();
   s.authoredTextureCount=exportSource_.textures.size();s.textureCount=gltfModel_.textures.size();s.runtimeTextures=textureManager_.textureCount();
   s.layout=descriptorSetLayout_;s.expectedPool=descriptorPool_;s.expectedMaterial=materialBuffer_.buffer;
-  s.textureMetadata=textureMetadataBuffer_.buffer;s.clip=sceneClipStateBuffer_.buffer;s.descriptorCpuAvailable=budget.available;
+  s.textureMetadata=textureMetadataBuffer_.buffer;s.clipFrames=sceneClipFrameIdentity();s.descriptorCpuAvailable=budget.available;
   s.beforeImages=textureImageOwnership_;s.images=textureImageOwnership_;
   s.beforeResourceGeneration=resourceGeneration;s.resourceGeneration=dependencyChange.next();
   s.beforeReferences=std::move(beforeReferences);s.references=std::move(references);
@@ -2345,7 +2346,7 @@ void SceneManager::PreparedMaterialGeneration::prepareDescriptorFrames(
     std::span<const container::gpu::AllocatedBuffer> auxiliaryObjects) {
   if(!*this) invalid("Material descriptor generation is empty or consumed");auto& s=*state_;const auto& owner=*s.owner;
   if(s.pool!=VK_NULL_HANDLE) invalid("Material descriptor generation has already been prepared");
-  if(cameras.empty() || cameras.size()>s.limits.maxDescriptorFrames || objects.empty() ||
+  if(cameras.empty() || cameras.size()>s.limits.maxDescriptorFrames || cameras.size()!=owner.sceneClipBuffers().size() || objects.empty() ||
       (objects.size()!=1 && objects.size()!=cameras.size()) ||
       (!auxiliaryObjects.empty() && auxiliaryObjects.size()!=1 && auxiliaryObjects.size()!=cameras.size()))
     invalid("Material descriptor frame tables have incompatible shapes");
@@ -2379,8 +2380,8 @@ void SceneManager::PreparedMaterialGeneration::prepareDescriptorFrames(
   s.primary.assign(allocated.begin(),allocated.begin()+frameCount);s.auxiliary.assign(allocated.begin()+frameCount,allocated.end());
   for(uint32_t i=0;i<frameCount;++i) {
     const auto write=[&](VkDescriptorSet set,const container::gpu::AllocatedBuffer& object) {
-      if(s.resources) s.resources->writeDescriptorSetContents(set,cameras[i],object,s.buffer,s.gpu.size());
-      else owner.writeMaterialDescriptorSetContents(set,cameras[i],object,s.buffer,s.gpu.size());
+      if(s.resources) s.resources->writeDescriptorSetContents(set,i,cameras[i],object,s.buffer,s.gpu.size());
+      else owner.writeMaterialDescriptorSetContents(set,i,cameras[i],object,s.buffer,s.gpu.size());
     };
     write(s.primary[i],objects[std::min<size_t>(i,objects.size()-1)]);
     write(s.auxiliary[i],auxiliaryObjects[std::min<size_t>(i,auxiliaryObjects.size()-1)]);
@@ -2474,7 +2475,7 @@ bool SceneManager::materialGenerationMatches(const PreparedMaterialGeneration& t
       s.materialCount!=materialManager_.materialCount() || s.sourceCount!=sourceMaterialToRuntime_.size() ||
       s.authoredTextureCount!=exportSource_.textures.size() || s.textureCount!=gltfModel_.textures.size() ||
       s.runtimeTextures!=textureManager_.textureCount() || s.expectedPool!=descriptorPool_ || s.layout!=descriptorSetLayout_ ||
-      s.expectedMaterial!=materialBuffer_.buffer || s.textureMetadata!=textureMetadataBuffer_.buffer || s.clip!=sceneClipStateBuffer_.buffer ||
+      s.expectedMaterial!=materialBuffer_.buffer || s.textureMetadata!=textureMetadataBuffer_.buffer || s.clipFrames!=sceneClipFrameIdentity() ||
       s.expectedAuthoredDeclarations!=exportSource_.extensionsUsed || s.expectedEvaluatedDeclarations!=gltfModel_.extensionsUsed)
     return false;
   if(!materialLifecycle_ || s.lifecycle!=materialLifecycle_ || s.lifecycleNextBefore!=materialLifecycleNextSlot_ ||
@@ -2571,7 +2572,7 @@ void SceneManager::exchangeMaterialGeneration(PreparedMaterialGeneration& token,
       s.authoredTextureCount!=exportSource_.textures.size() || s.textureCount!=gltfModel_.textures.size() ||
       s.runtimeTextures!=textureManager_.textureCount() || s.expectedPool!=descriptorPool_ || s.layout!=descriptorSetLayout_ ||
       s.expectedMaterial!=materialBuffer_.buffer || s.textureMetadata!=textureMetadataBuffer_.buffer ||
-      s.clip!=sceneClipStateBuffer_.buffer) return;
+      s.clipFrames!=sceneClipFrameIdentity()) return;
   if(!materialLifecycle_ || s.lifecycle!=materialLifecycle_ || s.lifecycleNextBefore!=materialLifecycleNextSlot_ ||
       materialLifecycleHandles_.size()!=s.materialCount ||
       (s.lifecycleRegistration && !materialLifecycle_->canExchange(*s.lifecycleRegistration)) ||

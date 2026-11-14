@@ -395,7 +395,10 @@ TEST_F(SceneMergeGenerationGpu,PreparationKeepsLiveAssetsPathsAndDescriptorHandl
   EXPECT_EQ(manager->buildSceneExport(graph),before);EXPECT_EQ(incoming.gltfModel,original);
   EXPECT_NE(staged.manager().descriptorSet(0),descriptor);
   EXPECT_NE(staged.manager().auxiliaryDescriptorSet(0),auxiliary);
-  EXPECT_NE(staged.manager().sceneClipBuffer().buffer,manager->sceneClipBuffer().buffer);
+  ASSERT_EQ(staged.manager().sceneClipBuffers().size(), 2u);
+  ASSERT_EQ(manager->sceneClipBuffers().size(), 2u);
+  for (size_t image = 0; image < 2u; ++image)
+    EXPECT_NE(staged.manager().sceneClipBuffers()[image].buffer, manager->sceneClipBuffers()[image].buffer);
   EXPECT_EQ(staged.manager().sourcePrimitiveToRuntime(),(std::vector<uint32_t>{0,1}));
   EXPECT_EQ(staged.manager().animationSource().images.size(),2u);
   EXPECT_EQ(staged.manager().animationSource().defaultScene,-1);
@@ -822,7 +825,7 @@ TEST_F(SceneMergeGenerationGpu,CloneKeepsImportedProceduralEditsAndTextureIdenti
   {
     auto clone=manager->prepareSubtreeCloneGeneration(graph,owner,"Imported and manual copy");
     ASSERT_TRUE(clone.readyForExchange(*manager,graph));EXPECT_TRUE(clone.isSubtreeClone());
-    EXPECT_EQ(allocations(),allocationsBefore+3); // Material, metadata and clip buffers; no image allocations.
+    EXPECT_EQ(allocations(),allocationsBefore+4); // Material, metadata and two clip buffers; no image allocations.
     EXPECT_NE(clone.manager().descriptorSet(0),originalDescriptor);
     EXPECT_EQ(manager->buildSceneExport(graph),original);EXPECT_EQ(graph.nodeCount(),first);
     EXPECT_EQ(clone.manager().runtimePrimitiveToSource(),manager->runtimePrimitiveToSource());
@@ -1363,7 +1366,7 @@ TEST_F(SceneMergeGenerationGpu,MergeRetainsOldRolePrefixAndPairedManualSourcesAc
   const auto beforeBytes=manager->mergeHistoryResidentBytes();const auto baseline=allocations();
   // Same source pixels+role+sampler deduplicate against A without a GPU image.
   auto staged=manager->prepareMergeGeneration(triangle("B alias",31),temp/"b.glb",{},graph);
-  EXPECT_EQ(allocations(),baseline+3); // Detached material/metadata/clip buffers only.
+  EXPECT_EQ(allocations(),baseline+4); // Detached material, metadata and two clip buffers.
   const auto merged=staged.manager().gltfTextureResources();
   ASSERT_EQ(merged.color.size(),5u);ASSERT_EQ(merged.data.size(),5u);
   EXPECT_TRUE(std::equal(paired.color.begin(),paired.color.end(),merged.color.begin()));
@@ -1398,7 +1401,7 @@ TEST_F(SceneMergeGenerationGpu,SubtreeCloneCopiesTextureRolesWithoutUploadingAnd
   SceneMergeGenerationLimits limits;limits.maxNewTextureBytes=0;limits.maxPreparedTextureBytes=0;
   {
     auto clone=manager->prepareSubtreeCloneGeneration(graph,sourceNode(0),"Role-preserving copy",limits);
-    EXPECT_EQ(allocations(),baseline+3);
+    EXPECT_EQ(allocations(),baseline+4);
     EXPECT_EQ(clone.manager().gltfTextureResources().color,original.color);
     EXPECT_EQ(clone.manager().gltfTextureResources().data,original.data);
     EXPECT_EQ(clone.manager().animationSource().textures.size(),manager->animationSource().textures.size());
@@ -1500,8 +1503,8 @@ TEST_F(SceneMergeGenerationGpu,SceneBindingsPublicationAllocatesNothingAndRetain
   auto stage=manager->prepareSceneBindings();stage.prepareDescriptorFrames(frames.cameras,std::span(frames.objects.data(),1));
   const std::array primary{stage.descriptorSet(0),stage.descriptorSet(1)};
   const std::array auxiliary{stage.auxiliaryDescriptorSet(0),stage.auxiliaryDescriptorSet(1)};
-  const auto clipBuffer=manager->sceneClipBuffer().buffer;auto clip=manager->sceneClipState();
-  clip.boxClipEnabled=1;clip.boxClipPlaneCount=1;clip.boxClipPlanes[0]={0,1,0,-2};manager->updateSceneClipState(clip);
+  const auto clipBuffer=manager->sceneClipBuffers()[0].buffer;auto clip=manager->sceneClipState();
+  clip.boxClipEnabled=1;clip.boxClipPlaneCount=1;clip.boxClipPlanes[0]={0,1,0,-2};manager->updateSceneClipState(0,clip);
   bool accepted{};size_t attempted{};
   {
     material_publication_test::AllocationGuard guard(true);
@@ -1510,7 +1513,7 @@ TEST_F(SceneMergeGenerationGpu,SceneBindingsPublicationAllocatesNothingAndRetain
   EXPECT_TRUE(accepted);EXPECT_EQ(attempted,0u);EXPECT_FALSE(stage);EXPECT_FALSE(manager->canExchangeSceneBindings(stage));
   EXPECT_EQ(manager->generationEpoch(),epoch+1);EXPECT_EQ(manager->materialRevision(),material);
   EXPECT_EQ(manager->authoredMaterialRevision(),authored);EXPECT_EQ(manager->geometryRevision(),geometry);EXPECT_EQ(allocations(),baseline);
-  EXPECT_EQ(manager->sceneClipBuffer().buffer,clipBuffer);EXPECT_EQ(manager->sceneClipState().boxClipEnabled,1u);
+  EXPECT_EQ(manager->sceneClipBuffers()[0].buffer,clipBuffer);EXPECT_EQ(manager->sceneClipState().boxClipEnabled,1u);
   EXPECT_EQ(manager->sceneClipState().boxClipPlanes[0],clip.boxClipPlanes[0]);
   EXPECT_EQ(manager->animationSource().materials.data(),gpuSource);EXPECT_EQ(manager->buildSceneExport(graph),sourceBefore);
   for(uint32_t i=0;i<2;++i) {
@@ -1533,6 +1536,77 @@ TEST_F(SceneMergeGenerationGpu,SceneBindingsPublicationAllocatesNothingAndRetain
   });
   manager->exchangeSceneBindings(stage);EXPECT_EQ(manager->generationEpoch(),epoch+1);
   stage={};EXPECT_EQ(allocations(),baseline);
+}
+
+TEST_F(SceneMergeGenerationGpu, SceneClipUploadUsesRetiredImageAndSeedsReplacementFrames) {
+  using container::gpu::SceneClipState;
+  load();
+  const auto active = manager->sceneClipBuffers();
+  ASSERT_EQ(active.size(), 2u);
+  EXPECT_NE(active[0].buffer, active[1].buffer);
+  ASSERT_NE(active[0].allocation_info.pMappedData, nullptr);
+  ASSERT_NE(active[1].allocation_info.pMappedData, nullptr);
+  const auto stateMatches = [](const auto& buffer, const SceneClipState& state) {
+    return std::memcmp(buffer.allocation_info.pMappedData, &state, sizeof(state)) == 0;
+  };
+  const SceneClipState disabled{};
+  auto first = disabled;
+  first.boxClipEnabled = 1;
+  first.boxClipPlaneCount = 1;
+  first.boxClipPlanes[0] = {0, 1, 0, -2};
+  auto second = first;
+  second.boxClipInvert = 1;
+  second.boxClipPlanes[0] = {1, 0, 0, -3};
+  manager->updateSceneClipState(0, first);
+  EXPECT_TRUE(stateMatches(active[0], first));
+  EXPECT_TRUE(stateMatches(active[1], disabled));
+  manager->updateSceneClipState(1, second);
+  EXPECT_TRUE(stateMatches(active[0], first));
+  EXPECT_TRUE(stateMatches(active[1], second));
+  manager->updateSceneClipState(0, second);
+  EXPECT_TRUE(stateMatches(active[0], second));
+  EXPECT_THROW(manager->updateSceneClipState(2, disabled), std::out_of_range);
+  EXPECT_TRUE(stateMatches(active[1], manager->sceneClipState()));
+
+  MaterialFrames frames(*allocation);
+  auto stale = manager->prepareSceneBindings();
+  stale.prepareDescriptorFrames(frames.cameras, frames.objects);
+  const auto oldHandles = std::array{active[0].buffer, active[1].buffer};
+  const auto oldDescriptors = std::array{manager->descriptorSet(0), manager->descriptorSet(1)};
+  const auto beforeResize = allocations();
+  bool rejectedResize = false;
+  {
+    // The first four allocations construct the clip tables and identity.
+    // Reject the next allocation after the candidate Vulkan slots are seeded.
+    material_publication_test::AllocationGuard guard(true, 4);
+    try {
+      manager->resizeDescriptorFrames(3);
+    } catch (const std::bad_alloc&) {
+      rejectedResize = true;
+    }
+  }
+  EXPECT_TRUE(rejectedResize);
+  EXPECT_EQ(allocations(), beforeResize);
+  ASSERT_EQ(manager->sceneClipBuffers().size(), 2u);
+  for (size_t image = 0; image < oldHandles.size(); ++image) {
+    EXPECT_EQ(manager->sceneClipBuffers()[image].buffer, oldHandles[image]);
+    EXPECT_EQ(manager->descriptorSet(static_cast<uint32_t>(image)), oldDescriptors[image]);
+  }
+  EXPECT_TRUE(manager->canExchangeSceneBindings(stale));
+  auto candidate = manager->prepareMergeGeneration(triangle("Clip frame candidate", 17), temp/"clip.glb", {}, graph);
+  candidate.prepareDescriptorFrames(3);
+  ASSERT_EQ(candidate.manager().sceneClipBuffers().size(), 3u);
+  for (const auto& buffer : candidate.manager().sceneClipBuffers())
+    EXPECT_TRUE(stateMatches(buffer, second));
+  EXPECT_TRUE(manager->canExchangeSceneBindings(stale));
+  manager->resizeDescriptorFrames(3);
+  EXPECT_FALSE(manager->canExchangeSceneBindings(stale));
+  ASSERT_EQ(manager->sceneClipBuffers().size(), 3u);
+  for (const auto& buffer : manager->sceneClipBuffers()) {
+    EXPECT_NE(buffer.buffer, oldHandles[0]);
+    EXPECT_NE(buffer.buffer, oldHandles[1]);
+    EXPECT_TRUE(stateMatches(buffer, second));
+  }
 }
 
 TEST_F(SceneMergeGenerationGpu,SceneBindingsRejectInvalidLimitsAndFrameShapesBeforePublication) {
