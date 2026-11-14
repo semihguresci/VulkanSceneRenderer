@@ -10203,6 +10203,8 @@ TEST(RenderingConventionTests, BimSectionClipCapsExposeShaderStyleContract) {
       readRepoTextFile("src/renderer/core/FrameRecorder.cpp");
   const std::string lightingPassRecorder = readRepoTextFile(
       "src/renderer/deferred/DeferredRasterLightingPassRecorder.cpp");
+  const std::string overlayRecorder =
+      readRepoTextFile("src/renderer/bim/BimLightingOverlayRecorder.cpp");
   const std::string sectionClipCapPlanner =
       readRepoTextFile("src/renderer/bim/BimSectionClipCapPassPlanner.cpp");
   const std::string sectionClipCapRecorder =
@@ -10235,12 +10237,12 @@ TEST(RenderingConventionTests, BimSectionClipCapsExposeShaderStyleContract) {
       readRepoTextFile("tests/CMakeLists.tests.cmake");
 
   const size_t sectionCapStart =
-      lightingPassRecorder.find("recordBimSectionClipCapFramePassCommands");
+      overlayRecorder.find("recordBimSectionClipCapFramePassCommands");
   ASSERT_NE(sectionCapStart, std::string::npos);
-  const size_t sectionCapEnd = lightingPassRecorder.find(
+  const size_t sectionCapEnd = overlayRecorder.find(
       "recordBimPrimitiveFramePassCommands", sectionCapStart);
   ASSERT_NE(sectionCapEnd, std::string::npos);
-  const std::string sectionCapBlock = lightingPassRecorder.substr(
+  const std::string sectionCapBlock = overlayRecorder.substr(
       sectionCapStart, sectionCapEnd - sectionCapStart);
 
   EXPECT_TRUE(contains(frameRecorderHeader, "FrameSectionBoxClipState"));
@@ -10256,9 +10258,9 @@ TEST(RenderingConventionTests, BimSectionClipCapsExposeShaderStyleContract) {
 
   EXPECT_FALSE(contains(frameRecorder, "BimSectionClipCapPassPlanner.h"));
   EXPECT_TRUE(
-      contains(lightingPassRecorder, "BimSectionClipCapPassRecorder.h"));
+      contains(overlayRecorder, "BimSectionClipCapPassRecorder.h"));
   EXPECT_TRUE(
-      contains(lightingPassRecorder, "bimSectionClipCapFramePassStyle"));
+      contains(overlayRecorder, "sectionClipCapStyle(bim, lineListWideLinesSupported)"));
   EXPECT_FALSE(contains(frameRecorder, "bimSectionClipCapPassInputs"));
   EXPECT_FALSE(contains(frameRecorder, "buildBimSectionClipCapPassPlan"));
   EXPECT_TRUE(
@@ -10273,10 +10275,8 @@ TEST(RenderingConventionTests, BimSectionClipCapsExposeShaderStyleContract) {
                        "DeferredRasterPipelineId::BimSectionClipCapFill"));
   EXPECT_TRUE(contains(lightingPassRecorder,
                        "DeferredRasterPipelineId::BimSectionClipCapHatch"));
-  EXPECT_TRUE(contains(lightingPassRecorder,
-                       "sectionClipCapGeometry.fillDrawCommands"));
-  EXPECT_TRUE(contains(lightingPassRecorder,
-                       "sectionClipCapGeometry.hatchDrawCommands"));
+  EXPECT_TRUE(contains(overlayRecorder, ".fillDrawCommands = geometry.fillDrawCommands"));
+  EXPECT_TRUE(contains(overlayRecorder, ".hatchDrawCommands = geometry.hatchDrawCommands"));
   EXPECT_TRUE(
       contains(sectionClipCapRecorder, "pipelineForBimSectionClipCapPass"));
   EXPECT_TRUE(
