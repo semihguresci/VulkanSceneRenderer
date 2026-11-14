@@ -100,25 +100,39 @@ def main():
             "--warmup-frames", "0", "--capture-frame", "19", "--screenshot", str(single))
     assert np.array_equal(read_image(single), images[0][-1]), "Series changed the accumulated sample sequence"
 
-    for name, target, starting_batch, limit in (("adaptive-grow", 1000, 40, 73),
-                                                ("adaptive-budget", .1, 4, 13)):
+    def adaptive_case(name, target, starting_batch, limit, *, capture_each_frame):
         base = output / f"{name}.exr"
         sequence = output / f"{name}.json"
         events = [{"frame": 7, "environmentYaw": 45}] if target == 1000 else []
-        sequence.write_text(json.dumps({"schemaVersion": 1, "frames": 12,
-                                        "sampleFrames": list(range(1, 13)),
+        frame_count = 12
+        frames = list(range(1, frame_count + 1))
+        sequence.write_text(json.dumps({"schemaVersion": 1, "frames": frame_count,
+                                        "sampleFrames": frames if capture_each_frame else [frame_count],
+                                        "telemetryFrames": frames,
                                         "events": events}), encoding="utf-8")
         capture(name, emitter, "--display-mode", "lit", "--path-spp", str(starting_batch),
                 "--path-samples", str(limit), "--path-target-ms", str(target),
                 "--capture-sequence", str(sequence), "--screenshot", str(base))
-        paths = [output / f"{name}.frame-{index:04}.telemetry.json" for index in range(1, 12)]
+        paths = [output / f"{name}.frame-{index:04}.telemetry.json" for index in frames[:-1]]
         paths.append(base.with_suffix(".telemetry.json"))
         states = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
         previous_count = 0
         previous_batch = 0
         previous_epoch = 0
+        previous_serial = 0
         decisions = []
-        for state in states:
+        schedule = []
+        for frame, state in enumerate(states):
+            history = state["frameHistory"]
+            current = history[-1]
+            assert current["frameIndex"] == frame, paths[frame]
+            captured = capture_each_frame or frame == frame_count - 1
+            assert (current["cpuPhasesMs"]["Screenshot"] > 0) == captured, paths[frame]
+            if captured:
+                # The screenshot fence makes this exact submission available
+                # even before its timing can drive the next batch.
+                assert current["gpuFrameIndex"] == frame and current["gpuGraphicsMs"] > 0, paths[frame]
+                assert current["gpuResultLatencyFrames"] == 0, paths[frame]
             reference = state["referencePath"]
             count, batch = reference["attemptedSamples"], reference["lastSubmittedSamples"]
             scheduled = reference["scheduledSamplesPerFrame"]
@@ -132,13 +146,23 @@ def main():
             if previous_count == 0:
                 assert scheduled == starting_batch and reference["lastTimedLightingMs"] is None
             elif previous_count < limit:
+                # Live Lighting and the controller must see the same retired
+                # result from the immediately preceding submitted frame.
+                previous = history[-2]
+                serial = state["gpuProfiler"]["recordingSerial"]
+                assert previous["frameIndex"] == previous["gpuFrameIndex"] == frame - 1, paths[frame]
+                assert previous["gpuResultLatencyFrames"] == (0 if capture_each_frame else 1), paths[frame]
+                assert serial == previous["gpuRecordingSerial"] and serial > previous_serial, paths[frame]
+                assert state["gpuProfiler"]["resultLatencyFrames"] == 1, paths[frame]
                 lighting = next(item for item in state["passes"] if item["name"] == "Lighting")
                 measured = reference["lastTimedLightingMs"]
                 assert measured == lighting["gpuMs"] and measured > 0
                 estimate = math.floor(previous_batch * reference["adaptiveTargetMs"] / measured)
                 expected = min(64, previous_batch * 2, max((previous_batch + 1) // 2, estimate))
                 assert scheduled == expected
+                previous_serial = serial
                 decisions.append(scheduled)
+            schedule.append((epoch, count, batch))
             previous_count, previous_batch = count, batch
             previous_epoch = epoch
         assert decisions and previous_count == limit and previous_batch == 0
@@ -146,6 +170,14 @@ def main():
         if target == 1000:
             assert max(decisions) == 64
         assert np.array_equal(read_image(base), images[0][checkpoints.index(limit)])
+        return schedule
+
+    captured = adaptive_case("adaptive-grow", 1000, 40, 73, capture_each_frame=True)
+    telemetry_only = adaptive_case("adaptive-grow-telemetry", 1000, 40, 73, capture_each_frame=False)
+    # The generous budget clamps to 64 SPP, and each epoch needs only 33 more
+    # samples after its first batch. Compare the submitted schedule across modes.
+    assert captured == telemetry_only
+    adaptive_case("adaptive-budget", .1, 4, 13, capture_each_frame=True)
 
     capture("duplicate", emitter, "--path-sample-series", "1,1", "--screenshot", str(single),
             error="strictly increasing counts")

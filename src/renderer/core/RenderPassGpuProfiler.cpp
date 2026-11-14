@@ -124,6 +124,7 @@ void RenderPassGpuProfiler::shutdown() {
   slots_.clear();
   submittedSlots_.clear();
   retired_.clear();
+  deferredLiveTiming_.reset();
 }
 
 void RenderPassGpuProfiler::beginFrame(VkCommandBuffer cmd,
@@ -253,6 +254,16 @@ std::span<const RenderPassGpuProfiler::RetiredFrame> RenderPassGpuProfiler::coll
     slot.submitted.reset();
   }
   return retired_;
+}
+
+void RenderPassGpuProfiler::deferLatestLiveTiming() {
+  if (!retired_.empty())
+    deferredLiveTiming_ = std::move(retired_.back());
+}
+
+std::optional<RenderPassGpuProfiler::RetiredFrame>
+RenderPassGpuProfiler::takeDeferredLiveTiming() {
+  return std::exchange(deferredLiveTiming_, std::nullopt);
 }
 
 uint32_t RenderPassGpuProfiler::pendingFrames() const {
