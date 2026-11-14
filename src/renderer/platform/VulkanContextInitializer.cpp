@@ -122,6 +122,7 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enabledFeatures.multiDrawIndirect = VK_TRUE;
     ci.optionalFeatures.fillModeNonSolid       = VK_TRUE;
     ci.optionalFeatures.wideLines              = VK_TRUE;
+    ci.optionalFeatures.largePoints            = VK_TRUE;
     ci.optionalFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
     ci.optionalFeatures.textureCompressionBC = VK_TRUE;
     ci.optionalFeatures.textureCompressionETC2 = VK_TRUE;

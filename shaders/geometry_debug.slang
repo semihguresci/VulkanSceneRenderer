@@ -11,6 +11,8 @@
 [[vk::push_constant]]
 ConstantBuffer<BindlessPushConstants> pc;
 
+[[vk::constant_id(0)]] const float vertexMarkerSize = 1.0;
+
 struct VSInput
 {
     [[vk::location(0)]] float3 inPosition;
@@ -51,7 +53,7 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
 
     float4 worldPos = mul(obj.model, float4(input.inPosition, 1.0));
     output.pos = mul(uCamera.viewProj, worldPos);
-    output.pointSize = 4.0;
+    output.pointSize = vertexMarkerSize;
     output.color = hashColor(objectIndex);
     output.worldPos = worldPos.xyz;
     return output;

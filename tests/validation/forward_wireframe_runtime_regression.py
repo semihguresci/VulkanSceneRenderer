@@ -266,7 +266,7 @@ def inspect_diagnostics(images, records, *, scene_linear):
             counts = {key: int(changed[y0:y1, x0:x1].sum())
                       for key, (x0, y0, x1, y1) in WINDOWS.items()}
             records[technique][mode]["diagnosticPixels"] = counts
-            require(min(counts.values()) >= (100 if mode == "normals" else 12),
+            require(min(counts.values()) >= (100 if mode == "normals" else 2),
                     f"Missing scene/BIM {mode} diagnostics in {technique}: {counts}")
 
 
