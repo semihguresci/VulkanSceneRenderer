@@ -941,7 +941,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   shadowDs.storeOp        = VK_ATTACHMENT_STORE_OP_STORE;
   shadowDs.stencilLoadOp  = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   shadowDs.stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
-  shadowDs.initialLayout  = VK_IMAGE_LAYOUT_UNDEFINED;
+  shadowDs.initialLayout  = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   shadowDs.finalLayout    = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 
   VkAttachmentReference shadowDsRef{0, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL};
@@ -949,28 +949,12 @@ void RenderPassManager::create(VkFormat swapchainFormat,
   shadowSubpass.pipelineBindPoint       = VK_PIPELINE_BIND_POINT_GRAPHICS;
   shadowSubpass.pDepthStencilAttachment = &shadowDsRef;
 
-  std::array<VkSubpassDependency, 2> shadowDeps{};
-  shadowDeps[0] = MakeDependency(
-      VK_SUBPASS_EXTERNAL, 0,
-      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT |
-          VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-      kDepthTestStages | VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT,
-      VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
-      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT |
-          VK_ACCESS_INDIRECT_COMMAND_READ_BIT);
-  shadowDeps[1] = MakeDependency(
-      0, VK_SUBPASS_EXTERNAL,
-      kDepthTestStages,
-      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
-      VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
-      VK_ACCESS_SHADER_READ_BIT);
-
   rpInfo.attachmentCount = 1;
   rpInfo.pAttachments    = &shadowDs;
   rpInfo.subpassCount    = 1;
   rpInfo.pSubpasses      = &shadowSubpass;
-  rpInfo.dependencyCount = static_cast<uint32_t>(shadowDeps.size());
-  rpInfo.pDependencies   = shadowDeps.data();
+  rpInfo.dependencyCount = 0;
+  rpInfo.pDependencies   = nullptr;
   if (createRenderingPass(dev, &rpInfo, nullptr, &passes_.shadow) != VK_SUCCESS)
     throw std::runtime_error("failed to create shadow render pass");
 

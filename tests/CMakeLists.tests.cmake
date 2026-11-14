@@ -2895,6 +2895,19 @@ target_compile_definitions(managed_compute_owner_gpu_tests PRIVATE
     CONTAINER_ENVIRONMENT_SAMPLE_SPIRV="${CONTAINER_ENVIRONMENT_SAMPLE_SPIRV}")
 add_dependencies(managed_compute_owner_gpu_tests environment_sample_contract_shader)
 
+set(CONTAINER_SHADOW_ATLAS_ORDER_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/shadow_atlas_order_contract.comp.spv")
+add_custom_command(OUTPUT "${CONTAINER_SHADOW_ATLAS_ORDER_SPIRV}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/test_shaders"
+    COMMAND "${SLANGC_EXECUTABLE}" "${CMAKE_SOURCE_DIR}/tests/shaders/shadow_atlas_order_contract.slang"
+            ${SLANG_SPIRV_FLAGS} -entry computeMain -o "${CONTAINER_SHADOW_ATLAS_ORDER_SPIRV}"
+    DEPENDS "${CMAKE_SOURCE_DIR}/tests/shaders/shadow_atlas_order_contract.slang"
+            "${SLANGC_EXECUTABLE}" "${CMAKE_CURRENT_LIST_FILE}"
+    VERBATIM)
+add_custom_target(shadow_atlas_order_contract_shader DEPENDS "${CONTAINER_SHADOW_ATLAS_ORDER_SPIRV}")
+target_compile_definitions(managed_compute_owner_gpu_tests PRIVATE
+    CONTAINER_SHADOW_ATLAS_ORDER_SPIRV="${CONTAINER_SHADOW_ATLAS_ORDER_SPIRV}")
+add_dependencies(managed_compute_owner_gpu_tests shadow_atlas_order_contract_shader)
+
 set(SAMPLER_PUBLICATION_SPIRV "${CMAKE_BINARY_DIR}/spv_shaders/scene_sampler_publication.comp.spv")
 add_custom_command(OUTPUT "${SAMPLER_PUBLICATION_SPIRV}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/spv_shaders"

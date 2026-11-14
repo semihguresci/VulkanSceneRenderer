@@ -125,6 +125,14 @@ void transitionAttachments(VkCommandBuffer cmd, const ActiveRendering &active,
     barrier.srcAccessMask = source.access;
     barrier.dstStageMask = destination.stages;
     barrier.dstAccessMask = destination.access;
+    if (begin && index == active.pass->depth.attachment &&
+        attachment.initialLayout == VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
+      // A sampled depth layer can be rendered again without an intervening
+      // sample. Wait for its earlier attachment writes as well as its readers.
+      barrier.srcStageMask |= VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT |
+                              VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+      barrier.srcAccessMask |= VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+    }
     if (!begin && index == active.pass->depth.attachment &&
         ((hasDepth(attachment.format) && storeOpWrites(attachment.storeOp)) ||
          (hasStencil(attachment.format) && storeOpWrites(attachment.stencilStoreOp)))) {

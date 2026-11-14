@@ -682,19 +682,7 @@ void recordForwardRasterDepthReadOnlyTransition(VkCommandBuffer cmd,
   const DeferredRasterDepthReadOnlyTransitionPlan transitionPlan =
       buildDeferredRasterDepthReadOnlyTransitionPlan(
           {.depthStencilImage =
-               forwardRasterImage(p, ForwardRasterImageId::DepthStencil),
-           .shadowAtlasImage = p.shadows.shadowManager != nullptr
-                                   ? p.shadows.shadowManager->shadowAtlasImage()
-                                   : VK_NULL_HANDLE,
-           .shadowAtlasVisible = true,
-           .shadowCascadeCount = kShadowCascadeCount,
-           .localShadowAtlasImage =
-               p.shadows.shadowManager != nullptr
-                   ? p.shadows.shadowManager->localShadowAtlasImage()
-                   : VK_NULL_HANDLE,
-           .localShadowAtlasVisible = forwardRasterCanRecordLocalShadowPass(p),
-           .localShadowLayerCount = std::min(p.shadows.localShadowLayerCount,
-                                             kMaxShadowedLocalLightLayers)});
+               forwardRasterImage(p, ForwardRasterImageId::DepthStencil)});
   static_cast<void>(
       recordDeferredRasterDepthReadOnlyTransitionCommands(cmd, transitionPlan));
 }

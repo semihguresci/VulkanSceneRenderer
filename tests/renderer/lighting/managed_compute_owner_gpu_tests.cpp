@@ -1,7 +1,10 @@
 #include "Container/common/CommonGLFW.h"
+#include "Container/renderer/core/RenderPassManager.h"
+#include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/effects/BloomManager.h"
 #include "Container/renderer/effects/ExposureManager.h"
 #include "Container/renderer/lighting/EnvironmentManager.h"
+#include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneData.h"
@@ -72,6 +75,8 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
     v12.bufferDeviceAddress = VK_TRUE;
     v12.separateDepthStencilLayouts = VK_TRUE;
     VkPhysicalDeviceVulkan13Features v13{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES};
+    v13.dynamicRendering = VK_TRUE;
+    v13.maintenance4 = VK_TRUE;
     v13.synchronization2 = VK_TRUE;
     v13.pNext = &v12;
     create.next = &v13;
@@ -235,6 +240,190 @@ class ManagedComputeOwnerGpu : public ::testing::Test {
   const std::filesystem::path root{CONTAINER_MANAGED_OWNER_SHADER_ROOT};
   std::filesystem::path scratch;
 };
+
+TEST_F(ManagedComputeOwnerGpu, RasterShadowAtlasOrdersClearsAndComputeSamplingAcrossSubmissions) {
+  constexpr uint32_t extent = 8;
+  constexpr uint32_t layerCount = 2;
+  using Depths = std::array<float, layerCount>;
+
+  RenderPassManager passes(device);
+  const auto format = passes.findDepthStencilFormat();
+  const auto formats = GBufferFormats::defaults();
+  passes.create(VK_FORMAT_R8G8B8A8_UNORM, format, formats.sceneColor, formats.albedo,
+      formats.normal, formats.material, formats.emissive, formats.specular, formats.pickId,
+      formats.materialLayers, formats.materialSheen, VK_SAMPLE_COUNT_1_BIT, {});
+  const auto shadow = passes.passes().shadow;
+  ASSERT_NE(shadow, nullptr);
+  ASSERT_EQ(shadow->attachments.size(), 1u);
+  EXPECT_EQ(shadow->attachments.front().initialLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+  EXPECT_EQ(shadow->attachments.front().finalLayout, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+
+  const auto allocator = allocation->memoryManager()->allocator();
+  const VkImageCreateInfo imageInfo{
+      .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+      .imageType = VK_IMAGE_TYPE_2D,
+      .format = format,
+      .extent = {extent, extent, 1},
+      .mipLevels = 1,
+      .arrayLayers = layerCount,
+      .samples = VK_SAMPLE_COUNT_1_BIT,
+      .usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
+               VK_IMAGE_USAGE_TRANSFER_DST_BIT};
+  struct Atlas {
+    VmaAllocator allocator;
+    VkDevice device;
+    VkImage image{};
+    VmaAllocation memory{};
+    std::array<VkImageView, layerCount> attachmentViews{};
+    ~Atlas() {
+      for (auto view : attachmentViews) {
+        if (view != VK_NULL_HANDLE) destroyVulkanImageView(device, view, nullptr);
+      }
+      if (image != VK_NULL_HANDLE) vmaDestroyImage(allocator, image, memory);
+    }
+  } atlas{allocator, device->device()};
+  VmaAllocationCreateInfo storage{};
+  storage.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
+  ASSERT_EQ(vmaCreateImage(allocator, &imageInfo, &storage, &atlas.image, &atlas.memory, nullptr), VK_SUCCESS);
+
+  const vk::raii::ImageView sampledView(device->raii(), vk::ImageViewCreateInfo(
+      {}, atlas.image, vk::ImageViewType::e2DArray, static_cast<vk::Format>(format), {},
+      {vk::ImageAspectFlagBits::eDepth, 0, 1, 0, layerCount}));
+  std::array<RenderingTarget, layerCount> targets{};
+  for (uint32_t layer = 0; layer < layerCount; ++layer) {
+    const VkImageViewCreateInfo viewInfo{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = atlas.image,
+        .viewType = VK_IMAGE_VIEW_TYPE_2D,
+        .format = format,
+        .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, layer, 1}};
+    ASSERT_EQ(createVulkanImageView(device->device(), &viewInfo, nullptr,
+                                   &atlas.attachmentViews[layer]), VK_SUCCESS);
+    targets[layer] = {{atlas.attachmentViews[layer]}, extent, extent, 1};
+  }
+
+  allocation->executeStagedCommands([&](VkCommandBuffer cmd) {
+    VkImageMemoryBarrier2 transition{
+        .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+        .dstStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT,
+        .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT,
+        .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        .newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+        .image = atlas.image,
+        .subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT,
+                             0, 1, 0, layerCount}};
+    const VkDependencyInfo dependency{
+        .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+        .imageMemoryBarrierCount = 1,
+        .pImageMemoryBarriers = &transition};
+    vkCmdPipelineBarrier2(cmd, &dependency);
+    const VkClearDepthStencilValue farDepth{0.0f, 0};
+    vkCmdClearDepthStencilImage(cmd, atlas.image, transition.newLayout, &farDepth, 1,
+                                &transition.subresourceRange);
+    transition.srcStageMask = VK_PIPELINE_STAGE_2_CLEAR_BIT;
+    transition.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+    transition.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    transition.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    transition.oldLayout = transition.newLayout;
+    transition.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+    vkCmdPipelineBarrier2(cmd, &dependency);
+  });
+
+  struct Readbacks {
+    AllocationManager& allocator;
+    std::array<AllocatedBuffer, 2> buffers{};
+    ~Readbacks() {
+      for (auto& buffer : buffers) allocator.destroyBuffer(buffer);
+    }
+  } readbacks{*allocation};
+  const std::array<vk::DescriptorSetLayoutBinding, 2> bindings{{
+      {0, vk::DescriptorType::eSampledImage, 1, vk::ShaderStageFlagBits::eCompute},
+      {1, vk::DescriptorType::eStorageBuffer, 1, vk::ShaderStageFlagBits::eCompute}}};
+  const auto& logicalDevice = device->raii();
+  const vk::raii::DescriptorSetLayout setLayout(logicalDevice, vk::DescriptorSetLayoutCreateInfo({}, bindings));
+  const vk::raii::PipelineLayout layout(logicalDevice, vk::PipelineLayoutCreateInfo({}, *setLayout));
+  const auto pipeline = pipelines->createComputePipeline(
+      CONTAINER_SHADOW_ATLAS_ORDER_SPIRV, *layout, "shadow-atlas.order");
+  const std::array<vk::DescriptorPoolSize, 2> sizes{{
+      {vk::DescriptorType::eSampledImage, 2}, {vk::DescriptorType::eStorageBuffer, 2}}};
+  const vk::raii::DescriptorPool descriptors(logicalDevice,
+      vk::DescriptorPoolCreateInfo(vk::DescriptorPoolCreateFlagBits::eFreeDescriptorSet, 2, sizes));
+  const std::array layouts{*setLayout, *setLayout};
+  const auto sets = logicalDevice.allocateDescriptorSets(vk::DescriptorSetAllocateInfo(*descriptors, layouts));
+  const vk::DescriptorImageInfo image({}, *sampledView, vk::ImageLayout::eShaderReadOnlyOptimal);
+  for (size_t slot = 0; slot < readbacks.buffers.size(); ++slot) {
+    auto& buffer = readbacks.buffers[slot];
+    buffer = allocation->createBuffer(sizeof(Depths), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    const vk::DescriptorBufferInfo bufferInfo(buffer.buffer, 0, sizeof(Depths));
+    const std::array<vk::WriteDescriptorSet, 2> writes{{
+        {*sets[slot], 0, 0, 1, vk::DescriptorType::eSampledImage, &image},
+        {*sets[slot], 1, 0, 1, vk::DescriptorType::eStorageBuffer, nullptr, &bufferInfo}}};
+    logicalDevice.updateDescriptorSets(writes, {});
+  }
+
+  const auto clearLayer = [&](VkCommandBuffer cmd, uint32_t layer, float depth) {
+    VkClearValue clear{};
+    clear.depthStencil.depth = depth;
+    const RenderingBeginInfo begin{
+        .renderPass = shadow,
+        .framebuffer = &targets[layer],
+        .renderArea = {{0, 0}, {extent, extent}},
+        .clearValueCount = 1,
+        .pClearValues = &clear};
+    beginDynamicRendering(cmd, &begin, VK_SUBPASS_CONTENTS_INLINE);
+    endDynamicRendering(cmd);
+  };
+  const auto sampleLayers = [&](const vk::raii::CommandBuffer& cmd, size_t slot) {
+    cmd.bindPipeline(vk::PipelineBindPoint::eCompute, static_cast<VkPipeline>(pipeline));
+    cmd.bindDescriptorSets(vk::PipelineBindPoint::eCompute, *layout, 0, *sets[slot], {});
+    cmd.dispatch(layerCount, 1, 1);
+    const vk::MemoryBarrier2 toHost(vk::PipelineStageFlagBits2::eComputeShader,
+        vk::AccessFlagBits2::eShaderWrite, vk::PipelineStageFlagBits2::eHost, vk::AccessFlagBits2::eHostRead);
+    vk::DependencyInfo dependency;
+    dependency.setMemoryBarriers(toHost);
+    cmd.pipelineBarrier2(dependency);
+  };
+
+  auto commands = logicalDevice.allocateCommandBuffers(
+      vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, 2));
+  const vk::CommandBufferBeginInfo begin(vk::CommandBufferUsageFlagBits::eOneTimeSubmit);
+  commands[0].begin(begin);
+  clearLayer(*commands[0], 0, 0.25f);
+  sampleLayers(commands[0], 0);
+  clearLayer(*commands[0], 1, 0.5f);
+  commands[0].end();
+  commands[1].begin(begin);
+  clearLayer(*commands[1], 1, 0.75f);
+  clearLayer(*commands[1], 0, 0.625f);
+  sampleLayers(commands[1], 1);
+  commands[1].end();
+
+  const vk::raii::Queue queue(logicalDevice, device->graphicsQueue());
+  // Leave the first submission in flight while submitting the second. No
+  // semaphore or explicit atlas barrier may hide a missing scope transition.
+  for (const auto& cmd : commands) {
+    const vk::CommandBuffer handle = *cmd;
+    vk::SubmitInfo info;
+    info.setCommandBuffers(handle);
+    queue.submit(info, nullptr);
+  }
+  queue.waitIdle();
+
+  std::array<Depths, 2> actual{};
+  for (size_t slot = 0; slot < readbacks.buffers.size(); ++slot) {
+    const auto& buffer = readbacks.buffers[slot];
+    ASSERT_EQ(vmaInvalidateAllocation(allocator, buffer.allocation, 0, sizeof(Depths)), VK_SUCCESS);
+    std::memcpy(actual[slot].data(), buffer.allocation_info.pMappedData, sizeof(Depths));
+  }
+  EXPECT_NEAR(actual[0][0], 0.25f, 1.0e-6f);
+  EXPECT_EQ(actual[0][1], 0.0f);
+  EXPECT_NEAR(actual[1][0], 0.625f, 1.0e-6f);
+  EXPECT_NEAR(actual[1][1], 0.75f, 1.0e-6f);
+}
 
 TEST_F(ManagedComputeOwnerGpu, BloomRetirementAndRecreationRegisterOnlyTheLiveSlots) {
   BloomManager bloom(device, *allocation, *pipelines, *pool);

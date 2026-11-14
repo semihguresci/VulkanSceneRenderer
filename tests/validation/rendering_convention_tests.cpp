@@ -3825,12 +3825,6 @@ TEST(RenderingConventionTests, DeferredDepthReadOnlyTransitionUsesRecorder) {
   EXPECT_TRUE(contains(transitionBlock,
                        "recordDeferredRasterDepthReadOnlyTransitionCommands"));
   EXPECT_TRUE(contains(transitionBlock, ".depthStencilImage"));
-  EXPECT_TRUE(contains(transitionBlock, ".shadowAtlasImage"));
-  EXPECT_TRUE(contains(transitionBlock, ".shadowAtlasVisible"));
-  EXPECT_TRUE(contains(transitionBlock, ".shadowCascadeCount"));
-  EXPECT_TRUE(contains(transitionBlock, ".localShadowAtlasImage"));
-  EXPECT_TRUE(contains(transitionBlock, ".localShadowAtlasVisible"));
-  EXPECT_TRUE(contains(transitionBlock, ".localShadowLayerCount"));
   EXPECT_FALSE(contains(transitionBlock, "VkImageMemoryBarrier"));
   EXPECT_FALSE(contains(transitionBlock, "vkCmdPipelineBarrier"));
   EXPECT_FALSE(contains(transitionBlock,
@@ -3845,9 +3839,6 @@ TEST(RenderingConventionTests, DeferredDepthReadOnlyTransitionUsesRecorder) {
                        "DeferredRasterDepthReadOnlyTransitionInputs"));
   EXPECT_TRUE(
       contains(transitionHeader, "DeferredRasterDepthReadOnlyTransitionPlan"));
-  EXPECT_TRUE(contains(transitionHeader, "localShadowAtlasImage"));
-  EXPECT_TRUE(contains(transitionHeader, "localShadowAtlasVisible"));
-  EXPECT_TRUE(contains(transitionHeader, "localShadowLayerCount"));
   EXPECT_TRUE(contains(transitionRecorder,
                        "buildDeferredRasterDepthReadOnlyTransitionPlan"));
   EXPECT_TRUE(contains(transitionRecorder,
@@ -3860,8 +3851,7 @@ TEST(RenderingConventionTests, DeferredDepthReadOnlyTransitionUsesRecorder) {
   EXPECT_TRUE(
       contains(transitionRecorder,
                "VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL"));
-  EXPECT_TRUE(
-      contains(transitionRecorder, "VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL"));
+  EXPECT_FALSE(contains(transitionRecorder, "VK_IMAGE_LAYOUT_UNDEFINED"));
   EXPECT_TRUE(contains(transitionRecorder, "VK_IMAGE_ASPECT_DEPTH_BIT | "
                                            "VK_IMAGE_ASPECT_STENCIL_BIT"));
   EXPECT_FALSE(contains(transitionRecorder, "FrameRecorder"));
