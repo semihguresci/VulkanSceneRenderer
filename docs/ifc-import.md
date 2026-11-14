@@ -56,7 +56,7 @@ checks are free of validation and synchronization errors.
 | Boolean/clipping results | Nested union/difference/intersection of supported closed, oriented mesh solids; plane, boxed and polygon-bounded half-space difference/intersection honors IFC agreement flags. Cycles, invalid operators, open/nonmanifold operands and unbounded unions are rejected with diagnostics. Styled results override operand colors; otherwise source face colors are retained. |
 | `IfcSweptDiskSolid` | Solid/hollow disks on bounded 3D curves, including splines, closed loops and mitered C0 joins. Explicit extents retain the directrix's source parameter domain. Straight and open tangential line/arc paths retain their analytic conversion. Disconnected paths, detected tube overlaps, curvature folds, turns above 120 degrees and segments too short for their miters reject atomically. |
 | `IfcSweptDiskSolidPolygonal` | Polyline or omitted-segment indexed-polycurve directrices, optional circular fillets, hollow walls and closed seams. Omitted fillets retain mitered joins. Radius/segment constraints and tangent-extent overlap are checked; adjacent fillets may meet exactly. |
-| `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Tagged breaklines can appear and disappear at authored zero-width tips. Ordered tags also support repeated-run splits and guide-driven transitions. Planar piecewise-linear sharp joins without guides use shared half-angle miters. |
+| `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Tagged breaklines can appear and disappear at authored zero-width tips. Ordered tags also support repeated-run splits and guide-driven transitions. Compatible planar, nonplanar and curved sharp joins use shared half-angle miters. |
 | `IfcSurfaceOfLinearExtrusion`, `IfcSurfaceOfRevolution` | Drawable open surface charts and pcurve/advanced-face bases. Centerlines, rounded rectangles, hollow circles and rectangles, and disjoint composite `CURVE` members retain their own domains and placements. Standalone revolution requires a regular, one-sided meridian. |
 | Auxiliary curves | Native Vulkan line lists for the concrete IFC 4.3 curve families listed below, including curves inside `IFCGEOMETRICCURVESET`. Closed paths retain their final segment; independent paths remain separate. Mapped instances, placements, units, curve colors and product identity are retained. Unbounded curves require explicit trims or segments. |
 
@@ -455,14 +455,27 @@ authored breakline tips, lane and shoulders in those modes.
 
 Sharp joins use the half-angle miter prescribed by the
 [sectioned-surface construction rules](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSectionedSurface.htm).
-This path requires planar piecewise-linear spans, a common perpendicular upward
-axis and tangent profile normals. Both incident spans use the same miter anchor,
-including when branches split or merge. Miters exceeding ten times the profile
-offset, detected directrix self-intersections and reversed/folded mesh triangles
-reject atomically. Curved sharp joins, nonplanar sharp joins and twisted sharp-join
-frames remain unsupported. Directrix intersection checks are bounded at eight
-million segment pairs; miter anchors and aligned profile points each have a
-4,097-point limit. The existing reader-wide point budget also applies.
+The shared row lies in the plane whose normal bisects the incident tangents.
+The importer projects each incident profile to that plane along its tangent.
+Compatible spatial joins preserve the shared row exactly and seed it in the
+native mesh and pcurve domains, including where a branch tip meets a join.
+Straight incident spans apply the correction linearly by arc length up to
+the neighboring authored section or join. Constant frames with affine profile
+variation produce ruled spans. Curved spans use a cubic correction over four
+times the maximum offset displacement, with a small minimum based on the
+chord tolerance. The native sweep resumes beyond that interval. Authored
+sections limit the correction's extent.
+
+The maximum half-angle extension factor is ten. The converter checks regular
+incident tangents, authored frame compatibility, curvature, progress along
+the join, and detected crossings of the directrix and the mesh. Both directrix
+and triangle validation have eight-million pair budgets. The station and
+profile axes are each limited to 4,097 samples. Guided sharp joins and
+incompatible or strongly twisted authored join frames remain outside coverage.
+
+Run `ifc_sectioned_miters_gpu_regression` with
+`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to compare the spatial and curved
+fixtures in Forward and Deferred raster with TAA off and on.
 
 Sectioned meshes seed the grid from curve samples, authored stations and profile
 breaks. Adaptive quarter-point probes measure distance to the output triangles,
@@ -587,8 +600,11 @@ zero-width branch tips and constant collapsed strips,
 metre/millimetre stations, sloped crowns and sampled triangle chord error,
 curved annular area, reversed/rotated miters and combined branches at miters.
 Exact-position edge uses, Euler count and a single degree-two boundary loop
-independently check mesh connectivity. Reordered tags, unsafe angles, folded
-patches, nonplanar sharp joins and intersecting directrices reject atomically.
+independently check mesh connectivity. Spatial sharp-join regressions also
+check shared rows, pcurves and analytic ribbon areas across changes of slope
+and direction. An arc-to-line case checks the native centerline and radius
+away from the joint. Reordered tags, unsafe angles, folded or intersecting
+patches and incompatible tangent frames reject atomically.
 Derived-profile regressions independently check placement/transform order,
 axis defaults and reflected senses, nested/metre/millimetre bounds, signed
 extrusion winding, analytic volumes and scaled circle/indexed-arc/spline chord
@@ -738,7 +754,7 @@ The remaining capabilities below and IFC source curve fonts/widths are tracked
 in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
 implementation tasks and independent geometry/rendering acceptance criteria.
 
-Ambiguous tag transitions, guided or nonplanar sharp joins, curved sharp joins,
+Ambiguous tag transitions, guided or incompatible sharp joins,
 non-spherical singular charts and edge loops through spherical poles remain
 outside native coverage. Swept surface limits include profiles with arbitrary
 `AREA` voids, standalone revolutions without a regular one-sided meridian, and

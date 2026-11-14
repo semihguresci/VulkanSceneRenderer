@@ -2167,11 +2167,11 @@ std::set<std::array<float, 3>> sectionedPoints(const Model &mesh) {
 }
 
 std::vector<glm::dvec3> sectionedColumn(const std::string &definitions,
-                                        double v) {
+                                      double v, double last = 1.) {
   std::ostringstream uv;
   uv.precision(17);
   uv << "#41=IFCCARTESIANPOINT((0.," << v << "));"
-     << "#42=IFCCARTESIANPOINT((1.," << v << "));"
+     << "#42=IFCCARTESIANPOINT((" << last << ',' << v << "));"
      << "#43=IFCPOLYLINE((#41,#42)); #10=IFCPCURVE(#40,#43);";
   const auto model =
       container::geometry::ifc::LoadFromStep(fixture(definitions + uv.str()));
@@ -2611,6 +2611,236 @@ TEST(IfcCurveFamilies, SectionedMitersPreserveRotatedCrossPlanes) {
   EXPECT_TRUE(outer);
 }
 
+const std::string nonplanarSharpSections =
+    "#2=IFCCARTESIANPOINT((0.,0.,0.)); #3=IFCCARTESIANPOINT((8.,0.,0.));"
+    "#5=IFCCARTESIANPOINT((8.,6.,0.)); #6=IFCCARTESIANPOINT((8.,12.,8.));"
+    "#4=IFCPOLYLINE((#2,#3,#5,#6));"
+    "#8=IFCDIRECTION((0.,0.,1.)); #9=IFCDIRECTION((0.,-0.8,0.6));"
+    "#20=IFCPOINTBYDISTANCEEXPRESSION(IFCPARAMETERVALUE(0.),$,$,$,#4);"
+    "#21=IFCPOINTBYDISTANCEEXPRESSION(IFCPARAMETERVALUE(3.),$,$,$,#4);"
+    "#22=IFCAXIS2PLACEMENTLINEAR(#20,#8,$);"
+    "#23=IFCAXIS2PLACEMENTLINEAR(#21,#9,$);"
+    "#24=IFCCARTESIANPOINT((-1.,0.));"
+    "#30=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.),(0.),$, #24);"
+    "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#30));";
+
+TEST(IfcCurveFamilies, SectionedNonplanarSharpJoinsShareExactBisectorRows) {
+  for (bool raised : {false, true}) {
+    SCOPED_TRACE(raised);
+    auto definitions = nonplanarSharpSections;
+    if (raised)
+      replace(definitions, "((-1.,0.))", "((-1.,1.))");
+    const auto model = container::geometry::ifc::LoadFromStep(
+        fixture(definitions, "#40", "'Surface','SectionedSurface'"));
+    const double h = raised ? 1. : 0.;
+    EXPECT_NEAR(checkSectionedMesh(model), 48. - 2 * h, 1e-5);
+    const auto rowPoints = sectionedPoints(model);
+    const auto contains = [&](glm::dvec3 expected) {
+      return std::ranges::any_of(rowPoints, [&](const auto &p) {
+        return glm::length(glm::dvec3(p[0], p[1], p[2]) - expected) < 1e-6;
+      });
+    };
+    for (float r : {-1.f, 1.f}) {
+      // At the first join the two generators agree at x=8-r, y=r.
+      // At the second, projection onto normal (0,1.6,.8) shifts the
+      // incoming generator backward by h/2 along the +Y tangent.
+      EXPECT_TRUE(contains({8 - r, r, h}));
+      EXPECT_TRUE(contains({8 - r, 6 - h / 2, h}));
+      const auto line = sectionedColumn(definitions, (r + 1.) / 2, 3.);
+      ASSERT_FALSE(line.empty());
+      EXPECT_LT(glm::length(line.front() - glm::dvec3(0, r, h)), 1e-6);
+      EXPECT_LT(
+          glm::length(line.back() - glm::dvec3(8 - r, 12 - .8 * h, 8 + .6 * h)),
+          1e-6);
+      for (const auto expected :
+           {glm::dvec3(8 - r, r, h), glm::dvec3(8 - r, 6 - h / 2, h)})
+        EXPECT_TRUE(std::ranges::any_of(line, [&](const auto &p) {
+          return glm::length(p - expected) < 1e-6;
+        }));
+    }
+    for (size_t i = 0; i < model.indices.size(); i += 3) {
+      const glm::dvec3 a(model.vertices.at(model.indices.at(i)).position),
+          b(model.vertices.at(model.indices.at(i + 1)).position),
+          c(model.vertices.at(model.indices.at(i + 2)).position);
+      const auto expected = std::max({a.z, b.z, c.z}) > h + 1e-6
+                                ? glm::dvec3(0, -.8, .6)
+                                : glm::dvec3(0, 0, 1);
+      EXPECT_GT(glm::dot(glm::normalize(glm::cross(b - a, c - a)), expected),
+                .999999);
+    }
+  }
+}
+
+const std::string curvedSharpSections =
+    "#2=IFCCARTESIANPOINT((0.,12.,0.)); #3=IFCDIRECTION((0.,0.,1.));"
+    "#5=IFCDIRECTION((0.,-1.,0.)); #6=IFCAXIS2PLACEMENT3D(#2,#3,#5);"
+    "#7=IFCCIRCLE(#6,12.);"
+    "#8=IFCTRIMMEDCURVE(#7,(IFCPARAMETERVALUE(0.)),"
+    "(IFCPARAMETERVALUE(1.5707963267948966)),.T.,.PARAMETER.);"
+    "#9=IFCCARTESIANPOINT((12.,12.,0.)); #19=IFCCARTESIANPOINT((24.,12.,0.));"
+    "#11=IFCPOLYLINE((#9,#19));"
+    "#12=IFCREPARAMETRISEDCOMPOSITECURVESEGMENT(.CONTINUOUS.,.T.,#8,1.);"
+    "#13=IFCCOMPOSITECURVESEGMENT(.DISCONTINUOUS.,.T.,#11);"
+    "#4=IFCCOMPOSITECURVE((#12,#13),.F.);"
+    "#20=IFCPOINTBYDISTANCEEXPRESSION(IFCPARAMETERVALUE(0.),$,$,$,#4);"
+    "#21=IFCPOINTBYDISTANCEEXPRESSION(IFCPARAMETERVALUE(2.),$,$,$,#4);"
+    "#22=IFCAXIS2PLACEMENTLINEAR(#20,#3,$); "
+    "#23=IFCAXIS2PLACEMENTLINEAR(#21,#3,$);"
+    "#24=IFCCARTESIANPOINT((-1.,0.));"
+    "#30=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(2.),(0.),$,#24);"
+    "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#30));";
+
+TEST(IfcCurveFamilies, SectionedSharpCornerSurvivesNearAuthoredStation) {
+  auto definitions = nonplanarSharpSections;
+  // The last two tangents lie in the YZ plane, so the flat lateral profile
+  // is parallel to their common X binormal and needs no longitudinal shift.
+  // Put their join at the origin in Y, where 0.4 micrometres still resolves
+  // in the float mesh but is inside the native seed coalescing tolerance.
+  replace(definitions, "((0.,0.,0.))", "((0.,-6.,0.))");
+  replace(definitions, "((8.,0.,0.))", "((8.,-6.,0.))");
+  replace(definitions, "((8.,6.,0.))", "((8.,0.,0.))");
+  replace(definitions, "((8.,12.,8.))", "((8.,6.,8.))");
+  definitions += "#25=IFCPOINTBYDISTANCEEXPRESSION(IFCPARAMETERVALUE(2."
+                 "00000004),$,$,$,#4);"
+                 "#26=IFCAXIS2PLACEMENTLINEAR(#25,#9,$);";
+  replace(definitions, "(#22,#23),(#30,#30)", "(#22,#26,#23),(#30,#30,#30)");
+  const auto model = container::geometry::ifc::LoadFromStep(
+      fixture(definitions, "#40", "'Surface','SectionedSurface'"));
+  EXPECT_NEAR(checkSectionedMesh(model), 48., 1e-5);
+  const auto points = sectionedPoints(model);
+  for (float x : {7.f, 9.f}) {
+    EXPECT_TRUE(points.contains({x, 0, 0}));
+    EXPECT_TRUE(std::ranges::any_of(points, [&](const auto &p) {
+      return p[0] == x && p[1] > 0 && p[2] > 0 &&
+             std::abs(p[1] - 2.4e-7f) < 1e-12f &&
+             std::abs(p[2] - 3.2e-7f) < 1e-12f;
+    }));
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedArcToLineRetainsCenterlineAndSharesMiter) {
+  const auto model = container::geometry::ifc::LoadFromStep(
+      fixture(curvedSharpSections, "#40", "'Surface','SectionedSurface'"));
+  EXPECT_GT(checkSectionedMesh(model), 30.);
+  const auto rowPoints = sectionedPoints(model);
+  for (float r : {-1.f, 1.f}) {
+    // Solve the intersection of the two lateral offset tangent lines.
+    const glm::vec3 expected(12 - r, 12 + r, 0);
+    EXPECT_TRUE(std::ranges::any_of(rowPoints, [&](const auto &p) {
+      return glm::length(glm::dvec3(p[0], p[1], p[2]) - glm::dvec3(expected)) <
+             1e-6;
+    }));
+    const auto line = sectionedColumn(curvedSharpSections, (r + 1.) / 2, 2.);
+    ASSERT_FALSE(line.empty());
+    EXPECT_TRUE(std::ranges::any_of(line, [&](const auto &p) {
+      return glm::length(p - glm::dvec3(expected)) < 1e-6;
+    }));
+  }
+  const auto center = sectionedColumn(curvedSharpSections, .5, 2.);
+  ASSERT_FALSE(center.empty());
+  EXPECT_LT(glm::length(center.front()), 1e-6);
+  EXPECT_LT(glm::length(center.back() - glm::dvec3(24, 12, 0)), 1e-6);
+  EXPECT_NEAR(length(center), 6 * pi + 12, .003);
+  const glm::dvec3 midpoint(6 * std::sqrt(2.), 12 - 6 * std::sqrt(2.), 0);
+  const auto midpointStart =
+      curvedSharpSections +
+      "#41=IFCCARTESIANPOINT((0.5,0.5)); #42=IFCCARTESIANPOINT((0.75,0.5));"
+      "#43=IFCPOLYLINE((#41,#42)); #10=IFCPCURVE(#40,#43);";
+  const auto midpointLine =
+      container::geometry::ifc::LoadFromStep(fixture(midpointStart));
+  complete(midpointLine);
+  const auto midpointPoints = vertices(midpointLine);
+  ASSERT_FALSE(midpointPoints.empty());
+  EXPECT_LT(glm::length(midpointPoints.front() - midpoint), 1e-6);
+  for (const auto &p : center) {
+    if (p.x < 12 - 1e-6)
+      EXPECT_NEAR(std::hypot(p.x, p.y - 12), 12., 1e-6);
+    else
+      EXPECT_NEAR(p.y, 12., 1e-6);
+    EXPECT_NEAR(p.z, 0., 1e-6);
+  }
+}
+
+TEST(IfcCurveFamilies, InvalidCurvedAndNonplanarSectionedJoinsAreAtomic) {
+  auto tightRadius = curvedSharpSections;
+  replace(tightRadius, "((-1.,0.))", "((-12.,0.))");
+  replace(tightRadius, ".T.,(2.),(0.)", ".T.,(24.),(0.)");
+
+  auto folded = nonplanarSharpSections;
+  replace(folded, "((-1.,0.))", "((-7.,0.))");
+  replace(folded, ".T.,(2.),(0.)", ".T.,(14.),(0.)");
+
+  auto twisted = nonplanarSharpSections;
+  twisted += "#33=IFCDIRECTION((1.,1.,0.)); #34=IFCDIRECTION((1.,0.6,0.8));";
+  replace(twisted, "(#20,#8,$)", "(#20,#8,#33)");
+  replace(twisted, "(#21,#9,$)", "(#21,#9,#34)");
+
+  auto zeroSpeed = curvedSharpSections;
+  // Incoming C(t)=(8(2t−t²),0,0). Direction tends to +X, but the
+  // authored endpoint derivative is zero exactly where it turns into +Y.
+  zeroSpeed +=
+      "#50=IFCCARTESIANPOINT((0.,0.,0.)); #51=IFCCARTESIANPOINT((8.,0.,0.));"
+      "#52=IFCBSPLINECURVEWITHKNOTS(2,(#50,#51,#51),.UNSPECIFIED.,.F.,.F.,"
+      "(3,3),(0.,1.),.UNSPECIFIED.);";
+  replace(zeroSpeed, ".CONTINUOUS.,.T.,#8,1.", ".CONTINUOUS.,.T.,#52,1.");
+  replace(zeroSpeed, "((12.,12.,0.))", "((8.,0.,0.))");
+  replace(zeroSpeed, "((24.,12.,0.))", "((8.,8.,0.))");
+
+  for (const auto &[source, name] :
+       {std::pair{&tightRadius, "zero radius at inner offset"},
+        std::pair{&folded, "neighboring miter extensions fold an inner edge"},
+        std::pair{&twisted, "incompatible authored section normal"},
+        std::pair{&zeroSpeed, "vanishing incident derivative"}}) {
+    SCOPED_TRACE(name);
+    const auto model = container::geometry::ifc::LoadFromStep(
+        fixture(*source, "#40", "'Surface','SectionedSurface'"));
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(model.vertices.empty());
+    EXPECT_TRUE(model.indices.empty());
+    EXPECT_TRUE(model.meshRanges.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    EXPECT_EQ(model.importReport.diagnostics.front().entityId, 40u);
+    EXPECT_FALSE(model.importReport.diagnostics.front().reason.empty());
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedSharpJoinsRejectNonadjacentStripOverlap) {
+  for (bool intersects : {false, true}) {
+    SCOPED_TRACE(intersects);
+    auto definitions = nonplanarSharpSections;
+    // Neither directrix intersects itself. The final eastbound strip runs
+    // parallel to the first with a gap of 2.5 m, or overlaps it at 1.5 m.
+    const std::string y = intersects ? "-1.5" : "-2.5";
+    definitions +=
+        "#14=IFCCARTESIANPOINT((16.,8.,0.)); "
+        "#15=IFCCARTESIANPOINT((16.,16.,0.));"
+        "#25=IFCCARTESIANPOINT((-8.,16.,0.)); #26=IFCCARTESIANPOINT((-8.," +
+        y + ",0.)); #18=IFCCARTESIANPOINT((8.," + y + ",0.));";
+    replace(definitions, "((#2,#3,#5,#6))", "((#2,#3,#5,#14,#15,#25,#26,#18))");
+    replace(definitions, "#5=IFCCARTESIANPOINT((8.,6.,0.))",
+            "#5=IFCCARTESIANPOINT((8.,8.,0.))");
+    replace(definitions, "IFCPARAMETERVALUE(3.)", "IFCPARAMETERVALUE(7.)");
+    replace(definitions, "((0.,-0.8,0.6))", "((0.,0.,1.))");
+    const auto model = container::geometry::ifc::LoadFromStep(
+        fixture(definitions, "#40", "'Surface','SectionedSurface'"));
+    if (!intersects) {
+      // Axis-aligned centerline span lengths sum to 90.5 m, so the
+      // two-metre-wide strip has 181 m² of area after its miter cuts.
+      EXPECT_NEAR(checkSectionedMesh(model), 181., 1e-5);
+      continue;
+    }
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(model.vertices.empty());
+    EXPECT_TRUE(model.indices.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    EXPECT_EQ(model.importReport.diagnostics.front().entityId, 40u);
+    EXPECT_NE(model.importReport.diagnostics.front().reason.find(
+                  "surface intersects itself"),
+              std::string::npos)
+        << model.importReport.diagnostics.front().reason;
+  }
+}
+
 TEST(IfcCurveFamilies, MalformedBranchesAndUnsafeMitersRejectAtomically) {
   std::vector<std::string> invalid;
   for (const auto &[from, to] :
@@ -2633,8 +2863,7 @@ TEST(IfcCurveFamilies, MalformedBranchesAndUnsafeMitersRejectAtomically) {
   for (const auto &[from, to] :
        std::vector<std::pair<std::string, std::string>>{
            {"((10.,10.,0.))", "((0.,0.1,0.))"},
-           {"(2.,2.),(0.,0.)", "(20.,20.),(0.,0.)"},
-           {"((10.,10.,0.))", "((10.,10.,1.))"}}) {
+           {"(2.,2.),(0.,0.)", "(20.,20.),(0.,0.)"}}) {
     auto definitions = miterSectionedFixture;
     replace(definitions, from, to);
     if (from == "(2.,2.),(0.,0.)")
