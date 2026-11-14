@@ -600,6 +600,24 @@ target_sources(ddgi_volume_placement_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSettings.cpp
     ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
 )
+
+add_custom_test(ddgi_bim_room_plan_tests
+    ${TEST_RENDERER_LIGHTING_DIR}/ddgi_bim_room_plan_tests.cpp "" ${TEST_RESULTS_DIR}
+    Dep_Math
+)
+target_sources(ddgi_bim_room_plan_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiBimRoomPlan.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumePlacement.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeFit.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiVolumeSet.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiSettings.cpp
+    ${CMAKE_SOURCE_DIR}/src/renderer/lighting/DdgiProbeVolume.cpp
+)
+
+add_custom_test(bim_ddgi_rooms_tests
+    ${TEST_RENDERER_BIM_DIR}/bim_ddgi_rooms_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_renderer
+)
 add_custom_test(ddgi_volume_scroll_tests
     ${TEST_RENDERER_LIGHTING_DIR}/ddgi_volume_scroll_tests.cpp "" ${TEST_RESULTS_DIR}
     Dep_Math
@@ -1031,7 +1049,7 @@ set_tests_properties(fsr_vulkan_image_adapter_tests PROPERTIES LABELS "cpu;tempo
 
 add_custom_test(temporal_capture_tests
     ${TEST_RENDERER_CORE_DIR}/temporal_capture_tests.cpp "" ${TEST_RESULTS_DIR}
-    Dep_Math nlohmann_json::nlohmann_json VulkanSceneRenderer_scene
+    Dep_Math nlohmann_json::nlohmann_json VulkanSceneRenderer_scene VulkanSceneRenderer_bim_ui_support
 )
 
 add_custom_test(scene_lighting_defaults_tests
@@ -1155,6 +1173,14 @@ add_test(NAME render_setup_gpu_regression
 set_tests_properties(render_setup_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 400
     LABELS "requires-vulkan;requires-display;visual-regression")
+
+add_test(NAME ddgi_bim_room_plan_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ddgi_bim_room_plan_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/ddgi-bim-room-plan" --managed-output)
+set_tests_properties(ddgi_bim_room_plan_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
+    LABELS "bim;ddgi;requires-vulkan;requires-display;visual-regression")
 
 add_test(NAME forward_wireframe_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/forward_wireframe_runtime_regression.py"

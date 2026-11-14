@@ -665,6 +665,8 @@ public:
   [[nodiscard]] BimMetadataTableView elementMetadata() const {
     return elementMetadata_.view();
   }
+  [[nodiscard]] std::span<const container::geometry::dotbim::SpaceWithoutDrawableGeometry>
+  spacesWithoutDrawableGeometry() const { return spacesWithoutDrawableGeometry_; }
   [[nodiscard]] BimCoordinationOverlayResult buildCoordinationOverlay(
       const BimCoordinationOverlayBuildOptions &options,
       std::span<const BimCoordinationOverlayClashPair> clashPairs = {},
@@ -1001,6 +1003,8 @@ private:
   std::vector<container::gpu::ObjectData> objectData_{};
   BimObjectTransforms runtimeObjectTransforms_{};
   BimMetadataStorage elementMetadata_{};
+  std::vector<container::geometry::dotbim::SpaceWithoutDrawableGeometry>
+      spacesWithoutDrawableGeometry_;
   BimRelationshipGraph relationshipGraph_{};
   std::vector<DrawCommand> objectDrawCommands_{};
   std::vector<uint32_t> objectDrawCommandOffsets_{};

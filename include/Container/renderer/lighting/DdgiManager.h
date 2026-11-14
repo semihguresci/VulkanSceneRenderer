@@ -48,6 +48,9 @@ public:
   // retire the device and rebuild; live controls retain history. Camera-follow
   // cell moves remap history on the GPU without reallocating.
   void applySettings(const DdgiSettings &settings);
+  // Prepare and validate the entire candidate field before retiring readers.
+  // A device-limit or allocation failure leaves the live settings and field intact.
+  void applyPlannedVolumes(const DdgiSettings &settings);
   // Call between frames when replacing/unloading the scene. Retires the async
   // writer and disables old irradiance immediately; the next graphics trace
   // clears both atlases/states even while paused, without reallocating them.
@@ -159,8 +162,11 @@ public:
   [[nodiscard]] const std::string &status() const;
 
 private:
-  void submitAsync(uint32_t image);
   struct Impl;
+  static void prepareRuntime(Impl &runtime, const Impl &pipelineOwner,
+                             uint32_t imageCount, VkImageView environment,
+                             VkSampler envSampler, bool requireReady);
+  void submitAsync(uint32_t image);
   std::unique_ptr<Impl> impl_;
 };
 void registerDdgiPasses(RenderGraphBuilder &graph);

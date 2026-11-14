@@ -1643,6 +1643,7 @@ void BimManager::clear() {
     }
   }
   elementMetadata_.clear();
+  spacesWithoutDrawableGeometry_.clear();
   relationshipGraph_.clear(loadProgressCallback_
       ? std::function<void()>([this] { notifyLoadProgress("Releasing BIM relationships"); })
       : std::function<void()>{});
@@ -3210,6 +3211,7 @@ void BimManager::loadPreparedModel(
                 model.indices.size());
   logger->flush();
   importReport_ = model.importReport;
+  spacesWithoutDrawableGeometry_ = model.spacesWithoutDrawableGeometry;
   if (!hasRenderableSourceGeometry(model)) {
     std::string message = modelLoadErrorPrefix(format, path);
     if (importReport_.completeness !=

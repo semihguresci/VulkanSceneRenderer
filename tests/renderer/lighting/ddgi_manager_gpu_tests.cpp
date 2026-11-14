@@ -1482,6 +1482,40 @@ TEST_F(DdgiManagerGpu,
   EXPECT_EQ(manager->frameNumber(), 2u);
 }
 
+TEST_F(DdgiManagerGpu, PlannedVolumeAllocationFailureKeepsActiveField) {
+  enable();
+  ASSERT_NO_THROW(run(0));
+  ASSERT_NO_THROW(run(1));
+  const auto live = manager->settings();
+  const auto bytes = manager->allocatedBytes();
+  const auto descriptor = manager->readDescriptors(0);
+  const auto epoch = manager->contentEpoch();
+  const auto frame = manager->frameNumber();
+
+  auto proposal = live;
+  proposal.additionalVolumes.push_back({{-1, -1, -1}, {.5f, .5f, .5f}, {4, 4, 4}});
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(device->physicalDevice(), &properties);
+  // The CPU resource budget admits these skinny tiles, but every probe
+  // requires a full tile whose width exceeds this device's image limit.
+  auto exceedsDevice = proposal;
+  exceedsDevice.resources.visibilityInteriorTexels = properties.limits.maxImageDimension2D;
+  exceedsDevice.payloadBudgetBytes = std::numeric_limits<uint64_t>::max();
+  validateDdgiSettings(exceedsDevice);
+  EXPECT_THROW(manager->applyPlannedVolumes(exceedsDevice), std::invalid_argument);
+  EXPECT_EQ(manager->settings(), live);
+  EXPECT_EQ(manager->allocatedBytes(), bytes);
+  EXPECT_EQ(manager->readDescriptors(0), descriptor);
+  EXPECT_EQ(manager->contentEpoch(), epoch);
+  EXPECT_EQ(manager->frameNumber(), frame);
+  ASSERT_NO_THROW(run(0, false));
+  ASSERT_NO_THROW(manager->applyPlannedVolumes(proposal));
+  EXPECT_EQ(manager->settings(), proposal);
+  EXPECT_NE(manager->readDescriptors(0), descriptor);
+  ASSERT_NO_THROW(run(1));
+  EXPECT_EQ(manager->lastBatch().volumeProbeCount, 68u);
+}
+
 TEST_F(DdgiManagerGpu, NearPlaneCrossingDebugSphereRemainsVisibleAndOccluded) {
   // The eye is outside this sphere, but its center-plane quad is before the
   // near plane. The far hemisphere remains visible and must be rasterized.

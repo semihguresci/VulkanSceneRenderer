@@ -3,6 +3,7 @@
 #include "Container/renderer/effects/DisplayGrade.h"
 #include "Container/renderer/effects/OpenVdbVolumeSettings.h"
 #include "Container/renderer/lighting/DdgiSettings.h"
+#include "Container/renderer/lighting/DdgiBimRoomPlan.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/renderer/pathtracing/ReferencePathLensSettings.h"
 #include "Container/renderer/pathtracing/ReferencePathDisplayMode.h"
@@ -1276,6 +1277,20 @@ public:
   bool requestDdgiSceneFit(uint32_t maxProbes);
   bool requestDdgiDetailFit(uint32_t maxProbes);
   [[nodiscard]] std::optional<uint32_t> consumeDdgiDetailFitRequest();
+  struct DdgiRoomPlanRequest {
+    enum class Action { Preview, Apply, Discard };
+    Action action{};
+    uint32_t maxProbes{};
+  };
+  struct DdgiRoomPlanUiState {
+    bool modelAvailable{}, running{}, canApply{};
+    std::shared_ptr<const container::renderer::DdgiBimRoomPlan> result;
+    std::string diagnostic;
+  };
+  void setDdgiRoomPlanUiState(DdgiRoomPlanUiState state) { ddgiRoomPlanUi_ = std::move(state); }
+  [[nodiscard]] std::optional<DdgiRoomPlanRequest> consumeDdgiRoomPlanRequest() {
+    return std::exchange(ddgiRoomPlanRequest_, std::nullopt);
+  }
   enum class DdgiPresetAction { Save, Load };
   void requestDdgiPreset(DdgiPresetAction action) { pendingDdgiPreset_ = action; }
   [[nodiscard]] std::optional<DdgiPresetAction> consumeDdgiPresetRequest();
@@ -1395,6 +1410,7 @@ private:
   void discoverSampleModels();
   void drawRendererTelemetryWindow();
   void drawDdgiControls();
+  void drawDdgiRoomPlanControls();
   void drawBimHardClashPanel(const BimInspectionState &inspection);
   [[nodiscard]] int sampleModelIndexForPath(const std::string &path) const;
 
@@ -1550,6 +1566,9 @@ private:
   std::optional<uint32_t> pendingDdgiSceneFit_{};
   std::optional<uint32_t> pendingDdgiDetailFit_{};
   uint32_t ddgiDetailProbeBudget_{512};
+  uint32_t ddgiRoomPlanProbeBudget_{512};
+  std::optional<DdgiRoomPlanRequest> ddgiRoomPlanRequest_;
+  DdgiRoomPlanUiState ddgiRoomPlanUi_;
   std::string ddgiFitStatus_{};
   std::optional<DdgiPresetAction> pendingDdgiPreset_{};
   std::string ddgiPresetPath_{}, ddgiPresetStatus_{};

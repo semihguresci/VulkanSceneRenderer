@@ -221,6 +221,12 @@ struct CaptureRenderSetup {
   std::string name, path;
   bool expectFailure{};
 };
+struct CaptureDdgiRoomPlan {
+  enum class Action { Preview, Apply, Discard };
+  Action action{};
+  uint32_t maxDetailProbes{512};
+  bool expectFailure{};
+};
 
 struct CaptureEditorDiagnostics {
   bool vertices{};
@@ -239,6 +245,7 @@ struct CaptureEvent {
   std::optional<bool> ddgiPaused, ddgiEnabled;
   std::optional<float> ddgiIntensity;
   std::optional<uint32_t> ddgiFitProbes;
+  std::optional<CaptureDdgiRoomPlan> ddgiRoomPlan;
   std::optional<uint32_t> rayShadowSamples;
   std::optional<uint32_t> areaLightSamples;
   std::optional<uint32_t> samples;
@@ -618,6 +625,8 @@ public:
         event.bimSunHours = bimSunHours(value.at("bimSunHours"));
       if (value.contains("renderSetup"))
         event.renderSetup = renderSetup(value.at("renderSetup"));
+      if (value.contains("ddgiRoomPlan"))
+        event.ddgiRoomPlan = ddgiRoomPlan(value.at("ddgiRoomPlan"));
       if (value.contains("displayGradePreset")) {
         event.displayGradePreset = value.at("displayGradePreset").get<std::string>();
         if (event.displayGradePreset->empty()) throw std::invalid_argument("Capture display grade requires a path");
@@ -1002,6 +1011,31 @@ public:
   std::vector<uint32_t> sampleFrames;
 
 private:
+  static CaptureDdgiRoomPlan ddgiRoomPlan(const nlohmann::json& value) {
+    using Action = CaptureDdgiRoomPlan::Action;
+    nodeFields(value, {"action", "maxDetailProbes", "expectFailure"}, "ddgiRoomPlan");
+    CaptureDdgiRoomPlan request;
+    const auto action = value.at("action").get<std::string>();
+    request.expectFailure = value.value("expectFailure", false);
+    if (action == "preview") {
+      request.action = Action::Preview;
+      if (const auto probes = value.find("maxDetailProbes"); probes != value.end()) {
+        if (!probes->is_number_integer() ||
+            (probes->is_number_unsigned() ? probes->get<uint64_t>() > 65536u :
+                probes->get<int64_t>() < 27 || probes->get<int64_t>() > 65536) ||
+            probes->get<uint32_t>() < 27)
+          throw std::invalid_argument("Capture maxDetailProbes must be an integer from 27 to 65536");
+        request.maxDetailProbes = probes->get<uint32_t>();
+      }
+    } else {
+      nodeFields(value, {"action", "expectFailure"}, "ddgiRoomPlan control action");
+      if (action == "apply") request.action = Action::Apply;
+      else if (action == "discard") request.action = Action::Discard;
+      else throw std::invalid_argument("Unknown capture ddgiRoomPlan action");
+    }
+    return request;
+  }
+
   static CaptureRenderSetup renderSetup(const nlohmann::json& value) {
     using Action = CaptureRenderSetup::Action;
     nodeFields(value, {"action", "name", "path", "expectFailure"}, "renderSetup");

@@ -9628,6 +9628,95 @@ void GuiManager::acceptDdgiSceneFit(
   ddgiFitStatus_ = std::move(status);
 }
 
+void GuiManager::drawDdgiRoomPlanControls() {
+  if (!ImGui::TreeNode("BIM room detail volume plan"))
+    return;
+  using Action = DdgiRoomPlanRequest::Action;
+  using RoomStatus = container::renderer::DdgiBimRoomCoverage::Status;
+  const auto& state = ddgiRoomPlanUi_;
+  ImGui::InputScalar("Maximum probes per new volume", ImGuiDataType_U32, &ddgiRoomPlanProbeBudget_);
+  ImGui::BeginDisabled(!state.modelAvailable || state.running || ddgiVolumeDraftDirty_ ||
+                      ddgiRoomPlanProbeBudget_ < 27 || ddgiRoomPlanProbeBudget_ > 65536);
+  if (ImGui::Button("Preview room plan"))
+    ddgiRoomPlanRequest_ = {Action::Preview, ddgiRoomPlanProbeBudget_};
+  ImGui::EndDisabled();
+  ImGui::SameLine();
+  ImGui::BeginDisabled(!state.canApply || ddgiVolumeDraftDirty_);
+  if (ImGui::Button("Apply room plan"))
+    ddgiRoomPlanRequest_ = {Action::Apply};
+  ImGui::EndDisabled();
+  if (state.running || state.result) {
+    ImGui::SameLine();
+    if (ImGui::Button(state.running ? "Cancel planning" : "Discard plan"))
+      ddgiRoomPlanRequest_ = {Action::Discard};
+  }
+  if (!state.modelAvailable)
+    ImGui::TextDisabled("Open a BIM model with room or space definitions.");
+  if (!state.diagnostic.empty())
+    ImGui::TextWrapped("%s", state.diagnostic.c_str());
+  if (const auto* plan = state.result.get()) {
+    const auto covered = std::ranges::count_if(plan->rooms, [](const auto& room) {
+      return room.status == RoomStatus::CoveredExisting || room.status == RoomStatus::CoveredPlanned;
+    });
+    ImGui::Text("%zu of %zu rooms inside a detail volume's full blend region",
+                size_t(covered), plan->rooms.size());
+    ImGui::Text("Shared probes %u to %u, payload %.2f to %.2f MiB",
+                plan->baseProbeCount, plan->totalProbeCount, double(plan->basePayloadBytes) / 1048576.,
+                double(plan->payloadBytes) / 1048576.);
+    if (plan->framesPerProbeCycle)
+      ImGui::Text("At least %llu update frames for one full probe sweep",
+                  static_cast<unsigned long long>(plan->framesPerProbeCycle));
+    for (const auto& volume : plan->volumes) {
+      const auto& desc = plan->settings.additionalVolumes.at(volume.volumeIndex - 1);
+      const auto band = desc.spacing * plan->settings.volumeBlendCells;
+      const auto boundsOverlap = [&](const auto& grid) {
+        const auto maximum = grid.origin + grid.spacing * glm::vec3(grid.counts - 1u);
+        return glm::all(glm::lessThan(glm::max(volume.boundsMin, grid.origin),
+                                     glm::min(volume.boundsMax, maximum)));
+      };
+      size_t overlap = boundsOverlap(plan->settings.volume);
+      for (size_t index = 0; index < plan->settings.additionalVolumes.size(); ++index)
+        if (index + 1 != volume.volumeIndex && boundsOverlap(plan->settings.additionalVolumes[index]))
+          ++overlap;
+      ImGui::TextWrapped("Detail %u, %u probes, %.3g world-unit spacing, %.3g blend band, overlaps %zu grids",
+                         volume.volumeIndex, volume.probeCount, double(desc.spacing.x), double(band.x), overlap);
+      ImGui::TextDisabled("Bounds (%.3g, %.3g, %.3g) to (%.3g, %.3g, %.3g)",
+                          double(volume.boundsMin.x), double(volume.boundsMin.y), double(volume.boundsMin.z),
+                          double(volume.boundsMax.x), double(volume.boundsMax.y), double(volume.boundsMax.z));
+    }
+    if (ImGui::BeginTable("DdgiRoomPlanCoverage", 3,
+                          ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_Resizable,
+                          ImVec2(0, ImGui::GetTextLineHeightWithSpacing() * 8))) {
+      ImGui::TableSetupColumn("Room");
+      ImGui::TableSetupColumn("Storey");
+      ImGui::TableSetupColumn("Coverage");
+      ImGui::TableSetupScrollFreeze(0, 1);
+      ImGui::TableHeadersRow();
+      ImGuiListClipper clipper;
+      clipper.Begin(static_cast<int>(plan->rooms.size()));
+      while (clipper.Step()) {
+        for (int row = clipper.DisplayStart; row < clipper.DisplayEnd; ++row) {
+          const auto& room = plan->rooms[row];
+          ImGui::TableNextRow();
+          ImGui::TableSetColumnIndex(0);
+          ImGui::TextUnformatted(room.label.empty() ? room.identity.c_str() : room.label.c_str());
+          ImGui::SetItemTooltip("%s", room.identity.c_str());
+          ImGui::TableSetColumnIndex(1);
+          ImGui::TextUnformatted(room.storey.c_str());
+          ImGui::TableSetColumnIndex(2);
+          if (room.volumeIndex)
+            ImGui::Text("Covered by detail %u", *room.volumeIndex);
+          else
+            ImGui::TextUnformatted(room.reason.c_str());
+          if (!room.reason.empty()) ImGui::SetItemTooltip("%s", room.reason.c_str());
+        }
+      }
+      ImGui::EndTable();
+    }
+  }
+  ImGui::TreePop();
+}
+
 void GuiManager::drawDdgiControls() {
   if (!ImGui::TreeNode("Probe global illumination (DDGI)"))
     return;
@@ -9724,6 +9813,7 @@ void GuiManager::drawDdgiControls() {
     ImGui::EndDisabled();
     ImGui::TextWrapped("Select scene geometry or a BIM room/element, then fit a padded detail grid. "
                        "Existing grids and the shared memory budget are retained.");
+    drawDdgiRoomPlanControls();
     ImGui::TextWrapped(
         "Fits the loaded model with equal cell spacing and a "
         "margin around its bounds. Larger probe budgets allow "

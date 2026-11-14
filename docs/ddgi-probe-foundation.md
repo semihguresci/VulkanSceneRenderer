@@ -243,6 +243,47 @@ the accepted detail volume.
   --ddgi-save-preset room-scene-gi.json
 ```
 
+### Plan detail volumes from BIM rooms
+
+Open **Probe global illumination (DDGI) → Probe volume and ray quality →
+BIM room detail volume plan**. Set **Maximum probes per new volume** and choose
+**Preview room plan**. It reads room and space definitions from the loaded BIM
+model, combines triangle fragments with the same product identity, and uses
+current world coordinates, including import scale and placement. Rooms with
+conflicting identities or no usable 3D triangle bounds are listed with the
+reason. You can still fit a selected element or edit probe volumes manually.
+
+The preview shows which room bounds fit entirely inside the full-strength
+part of a finer detail grid. It lists each proposed grid's world bounds,
+spacing, blend band, overlaps and probe count, plus the total payload and a
+lower bound on the number of update frames per sweep. The planner keeps the
+primary and manual grids, groups compact nearby rooms on the same storey
+when it can, and leaves rooms uncovered when they exceed the shared limits
+or the bounded search. Actual lighting also depends on probe classification,
+occlusion, convergence, and the room's shape within its world AABB.
+
+Choose **Apply room plan** to allocate the proposed grids. Moving or replacing
+the BIM model, or changing DDGI settings after preview, requires a fresh
+preview. Apply checks device and allocation limits while the previous field
+remains available. Both allocations coexist briefly during this check. Applied
+volumes can be adjusted manually or saved with **Save scene
+GI preset**. Enabling DDGI remains a separate control.
+
+The native Deferred raster regression uses two storeys, split room geometry,
+a rotated mapped room, a survey-only space, and conflicting storey metadata.
+On an RTX 2080 SUPER, three detail grids increased the total from 225 to
+6,193 probes (31.8 MiB of planned payload, 32.4 MiB allocated). One distant
+room remained uncovered because all four slots were occupied. The survey-only
+and conflicting rooms were reported separately.
+
+In the linear EXR samples, estimated shaded floor luminance fell from
+`0.00666` with the coarse field to `0.0000771` with the planned field.
+The dense manual DDGI reference measured `0.0000614` on that patch. The
+planned field retained about 90% of the coarse field's lit back-wall
+luminance and the measured shaded back-wall patch reached zero. These
+values describe four receiver patches in this fixture, with residual
+floor leakage. The dense reference uses the same DDGI implementation.
+
 ### Camera-follow scrolling
 
 Enable **Scroll scene volume with camera** or `--ddgi-camera-follow`; disable

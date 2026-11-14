@@ -148,6 +148,16 @@ struct ElementRelationship {
   std::string label{};
 };
 
+struct SpaceWithoutDrawableGeometry {
+  std::string guid;
+  std::string sourceId;
+  std::string name;
+  std::string storeyId;
+  std::string storeyName;
+  std::string reason;
+  bool ambiguousStorey{};
+};
+
 struct Model {
   container::geometry::ImportReport importReport{};
   std::vector<Vertex> vertices{};
@@ -161,6 +171,8 @@ struct Model {
   std::vector<ElementRelationship> relationships{};
   ModelUnitMetadata unitMetadata{};
   ModelGeoreferenceMetadata georeferenceMetadata{};
+  // Semantic rooms survive even when the importer cannot emit a draw row.
+  std::vector<SpaceWithoutDrawableGeometry> spacesWithoutDrawableGeometry;
 };
 
 [[nodiscard]] Model LoadFromFile(const std::filesystem::path& path,

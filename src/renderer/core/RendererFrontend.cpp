@@ -2341,6 +2341,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   publishBimClashUi();
   pollBimSunHours();
   publishBimSunHoursUi();
+  pollDdgiBimRoomPlan();
+  publishDdgiBimRoomPlanUi();
   publishRenderSetupUi();
   presentSceneControls();
   updateGltfAnimation();
@@ -2352,6 +2354,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   processPendingDdgiSceneFit();
   processPendingDdgiDetailFit();
   processPendingDdgiPreset();
+  processDdgiBimRoomPlan();
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::Gui,
                            elapsedMilliseconds(phaseStart));
@@ -3416,6 +3419,7 @@ void RendererFrontend::applyTemporalCapture(
     if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
     subs_.bimManager->setRootTranslation(*sample.bimTranslation);
   }
+  if (event.ddgiRoomPlan) applyCaptureDdgiRoomPlan(*event.ddgiRoomPlan);
   if (event.exposure)
     captureExposure_ = *event.exposure;
   if (event.areaLightPosition) {
@@ -4016,6 +4020,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"probeCount", ddgiFitProbeCount_},
         {"payloadBytes", ddgiFitPayloadBytes_},
         {"status", ddgiFitStatus_}};
+    appendDdgiBimRoomPlanTelemetry(json["ddgi"]);
     json["ddgi"]["selectedProbes"] = nlohmann::json::array();
     for (const auto &update : gi.lastUpdates())
       json["ddgi"]["selectedProbes"].push_back(update.probeIndex);
@@ -5887,6 +5892,8 @@ void RendererFrontend::shutdown() {
 #endif
   // Import jobs own only CPU payloads; join before releasing scene services.
   modelLoad_.reset();
+  discardDdgiBimRoomPlan();
+  pollDdgiBimRoomPlan(true);
   meshProviderAssetCache_.clear();
   if (!svc_.ctx.deviceWrapper)
     return;
