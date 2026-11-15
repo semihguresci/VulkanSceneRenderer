@@ -755,6 +755,95 @@ TEST(TextureResourceLifecycle, SelectedRetirementValidatesSelectionBudgetsAndExa
   EXPECT_FALSE(ready);EXPECT_FALSE(published);EXPECT_EQ(attempts,0u);EXPECT_TRUE(f.generation->active(selected[0]));
 }
 
+TEST(TextureResourceLifecycle,
+     SelectedRetirementDoesNotChargeSharedImagePayloads) {
+  Fixture f;
+  f.append("Small orphan");
+  constexpr size_t sharedImageBytes = 1024 * 1024;
+  f.archive.images[0].image.assign(sharedImageBytes, 3);
+  f.evaluated.images[0].image.assign(sharedImageBytes, 7);
+  TextureResourceLifecycleLimits limits;
+  limits.maxOwnedBytes = 256 * 1024;
+  EXPECT_THROW((void)PrepareTextureResourceLifecycle({}, f.view(), limits),
+               std::length_error);
+  f.publish();
+  ASSERT_TRUE(f.generation);
+  EXPECT_GT(f.generation->ownedBytes(), limits.maxOwnedBytes);
+
+  const TextureResourceSelection archiveShared{Domain::Archive, Kind::Image,
+                                               0};
+  const TextureResourceSelection evaluatedShared{Domain::Evaluated,
+                                                 Kind::Image, 0};
+  const auto archiveHandle = f.generation->resource(archiveShared);
+  const auto evaluatedHandle = f.generation->resource(evaluatedShared);
+  const auto beforeReaders = RetainAllTextureResourceReferences(
+      f.generation, Pins::GpuReader, limits.maxOwnedBytes);
+  ASSERT_TRUE(beforeReaders->valid());
+  EXPECT_LE(beforeReaders->ownedBytes(), limits.maxOwnedBytes);
+  const std::array largeImage{archiveShared};
+  EXPECT_THROW((void)RetainTextureResourceReferences(f.generation, largeImage,
+                                                    Pins::History,
+                                                    limits.maxOwnedBytes),
+               std::length_error);
+  const auto history =
+      RetainTextureResourceReferences(f.generation, largeImage, Pins::History);
+  // A reader encountered first must not drop the later History payload.
+  const std::array owners{beforeReaders, history};
+  EXPECT_THROW(
+      (void)CombineTextureResourceReferences(owners, limits.maxOwnedBytes),
+      std::length_error);
+  const auto combined = CombineTextureResourceReferences(owners);
+  EXPECT_GE(combined->ownedBytes(), sharedImageBytes);
+
+  const std::array selected{
+      TextureResourceSelection{Domain::Archive, Kind::Image, 1},
+      TextureResourceSelection{Domain::Archive, Kind::Texture, 1},
+      TextureResourceSelection{Domain::Evaluated, Kind::Image, 1},
+      TextureResourceSelection{Domain::Evaluated, Kind::Texture, 1}};
+  SourcePhases phases;
+  phases.sync(f);
+  phases.aImages[1] = phases.aTextures[1] = 0;
+  phases.eImages[1] = phases.eTextures[1] = 0;
+  auto retire = PrepareTextureResourceRetirement(
+      f.generation, phases.apply(f.view()), selected, limits);
+  const auto command = retire.retirementCommand();
+  const auto futurePreparation =
+      retire.selectAll(Pins::Preparation, limits.maxOwnedBytes);
+  ASSERT_TRUE(futurePreparation->valid());
+  EXPECT_LE(futurePreparation->ownedBytes(), limits.maxOwnedBytes);
+  EXPECT_NE(std::ranges::find(futurePreparation->resources(), archiveHandle),
+            futurePreparation->resources().end());
+  EXPECT_NE(std::ranges::find(futurePreparation->resources(), evaluatedHandle),
+            futurePreparation->resources().end());
+  retire.seal();
+  EXPECT_LE(retire.ownedBytes(), limits.maxOwnedBytes);
+
+  f.archive.images[0].image.back() = 4;
+  EXPECT_FALSE(CanExchangeTextureResourceLifecycle(retire, f.generation,
+                                                    phases.apply(f.view())));
+  f.archive.images[0].image.back() = 3;
+  ASSERT_TRUE(ExchangeTextureResourceLifecycle(retire, f.generation,
+                                                phases.apply(f.view())));
+  for (const auto resource : selected)
+    EXPECT_FALSE(f.generation->active(resource));
+  EXPECT_TRUE(f.generation->active(archiveShared));
+  EXPECT_TRUE(f.generation->active(evaluatedShared));
+  EXPECT_GT(f.generation->ownedBytes(), limits.maxOwnedBytes);
+
+  phases.aImages[1] = phases.aTextures[1] = 1;
+  phases.eImages[1] = phases.eTextures[1] = 1;
+  auto restore = PrepareTextureResourceRetirementReplay(
+      f.generation, phases.apply(f.view()), command,
+      ResourceLifecyclePhase::Active, limits);
+  restore.seal();
+  ASSERT_TRUE(ExchangeTextureResourceLifecycle(restore, f.generation,
+                                                phases.apply(f.view())));
+  for (const auto resource : selected)
+    EXPECT_TRUE(f.generation->active(resource));
+  EXPECT_EQ(f.generation->resource(archiveShared), archiveHandle);
+  EXPECT_EQ(f.generation->resource(evaluatedShared), evaluatedHandle);
+}
+
 TEST(TextureResourceLifecycle, SelectedTextureRestoreRequiresItsDependenciesToBeRestoredByTheirOwnReceipts) {
   Fixture f;f.publish();SourcePhases phases;phases.sync(f);const std::array texture{TextureResourceSelection{Domain::Archive,Kind::Texture,0}};
   phases.aTextures[0]=0;std::optional<TextureResourceLifecycleView> view;view.emplace(phases.apply(f.view()));auto removeTexture=PrepareTextureResourceRetirement(f.generation,*view,texture);
