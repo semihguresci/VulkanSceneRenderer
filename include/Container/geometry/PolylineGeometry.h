@@ -16,4 +16,11 @@ appendPolylineGeometry(dotbim::Model &model, std::span<const glm::vec3> points,
                        uint32_t meshId, float pickingRadius,
                        std::stop_token stop = {});
 
+// Appends a model-space stroke with butt ends, round joins and point glyphs.
+// The triangle range is used for both rendering and picking.
+[[nodiscard]] bool appendMetricPolylineGeometry(
+    dotbim::Model &model, std::span<const glm::vec3> points,
+    std::span<const size_t> pathVertexCounts, std::span<const glm::vec3> dots,
+    uint32_t meshId, double width, std::stop_token stop = {});
+
 } // namespace container::geometry

@@ -249,6 +249,7 @@ struct FrameBimResources {
   FrameDrawLists curveDraws{};
   FrameDrawLists nativePointDraws{};
   FrameDrawLists nativeCurveDraws{};
+  FrameDrawLists nativeCurveStrokeDraws{};
   FrameSceneGeometry coordinationMarkerScene{};
   FrameSceneGeometry sectionPlaneVisualScene{};
   const std::vector<DrawCommand> *coordinationIssueMarkerDrawCommands{nullptr};
@@ -270,6 +271,7 @@ struct FrameBimResources {
   bool nativePrimitiveDrawsUseGpuVisibility{false};
   bool nativePointDrawsUseGpuVisibility{false};
   bool nativeCurveDrawsUseGpuVisibility{false};
+  bool nativeCurveStrokeDrawsUseGpuVisibility{false};
 };
 
 struct FrameCameraResources {

@@ -256,6 +256,8 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
                               ForwardRasterPipelineId::BimPointCloudNoDepth,
                               ForwardRasterPipelineId::BimCurveDepth,
                               ForwardRasterPipelineId::BimCurveNoDepth,
+                              ForwardRasterPipelineId::BimCurveStrokeDepth,
+                              ForwardRasterPipelineId::BimCurveStrokeNoDepth,
                               ForwardRasterPipelineId::BimFloorPlanDepth,
                               ForwardRasterPipelineId::BimFloorPlanNoDepth,
                               ForwardRasterPipelineId::BimSectionClipCapFill,

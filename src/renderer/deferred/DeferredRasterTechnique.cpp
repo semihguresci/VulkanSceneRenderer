@@ -250,6 +250,16 @@ void registerDeferredRasterPipelineRecipes(PipelineRegistry &registry) {
                      .shaderStages = {"spv_shaders/gbuffer.vert.spv",
                                       "spv_shaders/gbuffer.frag.spv"},
                      .layoutName = "scene"});
+  for (const auto pipeline : {DeferredRasterPipelineId::BimCurveStrokeDepth,
+                              DeferredRasterPipelineId::BimCurveStrokeNoDepth}) {
+    registry.registerRecipe(PipelineRecipe{
+        .key = {kDeferredRasterTechnique,
+                std::string(deferredRasterPipelineName(pipeline))},
+        .kind = PipelineRecipeKind::Graphics,
+        .shaderStages = {"spv_shaders/wireframe_debug.vert.spv",
+                         "spv_shaders/wireframe_debug.frag.spv"},
+        .layoutName = "wireframe"});
+  }
   registry.registerRecipe(
       PipelineRecipe{.key = {kDeferredRasterTechnique, "bim-depth-prepass"},
                      .kind = PipelineRecipeKind::Graphics,

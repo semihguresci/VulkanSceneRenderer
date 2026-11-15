@@ -30,6 +30,10 @@ hasTransparentDrawCommands(const BimPrimitivePassDrawLists &draws) {
 
 [[nodiscard]] std::array<BimDrawCompactionSlot, 2>
 nativeGpuSlots(BimPrimitivePassKind kind) {
+  if (kind == BimPrimitivePassKind::CurveStrokes) {
+    return {BimDrawCompactionSlot::NativeCurveStrokeOpaque,
+            BimDrawCompactionSlot::NativeCurveStrokeTransparent};
+  }
   if (kind == BimPrimitivePassKind::Curves) {
     return {BimDrawCompactionSlot::NativeCurveOpaque,
             BimDrawCompactionSlot::NativeCurveTransparent};
@@ -101,7 +105,7 @@ BimPrimitivePassPlan BimPrimitivePassPlanner::build() const {
   plan.depthTest = inputs_.depthTest;
   plan.nativeDrawsSelected = hasNativeDraws;
   plan.useObjectColor =
-      hasNativeDraws && inputs_.kind == BimPrimitivePassKind::Curves;
+      hasNativeDraws && inputs_.kind != BimPrimitivePassKind::Points;
   plan.gpuCompaction = gpuCompaction;
   plan.opacity = std::clamp(inputs_.opacity, 0.0f, 1.0f);
   plan.primitiveSize = std::max(inputs_.primitiveSize, 1.0f);

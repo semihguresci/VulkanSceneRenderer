@@ -77,6 +77,8 @@ struct Element {
   std::vector<ElementProperty> properties{};
   bool doubleSided{true};
   uint32_t materialIndex{std::numeric_limits<uint32_t>::max()};
+  // The mesh range is both the rendered metric stroke and the pick geometry.
+  bool hasAuthoredCurveWidth{false};
 };
 
 struct MaterialTextureAsset {

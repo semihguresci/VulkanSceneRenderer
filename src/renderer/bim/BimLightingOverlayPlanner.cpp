@@ -295,6 +295,18 @@ BimLightingOverlayPlan BimLightingOverlayPlanner::build() const {
       inputs_.pipelines.bimCurveDepth, inputs_.nativeCurveSelectionCommands,
       kSelectionColor, 1.0f,
       nativeCurveSelectionWidth(inputs_.nativeCurveLineWidth), true, inputs_);
+  plan.nativeCurveStrokeHover = buildNativePrimitiveHighlight(
+      BimLightingOverlayKind::NativeCurveStrokeHover,
+      BimLightingOverlayPipeline::BimCurveStrokeDepth,
+      inputs_.pipelines.bimCurveStrokeDepth,
+      inputs_.nativeCurveStrokeHoverCommands, kHoverColor, 0.85f, 1.0f,
+      false, inputs_);
+  plan.nativeCurveStrokeSelection = buildNativePrimitiveHighlight(
+      BimLightingOverlayKind::NativeCurveStrokeSelection,
+      BimLightingOverlayPipeline::BimCurveStrokeDepth,
+      inputs_.pipelines.bimCurveStrokeDepth,
+      inputs_.nativeCurveStrokeSelectionCommands, kSelectionColor, 1.0f,
+      1.0f, false, inputs_);
   plan.coordinationIssueMarkers = buildCoordinationMarker(
       BimLightingOverlayKind::CoordinationIssueMarker,
       inputs_.coordinationIssueMarkers,

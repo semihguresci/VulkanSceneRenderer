@@ -90,6 +90,7 @@ bimLightingOverlayPipelineReadiness(
               pipelines.bimFloorPlanNoDepth != VK_NULL_HANDLE,
           .bimPointCloudDepth = pipelines.bimPointCloudDepth != VK_NULL_HANDLE,
           .bimCurveDepth = pipelines.bimCurveDepth != VK_NULL_HANDLE,
+          .bimCurveStrokeDepth = pipelines.bimCurveStrokeDepth != VK_NULL_HANDLE,
           .selectionMask = pipelines.selectionMask != VK_NULL_HANDLE,
           .selectionOutline = pipelines.selectionOutline != VK_NULL_HANDLE};
 }
@@ -139,6 +140,8 @@ bimLightingFloorPlanOverlayInputs(
     return pipelines.bimPointCloudDepth;
   case BimLightingOverlayPipeline::BimCurveDepth:
     return pipelines.bimCurveDepth;
+  case BimLightingOverlayPipeline::BimCurveStrokeDepth:
+    return pipelines.bimCurveStrokeDepth;
   }
   return VK_NULL_HANDLE;
 }
@@ -298,6 +301,8 @@ BimLightingOverlayInputs buildBimLightingOverlayFramePlanInputs(
       .nativeCurveHoverCommands = inputs.draws.nativeCurveHover,
       .nativePointSelectionCommands = inputs.draws.nativePointSelection,
       .nativeCurveSelectionCommands = inputs.draws.nativeCurveSelection,
+      .nativeCurveStrokeHoverCommands = inputs.draws.nativeCurveStrokeHover,
+      .nativeCurveStrokeSelectionCommands = inputs.draws.nativeCurveStrokeSelection,
       .coordinationIssueMarkerCommands =
           inputs.draws.coordinationIssueMarkers,
       .coordinationClashMarkerCommands =
@@ -363,6 +368,8 @@ bool recordBimLightingOverlayCommands(
                               inputs, pushConstants);
   recorded |= drawOverlayPlan(cmd, inputs.bim, plan.nativeCurveHover, false,
                               inputs, pushConstants);
+  recorded |= drawOverlayPlan(cmd, inputs.bim, plan.nativeCurveStrokeHover,
+                              false, inputs, pushConstants);
 
   recorded |= drawSelectionOutline(cmd, inputs.scene,
                                    plan.sceneSelectionOutline, inputs);
@@ -372,6 +379,8 @@ bool recordBimLightingOverlayCommands(
                               inputs, pushConstants);
   recorded |= drawOverlayPlan(cmd, inputs.bim, plan.nativeCurveSelection, false,
                               inputs, pushConstants);
+  recorded |= drawOverlayPlan(cmd, inputs.bim, plan.nativeCurveStrokeSelection,
+                              false, inputs, pushConstants);
   return recorded;
 }
 
@@ -453,7 +462,8 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                       .depthTest = curves.depthTest,
                       .placeholderRangePreviewEnabled =
                           display && curves.placeholderRangePreviewEnabled,
-                      .nativeDrawsUseGpuVisibility = bim.nativeCurveDrawsUseGpuVisibility,
+                      .nativeDrawsUseGpuVisibility =
+                          bim.nativeCurveDrawsUseGpuVisibility,
                       .opacity = curves.opacity,
                       .primitiveSize = curves.lineWidth,
                       .color = curves.color,
@@ -464,6 +474,23 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
             .geometry = primitiveGeometry,
             .pipelines = {.depth = inputs.pipelines.bimCurveDepth,
                           .noDepth = inputs.curveNoDepth},
+            .wireframeLayout = inputs.wireframeLayout,
+            .pushConstants = inputs.wireframePushConstants,
+            .debugOverlay = inputs.debugOverlay,
+            .bimManager = p.services.bimManager});
+
+  (void)recordBimPrimitiveFramePassCommands(
+      cmd, {.style = {.kind = BimPrimitivePassKind::CurveStrokes,
+                      .enabled = curves.enabled,
+                      .depthTest = curves.depthTest,
+                      .nativeDrawsUseGpuVisibility =
+                          bim.nativeCurveStrokeDrawsUseGpuVisibility,
+                      .opacity = curves.opacity,
+                      .color = curves.color},
+            .nativeDraws = primitiveDrawLists(bim.nativeCurveStrokeDraws),
+            .geometry = primitiveGeometry,
+            .pipelines = {.depth = inputs.pipelines.bimCurveStrokeDepth,
+                          .noDepth = inputs.curveStrokeNoDepth},
             .wireframeLayout = inputs.wireframeLayout,
             .pushConstants = inputs.wireframePushConstants,
             .debugOverlay = inputs.debugOverlay,
@@ -536,6 +563,10 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                       .nativeCurveHover = bim.nativeCurveDraws.hoveredDrawCommands,
                       .nativePointSelection = bim.nativePointDraws.selectedDrawCommands,
                       .nativeCurveSelection = bim.nativeCurveDraws.selectedDrawCommands,
+                      .nativeCurveStrokeHover =
+                          bim.nativeCurveStrokeDraws.hoveredDrawCommands,
+                      .nativeCurveStrokeSelection =
+                          bim.nativeCurveStrokeDraws.selectedDrawCommands,
                       .coordinationIssueMarkers = bim.coordinationIssueMarkerDrawCommands,
                       .coordinationClashMarkers = bim.coordinationClashMarkerDrawCommands,
                       .sectionPlaneVisual = bim.sectionPlaneVisualDrawCommands},

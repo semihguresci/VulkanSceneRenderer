@@ -12,6 +12,7 @@ enum class BimDrawCompactionSlot : uint32_t;
 enum class BimPrimitivePassKind : uint32_t {
   Points = 0,
   Curves = 1,
+  CurveStrokes = 2,
 };
 
 struct BimPrimitivePassDrawLists {

@@ -25,6 +25,7 @@ struct BimLightingOverlayPipelineHandles {
   VkPipeline bimFloorPlanNoDepth{VK_NULL_HANDLE};
   VkPipeline bimPointCloudDepth{VK_NULL_HANDLE};
   VkPipeline bimCurveDepth{VK_NULL_HANDLE};
+  VkPipeline bimCurveStrokeDepth{VK_NULL_HANDLE};
   VkPipeline selectionMask{VK_NULL_HANDLE};
   VkPipeline selectionOutline{VK_NULL_HANDLE};
 };
@@ -66,6 +67,8 @@ struct BimLightingOverlayFrameDrawSources {
   const std::vector<DrawCommand> *nativeCurveHover{nullptr};
   const std::vector<DrawCommand> *nativePointSelection{nullptr};
   const std::vector<DrawCommand> *nativeCurveSelection{nullptr};
+  const std::vector<DrawCommand> *nativeCurveStrokeHover{nullptr};
+  const std::vector<DrawCommand> *nativeCurveStrokeSelection{nullptr};
   const std::vector<DrawCommand> *coordinationIssueMarkers{nullptr};
   const std::vector<DrawCommand> *coordinationClashMarkers{nullptr};
   const std::vector<DrawCommand> *sectionPlaneVisual{nullptr};
@@ -108,6 +111,7 @@ struct BimRasterOverlayRecordInputs {
   BimLightingOverlayPipelineHandles pipelines{};
   VkPipeline pointCloudNoDepth{VK_NULL_HANDLE};
   VkPipeline curveNoDepth{VK_NULL_HANDLE};
+  VkPipeline curveStrokeNoDepth{VK_NULL_HANDLE};
   VkPipeline capFill{VK_NULL_HANDLE};
   VkPipeline capHatch{VK_NULL_HANDLE};
   const WireframePushConstants *wireframePushConstants{nullptr};

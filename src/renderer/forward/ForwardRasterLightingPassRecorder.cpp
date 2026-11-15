@@ -150,6 +150,12 @@ primitiveDrawLists(const FrameDrawLists &draws) {
              primitiveDrawLists(p.bim.nativeCurveDraws));
 }
 
+[[nodiscard]] bool hasNativeCurveStrokes(const FrameRecordParams &p) {
+  return p.bim.primitivePasses.curves.enabled &&
+         hasBimPrimitivePassDrawCommands(
+             primitiveDrawLists(p.bim.nativeCurveStrokeDraws));
+}
+
 [[nodiscard]] bool hasSceneGeometry(const FrameRecordParams& p) {
   return p.pushConstants.bindless != nullptr &&
          p.scene.vertexSlice.buffer != VK_NULL_HANDLE &&
@@ -334,10 +340,14 @@ void recordForwardBimOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
               pipeline(ForwardRasterPipelineId::BimFloorPlanNoDepth),
           .bimPointCloudDepth = pipeline(ForwardRasterPipelineId::BimPointCloudDepth),
           .bimCurveDepth = pipeline(ForwardRasterPipelineId::BimCurveDepth),
+          .bimCurveStrokeDepth =
+              pipeline(ForwardRasterPipelineId::BimCurveStrokeDepth),
           .selectionMask = pipeline(ForwardRasterPipelineId::SelectionMask),
           .selectionOutline = pipeline(ForwardRasterPipelineId::SelectionOutline)},
       .pointCloudNoDepth = pipeline(ForwardRasterPipelineId::BimPointCloudNoDepth),
       .curveNoDepth = pipeline(ForwardRasterPipelineId::BimCurveNoDepth),
+      .curveStrokeNoDepth =
+          pipeline(ForwardRasterPipelineId::BimCurveStrokeNoDepth),
       .capFill = pipeline(ForwardRasterPipelineId::BimSectionClipCapFill),
       .capHatch = pipeline(ForwardRasterPipelineId::BimSectionClipCapHatch),
       .wireframePushConstants = &pushConstants,
@@ -621,7 +631,7 @@ bool hasForwardRasterSkyInputs(const FrameRecordParams &p) {
 }
 
 bool hasForwardRasterNativePrimitiveDraws(const FrameRecordParams &p) {
-  return hasNativePoints(p) || hasNativeCurves(p);
+  return hasNativePoints(p) || hasNativeCurves(p) || hasNativeCurveStrokes(p);
 }
 
 RenderPassReadiness
@@ -663,7 +673,12 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
          !forwardRasterPipelineReady(
              p, p.bim.primitivePasses.curves.depthTest
                     ? ForwardRasterPipelineId::BimCurveDepth
-                    : ForwardRasterPipelineId::BimCurveNoDepth)))
+                    : ForwardRasterPipelineId::BimCurveNoDepth)) ||
+        (hasNativeCurveStrokes(p) &&
+         !forwardRasterPipelineReady(
+             p, p.bim.primitivePasses.curves.depthTest
+                    ? ForwardRasterPipelineId::BimCurveStrokeDepth
+                    : ForwardRasterPipelineId::BimCurveStrokeNoDepth)))
       return missing(RenderResourceId::SceneColor);
   }
   if (!hasLightingFramebuffer(p, ForwardRasterFramebufferId::Lighting) ||

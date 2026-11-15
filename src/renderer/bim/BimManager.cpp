@@ -497,6 +497,7 @@ struct PendingDraw {
   uint32_t indexCount{0};
   uint32_t nativeFirstIndex{0};
   uint32_t nativeIndexCount{0};
+  bool authoredCurveStroke{false};
   DrawBucket bucket{DrawBucket::OpaqueSingleSided};
 };
 
@@ -1665,6 +1666,7 @@ void BimManager::clear() {
   curveDrawLists_.clear();
   nativePointDrawLists_.clear();
   nativeCurveDrawLists_.clear();
+  nativeCurveStrokeDrawLists_.clear();
   meshletClusterCount_ = 0;
   meshletClusters_.clear();
   objectLodMetadata_.clear();
@@ -1686,8 +1688,8 @@ void BimManager::clear() {
 
 bool BimManager::hasScene() const {
   return vertexSlice_.buffer != VK_NULL_HANDLE &&
-         indexSlice_.buffer != VK_NULL_HANDLE &&
-         !objectBuffers_.empty() && !objectData_.empty() &&
+         indexSlice_.buffer != VK_NULL_HANDLE && !objectBuffers_.empty() &&
+         !objectData_.empty() &&
          (!opaqueDrawCommands_.empty() ||
           !opaqueSingleSidedDrawCommands_.empty() ||
           !opaqueWindingFlippedDrawCommands_.empty() ||
@@ -1699,7 +1701,8 @@ bool BimManager::hasScene() const {
           hasDrawCommands(pointDrawLists_) ||
           hasDrawCommands(curveDrawLists_) ||
           hasDrawCommands(nativePointDrawLists_) ||
-          hasDrawCommands(nativeCurveDrawLists_));
+          hasDrawCommands(nativeCurveDrawLists_) ||
+          hasDrawCommands(nativeCurveStrokeDrawLists_));
 }
 
 VkDeviceSize BimManager::objectBufferSize() const {
@@ -2545,6 +2548,10 @@ void BimManager::rebuildSceneStatisticsCache() {
           nativeCurveDrawLists_.opaqueDrawCommands.size(),
       .nativeCurveTransparentDrawCount =
           nativeCurveDrawLists_.transparentDrawCommands.size(),
+      .nativeCurveStrokeOpaqueDrawCount =
+          nativeCurveStrokeDrawLists_.opaqueDrawCommands.size(),
+      .nativeCurveStrokeTransparentDrawCount =
+          nativeCurveStrokeDrawLists_.transparentDrawCommands.size(),
       .meshletClusterCount = meshletClusterCount_,
       .meshletSourceClusterCount =
           optimizedModelMetadata_.sourceMeshletClusterCount,
@@ -2613,6 +2620,7 @@ BimDrawFilterStateInputs BimManager::drawFilterStateInputs() const {
       .curveDrawLists = &curveDrawLists_,
       .nativePointDrawLists = &nativePointDrawLists_,
       .nativeCurveDrawLists = &nativeCurveDrawLists_,
+      .nativeCurveStrokeDrawLists = &nativeCurveStrokeDrawLists_,
   };
 }
 
@@ -2626,14 +2634,24 @@ const BimDrawLists &BimManager::filteredDrawLists(const BimDrawFilter &filter) {
   return drawFilterState_->filteredDrawLists(filter, drawFilterStateInputs());
 }
 
-BimPickHit
-BimManager::pickRenderableObject(const container::gpu::CameraData &cameraData,
-                                 VkExtent2D viewportExtent, double cursorX,
-                                 double cursorY, bool sectionPlaneEnabled,
-                                 glm::vec4 sectionPlane) const {
+BimPickHit BimManager::pickRenderableObject(
+    const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
+    double cursorX, double cursorY, bool sectionPlaneEnabled,
+    glm::vec4 sectionPlane, bool skipNativeCurveStrokes) const {
   return pickRenderableObjectForDraws(cameraData, viewportExtent, cursorX,
                                       cursorY, true, true, sectionPlaneEnabled,
-                                      sectionPlane);
+                                      sectionPlane, skipNativeCurveStrokes);
+}
+
+BimPickHit BimManager::pickNativeCurveStroke(
+    const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
+    double cursorX, double cursorY, const BimDrawFilter &filter,
+    bool sectionPlaneEnabled, glm::vec4 sectionPlane) const {
+  if (!hasDrawCommands(nativeCurveStrokeDrawLists_))
+    return {};
+  return pickRenderableObjectForDraws(cameraData, viewportExtent, cursorX,
+                                      cursorY, true, true, sectionPlaneEnabled,
+                                      sectionPlane, false, &filter);
 }
 
 BimPickHit BimManager::pickTransparentRenderableObject(
@@ -2648,7 +2666,9 @@ BimPickHit BimManager::pickTransparentRenderableObject(
 BimPickHit BimManager::pickRenderableObjectForDraws(
     const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
     double cursorX, double cursorY, bool includeOpaque, bool includeTransparent,
-    bool sectionPlaneEnabled, glm::vec4 sectionPlane) const {
+    bool sectionPlaneEnabled, glm::vec4 sectionPlane,
+    bool skipNativeCurveStrokes,
+    const BimDrawFilter *nativeCurveStrokeFilter) const {
   if (objectData_.empty() || vertices_.empty() || indices_.empty()) {
     return {};
   }
@@ -2691,6 +2711,9 @@ BimPickHit BimManager::pickRenderableObjectForDraws(
              sphereDistance > nearest.distance)) {
           continue;
         }
+        if (nativeCurveStrokeFilter &&
+            !objectMatchesFilter(objectIndex, *nativeCurveStrokeFilter))
+          continue;
 
         const glm::mat4 &model = objectData_[objectIndex].model;
         const auto metadata = metadataForObject(objectIndex);
@@ -2698,7 +2721,7 @@ BimPickHit BimManager::pickRenderableObjectForDraws(
         glm::vec3 sectionCapHitPosition{0.0f};
         bool sectionCapCandidate = false;
         bool sectionCapCrossesObject = false;
-        if (sectionPlaneEnabled && metadata &&
+        if (!nativeCurveStrokeFilter && sectionPlaneEnabled && metadata &&
             intersectRaySectionPlane(ray, sectionPlane,
                                      sectionCapHitDistance) &&
             sectionCapHitDistance < nearest.distance) {
@@ -2765,6 +2788,14 @@ BimPickHit BimManager::pickRenderableObjectForDraws(
     }
   };
 
+  if (nativeCurveStrokeFilter) {
+    testDrawCommands(nativeCurveStrokeDrawLists_.opaqueDrawCommands,
+                     TriangleCullMode::None);
+    testDrawCommands(nativeCurveStrokeDrawLists_.transparentDrawCommands,
+                     TriangleCullMode::None);
+    return nearest;
+  }
+
   auto testDrawListSet =
       [&](const std::vector<DrawCommand> &opaque,
           const std::vector<DrawCommand> &opaqueSingleSided,
@@ -2830,6 +2861,17 @@ BimPickHit BimManager::pickRenderableObjectForDraws(
         (!metadata.transparent && !includeOpaque)) {
       continue;
     }
+    // Stroke draw lists store one aggregate command per object in object
+    // index order. The frontend tests these triangles against its active
+    // visibility filter separately from the legacy native proxies.
+    if (skipNativeCurveStrokes &&
+        metadata.geometryKind == BimGeometryKind::Curves &&
+        std::ranges::binary_search(
+            metadata.transparent
+                ? nativeCurveStrokeDrawLists_.transparentDrawCommands
+                : nativeCurveStrokeDrawLists_.opaqueDrawCommands,
+            metadata.objectIndex, {}, &DrawCommand::objectIndex))
+      continue;
     if (metadata.objectIndex >= objectDrawCommandOffsets_.size() ||
         metadata.objectIndex >= objectDrawCommandCounts_.size()) {
       continue;
@@ -2868,6 +2910,8 @@ void BimManager::collectDrawCommandsForObject(
                                               metadata.objectIndex);
         case BimGeometryKind::Curves:
           return geometryDrawListsCoverObject(nativeCurveDrawLists_,
+                                              metadata.objectIndex) ||
+                 geometryDrawListsCoverObject(nativeCurveStrokeDrawLists_,
                                               metadata.objectIndex);
         case BimGeometryKind::Mesh:
         default:
@@ -2924,6 +2968,12 @@ void BimManager::collectNativeCurveDrawCommandsForObject(
     uint32_t objectIndex, std::vector<DrawCommand> &outCommands) const {
   collectNativeDrawCommandsForObject(objectIndex, BimGeometryKind::Curves,
                                      nativeCurveDrawLists_, outCommands);
+}
+
+void BimManager::collectNativeCurveStrokeDrawCommandsForObject(
+    uint32_t objectIndex, std::vector<DrawCommand> &outCommands) const {
+  collectNativeDrawCommandsForObject(objectIndex, BimGeometryKind::Curves,
+                                     nativeCurveStrokeDrawLists_, outCommands);
 }
 
 void BimManager::collectNativeDrawCommandsForObject(
@@ -3449,11 +3499,14 @@ std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(
         pending.nativeIndexCount = nativeRangeIt->second.indexCount;
       }
     } else if (pending.metadata.geometryKind == BimGeometryKind::Curves) {
-      if (const auto nativeRangeIt =
-              nativeCurveRangesByMeshId.find(element.meshId);
-          nativeRangeIt != nativeCurveRangesByMeshId.end()) {
-        pending.nativeFirstIndex = nativeRangeIt->second.firstIndex;
-        pending.nativeIndexCount = nativeRangeIt->second.indexCount;
+      pending.authoredCurveStroke = element.hasAuthoredCurveWidth;
+      if (!pending.authoredCurveStroke) {
+        if (const auto nativeRangeIt =
+                nativeCurveRangesByMeshId.find(element.meshId);
+            nativeRangeIt != nativeCurveRangesByMeshId.end()) {
+          pending.nativeFirstIndex = nativeRangeIt->second.firstIndex;
+          pending.nativeIndexCount = nativeRangeIt->second.indexCount;
+        }
       }
     }
     if (transparent) {
@@ -3614,6 +3667,13 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
       countPendingKind(opaquePendingDraws, BimGeometryKind::Curves);
   const size_t transparentCurveDrawCount =
       countPendingKind(transparentPendingDraws, BimGeometryKind::Curves);
+  const auto strokeCount = [](const auto &draws) {
+    return static_cast<size_t>(
+        std::ranges::count_if(draws, &PendingDraw::authoredCurveStroke));
+  };
+  const size_t opaqueStrokeDrawCount = strokeCount(opaquePendingDraws);
+  const size_t transparentStrokeDrawCount =
+      strokeCount(transparentPendingDraws);
 
   const size_t totalDraws =
       opaquePendingDraws.size() + transparentPendingDraws.size();
@@ -3634,11 +3694,16 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
   transparentWindingFlippedDrawCommands_.reserve(transparentMeshDrawCount);
   transparentDoubleSidedDrawCommands_.reserve(transparentMeshDrawCount);
   pointDrawLists_.reserve(opaquePointDrawCount, transparentPointDrawCount);
-  curveDrawLists_.reserve(opaqueCurveDrawCount, transparentCurveDrawCount);
+  curveDrawLists_.reserve(opaqueCurveDrawCount - opaqueStrokeDrawCount,
+                          transparentCurveDrawCount -
+                              transparentStrokeDrawCount);
   nativePointDrawLists_.reserve(opaquePointDrawCount,
                                 transparentPointDrawCount);
-  nativeCurveDrawLists_.reserve(opaqueCurveDrawCount,
-                                transparentCurveDrawCount);
+  nativeCurveDrawLists_.reserve(opaqueCurveDrawCount - opaqueStrokeDrawCount,
+                                transparentCurveDrawCount -
+                                    transparentStrokeDrawCount);
+  nativeCurveStrokeDrawLists_.reserve(opaqueStrokeDrawCount,
+                                      transparentStrokeDrawCount);
 
   auto appendPendingDraw = [this, &clusterSpansByMeshId](
                                const PendingDraw &pending, bool allowMerge) {
@@ -3702,7 +3767,11 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
       }
       break;
     case BimGeometryKind::Curves:
-      if (pending.nativeIndexCount > 0u) {
+      if (pending.authoredCurveStroke) {
+        appendDrawCommandToGeometryLists(
+            nativeCurveStrokeDrawLists_, pending.bucket, objectIndex,
+            pending.firstIndex, pending.indexCount, allowMerge);
+      } else if (pending.nativeIndexCount > 0u) {
         appendDrawCommandToGeometryLists(nativeCurveDrawLists_, pending.bucket,
                                          objectIndex, pending.nativeFirstIndex,
                                          pending.nativeIndexCount, allowMerge);

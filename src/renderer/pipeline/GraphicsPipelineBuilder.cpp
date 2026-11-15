@@ -1241,6 +1241,15 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.bimCurveNoDepth = pipelineManager_.createGraphicsPipeline(
       curvePCI, "bim_curve_no_depth_pipeline");
 
+  RenderingGraphicsPipelineCreateInfo curveStrokePCI = pointCloudPCI;
+  curveStrokePCI.pInputAssemblyState = &triAssembly;
+  curveStrokePCI.pDepthStencilState = &wfDepthDS;
+  pipelines.bimCurveStrokeDepth = pipelineManager_.createGraphicsPipeline(
+      curveStrokePCI, "bim_curve_stroke_depth_pipeline");
+  curveStrokePCI.pDepthStencilState = &wfNoDepthDS;
+  pipelines.bimCurveStrokeNoDepth = pipelineManager_.createGraphicsPipeline(
+      curveStrokePCI, "bim_curve_stroke_no_depth_pipeline");
+
   RenderingGraphicsPipelineCreateInfo capFillPCI = pointCloudPCI;
   capFillPCI.pInputAssemblyState = &triAssembly;
   capFillPCI.pRasterizationState = &noCullRaster;
@@ -1417,6 +1426,8 @@ void GraphicsPipelineBuilder::destroy(PipelineBuildResult& result) const noexcep
   destroyPipeline(pipelines.bimPointCloudNoDepth);
   destroyPipeline(pipelines.bimCurveDepth);
   destroyPipeline(pipelines.bimCurveNoDepth);
+  destroyPipeline(pipelines.bimCurveStrokeDepth);
+  destroyPipeline(pipelines.bimCurveStrokeNoDepth);
   destroyPipeline(pipelines.bimSectionClipCapFill);
   destroyPipeline(pipelines.bimSectionClipCapHatch);
   destroyPipeline(pipelines.surfaceNormalLine);

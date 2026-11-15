@@ -86,6 +86,8 @@ struct GraphicsPipelines {
   VkPipeline bimPointCloudNoDepth{VK_NULL_HANDLE};
   VkPipeline bimCurveDepth{VK_NULL_HANDLE};
   VkPipeline bimCurveNoDepth{VK_NULL_HANDLE};
+  VkPipeline bimCurveStrokeDepth{VK_NULL_HANDLE};
+  VkPipeline bimCurveStrokeNoDepth{VK_NULL_HANDLE};
   VkPipeline bimSectionClipCapFill{VK_NULL_HANDLE};
   VkPipeline bimSectionClipCapHatch{VK_NULL_HANDLE};
   VkPipeline surfaceNormalLine{VK_NULL_HANDLE};
