@@ -2500,6 +2500,242 @@ double maximumBodyHeight(const Model &body) {
   return height;
 }
 
+TEST(IfcCurveFamilies, IndexedSectionTagListFollowsProfileTraversal) {
+  GuideSectionFixture step;
+  step.definitions =
+      sectionedStraightBase +
+      "#25=IFCCARTESIANPOINTLIST2D(((0.,0.),(2.,0.),(-2.,0.),(99.,99.)),"
+      "('crown','right','left','unused'));"
+      "#26=IFCINDEXEDPOLYCURVE(#25,(IFCLINEINDEX((3,1)),IFCLINEINDEX((1,2))),."
+      "F.);"
+      "#27=IFCCARTESIANPOINTLIST2D(((-2.,0.),(0.,0.),(2.,0.)),"
+      "('left','crown','right'));"
+      "#28=IFCINDEXEDPOLYCURVE(#27,$,.F.);"
+      "#30=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#26);"
+      "#31=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#28);"
+      "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#31));"
+      "#45=IFCCARTESIANPOINT((0.,0.5)); #46=IFCCARTESIANPOINT((1.,0.5));"
+      "#47=IFCPOLYLINE((#45,#46)); #48=IFCPCURVE(#40,#47);";
+  const auto left =
+      step.guide("left", "#4", {{0, -2, 0}, {4, -2, 3}, {10, -2, 0}});
+  const auto crown =
+      step.guide("crown", "#4", {{0, 0, 0}, {4, 0, 3}, {10, 0, 0}});
+  const auto right =
+      step.guide("right", "#4", {{0, 2, 0}, {4, 2, 3}, {10, 2, 0}});
+  const auto unused = step.guide("unused", "#4", {{0, 8, 7}});
+  const auto axis = step.add("IFCGEOMETRICCURVESET((" + left + "," + crown +
+                             "," + right + "," + unused + ",#48))");
+  step.product("indexed-tag-roof", axis);
+  const auto model = step.load();
+  const auto body = sectionedProductMesh(model, "indexed-tag-roof");
+  EXPECT_NEAR(checkSectionedMesh(body), 4 * (5 + std::sqrt(45.)), 1e-5);
+  EXPECT_NEAR(maximumBodyHeight(body), 3., 1e-6);
+  for (float y : {-2.f, 0.f, 2.f}) {
+    EXPECT_TRUE(std::ranges::any_of(body.indices, [&](uint32_t index) {
+      return body.vertices.at(index).position == glm::vec3(4, y, 3);
+    }));
+  }
+
+  size_t crownCurves = 0;
+  for (const auto &range : model.nativeCurveRanges) {
+    std::vector<glm::dvec3> points;
+    for (size_t j = 0; j < range.indexCount; ++j)
+      points.emplace_back(
+          model.vertices.at(model.indices.at(range.firstIndex + j)).position);
+    if (points.empty() || points.front() != glm::dvec3(0) ||
+        points.back() != glm::dvec3(10, 0, 0))
+      continue;
+    ++crownCurves;
+    ASSERT_EQ(points.size() % 2, 0u);
+    EXPECT_EQ(std::ranges::count(points, glm::dvec3(4, 0, 3)), 2);
+    EXPECT_NEAR(length(points), 5 + std::sqrt(45.), 1e-5);
+  }
+  EXPECT_EQ(crownCurves, 2u) << "Expected the guide and its lifted pcurve";
+}
+
+TEST(IfcCurveFamilies, IndexedSectionTagListKeepsUnboundOrdinalSlot) {
+  GuideSectionFixture step;
+  step.definitions = sectionedStraightBase +
+                     "#25=IFCCARTESIANPOINTLIST2D(((-2.,0.),(0.5,0.),(2.,0.)),("
+                     "'left','','right'));"
+                     "#26=IFCINDEXEDPOLYCURVE(#25,$,.F.);"
+                     "#30=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#26);"
+                     "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#30));";
+  const auto guide =
+      step.guide("left", "#4", {{0, -2, 0}, {4, -3, 0}, {10, -2, 0}});
+  const auto axis = step.add("IFCGEOMETRICCURVESET((" + guide + "))");
+  step.product("untagged-ordinal-slot", axis);
+  const auto body = sectionedProductMesh(step.load(), "untagged-ordinal-slot");
+  // The moved left edge adds a 10 m by 1 m triangular wedge. The unnamed
+  // center point remains at its authored lateral coordinate at the same row.
+  EXPECT_NEAR(checkSectionedMesh(body), 45., 1e-5);
+  for (float y : {-3.f, .5f, 2.f}) {
+    EXPECT_TRUE(std::ranges::any_of(body.indices, [&](uint32_t index) {
+      return body.vertices.at(index).position == glm::vec3(4, y, 0);
+    }));
+  }
+}
+
+TEST(IfcCurveFamilies,
+     IndexedSectionTagListKeepsMirroredDerivedMillimetreTags) {
+  GuideSectionFixture step;
+  step.definitions =
+      "#2=IFCCARTESIANPOINT((0.,0.,0.)); #3=IFCCARTESIANPOINT((10000.,0.,0.));"
+      "#4=IFCPOLYLINE((#2,#3));"
+      "#20=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(0.),$,$,$,#4);"
+      "#21=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(10000.),$,$,$,#4);"
+      "#22=IFCAXIS2PLACEMENTLINEAR(#20,$,$); "
+      "#23=IFCAXIS2PLACEMENTLINEAR(#21,$,$);"
+      "#25=IFCCARTESIANPOINTLIST2D(((0.,0.),(2000.,0.),(-2000.,0.)),"
+      "('crown','edge-b','edge-a'));"
+      "#26=IFCINDEXEDPOLYCURVE(#25,(IFCLINEINDEX((3,1,2))),.F.);"
+      "#30=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#26);"
+      "#31=IFCCARTESIANPOINT((500.,750.));"
+      "#32=IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM($,$,#31,1.5,0.5);"
+      "#33=IFCDERIVEDPROFILEDEF(.CURVE.,$,#30,#32,$);"
+      "#34=IFCMIRROREDPROFILEDEF(.CURVE.,$,#33,*,$);"
+      "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#34,#34));"
+      "#45=IFCCARTESIANPOINT((0.,0.)); #46=IFCCARTESIANPOINT((1.,0.));"
+      "#47=IFCPOLYLINE((#45,#46)); #48=IFCPCURVE(#40,#47);";
+  const auto guide = [&](std::string_view tag, double y) {
+    return step.guide(tag, "#4",
+                      {{0, y, 750}, {4000, y, 2750}, {10000, y, 750}});
+  };
+  const auto a = guide("edge-a", 2500), crown = guide("crown", -500),
+             b = guide("edge-b", -3500);
+  const auto axis =
+      step.add("IFCGEOMETRICCURVESET((" + a + "," + crown + "," + b + ",#48))");
+  step.product("mirrored-indexed-tags", axis);
+  const auto model = container::geometry::ifc::LoadFromStep(
+      "ISO-10303-21; DATA; #1=IFCSIUNIT(*,.LENGTHUNIT.,.MILLI.,.METRE.);" +
+      step.definitions + "ENDSEC; END-ISO-10303-21;");
+  const auto body = sectionedProductMesh(model, "mirrored-indexed-tags");
+  const double railLength = std::sqrt(20.) + std::sqrt(40.);
+  EXPECT_NEAR(checkSectionedMesh(body, {0, 0, -1}), 6 * railLength, 1e-4);
+  EXPECT_NEAR(maximumBodyHeight(body), 2.75, 1e-6);
+  for (double y : {2.5, -.5, -3.5}) {
+    EXPECT_TRUE(std::ranges::any_of(body.indices, [&](uint32_t index) {
+      return glm::length(glm::dvec3(body.vertices.at(index).position) -
+                         glm::dvec3(4, y, 2.75)) < 1e-5;
+    }));
+  }
+  // V=0 follows the first traversed point, now on the reflected side.
+  size_t firstRails = 0;
+  for (const auto &element : model.elements) {
+    const auto points = worldCurveEndpoints(model, element);
+    if (points.empty() ||
+        glm::length(points.front() - glm::dvec3(0, .75, -2.5)) > 1e-6 ||
+        glm::length(points.back() - glm::dvec3(10, .75, -2.5)) > 1e-6)
+      continue;
+    ++firstRails;
+    ASSERT_EQ(points.size() % 2, 0u);
+    EXPECT_NEAR(length(points), railLength, 1e-5);
+  }
+  EXPECT_EQ(firstRails, 2u) << "Expected the reflected guide and V=0 pcurve";
+}
+
+TEST(IfcCurveFamilies, IndexedSectionTagListRejectsInvalidOrMixedRows) {
+  for (const bool wrongLength : {false, true}) {
+    SCOPED_TRACE(wrongLength);
+    GuideSectionFixture step;
+    step.definitions =
+        sectionedStraightBase + std::string("#25=IFCCARTESIANPOINTLIST2D(") +
+        (wrongLength ? "((-2.,0.),(0.,0.),(2.,0.),(99.,99.)),"
+                     : "((-2.,0.),(0.,0.),(2.,0.)),") +
+        "('left','crown','right'));"
+        "#26=IFCINDEXEDPOLYCURVE(#25,(IFCLINEINDEX((1,2,3))),.F.);"
+        "#27=IFCCARTESIANPOINTLIST2D(((-2.,0.),(0.,0.),(2.,0.)),$);"
+        "#28=IFCINDEXEDPOLYCURVE(#27,$,.F.);"
+        "#30=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#26);"
+        "#31=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#28);"
+        "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30," +
+        (wrongLength ? "#30" : "#31") +
+        "));"
+        "#41=IFCSECTIONEDSURFACE(#4,(#22,#23),(#31,#31));";
+    step.product("invalid-indexed-tags");
+    step.product("untagged-fallback", {}, "#41");
+    const auto model = step.load();
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+    EXPECT_TRUE(
+        sectionedProductMesh(model, "invalid-indexed-tags").indices.empty());
+    EXPECT_FALSE(
+        sectionedProductMesh(model, "untagged-fallback").indices.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    const auto &diagnostic = model.importReport.diagnostics.front();
+    EXPECT_EQ(diagnostic.entityId, 40u);
+    EXPECT_EQ(diagnostic.productGuid, "invalid-indexed-tags");
+    EXPECT_TRUE(diagnostic.reason.find("tag") != std::string::npos ||
+                diagnostic.reason.find("TagList") != std::string::npos)
+        << diagnostic.reason;
+  }
+}
+
+TEST(IfcCurveFamilies, IndexedSectionTagListGuidesPreserveAnalyticArc) {
+  const double root2 = std::sqrt(2.);
+  for (const double rise : {0., .5}) {
+    SCOPED_TRACE(rise);
+    GuideSectionFixture step;
+    step.definitions =
+        sectionedStraightBase +
+        "#25=IFCCARTESIANPOINTLIST2D(((2.,0.),"
+        "(1.4142135623730951,1.4142135623730951),(0.,2.)),"
+        "('start','on-arc','end'));"
+        "#26=IFCINDEXEDPOLYCURVE(#25,(IFCARCINDEX((1,2,3))),.F.);"
+        "#30=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#26);"
+        "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#30));"
+        "#45=IFCCARTESIANPOINT((0.4,0.)); #46=IFCCARTESIANPOINT((0.4,1.));"
+        "#47=IFCPOLYLINE((#45,#46)); #48=IFCPCURVE(#40,#47);"
+        "#49=IFCCARTESIANPOINT((0.4,0.25)); #50=IFCCARTESIANPOINT((0.4,0.75));"
+        "#51=IFCPOLYLINE((#49,#50)); #52=IFCPCURVE(#40,#51);";
+    const auto guide = step.guide(
+        "on-arc", "#4",
+        {{0, root2, root2}, {4, root2, root2 + rise}, {10, root2, root2}});
+    const auto axis = step.add("IFCGEOMETRICCURVESET((" + guide + ",#48,#52))");
+    step.product("guided-indexed-arc", axis);
+    const auto model = step.load();
+    const auto body = sectionedProductMesh(model, "guided-indexed-arc");
+    const double area = checkSectionedMesh(body, {0, 0, -1});
+    if (rise == 0.) {
+      EXPECT_NEAR(area, 10 * pi, .02);
+      for (uint32_t index : body.indices) {
+        const auto p = glm::dvec3(body.vertices.at(index).position);
+        EXPECT_NEAR(std::hypot(p.y, p.z), 2., 1e-6);
+      }
+    }
+    EXPECT_TRUE(std::ranges::any_of(body.indices, [&](uint32_t index) {
+      const auto p = glm::dvec3(body.vertices.at(index).position);
+      return glm::length(p - glm::dvec3(4, root2, root2 + rise)) < 1e-6;
+    }));
+
+    const auto point = [&](double v) {
+      return glm::dvec3(4, 2 * std::cos(v * pi / 2),
+                        2 * std::sin(v * pi / 2) + .5 * rise);
+    };
+    unsigned fullArc = 0, interiorArc = 0;
+    for (const auto &range : model.nativeCurveRanges) {
+      std::vector<glm::dvec3> points;
+      for (size_t j = 0; j < range.indexCount; ++j)
+        points.emplace_back(
+            model.vertices.at(model.indices.at(range.firstIndex + j)).position);
+      if (points.empty())
+        continue;
+      if (glm::length(points.front() - glm::dvec3(4, 2, 0)) < 1e-6 &&
+          glm::length(points.back() - glm::dvec3(4, 0, 2)) < 1e-6) {
+        ++fullArc;
+        if (rise == 0.) {
+          ASSERT_EQ(points.size() % 2, 0u);
+          EXPECT_NEAR(length(points), pi, .002);
+        }
+      }
+      if (glm::length(points.front() - point(.25)) < 1e-6 &&
+          glm::length(points.back() - point(.75)) < 1e-6)
+        ++interiorArc;
+    }
+    EXPECT_EQ(fullArc, 1u);
+    EXPECT_EQ(interiorArc, 1u) << "The guide must add displacement to the arc";
+  }
+}
+
 TEST(IfcCurveFamilies, SectionedGuidesKeepIndependentBasisAndIntermediateRow) {
   for (const bool independent : {false, true}) {
     SCOPED_TRACE(independent);
