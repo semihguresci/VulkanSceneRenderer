@@ -6,9 +6,15 @@
 
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <span>
 
 namespace container::scene {
+
+struct TextureResourceImageBytes {
+  uint32_t row{};
+  std::span<const unsigned char> bytes;
+};
 
 struct TextureResourceSourceTables {
   std::span<const tinygltf::Image> images;
@@ -23,6 +29,9 @@ struct TextureResourceSourceTables {
   // Empty means all active. Otherwise each mask covers its exact source table
   // and contains only 0 (retired) or 1 (active); records keep stable row IDs.
   std::span<const uint8_t> imageActive,textureActive,samplerActive;
+  // Sorted by distinct image row. A prepared edit can overlay just the inline
+  // image bytes while borrowing all other source records and backing buffers.
+  std::span<const TextureResourceImageBytes> imageByteOverrides;
 };
 struct TextureResourceLifecycleView {
   TextureResourceSourceTables archive,evaluated;
@@ -147,6 +156,10 @@ class TextureResourceRetirementCommand {
   [[nodiscard]] uint64_t ownedBytes() const noexcept;
   [[nodiscard]] TextureResourceReferenceOwnerPtr references() const noexcept;
   [[nodiscard]] std::span<const TextureResourceSelection> selections() const noexcept;
+  // The original selected inline bytes, borrowed for as long as this receipt
+  // is retained. An embedded image may have an empty inline payload.
+  [[nodiscard]] std::optional<std::span<const unsigned char>> sourceImageBytes(
+      TextureResourceSelection) const noexcept;
  private:
   struct State;
   std::shared_ptr<State> state_;
@@ -205,8 +218,9 @@ class PreparedTextureResourceLifecycle {
 [[nodiscard]] PreparedTextureResourceLifecycle PrepareTextureResourceLifecycleReplay(
     const TextureResourceLifecycleGenerationPtr& before,const TextureResourceLifecycleView&,
     const TextureResourceLifecycleCommand&,bool forward,const TextureResourceLifecycleLimits& limits={});
-// NEXT tables retain every source record/address. Only selected source phases
-// and their own cleared/restored roles/correspondence may change. Selection is
+// NEXT tables retain every source record/address. A selected image's inline
+// payload may be cleared on retirement and restored from its receipt. Other
+// changes are limited to selected phases, roles and correspondence. Selection is
 // explicit A/E Image/Texture/Sampler or RuntimeTexture; no implicit phase
 // coupling. Selected runtime rows may clear only their exact source role cells,
 // keeping those source owners/other roles/correspondence active and unchanged.

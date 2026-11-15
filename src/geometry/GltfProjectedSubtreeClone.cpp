@@ -521,17 +521,14 @@ uint64_t animationCost(const tinygltf::Model& model, const GltfMergeLimits& limi
   }
   return bytes;
 }
-void resident(const tinygltf::Model& model) {
+void resident(const tinygltf::Model& model,GltfSourceResourcePhases phases) {
   for (const auto& buffer : model.buffers)
     if (buffer.data.empty() && !buffer.uri.empty()) fail("source buffer is not resident");
-  for (const auto& image : model.images) {
+  for (size_t row = 0; row < model.images.size(); ++row) {
+    const auto& image = model.images[row];
+    if (!phases.imageActive(row)) continue;
     if (!image.image.empty()) continue;
-    index(image.bufferView, model.bufferViews.size(), "source image is not resident");
-    const auto& view = model.bufferViews[size_t(image.bufferView)];
-    index(view.buffer, model.buffers.size(), "image buffer is invalid");
-    const auto size = model.buffers[size_t(view.buffer)].data.size();
-    if (!view.byteLength || view.byteOffset > size || view.byteLength > size - view.byteOffset)
-      fail("image buffer range is not resident");
+    if (!GltfImagePayloadIsResident(model,image)) fail("source image is not resident");
   }
 }
 struct InputCounts { uint64_t objects{}, references{}; };
@@ -754,7 +751,8 @@ void GltfProjectedCloneOwnershipProof::validate(const tinygltf::Model& current,
 
 GltfProjectedSubtreeClonePlan PlanGltfProjectedSubtreeClone(const tinygltf::Model& live,
     const tinygltf::Model& archive,const GltfSubtreeCloneProjection& projection,
-    const GltfSubtreeCloneRestrictions& restrictions,const GltfMergeLimits& limits) {
+    const GltfSubtreeCloneRestrictions& restrictions,const GltfMergeLimits& limits,
+    GltfSessionResourcePhases phases) {
   if(!limits.maxTableEntries || !limits.maxMetadataBytes || !limits.maxMetadataDepth)
     fail("zero preparation budget");
   counts(live,limits);const auto inputCounts=counts(archive,limits);
@@ -766,9 +764,25 @@ GltfProjectedSubtreeClonePlan PlanGltfProjectedSubtreeClone(const tinygltf::Mode
       add(multiply(archive.skins.size(),8),multiply(projection.nodes.size(),64)));
   if(add(add(liveMetadata,multiply(archiveMetadata,3)),workspace)>limits.maxMetadataBytes)
     fail("projected metadata/workspace budget exceeded before allocation");
-  const auto peakResident=add(residentBytes(live),multiply(residentBytes(archive),3));
+  validatePrefix(live,archive,limits);
+  ValidateGltfSourceResourcePhases(archive,phases.archive);
+  ValidateGltfSourceResourcePhases(live,phases.evaluated);
+  resident(archive,phases.archive);
+  const bool retainsResourcePhases = !phases.archive.images.empty() ||
+      !phases.evaluated.images.empty() || !phases.archive.textures.empty() ||
+      !phases.evaluated.textures.empty();
+  if (retainsResourcePhases) resident(live,phases.evaluated);
+  uint64_t imageOverlayBytes = 0;
+  for (size_t row = 0; row < live.images.size(); ++row) {
+    if (phases.archive.imageActive(row) && phases.evaluated.imageActive(row)) continue;
+    const auto& image = live.images[row];
+    if (phases.evaluated.imageActive(row) && !GltfImagePayloadIsResident(live,image))
+      fail("active evaluated image payload is not resident");
+    imageOverlayBytes = add(imageOverlayBytes,image.image.size());
+  }
+  const auto peakResident=add(add(residentBytes(live),multiply(residentBytes(archive),3)),
+      multiply(imageOverlayBytes,2));
   if(peakResident>limits.maxResidentBytes) fail("inputs and both projected outputs exceed resident budget");
-  validatePrefix(live,archive,limits);resident(archive);
   const auto catalog=scene::BuildGltfSceneCatalog(archive,{.maxScenes=limits.maxScenes,.maxRootReferences=limits.maxRootReferences});
   if(projection.destinationScene>=catalog.entries.size()) fail("projection destination scene is invalid");
   std::vector<bool> affected(catalog.entries.size()),restricted(archive.nodes.size());
@@ -902,6 +916,15 @@ GltfProjectedSubtreeClonePlan PlanGltfProjectedSubtreeClone(const tinygltf::Mode
   const auto assemble=[&](bool evaluated) {
     auto model=archive;
     if(evaluated) {
+      if (retainsResourcePhases) {
+        model.images.resize(live.images.size());
+        model.textures.resize(live.textures.size());
+        model.samplers.resize(live.samplers.size());
+        for (size_t row = 0; row < live.images.size(); ++row) {
+          if (!phases.archive.imageActive(row) || !phases.evaluated.imageActive(row))
+            model.images[row] = live.images[row];
+        }
+      }
       std::copy(live.nodes.begin(),live.nodes.end(),model.nodes.begin());
       std::copy(live.materials.begin(),live.materials.end(),model.materials.begin());
       std::copy(live.lights.begin(),live.lights.end(),model.lights.begin());

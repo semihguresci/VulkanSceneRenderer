@@ -78,6 +78,7 @@ private:
 [[nodiscard]] GltfProjectedSubtreeClonePlan PlanGltfProjectedSubtreeClone(
     const tinygltf::Model& evaluatedSource, const tinygltf::Model& authoredArchive,
     const GltfSubtreeCloneProjection& projection,
-    const GltfSubtreeCloneRestrictions& restrictions = {}, const GltfMergeLimits& limits = {});
+    const GltfSubtreeCloneRestrictions& restrictions = {},
+    const GltfMergeLimits& limits = {}, GltfSessionResourcePhases phases = {});
 
 } // namespace container::geometry::gltf

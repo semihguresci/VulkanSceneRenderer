@@ -257,6 +257,52 @@ TEST_F(SourceResourceRetirementGpu,SelectedTextureUndoRedoPreservesGpuImagesAndU
   ASSERT_TRUE(publish(restoreTexture));EXPECT_TRUE(retained->resourceDependenciesActive());EXPECT_TRUE(Access::dependenciesValid(*manager));
 }
 
+TEST_F(SourceResourceRetirementGpu,RetiredSourceImagesReleaseRowStorageAndUndoRestoresExactPayloads) {
+  const auto reference=add("Selected image bytes",167);
+  const auto other=add("Unrelated image bytes",51);
+  const auto archiveRow=uint32_t(manager->authoredMaterialResources().textures[reference.archiveTexture()].source);
+  const auto evaluatedRow=uint32_t(manager->animationSource().textures[reference.evaluatedTexture().value()].source);
+  const auto otherRow=uint32_t(manager->authoredMaterialResources().textures[other.archiveTexture()].source);
+  const auto archive=[&]() -> const tinygltf::Image& {return manager->authoredMaterialResources().images[archiveRow];};
+  const auto evaluated=[&]() -> const tinygltf::Image& {return manager->animationSource().images[evaluatedRow];};
+  const auto otherBytes=manager->authoredMaterialResources().images[otherRow].image;
+  const auto archiveBefore=archive();const auto evaluatedBefore=evaluated();
+  ASSERT_FALSE(archiveBefore.image.empty());ASSERT_FALSE(evaluatedBefore.image.empty());
+  ASSERT_NE(archiveBefore.image,otherBytes);
+  const std::array images{TextureResourceSelection{ResourceDomainKind::Archive,ResourceKind::Image,archiveRow},
+      TextureResourceSelection{ResourceDomainKind::Evaluated,ResourceKind::Image,evaluatedRow}};
+  const auto first=manager->resourceLifecycleGeneration()->resource(images[0]);
+  const auto second=manager->resourceLifecycleGeneration()->resource(images[1]);
+  auto textureRetire=manager->prepareSourceResourceRetirement(textures(reference));
+  ASSERT_TRUE(publish(textureRetire));textureRetire={};
+
+  const auto checkRows=[&](bool retired) {
+    const auto generation=manager->resourceLifecycleGeneration();
+    EXPECT_EQ(generation->active(images[0]),!retired);EXPECT_EQ(generation->active(images[1]),!retired);
+    EXPECT_EQ(generation->resource(images[0]),first);EXPECT_EQ(generation->resource(images[1]),second);
+    EXPECT_EQ(manager->authoredMaterialResources().images[otherRow].image,otherBytes);
+    if(retired) {
+      EXPECT_TRUE(archive().image.empty());EXPECT_EQ(archive().image.capacity(),0u);
+      EXPECT_TRUE(evaluated().image.empty());EXPECT_EQ(evaluated().image.capacity(),0u);
+    } else {
+      EXPECT_EQ(archive().image,archiveBefore.image);EXPECT_EQ(evaluated().image,evaluatedBefore.image);
+      EXPECT_EQ(archive(),archiveBefore);EXPECT_EQ(evaluated(),evaluatedBefore);
+    }
+  };
+  auto retire=manager->prepareSourceResourceRetirement(images);const auto command=retire.command();
+  {SCOPED_TRACE("before retire publication");checkRows(false);}
+  ASSERT_TRUE(publish(retire));retire={};
+  {SCOPED_TRACE("retired");checkRows(true);}
+  auto undo=manager->prepareSourceResourceRetirement(command,ResourceLifecyclePhase::Active);
+  {SCOPED_TRACE("before undo publication");checkRows(true);}
+  ASSERT_TRUE(publish(undo));undo={};
+  {SCOPED_TRACE("restored");checkRows(false);}
+  auto redo=manager->prepareSourceResourceRetirement(command,ResourceLifecyclePhase::Retired);
+  ASSERT_TRUE(publish(redo));
+  {SCOPED_TRACE("retired again");checkRows(true);}
+  EXPECT_TRUE(Access::dependenciesValid(*manager));
+}
+
 TEST_F(SourceResourceRetirementGpu,ActiveSourceAndMaterialEdgesCannotBeClearedToManufactureUnusedResources) {
   const auto reference=add("Referenced source");const auto selected=textures(reference);const auto source=manager->authoredMaterialResources().textures[reference.archiveTexture()];
   const std::array image{TextureResourceSelection{ResourceDomainKind::Archive,ResourceKind::Image,uint32_t(source.source)}};
@@ -367,16 +413,53 @@ TEST_F(SourceResourceRetirementGpu,ImmediateProducerAndMergeClonePreserveSourceP
   for(const auto root:roots) ASSERT_TRUE(graph.setParent(root,editor));
   graph.updateWorldTransforms();
   const auto original=add("Retired prefix");const auto selected=textures(original);
+  const auto archiveRow=uint32_t(manager->authoredMaterialResources().textures[original.archiveTexture()].source);
+  const auto evaluatedRow=uint32_t(manager->animationSource().textures[original.evaluatedTexture().value()].source);
+  const auto archiveBytes=manager->authoredMaterialResources().images[archiveRow].image;
+  const auto evaluatedBytes=manager->animationSource().images[evaluatedRow].image;
+  ASSERT_FALSE(archiveBytes.empty());
+  ASSERT_FALSE(evaluatedBytes.empty());
+  const std::array images{TextureResourceSelection{ResourceDomainKind::Archive,ResourceKind::Image,archiveRow},
+      TextureResourceSelection{ResourceDomainKind::Evaluated,ResourceKind::Image,evaluatedRow}};
+  const auto generation=manager->resourceLifecycleGeneration();
+  const std::array imageHandles{generation->resource(images[0]),generation->resource(images[1])};
   const auto firstHandle=manager->resourceLifecycleGeneration()->resource(selected[0]);
   auto retire=manager->prepareSourceResourceRetirement(selected);const auto command=retire.command();
   ASSERT_TRUE(publish(retire));retire={};
+  auto imageRetirement=manager->prepareSourceResourceRetirement(images);
+  const auto imageCommand=imageRetirement.command();
+  ASSERT_TRUE(publish(imageRetirement));imageRetirement={};
   const auto current=manager->loadMaterialTextureSourceFromBytes("Immediate after retirement",png(17),true);
   manager->uploadMaterialResources();
+  const auto originalImage=Access::texture(*manager,original.runtimeResource());
+  const auto currentImage=Access::texture(*manager,current.runtimeResource());
+  const auto checkRetiredImages=[&](const SceneManager& target,bool sharedAuthority) {
+    const auto archive=target.authoredMaterialResources().images;
+    const auto& evaluated=target.animationSource().images;
+    ASSERT_LT(archiveRow,archive.size());
+    ASSERT_LT(evaluatedRow,evaluated.size());
+    EXPECT_TRUE(archive[archiveRow].image.empty());
+    EXPECT_TRUE(evaluated[evaluatedRow].image.empty());
+
+    const auto lifecycle=target.resourceLifecycleGeneration();
+    ASSERT_TRUE(lifecycle);
+    for(size_t i=0;i<images.size();++i) {
+      const auto key=images[i];
+      ASSERT_LT(key.row,lifecycle->rowCount(key.domain,key.kind));
+      EXPECT_FALSE(lifecycle->active(key));
+      const auto handle=lifecycle->resource(key);
+      EXPECT_TRUE(handle);
+      EXPECT_EQ(handle==imageHandles[i],sharedAuthority);
+    }
+    EXPECT_TRUE(container::material::TextureImageOwnershipContains(target.textureImageOwnership(),originalImage,*allocation));
+    EXPECT_TRUE(container::material::TextureImageOwnershipContains(target.textureImageOwnership(),currentImage,*allocation));
+  };
   EXPECT_NE(current.archiveTexture(),original.archiveTexture());
   EXPECT_EQ(manager->authoredMaterialResources().textureActive.size(),2u);
   EXPECT_FALSE(manager->resourceLifecycleGeneration()->active(selected[0]));
   EXPECT_TRUE(manager->resourceLifecycleGeneration()->active({ResourceDomainKind::Archive,ResourceKind::Texture,current.archiveTexture()}));
   EXPECT_TRUE(Access::dependenciesValid(*manager));
+  {SCOPED_TRACE("immediate import");checkRetiredImages(*manager,true);}
   uint32_t root=SceneGraph::kInvalidNode;
   for(uint32_t row=0;row<graph.nodeCount();++row) if(graph.getNode(row)->sourceNodeIndex==0) {root=row;break;}
   ASSERT_NE(root,SceneGraph::kInvalidNode);
@@ -385,8 +468,10 @@ TEST_F(SourceResourceRetirementGpu,ImmediateProducerAndMergeClonePreserveSourceP
   manager->exchangeMergeGeneration(clone);
   EXPECT_FALSE(manager->resourceLifecycleGeneration()->active(selected[0]));
   EXPECT_EQ(manager->resourceLifecycleGeneration()->resource(selected[0]),firstHandle);
+  {SCOPED_TRACE("clone");checkRetiredImages(*manager,true);}
   clone.prepareResourceDependencies(*manager);manager->exchangeMergeGeneration(clone);
   EXPECT_FALSE(manager->resourceLifecycleGeneration()->active(selected[0]));
+  {SCOPED_TRACE("clone undo");checkRetiredImages(*manager,true);}
   tinygltf::TinyGLTF writer;auto source=triangle();const auto path=temp/"incoming.glb";
   ASSERT_TRUE(writer.WriteGltfSceneToFile(&source,path.string(),true,true,true,true));
   auto incoming=LoadModelWithSource(path.string());
@@ -394,9 +479,18 @@ TEST_F(SourceResourceRetirementGpu,ImmediateProducerAndMergeClonePreserveSourceP
   ASSERT_TRUE(merge.readyForExchange(*manager,graph));manager->exchangeMergeGeneration(merge);
   EXPECT_FALSE(manager->resourceLifecycleGeneration()->active(selected[0]));
   EXPECT_NE(manager->resourceLifecycleGeneration()->resource(selected[0]),firstHandle);
+  {SCOPED_TRACE("merge");checkRetiredImages(*manager,false);}
   EXPECT_THROW((void)manager->prepareSourceResourceRetirement(command,ResourceLifecyclePhase::Active),std::invalid_argument);
+  EXPECT_THROW((void)manager->prepareSourceResourceRetirement(imageCommand,ResourceLifecyclePhase::Active),std::invalid_argument);
   merge.prepareResourceDependencies(*manager);manager->exchangeMergeGeneration(merge);
   EXPECT_EQ(manager->resourceLifecycleGeneration()->resource(selected[0]),firstHandle);
+  {SCOPED_TRACE("merge undo");checkRetiredImages(*manager,true);}
+  auto restoreImages=manager->prepareSourceResourceRetirement(imageCommand,ResourceLifecyclePhase::Active);
+  ASSERT_TRUE(publish(restoreImages));
+  EXPECT_EQ(manager->authoredMaterialResources().images[archiveRow].image,archiveBytes);
+  EXPECT_EQ(manager->animationSource().images[evaluatedRow].image,evaluatedBytes);
+  EXPECT_TRUE(manager->resourceLifecycleGeneration()->active(images[0]));
+  EXPECT_TRUE(manager->resourceLifecycleGeneration()->active(images[1]));
   auto restore=manager->prepareSourceResourceRetirement(command,ResourceLifecyclePhase::Active);
   ASSERT_TRUE(publish(restore));EXPECT_TRUE(Access::dependenciesValid(*manager));
 }
@@ -405,12 +499,12 @@ TEST_F(SourceResourceRetirementGpu,TrustedUnusedSourceAppendExtendsExplicitPhase
   const auto original=add("Retired source image");const auto selected=textures(original);
   const auto image=uint32_t(manager->authoredMaterialResources().textures[original.archiveTexture()].source);
   const auto evaluated=uint32_t(manager->animationSource().textures[original.evaluatedTexture().value()].source);
+  auto added=manager->animationSource().images[evaluated];added.name="Independent evaluated append";
   auto textureRetire=manager->prepareSourceResourceRetirement(selected);ASSERT_TRUE(publish(textureRetire));textureRetire={};
   const std::array images{TextureResourceSelection{ResourceDomainKind::Archive,ResourceKind::Image,image},
       TextureResourceSelection{ResourceDomainKind::Evaluated,ResourceKind::Image,evaluated}};
   auto imageRetire=manager->prepareSourceResourceRetirement(images);const auto command=imageRetire.command();
   ASSERT_TRUE(publish(imageRetire));imageRetire={};
-  auto added=manager->animationSource().images[evaluated];added.name="Independent evaluated append";
   const auto row=uint32_t(manager->animationSource().images.size());manager->animationSource().images.push_back(std::move(added));
   // The public resource preparation must normalize before capturing its own
   // before phases; a separate retention/refresh call must not hide that order.

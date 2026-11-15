@@ -844,6 +844,243 @@ TEST(TextureResourceLifecycle,
   EXPECT_EQ(f.generation->resource(evaluatedShared), evaluatedHandle);
 }
 
+TEST(TextureResourceLifecycle, RetiredImageCompactionPreservesExactReplayAndStableRows) {
+  Fixture f;
+  constexpr size_t inlineSize = 256 * 1024;
+  constexpr size_t sliceSize = 192 * 1024;
+  constexpr size_t sliceOffset = 5;
+  const auto appendOrphanImages = [&](tinygltf::Model& model,
+                                      unsigned char encoded, unsigned char embedded) {
+    auto& inlineImage = model.images.emplace_back();
+    inlineImage.name = "Orphan encoded image";
+    inlineImage.uri = "orphan.png";
+    inlineImage.mimeType = "image/png";
+    inlineImage.extras = tinygltf::Value(tinygltf::Value::Object{{"test", tinygltf::Value(7)}});
+    inlineImage.image.assign(inlineSize, encoded);
+
+    auto& buffer = model.buffers.emplace_back();
+    buffer.data.assign(sliceOffset + sliceSize + 3, embedded);
+    auto& bufferView = model.bufferViews.emplace_back();
+    bufferView.name = "Embedded image slice";
+    bufferView.buffer = 0;
+    bufferView.byteOffset = sliceOffset;
+    bufferView.byteLength = sliceSize;
+    auto& embeddedImage = model.images.emplace_back();
+    embeddedImage.name = "Orphan embedded image";
+    embeddedImage.mimeType = "image/png";
+    embeddedImage.bufferView = 0;
+  };
+  appendOrphanImages(f.archive, 31, 55);
+  appendOrphanImages(f.evaluated, 61, 87);
+  f.publish();
+
+  constexpr std::array selected{
+      TextureResourceSelection{Domain::Archive, Kind::Image, 1},
+      TextureResourceSelection{Domain::Archive, Kind::Image, 2},
+      TextureResourceSelection{Domain::Evaluated, Kind::Image, 1},
+      TextureResourceSelection{Domain::Evaluated, Kind::Image, 2}};
+  std::array<ResourceHandle, selected.size()> handles;
+  for (size_t i = 0; i < selected.size(); ++i)
+    handles[i] = f.generation->resource(selected[i]);
+  constexpr uint64_t compactBudget = 128 * 1024;
+  EXPECT_GT(f.generation->ownedBytes(), 2 * (inlineSize + sliceSize));
+
+  SourcePhases activePhases;
+  activePhases.sync(f);
+  auto retiredPhases = activePhases;
+  retiredPhases.aImages[1] = retiredPhases.aImages[2] = 0;
+  retiredPhases.eImages[1] = retiredPhases.eImages[2] = 0;
+  const std::array emptyBytes{TextureResourceImageBytes{1, {}},
+                              TextureResourceImageBytes{2, {}}};
+  const auto retirementView = [&] {
+    auto result = retiredPhases.apply(f.view());
+    result.archive.imageByteOverrides = emptyBytes;
+    result.evaluated.imageByteOverrides = emptyBytes;
+    return result;
+  };
+  std::vector<unsigned char> archiveBytes, evaluatedBytes;
+  const auto exchange = [&](PreparedTextureResourceLifecycle& prepared,
+                            const TextureResourceLifecycleView& view) {
+    bool published{};
+    size_t allocations{};
+    {
+      material_publication_test::AllocationGuard deny(true);
+      published = ExchangeTextureResourceLifecycle(prepared, f.generation, view);
+      if (published) {
+        // The source owner moves only the inline vectors at publication.
+        archiveBytes.swap(f.archive.images[1].image);
+        evaluatedBytes.swap(f.evaluated.images[1].image);
+      }
+      allocations = deny.allocations();
+    }
+    EXPECT_EQ(allocations, 0u);
+    return published;
+  };
+  const auto checkRetired = [&] {
+    EXPECT_LT(f.generation->ownedBytes(), compactBudget);
+    EXPECT_TRUE(f.generation->matches(retiredPhases.apply(f.view())));
+    EXPECT_EQ(f.archive.images[1].image.capacity(), 0u);
+    EXPECT_EQ(f.evaluated.images[1].image.capacity(), 0u);
+    EXPECT_EQ(f.archive.images[1].name, "Orphan encoded image");
+    EXPECT_EQ(f.archive.images[1].uri, "orphan.png");
+    EXPECT_TRUE(f.archive.images[1].extras.Has("test"));
+    EXPECT_EQ(f.evaluated.images[2].bufferView, 0);
+    EXPECT_EQ(f.archive.buffers[0].data.size(), sliceOffset + sliceSize + 3);
+    EXPECT_TRUE(std::ranges::all_of(f.archive.buffers[0].data,
+                                   [](unsigned char value) { return value == 55; }));
+    EXPECT_TRUE(std::ranges::all_of(f.evaluated.buffers[0].data,
+                                   [](unsigned char value) { return value == 87; }));
+    const auto inventory = f.generation->inventory();
+    for (size_t i = 0; i < selected.size(); ++i) {
+      EXPECT_EQ(f.generation->resource(selected[i]), handles[i]);
+      EXPECT_FALSE(f.generation->active(selected[i]));
+      const auto* row = find(inventory, handles[i]);
+      ASSERT_NE(row, nullptr);
+      EXPECT_TRUE(row->retired);
+    }
+  };
+
+  {
+    const auto originalBaseBytes = f.archive.images[0].image;
+    const std::array baseOverride{TextureResourceImageBytes{0, originalBaseBytes}};
+    auto ordinaryView = activePhases.apply(f.view());
+    auto ordinary = sealedPrepare(f.generation, ordinaryView);
+    ordinaryView.archive.imageByteOverrides = baseOverride;
+    EXPECT_THROW((void)PrepareTextureResourceLifecycle(f.generation, ordinaryView),
+                 std::invalid_argument);
+    EXPECT_FALSE(CanExchangeTextureResourceLifecycle(ordinary, f.generation, ordinaryView));
+    ordinary = {};
+
+    const std::array reversedOverrides{emptyBytes[1], emptyBytes[0]};
+    auto malformed = retirementView();
+    malformed.archive.imageByteOverrides = reversedOverrides;
+    EXPECT_THROW((void)PrepareTextureResourceRetirement(f.generation, malformed, selected),
+                 std::invalid_argument);
+    const std::array unrelatedOverrides{baseOverride[0], emptyBytes[0], emptyBytes[1]};
+    auto unrelatedView = retirementView();
+    unrelatedView.archive.imageByteOverrides = unrelatedOverrides;
+    EXPECT_THROW((void)PrepareTextureResourceRetirement(f.generation, unrelatedView, selected),
+                 std::invalid_argument);
+    const std::array nonemptyDelete{TextureResourceImageBytes{1, f.archive.images[1].image},
+                                    emptyBytes[1]};
+    auto nonemptyView = retirementView();
+    nonemptyView.archive.imageByteOverrides = nonemptyDelete;
+    EXPECT_THROW((void)PrepareTextureResourceRetirement(f.generation, nonemptyView, selected),
+                 std::invalid_argument);
+
+    auto retire = PrepareTextureResourceRetirement(f.generation, retirementView(), selected);
+    auto command = retire.retirementCommand();
+    retire.seal();
+    f.archive.images[0].image.back() ^= 1;
+    EXPECT_FALSE(CanExchangeTextureResourceLifecycle(retire, f.generation, unrelatedView));
+    f.archive.images[0].image.back() ^= 1;
+    f.archive.images[1].image.back() ^= 1;
+    EXPECT_FALSE(CanExchangeTextureResourceLifecycle(retire, f.generation, retirementView()));
+    f.archive.images[1].image.back() ^= 1;
+    f.evaluated.buffers[0].data[sliceOffset] ^= 1;
+    EXPECT_FALSE(CanExchangeTextureResourceLifecycle(retire, f.generation, retirementView()));
+    f.evaluated.buffers[0].data[sliceOffset] ^= 1;
+    ASSERT_TRUE(exchange(retire, retirementView()));
+    checkRetired();
+
+    const auto archiveOriginal = command.sourceImageBytes(selected[0]);
+    const auto archiveEmbedded = command.sourceImageBytes(selected[1]);
+    const auto evaluatedOriginal = command.sourceImageBytes(selected[2]);
+    const auto evaluatedEmbedded = command.sourceImageBytes(selected[3]);
+    ASSERT_TRUE(archiveOriginal && archiveEmbedded && evaluatedOriginal && evaluatedEmbedded);
+    EXPECT_TRUE(std::ranges::equal(*archiveOriginal, archiveBytes));
+    EXPECT_TRUE(std::ranges::equal(*evaluatedOriginal, evaluatedBytes));
+    EXPECT_TRUE(archiveEmbedded->empty());
+    EXPECT_TRUE(evaluatedEmbedded->empty());
+    const std::array archiveRestore{TextureResourceImageBytes{1, *archiveOriginal},
+                                    TextureResourceImageBytes{2, *archiveEmbedded}};
+    const std::array evaluatedRestore{TextureResourceImageBytes{1, *evaluatedOriginal},
+                                      TextureResourceImageBytes{2, *evaluatedEmbedded}};
+    auto restoredView = activePhases.apply(f.view());
+    restoredView.archive.imageByteOverrides = archiveRestore;
+    restoredView.evaluated.imageByteOverrides = evaluatedRestore;
+    auto undo = PrepareTextureResourceRetirementReplay(f.generation, restoredView, command,
+                                                        ResourceLifecyclePhase::Active);
+    undo.seal();
+    auto wrongBytes = archiveBytes;
+    wrongBytes.back() ^= 1;
+    const std::array wrongArchive{TextureResourceImageBytes{1, wrongBytes},
+                                  TextureResourceImageBytes{2, *archiveEmbedded}};
+    auto wrongView = restoredView;
+    wrongView.archive.imageByteOverrides = wrongArchive;
+    EXPECT_FALSE(CanExchangeTextureResourceLifecycle(undo, f.generation, wrongView));
+    f.archive.images[1].image.push_back(13);
+    EXPECT_FALSE(CanExchangeTextureResourceLifecycle(undo, f.generation, restoredView));
+    std::vector<unsigned char>{}.swap(f.archive.images[1].image);
+    f.archive.buffers[0].data[sliceOffset] ^= 1;
+    EXPECT_FALSE(CanExchangeTextureResourceLifecycle(undo, f.generation, restoredView));
+    f.archive.buffers[0].data[sliceOffset] ^= 1;
+    ASSERT_TRUE(exchange(undo, restoredView));
+    EXPECT_TRUE(f.generation->matches(activePhases.apply(f.view())));
+    EXPECT_GT(f.generation->ownedBytes(), 2 * (inlineSize + sliceSize));
+    EXPECT_TRUE(std::ranges::equal(*archiveOriginal, f.archive.images[1].image));
+    EXPECT_TRUE(std::ranges::equal(*evaluatedOriginal, f.evaluated.images[1].image));
+    for (size_t i = 0; i < selected.size(); ++i) {
+      EXPECT_EQ(f.generation->resource(selected[i]), handles[i]);
+      EXPECT_TRUE(f.generation->active(selected[i]));
+    }
+
+    auto redo = PrepareTextureResourceRetirementReplay(f.generation, retirementView(), command,
+                                                        ResourceLifecyclePhase::Retired);
+    redo.seal();
+    ASSERT_TRUE(exchange(redo, retirementView()));
+    checkRetired();
+  }
+  // Release the original endpoint, including the raw image allocations held
+  // by the source owner. Both append and fresh bootstrap see compact rows.
+  std::vector<unsigned char>{}.swap(archiveBytes);
+  std::vector<unsigned char>{}.swap(evaluatedBytes);
+  checkRetired();
+
+  auto appendedImage = f.evaluated.images.front();
+  appendedImage.name = "Independent append";
+  f.evaluated.images.push_back(appendedImage);
+  retiredPhases.eImages.push_back(1);
+  TextureResourceLifecycleLimits limits;
+  limits.maxOwnedBytes = compactBudget;
+  const auto phaseView = [&] { return retiredPhases.apply(f.view()); };
+  auto append = sealedPrepare(f.generation, phaseView(), limits);
+  const auto appendCommand = append.command();
+  ASSERT_TRUE(ExchangeTextureResourceLifecycle(append, f.generation, phaseView()));
+  checkRetired();
+  const TextureResourceSelection appended{Domain::Evaluated, Kind::Image, 3};
+  const auto appendedHandle = f.generation->resource(appended);
+  EXPECT_TRUE(f.generation->active(appended));
+
+  f.evaluated.images[0].name = "Updated prefix";
+  auto reconcile = sealedReconcile(f.generation, phaseView(), limits);
+  ASSERT_TRUE(ExchangeTextureResourceLifecycle(reconcile, f.generation, phaseView()));
+  f.evaluated.images.pop_back();
+  retiredPhases.eImages.pop_back();
+  auto undoAppend = sealedReplay(f.generation, phaseView(), appendCommand, false, limits);
+  ASSERT_TRUE(ExchangeTextureResourceLifecycle(undoAppend, f.generation, phaseView()));
+  checkRetired();
+  EXPECT_FALSE(f.generation->resource(appended));
+
+  f.evaluated.images.push_back(std::move(appendedImage));
+  retiredPhases.eImages.push_back(1);
+  auto redoAppend = sealedReplay(f.generation, phaseView(), appendCommand, true, limits);
+  ASSERT_TRUE(ExchangeTextureResourceLifecycle(redoAppend, f.generation, phaseView()));
+  checkRetired();
+  EXPECT_EQ(f.generation->resource(appended), appendedHandle);
+  EXPECT_TRUE(f.generation->active(appended));
+  EXPECT_EQ(f.evaluated.images[0].name, "Updated prefix");
+
+  TextureResourceLifecycleGenerationPtr bootstrapped;
+  auto bootstrap = sealedPrepare({}, phaseView(), limits);
+  ASSERT_TRUE(ExchangeTextureResourceLifecycle(bootstrap, bootstrapped, phaseView()));
+  EXPECT_LT(bootstrapped->ownedBytes(), compactBudget);
+  EXPECT_TRUE(bootstrapped->matches(phaseView()));
+  for (const auto selection : selected)
+    EXPECT_FALSE(bootstrapped->active(selection));
+  EXPECT_TRUE(bootstrapped->active(appended));
+}
+
 TEST(TextureResourceLifecycle, SelectedTextureRestoreRequiresItsDependenciesToBeRestoredByTheirOwnReceipts) {
   Fixture f;f.publish();SourcePhases phases;phases.sync(f);const std::array texture{TextureResourceSelection{Domain::Archive,Kind::Texture,0}};
   phases.aTextures[0]=0;std::optional<TextureResourceLifecycleView> view;view.emplace(phases.apply(f.view()));auto removeTexture=PrepareTextureResourceRetirement(f.generation,*view,texture);

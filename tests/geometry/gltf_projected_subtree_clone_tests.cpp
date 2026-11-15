@@ -155,6 +155,39 @@ void sameResources(const tinygltf::Model& result,const tinygltf::Model& source) 
   EXPECT_EQ(result.cameras,source.cameras);EXPECT_EQ(result.lights,source.lights);
 }
 
+TEST(GltfProjectedSubtreeClone, RetiredImagePayloadHolesKeepSharedResources) {
+  auto archive = fixture();
+  auto image = archive.images.front();
+  image.name = "Orphan";
+  archive.images.push_back(image);
+  auto texture = archive.textures.front();
+  texture.source = 1;
+  archive.textures.push_back(texture);
+  const auto live = archive;
+  archive.images[1].image.clear();
+  const std::array<uint8_t, 2> archiveMask{1, 0};
+  const GltfSessionResourcePhases phases{{archiveMask, archiveMask}, {}};
+  const auto request = projection({{1,-1,GltfCloneNodeRole::Visual,true,
+                                    "Clone",true,true,false}});
+  EXPECT_THROW((void)PlanGltfProjectedSubtreeClone(live, archive, request),
+               std::runtime_error);
+  const auto plan = PlanGltfProjectedSubtreeClone(live, archive, request, {}, {}, phases);
+  EXPECT_EQ(plan.clone.clonedNodes, 1u);
+  EXPECT_EQ(plan.clone.authoredSource.images, archive.images);
+  EXPECT_EQ(plan.clone.evaluatedSource.images, live.images);
+  EXPECT_EQ(plan.clone.evaluatedSource.textures, live.textures);
+
+  auto invalid = archive;
+  declare(invalid, "EXT_texture_webp");
+  invalid.textures[0].extensions["EXT_texture_webp"] =
+      Value(Object{{"source", Value(1)}});
+  auto invalidLive = live;
+  declare(invalidLive, "EXT_texture_webp");
+  invalidLive.textures[0] = invalid.textures[0];
+  EXPECT_THROW((void)PlanGltfProjectedSubtreeClone(invalidLive, invalid, request, {}, {}, phases),
+               std::runtime_error);
+}
+
 TEST(GltfProjectedSubtreeClone,PreservesOldTopologyAndAuthoredRestWhileCloningNodeTracksOnly) {
   auto authored=fixture();animation(authored);auto live=authored;
   ApplyAnimationPose(live,SampleAnimation(ParseAnimations(authored).clips[0],.5));

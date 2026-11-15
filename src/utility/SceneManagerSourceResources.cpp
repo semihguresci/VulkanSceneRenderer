@@ -68,6 +68,14 @@ struct SceneManager::PreparedSourceResourceRetirement::State {
   size_t requestCount{};
   struct CacheSwap {size_t index{};MaterialTextureSourceRequest expected,replacement;};
   std::vector<CacheSwap> cache;
+  struct ImagePayloadSwaps {
+    struct Swap {
+      uint32_t row{};
+      std::vector<unsigned char> replacement;
+    };
+    std::vector<Swap> entries;
+    std::vector<TextureResourceImageBytes> overrides;
+  } archiveImages, evaluatedImages;
   TextureResourceLifecycleGenerationPtr before;
   PreparedTextureResourceLifecycle mutation;
   std::optional<container::material::PreparedRuntimeTextureRetirement> runtimeMutation;
@@ -86,8 +94,10 @@ struct SceneManager::PreparedSourceResourceRetirement::State {
     auto result=owner->textureResourceLifecycleView();
     result.archive.colorResources=archiveRoles.color;result.archive.dataResources=archiveRoles.data;
     result.archive.imageActive=archive.images;result.archive.textureActive=archive.textures;result.archive.samplerActive=archive.samplers;
+    result.archive.imageByteOverrides=archiveImages.overrides;
     result.evaluated.colorResources=evaluatedRoles.color;result.evaluated.dataResources=evaluatedRoles.data;
     result.evaluated.imageActive=evaluated.images;result.evaluated.textureActive=evaluated.textures;result.evaluated.samplerActive=evaluated.samplers;
+    result.evaluated.imageByteOverrides=evaluatedImages.overrides;
     return {result.archive,result.evaluated,runtimeMutation?runtimeMutation->textures():owner->textureManager_,
         correspondence,result.archiveTextureIdentities};
   }
@@ -421,6 +431,35 @@ SceneManager::PreparedSourceResourceRetirement SceneManager::prepareSourceResour
     (*mask)[selection.row]=retiring?0:1;
   };
   for(const auto selection:selected) changePhase(selection);
+  using ImageSwap = PreparedSourceResourceRetirement::State::ImagePayloadSwaps::Swap;
+  for (const auto domain : {ResourceDomainKind::Archive,
+                            ResourceDomainKind::Evaluated}) {
+    auto& images = domain == ResourceDomainKind::Archive ? s.archiveImages
+                                                         : s.evaluatedImages;
+    const auto selectsImage = [domain](TextureResourceSelection selection) {
+      return selection.domain == domain && selection.kind == ResourceKind::Image;
+    };
+    const auto count = size_t(std::ranges::count_if(selected, selectsImage));
+    budget.add(count, sizeof(ImageSwap) + sizeof(TextureResourceImageBytes));
+    images.entries.reserve(count);
+    images.overrides.reserve(count);
+    for (const auto selection : selected) {
+      if (!selectsImage(selection)) continue;
+      auto& entry = images.entries.emplace_back();
+      entry.row = selection.row;
+      if (!retiring) {
+        const auto bytes = command.authority.sourceImageBytes(selection);
+        if (!bytes) sourceFailure("Source replay lost its selected image payload");
+        budget.add(bytes->size());
+        if (!bytes->empty())
+          entry.replacement.assign(bytes->begin(), bytes->end());
+      }
+    }
+    std::ranges::sort(images.entries, {}, &ImageSwap::row);
+    // The override spans borrow these stage-owned vectors through publication.
+    for (const auto& entry : images.entries)
+      images.overrides.push_back({entry.row, entry.replacement});
+  }
   if(!replay) for(const auto domain:{ResourceDomainKind::Archive,ResourceDomainKind::Evaluated}) {
     const auto& roles=domain==ResourceDomainKind::Archive?archiveTextureResources_:gltfTextureResources_;
     for(uint32_t row=0;row<roles.color.size();++row) {
@@ -581,6 +620,10 @@ bool SceneManager::canExchangeSourceResourceRetirement(const PreparedSourceResou
 void SceneManager::exchangeSourceResourceRetirement(PreparedSourceResourceRetirement& prepared,const AnimationPlayer* player) noexcept {
   if(!canExchangeSourceResourceRetirement(prepared,player)) return;auto& s=*prepared.state_;
   if(!ExchangeTextureResourceLifecycle(s.mutation,textureResourceLifecycle_,s.view())) return;
+  for (auto& entry : s.archiveImages.entries)
+    exportSource_.images[entry.row].image.swap(entry.replacement);
+  for (auto& entry : s.evaluatedImages.entries)
+    gltfModel_.images[entry.row].image.swap(entry.replacement);
   if(s.runtimeMutation) {
     const bool exchanged=container::material::ExchangeRuntimeTextureRetirement(*s.runtimeMutation,textureManager_);
     assert(exchanged);(void)exchanged;

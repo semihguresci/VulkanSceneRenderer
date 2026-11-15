@@ -326,14 +326,26 @@ bool authoringEmpty(const tinygltf::Model& m) {
 } // namespace
 
 GltfSessionMergePlan PlanGltfSessionSources(const tinygltf::Model& live, const tinygltf::Model& archive,
-    const tinygltf::Model& incoming, const GltfMergeOptions& options, const GltfMergeLimits& limits) {
+    const tinygltf::Model& incoming, const GltfMergeOptions& options,
+    const GltfMergeLimits& limits, GltfSessionResourcePhases phases) {
   const auto liveMetadata = metadataCost(live,limits);
   const auto archiveMetadata = metadataCost(archive,limits); // Bound recursive equality before comparing prefixes.
+  validatePrefix(live,archive,limits);
+  ValidateGltfSourceResourcePhases(archive,phases.archive);
+  ValidateGltfSourceResourcePhases(live,phases.evaluated);
+  uint64_t imageOverlayBytes = 0;
+  for (size_t row = 0; row < live.images.size(); ++row) {
+    if (phases.archive.imageActive(row) && phases.evaluated.imageActive(row)) continue;
+    const auto& image = live.images[row];
+    if (phases.evaluated.imageActive(row) && !GltfImagePayloadIsResident(live,image))
+      fail("active evaluated image payload is not resident");
+    imageOverlayBytes = add(imageOverlayBytes, image.image.size());
+  }
   const auto payload = add(residentBytes(archive),residentBytes(incoming));
-  const auto peak = add(residentBytes(live),multiply(payload,3));
+  const auto peak = add(add(residentBytes(live),multiply(payload,3)),
+      multiply(imageOverlayBytes,2));
   if (peak > limits.maxResidentBytes) fail("session inputs and both output payloads exceed budget");
   if (liveMetadata >= limits.maxMetadataBytes) fail("session metadata budget exhausted");
-  validatePrefix(live,archive,limits);
   GltfMergeLimits plannedLimits = limits;
   plannedLimits.maxMetadataBytes = (limits.maxMetadataBytes-liveMetadata)/2;
   if (options.parentName.size()>plannedLimits.maxMetadataBytes) fail("placement name exceeds metadata budget");
@@ -347,9 +359,9 @@ GltfSessionMergePlan PlanGltfSessionSources(const tinygltf::Model& live, const t
       // This temporary is gone before copying the evaluated output. Its payload
       // fits the same peak: archive <= archive+incoming.
       auto normalized = archive; normalized.asset.version = "2.0";
-      return PlanGltfMerge(normalized,incoming,selected,plannedLimits);
+      return PlanGltfMerge(normalized,incoming,selected,plannedLimits,{},phases.archive);
     }
-    return PlanGltfMerge(archive,incoming,selected,plannedLimits);
+    return PlanGltfMerge(archive,incoming,selected,plannedLimits,{},phases.archive);
   }();
   result.peakResidentBytes = peak;
   // Recount the complete result before the second model copy. Taking the larger
@@ -360,6 +372,10 @@ GltfSessionMergePlan PlanGltfSessionSources(const tinygltf::Model& live, const t
   result.metadataBytes = std::max(archiveMetadata,add(liveMetadata,multiply(outputMetadata,2)));
   if (result.metadataBytes > limits.maxMetadataBytes) fail("session output metadata exceeds budget");
   result.evaluatedSource = result.merge.model;
+  for (size_t row = 0; row < live.images.size(); ++row) {
+    if (!phases.archive.imageActive(row) || !phases.evaluated.imageActive(row))
+      result.evaluatedSource.images[row] = live.images[row];
+  }
   std::copy(live.nodes.begin(),live.nodes.end(),result.evaluatedSource.nodes.begin());
   std::copy(live.materials.begin(),live.materials.end(),result.evaluatedSource.materials.begin());
   const auto preserveXmp = [](auto& evaluated, const auto& authored, size_t count) {

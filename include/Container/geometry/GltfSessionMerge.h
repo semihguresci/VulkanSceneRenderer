@@ -29,6 +29,7 @@ struct GltfSessionMergePlan {
     const tinygltf::Model& evaluatedSource,
     const tinygltf::Model& authoredArchive,
     const tinygltf::Model& incoming,
-    const GltfMergeOptions& options = {}, const GltfMergeLimits& limits = {});
+    const GltfMergeOptions& options = {}, const GltfMergeLimits& limits = {},
+    GltfSessionResourcePhases phases = {});
 
 } // namespace container::geometry::gltf

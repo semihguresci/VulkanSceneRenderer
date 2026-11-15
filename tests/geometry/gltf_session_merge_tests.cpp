@@ -183,6 +183,53 @@ TEST(GltfSessionMerge, ImageEncodingAndUriNormalizationDoNotChangeBindingIdentit
   EXPECT_EQ(merged.evaluatedSource.textures[0].source,0);
 }
 
+TEST(GltfSessionMerge, RetiredImagePayloadHolesPreserveIndependentSourcePhases) {
+  auto archive = fixture();
+  texture(archive, 71);
+  texture(archive, 72);
+  texture(archive, 73);
+  auto live = archive;
+  archive.images[1].image.clear();
+  live.images[2].image.clear();
+  archive.images[3].image.clear();
+  live.images[3].image.clear();
+  const std::array<uint8_t, 4> archiveMask{1, 0, 1, 0};
+  const std::array<uint8_t, 4> evaluatedMask{1, 1, 0, 0};
+  const GltfSessionResourcePhases phases{{archiveMask, archiveMask},
+                                         {evaluatedMask, evaluatedMask}};
+  const auto incoming = fixture(22);
+  EXPECT_THROW((void)PlanGltfSessionSources(live, archive, incoming),
+               std::runtime_error);
+  const auto merged = PlanGltfSessionSources(live, archive, incoming, {}, {}, phases);
+  ASSERT_EQ(merged.merge.model.images.size(), 5u);
+  ASSERT_EQ(merged.evaluatedSource.images.size(), 5u);
+  for (size_t row = 0; row < archive.images.size(); ++row) {
+    EXPECT_EQ(merged.merge.model.images[row].image, archive.images[row].image);
+    EXPECT_EQ(merged.evaluatedSource.images[row].image, live.images[row].image);
+    EXPECT_EQ(merged.merge.model.textures[row].source, int(row));
+  }
+  EXPECT_EQ(merged.merge.imported.images, (std::vector<int32_t>{4}));
+  EXPECT_EQ(merged.evaluatedSource.images[4].image, incoming.images[0].image);
+
+  auto malformed = phases;
+  malformed.archive.images = std::span(archiveMask).first(3);
+  EXPECT_THROW((void)PlanGltfSessionSources(live, archive, incoming, {}, {}, malformed),
+               std::runtime_error);
+  const std::array<uint8_t, 4> nonBooleanMask{1, 2, 1, 0};
+  malformed = phases;
+  malformed.evaluated.textures = nonBooleanMask;
+  EXPECT_THROW((void)PlanGltfSessionSources(live, archive, incoming, {}, {}, malformed),
+               std::runtime_error);
+  malformed = phases;
+  malformed.archive.textures = {};
+  EXPECT_THROW((void)PlanGltfSessionSources(live, archive, incoming, {}, {}, malformed),
+               std::runtime_error);
+  auto incompleteIncoming = incoming;
+  incompleteIncoming.images[0].image.clear();
+  EXPECT_THROW((void)PlanGltfSessionSources(live, archive, incompleteIncoming, {}, {}, phases),
+               std::runtime_error);
+}
+
 TEST(GltfSessionMerge, LiveSelectedDefaultControlsOmittedDestinationButArchiveDefaultSurvives) {
   auto archive=fixture(); archive.scenes.push_back(archive.scenes[0]);
   auto live=archive; live.defaultScene=1;
