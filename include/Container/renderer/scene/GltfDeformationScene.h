@@ -8,6 +8,10 @@
 #include <memory>
 #include <span>
 
+namespace container::geometry::gltf {
+struct PreparedDeformationFrames;
+}
+
 namespace container::renderer {
 
 enum class GltfDeformationOrientation {
@@ -26,7 +30,7 @@ struct GltfDeformationBounds {
 
 struct GltfDeformationDrawRange {
   uint32_t graphNode{scene::SceneGraph::kInvalidNode};
-  // Historical name: this is the runtime bind-geometry slot, not a source ID.
+  // Historical name for the canonical runtime primitive slot from SceneGraph.
   uint32_t sourcePrimitive{scene::SceneGraph::kInvalidNode};
   uint32_t meshOwnerGraphNode{scene::SceneGraph::kInvalidNode};
   uint32_t firstIndex{0};
@@ -64,9 +68,15 @@ class GltfDeformationScene {
   // and procedural scenes are valid and need no dynamic/GPU instance streams.
   // Optional source deformation definition -> runtime geometry IDs are exact,
   // injective, and may leave procedural holes. Empty retains the source prefix.
+  // Render-only variants follow the canonical geometry prefix. When present,
+  // renderPrimitiveSources maps every physical slot to its canonical slot.
+  // renderPreparedFrames can supply reusable corner frames for variant slots.
   void configure(geometry::gltf::DeformationData data,
-                   const geometry::Model& sourceGeometry,
-                   std::span<const uint32_t> sourceDeformationToRuntime = {});
+      const geometry::Model& renderGeometry,
+      std::span<const uint32_t> sourceDeformationToRuntime = {},
+      std::span<const uint32_t> renderPrimitiveSources = {},
+      std::span<const std::shared_ptr<const geometry::gltf::PreparedDeformationFrames>> renderPreparedFrames = {},
+      uint64_t maxPoseBytes = UINT64_MAX);
 
   // Graph world matrices must already be current. meshOwnerGraphNodes is
   // indexed by runtime graph-node index and contains the owning runtime mesh
@@ -77,11 +87,14 @@ class GltfDeformationScene {
   // animation. Missing/ambiguous joint identities or deleted owners throw.
   // Hierarchy/identity edits reconcile bindings without resetting history when
   // the instance identities/order and source geometry remain compatible.
+  // renderPrimitivesByGraphNode selects physical slots by graph node. An empty
+  // table or kInvalidNode entry uses the node's canonical primitive.
   GltfDeformationSceneUpdate update(
       const scene::SceneGraph& graph,
       std::span<const uint32_t> meshOwnerGraphNodes,
       const tinygltf::Model* evaluatedSource = nullptr,
-      bool resetHistory = false);
+      bool resetHistory = false,
+      std::span<const uint32_t> renderPrimitivesByGraphNode = {});
 
   // Call only after successful queue submission. Repeated update() calls,
   // failed/abandoned frames and history resets never advance submitted pose.

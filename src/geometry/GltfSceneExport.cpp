@@ -1,6 +1,7 @@
 #include <Container/geometry/GltfSceneExport.h>
 #include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfMaterialExport.h>
+#include <Container/geometry/GltfMaterialTextureAuthoring.h>
 #include <Container/geometry/GltfAnimation.h>
 #include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfDeformation.h>
@@ -1556,6 +1557,9 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
                                                 snapshot.runtimePrimitiveToSourceIndices);
     } catch (const std::invalid_argument& error) { fail(error.what()); }
   }();
+  if (!snapshot.sourceAuthoredTangentUvMask.empty() &&
+      snapshot.sourceAuthoredTangentUvMask.size() != sourcePrimitives.size())
+    fail("normal UV provenance does not cover the source primitives");
   bool hasDeformation = !output.skins.empty();
   for (const auto* primitive : sourcePrimitives)
     hasDeformation |= !primitive->targets.empty() || primitive->attributes.contains("JOINTS_0");
@@ -1769,6 +1773,30 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
       mesh.name = current.name;
       mesh.primitives.push_back(primitive->second);
       mesh.primitives.front().material = static_cast<int>(current.materialIndex);
+      if (sourcePrimitive >= 0 && !snapshot.sourceAuthoredTangentUvMask.empty()) {
+        const auto binding = ReadGltfMaterialTextureBinding(
+            output.materials.at(current.materialIndex), GltfMaterialTextureSlot::Normal);
+        if (binding.index >= 0 && (binding.texCoord > 1 ||
+            !(snapshot.sourceAuthoredTangentUvMask[size_t(sourcePrimitive)] & (1u << binding.texCoord)))) {
+          auto& generated = mesh.primitives.front();
+          generated.attributes.erase("TANGENT");
+          int zeroPosition = -1;
+          for (auto& morph : generated.targets) {
+            if (!morph.erase("TANGENT") || !morph.empty()) continue;
+            // Retain tangent-only targets' slot IDs and animation weights.
+            if (zeroPosition < 0) {
+              const auto count = snapshot.geometry.meshes()[current.primitiveIndex].vertices().size();
+              if (count > SIZE_MAX / (3 * sizeof(float))) fail("empty morph target is too large");
+              zeroPosition = appendAccessor(output, Bytes(count * 3 * sizeof(float)),
+                  count, TINYGLTF_TYPE_VEC3, TINYGLTF_COMPONENT_TYPE_FLOAT,
+                  TINYGLTF_TARGET_ARRAY_BUFFER);
+              output.accessors[zeroPosition].minValues.assign(3,0.0);
+              output.accessors[zeroPosition].maxValues.assign(3,0.0);
+            }
+            morph.emplace("POSITION", zeroPosition);
+          }
+        }
+      }
       node.mesh = static_cast<int>(output.meshes.size());
       meshes.emplace(key, node.mesh);
       if (sourcePrimitive >= 0)

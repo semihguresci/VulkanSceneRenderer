@@ -89,6 +89,13 @@ Model RegenerateGltfBindTangents(
     const tinygltf::Model& source, const Model& originalBindGeometry,
     std::span<const uint32_t> normalTextureTexCoords);
 
+// A live normal-UV authoring edit requests a replacement indexed tangent
+// stream. Geometry consumers retain their original triangle/vertex addresses.
+[[nodiscard]] Mesh RegenerateGltfPrimitiveTangents(const Mesh&, uint32_t texCoord,
+                                                   bool requireConsistentCorners);
+[[nodiscard]] uint32_t GltfSourceNormalTexCoord(const tinygltf::Model&,
+                                                const tinygltf::Primitive&);
+
 }  // namespace gltf
 }  // namespace container::geometry
 

@@ -16,6 +16,8 @@
 #include <cmath>
 #include <cstring>
 #include <limits>
+#include <map>
+#include <numeric>
 #include <span>
 #include <stdexcept>
 #include <string>
@@ -323,6 +325,9 @@ struct SceneController::PreparedGeneration::State {
   std::unique_ptr<OwnedGenerationBuffers> initialBuffers;
   std::unordered_map<VkBuffer,uint64_t> initialUploadRevisions;
   std::unique_ptr<GltfDeformationScene> deformationScene_;
+  std::vector<NormalFrameBinding> normalFrameBindings_;
+  std::vector<uint32_t> normalFrameRenderPrimitives_;
+  uint64_t normalFrameGraphRevision_{UINT64_MAX},normalFrameMaterialRevision_{UINT64_MAX};
   std::vector<container::geometry::Vertex> gpuBindVertices_;
   std::vector<uint32_t> gpuBindIndices_;
   size_t generationSceneVertexCount_{},generationSceneIndexCount_{};
@@ -374,6 +379,12 @@ struct SceneController::PreparedMaterialRouting::State {
     return true;
   }
   std::unique_ptr<OwnedGenerationBuffers> buffers,initial;
+  std::unique_ptr<OwnedGenerationBuffers> geometryBuffers;
+  NormalFrameGeometry normalFrames;
+  std::vector<NormalFrameBinding> frameBindings;
+  std::vector<container::geometry::Vertex> bindVertices;
+  std::vector<uint32_t> bindIndices;
+  size_t sceneVertexCount{},sceneIndexCount{};
   bool adoptBase{};
   std::unordered_map<VkBuffer,uint64_t> initialUploads,objectBufferUploadRevisions_;
   std::vector<ObjectData> objectData_;
@@ -414,6 +425,29 @@ uint64_t SceneController::PreparedMaterialRouting::objectDataRevision() const no
 }
 uint64_t SceneController::PreparedMaterialRouting::expectedGraphRevision() const noexcept {return state_?state_->graph:0;}
 uint64_t SceneController::PreparedMaterialRouting::candidateGraphRevision() const noexcept {return state_?state_->candidateGraph:0;}
+bool SceneController::PreparedMaterialRouting::geometryChanged() const noexcept {
+  return state_ && bool(state_->geometryBuffers);
+}
+uint64_t SceneController::PreparedMaterialRouting::geometryRevision() const noexcept {
+  return state_?state_->geometry+uint64_t(geometryChanged()):0;
+}
+const GltfDeformationScene* SceneController::PreparedMaterialRouting::deformationScene() const noexcept {
+  return geometryChanged()?state_->normalFrames.scene.get():nullptr;
+}
+std::span<const container::geometry::Vertex> SceneController::PreparedMaterialRouting::geometryVertices() const noexcept {
+  if(!geometryChanged()) return {};
+  if(auto* scene=deformationScene()) return scene->currentVertices();
+  return std::span(state_->bindVertices).first(state_->sceneVertexCount);
+}
+std::span<const uint32_t> SceneController::PreparedMaterialRouting::geometryIndices() const noexcept {
+  if(!geometryChanged()) return {};
+  if(auto* scene=deformationScene()) return scene->indices();
+  return std::span(state_->bindIndices).first(state_->sceneIndexCount);
+}
+std::span<const container::geometry::Vertex> SceneController::PreparedMaterialRouting::gpuBindVertices() const noexcept {
+  if(!geometryChanged()) return {};
+  return state_->bindVertices;
+}
 
 static_assert(std::is_nothrow_swappable_v<std::vector<container::geometry::Vertex>>);
 static_assert(std::is_nothrow_swappable_v<std::unordered_map<VkBuffer,uint64_t>>);
@@ -691,6 +725,8 @@ void SceneController::swapGenerationState(PreparedGeneration::State& state) noex
   using std::swap;
 #define SCENE_EXCHANGE(member) swap(member,state.member)
   SCENE_EXCHANGE(ownedGenerationBuffers_); SCENE_EXCHANGE(deformationScene_);
+  SCENE_EXCHANGE(normalFrameBindings_); SCENE_EXCHANGE(normalFrameRenderPrimitives_);
+  SCENE_EXCHANGE(normalFrameGraphRevision_); SCENE_EXCHANGE(normalFrameMaterialRevision_);
   SCENE_EXCHANGE(ownedMaterialObjectBuffers_);
   SCENE_EXCHANGE(gpuBindVertices_); SCENE_EXCHANGE(gpuBindIndices_);
   SCENE_EXCHANGE(generationSceneVertexCount_); SCENE_EXCHANGE(generationSceneIndexCount_);
@@ -850,6 +886,18 @@ static container::scene::MaterialBindingContext routingBindingContext(const cont
       uint32_t(manager.primitiveRanges().size())};
 }
 
+static void buildSceneBindStreams(std::span<const container::geometry::Vertex> vertices,
+    std::span<const uint32_t> indices,std::vector<container::geometry::Vertex>& bindVertices,
+    std::vector<uint32_t>& bindIndices) {
+  const auto cube=makeScenePrimitiveCube();
+  if(vertices.size()>UINT32_MAX-cube.vertices().size() || indices.size()>UINT32_MAX-cube.indices().size())
+    throw std::runtime_error("Expanded scene and diagnostic geometry exceed 32-bit indexing");
+  bindVertices.assign(vertices.begin(),vertices.end());
+  bindVertices.insert(bindVertices.end(),cube.vertices().begin(),cube.vertices().end());
+  bindIndices.assign(indices.begin(),indices.end());
+  for(const auto index:cube.indices()) bindIndices.push_back(uint32_t(vertices.size())+index);
+}
+
 SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting(
     std::span<const container::scene::MaterialRenderProperties> materials,uint32_t images,bool showDiag,
     uint64_t epoch) const {
@@ -959,6 +1007,22 @@ SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting
   }
   state.sourceGeometry=sceneManager_.geometryRevision();state.sourceMaterial=sceneManager_.materialRevision();
   state.geometry=geometryRevision_;state.objects=objectDataRevision_;state.upload=objectBufferUploadRevision_;
+  state.frameBindings=planNormalFrameBindings(materials,bindings);
+  if(state.frameBindings!=normalFrameBindings_) {
+    if(geometryRevision_==UINT64_MAX) fail("geometry revision exhausted");
+    state.normalFrames=configureNormalFrameGeometry(state.frameBindings);
+    auto* scene=state.normalFrames.scene.get();
+    if(scene) (void)updateConfiguredDeformation(scene,state.normalFrames.renderPrimitives,true);
+    const auto vertices=scene?scene->bindVertices():std::span<const container::geometry::Vertex>(sceneManager_.vertices());
+    const auto indices=scene?scene->indices():std::span<const uint32_t>(sceneManager_.indices());
+    state.sceneVertexCount=vertices.size();
+    state.sceneIndexCount=indices.size();
+    const auto geometryBytes=add(multiply(vertices.size(),sizeof(container::geometry::Vertex)),multiply(indices.size(),sizeof(uint32_t)));
+    if(geometryBytes>GraphPoseGenerationLimits{}.maxGpuBytes-gpu) fail("normal frame vertex and index storage exceeds its GPU budget");
+    buildSceneBindStreams(vertices,indices,state.bindVertices,state.bindIndices);
+    state.geometryBuffers=OwnedGenerationBuffers::geometry(allocationManager_,device_,state.bindVertices,state.bindIndices);
+  }
+  const auto* candidateDeformation=state.geometryBuffers?state.normalFrames.scene.get():deformationScene_.get();
   state.objectData_.reserve(count);state.objectData_.assign(objectData_.begin(),objectData_.begin()+rows);
   state.objectNodeIndices_.reserve(count);state.objectNodeIndices_.assign(objectNodeIndices_.begin(),objectNodeIndices_.begin()+rows);
   std::vector<DrawCommand> draws(rows);std::vector<bool> seen(rows);
@@ -981,11 +1045,19 @@ SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting
     if(object.objectInfo.x>=materials.size()) fail("target object material exceeds the prospective runtime table");
     const auto& properties=materials[object.objectInfo.x];
     const auto primitive=object.temporalInfo.w;
-    const auto* deformation=deformationScene_?deformationScene_->drawRange(state.objectNodeIndices_[i]):nullptr;
+    const auto* deformation=candidateDeformation?candidateDeformation->drawRange(state.objectNodeIndices_[i]):nullptr;
+    if(state.geometryBuffers) {
+      const auto& range=sceneManager_.primitiveRanges()[primitive];
+      draws[i].firstIndex=deformation?deformation->firstIndex:range.firstIndex;
+      draws[i].indexCount=deformation?deformation->indexCount:range.indexCount;
+    }
     const bool doubleSided=properties.doubleSided || sceneManager_.primitiveRanges()[primitive].disableBackfaceCulling ||
         (deformation && deformation->orientation==GltfDeformationOrientation::MixedOrDegenerate);
     object.objectInfo.y&=~container::gpu::kObjectFlagDoubleSided;
     if(doubleSided) object.objectInfo.y|=container::gpu::kObjectFlagDoubleSided;
+    object.objectInfo.y&=~container::gpu::kObjectFlagDeformationWindingFlipped;
+    if(deformation && deformation->orientation==GltfDeformationOrientation::Reversed)
+      object.objectInfo.y|=container::gpu::kObjectFlagDeformationWindingFlipped;
     const bool flipped=transformFlipsWinding(object.model)!=
         (deformation && deformation->orientation==GltfDeformationOrientation::Reversed);
     if(deformation || primitive<primitiveBounds_.size()) {
@@ -1018,7 +1090,8 @@ SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting
     if(object.objectInfo.x>=materials.size()) fail("diagnostic material exceeds the prospective runtime table");
     state.diagCubeObjectIndex_=uint32_t(rows);state.objectData_.push_back(object);state.objectNodeIndices_.push_back(UINT32_MAX);
   }
-  state.cachedSceneGraphRevision_=state.candidateGraph;state.cachedGeometryRevision_=geometryRevision_;
+  state.cachedSceneGraphRevision_=state.candidateGraph;
+  state.cachedGeometryRevision_=geometryRevision_+uint64_t(bool(state.geometryBuffers));
   state.cachedMaterialRevision_=sceneManager_.materialRevision();state.cachedShowDiagCube_=showDiag;
   state.buffers=std::make_unique<OwnedGenerationBuffers>(allocationManager_,device_);
   state.buffers->createObjects(images,state.objectData_);
@@ -1066,6 +1139,22 @@ void SceneController::exchangeMaterialRouting(PreparedMaterialRouting& prepared,
     ownedMaterialObjectBuffers_=std::move(state.initial);
   }
   ownedMaterialObjectBuffers_.swap(state.buffers);
+  if(state.geometryBuffers) {
+    ownedGenerationBuffers_.swap(state.geometryBuffers);
+    deformationScene_.swap(state.normalFrames.scene);
+    normalFrameRenderPrimitives_.swap(state.normalFrames.renderPrimitives);
+    normalFrameBindings_.swap(state.frameBindings);
+    gpuBindVertices_.swap(state.bindVertices);
+    gpuBindIndices_.swap(state.bindIndices);
+    generationSceneVertexCount_=state.sceneVertexCount;
+    generationSceneIndexCount_=state.sceneIndexCount;
+    diagCubeIndexCount_=uint32_t(gpuBindIndices_.size()-generationSceneIndexCount_);
+    setOwnedGeometrySlices(generationSceneIndexCount_);
+    deformationTopologyPending_=false;
+    ++geometryRevision_;
+  }
+  normalFrameGraphRevision_=sceneGraph_.revision();
+  normalFrameMaterialRevision_=materialRevision;
   using std::swap;
 #define MATERIAL_EXCHANGE(name) static_assert(std::is_nothrow_swappable_v<decltype(name)>);swap(name,state.name)
   MATERIAL_EXCHANGE(objectData_);MATERIAL_EXCHANGE(objectNodeIndices_);MATERIAL_EXCHANGE(objectBufferUploadRevisions_);
@@ -1088,6 +1177,117 @@ void SceneController::acknowledgeMaterialRevision(uint64_t revision) noexcept {
     cachedMaterialRevision_=revision;
 }
 
+std::vector<SceneController::NormalFrameBinding> SceneController::planNormalFrameBindings(
+    std::span<const container::scene::MaterialRenderProperties> prospective,
+    const container::scene::PreparedMaterialBindingChange* bindings) const {
+  std::vector<NormalFrameBinding> result;
+  if(sceneManager_.sourcePrimitiveToRuntime().empty()) return result;
+  const auto assignments=bindings?bindings->assignments():
+      std::span<const container::scene::MaterialBindingAssignment>{};
+  size_t assignment=0;
+  for(uint32_t id=0;id<sceneGraph_.nodeCount();++id) {
+    const auto* node=sceneGraph_.getNode(id);
+    if(!node || !node->renderable || sceneGraph_.isNodeRetired(id)) continue;
+    const auto frame=sceneManager_.canonicalPrimitiveFrameView(node->primitiveIndex);
+    if(!frame) continue;
+    while(assignment<assignments.size() && assignments[assignment].graphNode<id) ++assignment;
+    const auto material=assignment<assignments.size() && assignments[assignment].graphNode==id
+        ?assignments[assignment].afterRuntimeMaterial:node->materialIndex;
+    if(!prospective.empty() && material>=prospective.size())
+      throw std::invalid_argument("Normal frame binding references an unavailable material");
+    const auto normalUv=prospective.empty()?sceneManager_.materialNormalTexCoord(material):prospective[material].normalTexCoord;
+    const auto uv=normalUv.value_or(frame->metadata.bindNormalTexCoord());
+    if(uv!=frame->retainedNormalTexCoord) result.push_back({id,node->primitiveIndex,uv});
+  }
+  return result;
+}
+
+SceneController::NormalFrameGeometry SceneController::configureNormalFrameGeometry(
+    std::span<const NormalFrameBinding> bindings) const {
+  NormalFrameGeometry output;
+  const auto* canonical=sceneManager_.deformationData();
+  if(bindings.empty()) {
+    if(canonical) {
+      output.scene=std::make_unique<GltfDeformationScene>();
+      output.scene->configure(*canonical,sceneManager_.model(),sceneManager_.sourcePrimitiveToRuntime());
+    }
+    return output;
+  }
+  using container::geometry::Vertex;
+  using container::geometry::Mesh;
+  using namespace container::geometry::gltf;
+  const GraphPoseGenerationLimits limits;
+  PoseBudget budget{limits};
+  budget.bytes(sceneManager_.vertices().size(),sizeof(Vertex)*8);
+  budget.bytes(sceneManager_.indices().size(),sizeof(uint32_t)*8);
+  budget.bytes(sceneGraph_.nodeCount(),sizeof(uint32_t)*3);
+  budget.bytes(sceneManager_.model().meshes().size(),sizeof(Mesh)+64);
+  const auto chargeDefinition=[&](const DeformationPrimitive& primitive,uint64_t copies) {
+    budget.bytes(primitive.bindVertices.size(),sizeof(Vertex)*copies);
+    budget.bytes(primitive.influences.size(),sizeof(VertexSkinInfluences)*copies);
+    for(const auto& influence:primitive.influences)
+      budget.bytes(influence.values.size(),sizeof(JointInfluence)*copies);
+    for(const auto& target:primitive.morphTargets) {
+      budget.bytes(1,sizeof(MorphTarget)*copies);
+      for(const auto* values:{&target.positions,&target.normals,&target.tangents})
+        budget.bytes(values->size(),sizeof(glm::vec3)*copies);
+    }
+  };
+  if(canonical) {
+    for(const auto& primitive:canonical->primitives) chargeDefinition(primitive,4);
+    for(const auto& skin:canonical->skins) budget.bytes(skin.joints.size(),sizeof(glm::mat4)*4);
+    for(const auto& node:canonical->nodes) budget.bytes(node.defaultMorphWeights.size(),sizeof(float)*4);
+  }
+  auto meshes=sceneManager_.model().meshes();
+  auto data=canonical?*canonical:DeformationData{};
+  std::vector<uint32_t> definitions;
+  if(canonical) {
+    const auto source=sceneManager_.sourcePrimitiveToRuntime();
+    definitions.assign(source.begin(),source.end());
+  }
+  std::vector<uint32_t> sources(meshes.size());
+  std::iota(sources.begin(),sources.end(),0u);
+  std::vector<std::shared_ptr<const PreparedDeformationFrames>> frames(meshes.size());
+  std::map<std::pair<uint32_t,uint32_t>,uint32_t> slots;
+  output.renderPrimitives.assign(sceneGraph_.nodeCount(),container::scene::SceneGraph::kInvalidNode);
+  for(const auto& binding:bindings) {
+    const auto key=std::pair{binding.primitive,binding.texCoord};
+    auto [slot,inserted]=slots.try_emplace(key,uint32_t(meshes.size()));
+    if(inserted) {
+      if(meshes.size()>=limits.maxObjects)
+        throw std::length_error("Normal frame geometry exceeds the primitive limit");
+      const auto corners=meshes[binding.primitive].indices().size();
+      budget.bytes(corners,sizeof(Vertex)*8+sizeof(uint32_t)*8);
+      // Bound each derived frame against the remaining aggregate preparation.
+      container::scene::PrimitiveNormalFrameLimits variantLimits;
+      variantLimits.frames.maxOutputBytes=std::min(variantLimits.frames.maxOutputBytes,limits.maxCpuBytes-budget.cpu);
+      auto variant=sceneManager_.preparePrimitiveNormalFrameVariant(binding.primitive,binding.texCoord,variantLimits);
+      meshes.push_back(std::move(variant.mesh));
+      sources.push_back(binding.primitive);
+      frames.push_back(std::move(variant.preparedFrames));
+      if(variant.definition) {
+        chargeDefinition(*variant.definition,4);
+        definitions.push_back(slot->second);
+        data.primitives.push_back(std::move(*variant.definition));
+      }
+    }
+    output.renderPrimitives[binding.graphNode]=slot->second;
+  }
+  output.scene=std::make_unique<GltfDeformationScene>();
+  output.scene->configure(std::move(data),container::geometry::Model::FromMeshes(std::move(meshes)),
+                          definitions,sources,frames,limits.maxCpuBytes-budget.cpu);
+  return output;
+}
+
+GltfDeformationSceneUpdate SceneController::updateConfiguredDeformation(
+    GltfDeformationScene* scene,std::span<const uint32_t> renderPrimitives,bool resetHistory) const {
+  if(!scene) return {};
+  std::vector<uint32_t> owners(sceneGraph_.nodeCount(),container::scene::SceneGraph::kInvalidNode);
+  for(uint32_t index=0;index<sceneGraph_.nodeCount();++index)
+    if(const auto* node=sceneGraph_.getNode(index)) owners[index]=node->meshOwnerGraphNode;
+  return scene->update(sceneGraph_,owners,&std::as_const(sceneManager_).animationSource(),resetHistory,renderPrimitives);
+}
+
 std::span<const container::geometry::Vertex> SceneController::geometryVertices() const {
   return deformationScene_ ? deformationScene_->currentVertices()
       : std::span<const container::geometry::Vertex>(sceneManager_.vertices());
@@ -1099,54 +1299,48 @@ std::span<const uint32_t> SceneController::geometryIndices() const {
 }
 
 void SceneController::rebuildDeformationBindStreams() {
-  const auto sceneVertices = deformationScene_ ? deformationScene_->bindVertices()
-      : std::span<const container::geometry::Vertex>(sceneManager_.vertices());
-  const auto sceneIndices = geometryIndices();
-  const auto cube = makeScenePrimitiveCube();
-  constexpr auto maximum = std::numeric_limits<uint32_t>::max();
-  if (sceneVertices.size() > maximum - cube.vertices().size() ||
-      sceneIndices.size() > maximum - cube.indices().size())
-    throw std::runtime_error("Expanded scene and diagnostic geometry exceed 32-bit indexing");
-  gpuBindVertices_.assign(sceneVertices.begin(),sceneVertices.end());
-  generationSceneVertexCount_=sceneVertices.size(); generationSceneIndexCount_=sceneIndices.size();
-  const uint32_t diagnosticVertexBase = static_cast<uint32_t>(gpuBindVertices_.size());
-  gpuBindVertices_.insert(gpuBindVertices_.end(),cube.vertices().begin(),cube.vertices().end());
-  gpuBindIndices_.assign(sceneIndices.begin(),sceneIndices.end());
-  for (uint32_t index : cube.indices()) gpuBindIndices_.push_back(diagnosticVertexBase+index);
+  const auto sceneVertices=deformationScene_?deformationScene_->bindVertices():
+      std::span<const container::geometry::Vertex>(sceneManager_.vertices());
+  const auto sceneIndices=geometryIndices();
+  buildSceneBindStreams(sceneVertices,sceneIndices,gpuBindVertices_,gpuBindIndices_);
+  generationSceneVertexCount_=sceneVertices.size();
+  generationSceneIndexCount_=sceneIndices.size();
 }
 
 GltfDeformationSceneUpdate SceneController::updateDeformation(bool resetHistory) {
-  const uint64_t sourceRevision = sceneManager_.geometryRevision();
-  const bool sourceChanged = sourceRevision != deformationSourceGeometryRevision_;
-  if (sourceChanged) {
-    if (const auto* data = sceneManager_.deformationData()) {
-      if (!deformationScene_) deformationScene_ = std::make_unique<GltfDeformationScene>();
-      deformationScene_->configure(*data,sceneManager_.model(),
-                                   sceneManager_.sourcePrimitiveToRuntime());
-    } else deformationScene_.reset();
-    deformationTopologyPending_ = true;
-    rebuildPrimitiveBoundsCache();
+  const auto sourceRevision=sceneManager_.geometryRevision();
+  const bool sourceChanged=sourceRevision!=deformationSourceGeometryRevision_;
+  bool framesChanged=false;
+  if(sourceChanged || normalFrameGraphRevision_!=sceneGraph_.revision() ||
+      normalFrameMaterialRevision_!=sceneManager_.materialRevision()) {
+    auto bindings=planNormalFrameBindings();
+    framesChanged=bindings!=normalFrameBindings_;
+    if(sourceChanged || framesChanged) {
+      auto frames=configureNormalFrameGeometry(bindings);
+      deformationScene_=std::move(frames.scene);
+      normalFrameRenderPrimitives_=std::move(frames.renderPrimitives);
+      normalFrameBindings_=std::move(bindings);
+    } else if(!normalFrameRenderPrimitives_.empty()) {
+      normalFrameRenderPrimitives_.resize(sceneGraph_.nodeCount(),container::scene::SceneGraph::kInvalidNode);
+    }
+    normalFrameGraphRevision_=sceneGraph_.revision();
+    normalFrameMaterialRevision_=sceneManager_.materialRevision();
   }
-  GltfDeformationSceneUpdate result;
-  if (deformationScene_) {
-    sceneGraph_.updateWorldTransforms();
-    std::vector<uint32_t> owners(sceneGraph_.nodeCount(),container::scene::SceneGraph::kInvalidNode);
-    for (uint32_t index = 0; index < sceneGraph_.nodeCount(); ++index)
-      if (const auto* node = sceneGraph_.getNode(index)) owners[index] = node->meshOwnerGraphNode;
-    result = deformationScene_->update(sceneGraph_,owners,&sceneManager_.animationSource(),resetHistory);
-  }
-  if (sourceChanged || result.topologyChanged) {
-    deformationTopologyPending_ = true;
+  if(sourceChanged) rebuildPrimitiveBoundsCache();
+  if(deformationScene_) sceneGraph_.updateWorldTransforms();
+  auto result=updateConfiguredDeformation(deformationScene_.get(),normalFrameRenderPrimitives_,resetHistory || framesChanged);
+  if(sourceChanged || framesChanged || result.topologyChanged) {
+    deformationTopologyPending_=true;
     rebuildDeformationBindStreams();
   }
-  if (sourceChanged || result.geometryChanged || result.topologyChanged) {
+  if(sourceChanged || framesChanged || result.geometryChanged || result.topologyChanged) {
     ++geometryRevision_;
     invalidateObjectDataCache();
   }
-  deformationSourceGeometryRevision_ = sourceRevision;
-  result.geometryChanged |= sourceChanged;
-  result.topologyChanged = deformationTopologyPending_;
-  result.historyReset |= resetHistory || sourceChanged;
+  deformationSourceGeometryRevision_=sourceRevision;
+  result.geometryChanged|=sourceChanged || framesChanged;
+  result.topologyChanged=deformationTopologyPending_;
+  result.historyReset|=resetHistory || sourceChanged || framesChanged;
   return result;
 }
 

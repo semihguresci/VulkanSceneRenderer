@@ -391,6 +391,8 @@ struct MikkTangentContext {
   const std::vector<uint32_t>* indices{nullptr};
   std::vector<uint8_t>* tangentWritten{nullptr};
   uint32_t texCoord{0};
+  bool requireConsistentCorners{false};
+  bool conflictingCorners{false};
 };
 
 uint32_t mikkVertexIndex(const SMikkTSpaceContext* context, int faceIndex,
@@ -472,8 +474,13 @@ void mikkSetTangent(const SMikkTSpaceContext* context, const float tangent[3],
   }
 
   Vertex& vertex = (*data->vertices)[index];
-  vertex.tangent = orthonormalizeTangent(
+  const auto frame = orthonormalizeTangent(
       vertex.normal, glm::vec4(tangent[0], tangent[1], tangent[2], sign));
+  if (data->requireConsistentCorners && (*data->tangentWritten)[index] &&
+      (frame.w != vertex.tangent.w ||
+       glm::dot(glm::vec3(frame), glm::vec3(vertex.tangent)) < 0.99999f))
+    data->conflictingCorners = true;
+  vertex.tangent = frame;
   (*data->tangentWritten)[index] = 1u;
 }
 
@@ -561,7 +568,8 @@ glm::vec4 makeGeneratedTangent(const Vertex& vertex,
 
 void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
                                   const std::vector<uint32_t>& indices,
-                                  uint32_t texCoord, const std::stop_token& stop = {}) {
+                                  uint32_t texCoord, const std::stop_token& stop = {},
+                                  bool requireConsistentCorners = false) {
   if (texCoord > 1)
     throw gltfError("normal texture", "tangent generation supports UV0 and UV1");
   std::vector<uint8_t> tangentWritten(vertices.size(), 0u);
@@ -570,6 +578,7 @@ void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
       &indices,
       &tangentWritten,
       texCoord,
+      requireConsistentCorners,
   };
   SMikkTSpaceInterface mikkInterface{};
   mikkInterface.m_getNumFaces = mikkGetNumFaces;
@@ -587,6 +596,8 @@ void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
       !vertices.empty() && indices.size() >= 3u &&
       genTangSpaceDefault(&mikkContext) != 0;
   checkModelImportCancellation(stop);
+  if (tangentContext.conflictingCorners)
+    throw gltfError("normal texture", "the selected UV requires splitting shared vertices at tangent seams");
 
   const auto bases = accumulateGeometryTangents(vertices, indices, texCoord, stop);
   for (size_t i = 0; i < vertices.size(); ++i) {
@@ -2105,6 +2116,19 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
   } catch (const std::runtime_error& exception) {
     throw gltfError("glTF asset '" + path + "'", exception.what());
   }
+}
+
+Mesh RegenerateGltfPrimitiveTangents(const Mesh& source, uint32_t texCoord,
+                                    bool requireConsistentCorners) {
+  auto vertices = source.vertices();
+  generateTangentsFromGeometry(vertices, source.indices(), texCoord, {}, requireConsistentCorners);
+  return Mesh(std::move(vertices), source.indices(), source.materialIndex(),
+              source.disableBackfaceCulling());
+}
+
+uint32_t GltfSourceNormalTexCoord(const tinygltf::Model& source,
+                                 const tinygltf::Primitive& primitive) {
+  return normalTextureTexCoord(source, primitive);
 }
 
 Model RegenerateGltfBindTangents(

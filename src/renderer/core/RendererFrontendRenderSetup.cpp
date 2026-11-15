@@ -184,15 +184,17 @@ void RendererFrontend::deactivateRenderSetup() {
     } catch (const std::invalid_argument&) { camera.reset(); }
   }
   auto variant = scene.planMaterialVariant(sceneGraph_, base->variant);
+  std::swap(variant.beforeSelection,variant.afterSelection);
+  for (auto& assignment:variant.assignments) std::swap(assignment.before,assignment.after);
   for (const auto& original : base->materials) {
     const auto found = std::ranges::lower_bound(variant.assignments, original.node, {},
         &container::scene::MaterialVariantGraphEdit::Assignment::node);
-    if (found != variant.assignments.end() && found->node == original.node) found->after = original.before;
+    if (found != variant.assignments.end() && found->node == original.node) found->before = original.before;
   }
   if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
   if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
     throw std::runtime_error("Could not retire readers before restoring the base view");
-  if (variant.changes() && !scene.applyMaterialVariant(sceneGraph_, variant))
+  if (variant.changes() && !scene.applyMaterialVariant(sceneGraph_, variant, false))
     throw std::runtime_error("The base material bindings are stale");
   sceneGraph_.setPreviewVisibility({});
   if (base->environment) environment.exchangePreviewMaps(*base->environment);

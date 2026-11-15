@@ -8,6 +8,7 @@
 #include "Container/renderer/pipeline/RuntimeShaderCompiler.h"
 #include "Container/renderer/platform/VulkanContextInitializer.h"
 #include "Container/renderer/raytracing/RayShadowManager.h"
+#include "Container/renderer/scene/GltfDeformationPass.h"
 #include "Container/renderer/resources/FrameResourceManager.h"
 #include "Container/renderer/resources/FrameResourceRegistry.h"
 #include "Container/renderer/scene/PbrAuxiliaryPass.h"
@@ -64,35 +65,29 @@ container::scene::MaterialBindingContext materialBindingContext(const container:
   return {manager.materialAssetIdentity(),manager.sourceMaterialRuntimeMapping(),
       uint32_t(manager.materialCount()),uint32_t(manager.primitiveRanges().size())};
 }
-void validateBindingFrameReuseForUv(const container::scene::SceneManager& manager,
+void validateBindingNormalUv(const container::scene::SceneManager& manager,
     const container::scene::SceneNode& node,std::optional<uint32_t> uv) {
   if(!uv) return;
   if(*uv>1) throw std::invalid_argument("This normal texture requires an unsupported texture-coordinate set");
-  const auto retained=manager.retainedPrimitiveNormalTexCoord(node.primitiveIndex);
-  if(!retained)
+  const auto frame=manager.canonicalPrimitiveFrameView(node.primitiveIndex);
+  if(!frame)
     throw std::invalid_argument("Normal-mapped assignment requires retained primitive frame provenance");
-  // This is the retained geometry basis, independent of today's material. A
-  // no-map assignment does not reset it. UV-changing per-binding streams are
-  // staged separately before that assignment path can be enabled.
-  if(*uv!=*retained)
-    throw std::invalid_argument("This assignment requires a new per-surface normal UV frame");
+  if(!(frame->metadata.availableTexCoordMask() & (1u<<*uv)))
+    throw std::invalid_argument("The selected surface is missing TEXCOORD_"+std::to_string(*uv)+" for its normal texture");
 }
-void validateBindingFrameReuse(const container::scene::SceneManager& manager,
-    const container::scene::SceneNode& node,uint32_t runtime) {
-  validateBindingFrameReuseForUv(manager,node,manager.materialNormalTexCoord(runtime));
-}
-void validateTextureFrameReuse(const container::scene::SceneManager& manager,
+void validateTextureNormalUv(const container::scene::SceneManager& manager,
     const container::scene::SceneGraph& graph,uint32_t runtime,const tinygltf::Material& material) {
   const auto normal=ReadGltfMaterialTextureBinding(material,GltfMaterialTextureSlot::Normal);
   if(normal.index<0) return;
   // Replacing pixels or editing another slot does not change the normal UV
   // requirement. A map added after absence still needs the retained basis.
   if(const auto previous=manager.materialNormalTexCoord(runtime);previous && *previous==normal.texCoord) return;
+  const auto importedUv=manager.importedMaterialNormalTexCoord(manager.sourceMaterialForRuntime(runtime));
   if(graph.nodeCount()>1'000'000) throw std::length_error("Material frame reference traversal exceeds its limit");
   for(uint32_t id=0;id<graph.nodeCount();++id) {
     const auto* node=graph.getNode(id);
     if(node && node->renderable && !graph.isNodeRetired(id) && node->materialIndex==runtime)
-      validateBindingFrameReuseForUv(manager,*node,normal.texCoord);
+      validateBindingNormalUv(manager,*node,normal.texCoord);
   }
   // An inactive default or variant can become live without a material edit.
   // Check its retained frame too, before publishing a new normal UV choice.
@@ -133,7 +128,12 @@ void validateTextureFrameReuse(const container::scene::SceneManager& manager,
     if(uses) {
       container::scene::SceneNode retained;
       retained.primitiveIndex=primitives[flat];
-      validateBindingFrameReuseForUv(manager,retained,normal.texCoord);
+      validateBindingNormalUv(manager,retained,normal.texCoord);
+      const auto frame=manager.canonicalPrimitiveFrameView(retained.primitiveIndex);
+      // Check an edited mapping even when this primitive does not currently
+      // display its material. The named variant can activate it later.
+      if(normal.texCoord!=frame->metadata.bindNormalTexCoord() && importedUv!=normal.texCoord)
+        (void)manager.preparePrimitiveNormalFrameVariant(retained.primitiveIndex,normal.texCoord);
     }
     ++flat;
   }
@@ -541,7 +541,7 @@ bool RendererFrontend::authorMaterialTexture(const container::material::GltfMate
   MaterialPublication publication;publication.editedSource=request.sourceMaterial;
   if(resources) publication.material.emplace(manager.prepareMaterialGeneration(plan,gltfAnimation_.get(),std::move(*resources),limits));
   else publication.material.emplace(manager.prepareMaterialGeneration(plan,gltfAnimation_.get(),limits));
-  validateTextureFrameReuse(manager,sceneGraph_,runtime,publication.material->evaluatedMaterial());
+  validateTextureNormalUv(manager,sceneGraph_,runtime,publication.material->evaluatedMaterial());
   if(!publishMaterialTransaction(publication)) return false;
   // Keep a preceding gesture and redo cursor intact until every resource and
   // renderer stage has succeeded. The command and captures already exist.
@@ -567,7 +567,7 @@ bool RendererFrontend::replayMaterialTexture(const MaterialTextureHistory& state
   MaterialPublication publication;publication.editedSource=plan.destinationMaterial;
   if(resources) publication.material.emplace(manager.prepareMaterialGeneration(plan,gltfAnimation_.get(),std::move(*resources)));
   else publication.material.emplace(manager.prepareMaterialGeneration(plan,gltfAnimation_.get()));
-  validateTextureFrameReuse(manager,sceneGraph_,publication.material->runtimeMaterial(),publication.material->evaluatedMaterial());
+  validateTextureNormalUv(manager,sceneGraph_,publication.material->runtimeMaterial(),publication.material->evaluatedMaterial());
   return publishMaterialTransaction(publication);
 }
 
@@ -723,6 +723,20 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
   std::optional<SceneController::PreparedMaterialRouting> routing;
   if(bindings) routing=controller.prepareMaterialRouting(facts,*bindings,imageCount,showDiagCube,epoch);
   else if(material && material->routingChanged()) routing=controller.prepareMaterialRouting(facts,imageCount,showDiagCube,epoch);
+  const bool geometryChanged=routing && routing->geometryChanged();
+  const auto futureGeometry=geometryChanged?routing->geometryRevision():geometry;
+  const auto vertices=geometryChanged?routing->geometryVertices():controller.geometryVertices();
+  const auto indices=geometryChanged?routing->geometryIndices():controller.geometryIndices();
+  const auto* deformed=geometryChanged?routing->deformationScene():nullptr;
+  const auto topology=deformed?deformed->topologyRevision():0;
+  const auto bindVertexCount=geometryChanged?routing->gpuBindVertices().size():0;
+  std::unique_ptr<GltfDeformationPass> deformation;
+  if(deformed && !deformed->gpuInstances().empty()) {
+    deformation=std::make_unique<GltfDeformationPass>(svc_.ctx.deviceWrapper,svc_.allocationManager,svc_.pipelineManager);
+    deformation->createResources(container::util::executableDirectory(),imageCount);
+    deformation->setScene(routing->gpuBindVertices(),deformed->gpuInstances());
+    for(uint32_t image=0;image<imageCount;++image) deformation->uploadFrame(image,deformed->gpuPoses());
+  }
   const auto objects=routing?routing->objectBuffers():std::span<const container::gpu::AllocatedBuffer>(buffers_.objects);
   const auto capacities=routing?routing->objectBufferCapacities():std::span<const size_t>(buffers_.objectCapacities);
   const auto objectData=routing?routing->objectData():std::span<const container::gpu::ObjectData>(controller.objectData());
@@ -781,11 +795,11 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
   const auto& asset=assetCache.get({.primitiveRanges=manager.primitiveRanges(),.materialCount=facts.size(),
       .instanceCount=objectData.size(),.bounds=meshBounds,.materialFactsAt=[&](uint32_t id) {
         const auto& value=facts[id];return container::scene::MeshSceneProviderMaterialFacts{value.transparent,value.doubleSided};
-      },.bindings=MakeMeshSceneProviderBindingView(objectData,opaque,transparent,uint64_t(controller.geometryIndices().size()))},
-      {.geometry=manager.geometryRevision(),.materials=materialRevision,.instances=futureObject},&manager);
+      },.bindings=MakeMeshSceneProviderBindingView(objectData,opaque,transparent,uint64_t(indices.size()))},
+      {.geometry=futureGeometry,.materials=materialRevision,.instances=futureObject},&manager);
   MeshSceneProviderSyncInput mesh{.available=asset.primitiveCount>0 || asset.bounds.valid,.primitiveCount=asset.primitiveCount,
       .materialCount=asset.materialCount,.instanceCount=asset.instanceCount,.triangleBatches=asset.triangleBatches,.bounds=asset.bounds,
-      .geometryRevision=geometry,.materialRevision=materialRevision,.instanceRevision=futureObject,
+      .geometryRevision=futureGeometry,.materialRevision=materialRevision,.instanceRevision=futureObject,
       .displayName=activePrimaryModelPath_.empty()?"Primary mesh scene":activePrimaryModelPath_,
       .triangleBatchesAuthoritative=asset.triangleBatchesAuthoritative};
   const auto providerInput=buildSceneProviderSyncInput(&mesh);
@@ -802,7 +816,7 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
     const bool wants=ray->supported() && (gi || ray->settings().mode!=RayShadowMode::Raster);
     std::vector<DrawCommand> meshDraws(opaque.begin(),opaque.end());if(gi) meshDraws.insert(meshDraws.end(),transparent.begin(),transparent.end());
     std::vector<RaySceneProviderSource> sources;
-    if(mesh.available && wants) sources.push_back({{"primary-mesh-scene"},geometry,controller.geometryVertices(),controller.geometryIndices(),objectData,meshDraws});
+    if(mesh.available && wants) sources.push_back({{"primary-mesh-scene"},futureGeometry,vertices,indices,objectData,meshDraws});
     std::vector<DrawCommand> bimDraws;
     if(subs_.bimManager && subs_.bimManager->hasScene() && wants) {
       auto filter=currentBimDrawFilter();filter.drawBudgetEnabled=false;filter.drawBudgetMaxObjects=0;
@@ -863,6 +877,19 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
   }
   if(routing) controller.exchangeMaterialRouting(*routing,manager.materialRevision(),manager.generationEpoch());
   else controller.acknowledgeMaterialRevision(manager.materialRevision());
+  if(geometryChanged) {
+    subs_.gltfDeformationPass.swap(deformation);
+    syncSceneStateFromController();
+    gltfDeformationGraphIdentity_=subs_.gltfDeformationPass?sceneGraph_.identity():0;
+    gltfDeformationSourceRevision_=manager.geometryRevision();
+    gltfDeformationTopologyRevision_=topology;
+    gltfDeformationVertexCount_=bindVertexCount;
+    gltfDeformationImageCount_=imageCount;
+    gltfDeformationSubmittedEpoch_.reset();
+    gltfDeformationHistoryReset_=true;
+    gltfDeformationMaxPositionDelta_=0;
+    selectedDrawCommands_.clear();
+  }
   if(culling){const bool ok=subs_.gpuCullManager->exchangeGeneration(*culling);assert(ok);}
   if(shadowCulling){const bool ok=subs_.shadowCullManager->exchangeGeneration(*shadowCulling);assert(ok);}
   if(ray){const bool ok=subs_.rayShadowManager->exchangeGeneration(*ray);assert(ok);}
@@ -919,7 +946,7 @@ bool RendererFrontend::authorMaterialBinding(const container::material::GltfMate
   if(unique && (request.runtimeMaterial!=node->materialIndex || request.sourceMaterial!=currentSource))
     throw std::invalid_argument("Make Unique must use the surface's current material pair");
   if(!unique && request.runtimeMaterial==node->materialIndex) return true;
-  if(!unique) validateBindingFrameReuse(manager,*node,request.runtimeMaterial);
+  if(!unique) validateBindingNormalUv(manager,*node,manager.materialNormalTexCoord(request.runtimeMaterial));
   if(!materialBindingBudget_) materialBindingBudget_=std::make_shared<MaterialBindingBudget>();
   auto budget=materialBindingBudget_;
   if(budget->reserved>=MaterialBindingBudget::limit) throw std::length_error("Material binding history budget is exhausted");

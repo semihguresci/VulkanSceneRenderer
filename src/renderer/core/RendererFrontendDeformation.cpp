@@ -54,7 +54,8 @@ void RendererFrontend::updateGltfDeformation() {
       gltfDeformationGraphIdentity_ = 0;
       gltfDeformationImageCount_ = images;
     }
-    if (gltfDeformationGraphIdentity_ != sceneGraph_.identity() ||
+    if (changed.topologyChanged ||
+        gltfDeformationGraphIdentity_ != sceneGraph_.identity() ||
         gltfDeformationSourceRevision_ != sourceRevision ||
         gltfDeformationTopologyRevision_ != scene->topologyRevision() ||
         gltfDeformationVertexCount_ != vertices.size()) {

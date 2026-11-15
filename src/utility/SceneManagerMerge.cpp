@@ -600,7 +600,8 @@ uint64_t SceneManager::mergeHistoryResidentBytes() const {
   RETAINED_MEMBER(archiveResourcePhases_.images);RETAINED_MEMBER(archiveResourcePhases_.textures);RETAINED_MEMBER(archiveResourcePhases_.samplers);
   RETAINED_MEMBER(gltfResourcePhases_.images);RETAINED_MEMBER(gltfResourcePhases_.textures);RETAINED_MEMBER(gltfResourcePhases_.samplers);
   RETAINED_MEMBER(gltfTextureResources_.color); RETAINED_MEMBER(gltfTextureResources_.data);
-  RETAINED_MEMBER(variantNormalTexCoords_); RETAINED_MEMBER(exportTextureIndices_);
+  RETAINED_MEMBER(variantNormalTexCoords_); RETAINED_MEMBER(bindNormalTexCoords_); RETAINED_MEMBER(exportTextureIndices_);
+  RETAINED_MEMBER(importedMaterialNormalTexCoords_);
   RETAINED_MEMBER(vertices_); RETAINED_MEMBER(indices_); RETAINED_MEMBER(gpuMaterials_);
   RETAINED_MEMBER(gpuMaterialTemporalRevisions_); RETAINED_MEMBER(textureMetadata_);
   RETAINED_MEMBER(textureSamplingPlan_.rows); RETAINED_MEMBER(textureSamplingPlan_.images);
@@ -748,7 +749,7 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
   auto geometry=ComposeGltfMergeGeometry(
       {model_,sourcePrimitiveToRuntime_,runtimePrimitiveToSource_},incoming.model,plan,geometryLimits);
   cpu.add(geometry.outputBytes);
-  cpu.add(checkedBytes(geometry.sourcePrimitiveToRuntime.size(),sizeof(uint32_t))); // Retained tangent UV policy for every source primitive.
+  cpu.add(checkedBytes(geometry.sourcePrimitiveToRuntime.size(),2*sizeof(uint32_t)));
   cpu.add(streamBytes(geometry.runtime)); // SceneManager's shader upload copies.
   std::vector<Mesh> retainedBind;
   if(deformation_ || incoming.deformation) {
@@ -942,6 +943,9 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
     candidate.sourceMaterialToRuntime_[size_t(source)]=incomingMaterials[i];
   }
   ValidateSourceMaterialMapping(candidate.sourceMaterialToRuntime_,candidate.gltfModel_.materials.size(),materialCount);
+  cpu.add(checkedBytes(candidate.sourceMaterialToRuntime_.size(),sizeof(std::optional<uint32_t>)));
+  candidate.importedMaterialNormalTexCoords_=importedMaterialNormalTexCoords_;
+  candidate.importedMaterialNormalTexCoords_.resize(candidate.sourceMaterialToRuntime_.size());
   std::vector<uint32_t> materials;
   materials.reserve(candidate.sourcePrimitiveToRuntime_.size());
   size_t sourceFlat{};
@@ -973,8 +977,22 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
   candidate.mergedAssets_=true;
   if(candidate.materialVariants_.hasVariants()) {
     cpu.add(geometry.outputBytes);cpu.add(runtime.outputBytes);
-    candidate.variantOriginalModel_=candidate.model_;
     candidate.variantOriginalDeformation_=candidate.deformation_;
+    if (variantOriginalModel_) {
+      auto bindMeshes = candidate.model_.meshes();
+      for (size_t flat = 0; flat < sourcePrimitiveToRuntime_.size(); ++flat) {
+        const auto& original = variantOriginalModel_->meshes().at(sourcePrimitiveToRuntime_[flat]);
+        bindMeshes.at(candidate.sourcePrimitiveToRuntime_.at(flat)) = original;
+        if (candidate.variantOriginalDeformation_) {
+          auto& definition = candidate.variantOriginalDeformation_->primitives.at(flat);
+          definition.bindVertices = original.vertices();
+          definition.normalTextureTexCoord = bindNormalTexCoords_.at(flat);
+        }
+      }
+      candidate.variantOriginalModel_=container::geometry::Model::FromMeshes(std::move(bindMeshes));
+    } else {
+      candidate.variantOriginalModel_=candidate.model_;
+    }
   }
   candidate.vertices_=candidate.model_.vertices();
   candidate.indices_=candidate.model_.indices();
@@ -1009,6 +1027,7 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
   for(size_t i=0;i<incomingMaterials.size();++i) {
     const auto source=plan.imported.materials.at(i);
     const auto target=incomingMaterials[i];
+    candidate.importedMaterialNormalTexCoords_[size_t(source)]=candidate.materialNormalTexCoord(target);
     // Already remapped against the one authoritative merged resource archive.
     // Calling rememberExportMaterials here would duplicate all source tables.
     candidate.exportMaterialSources_[target]=plan.model.materials[size_t(source)];
@@ -1029,18 +1048,17 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
         candidate.exportTextureIndices_[resource]=plan.imported.textures[i];
     }
   candidate.variantNormalTexCoords_.reserve(candidate.sourcePrimitiveToRuntime_.size());
+  candidate.bindNormalTexCoords_.reserve(candidate.sourcePrimitiveToRuntime_.size());
   size_t flat{};
   for(const auto& mesh:candidate.gltfModel_.meshes) for(const auto& primitive:mesh.primitives) {
-    const auto material=candidate.resolvePrimitiveMaterialIndex(flat,primitive.material);
     uint32_t uv{};
-    if(candidate.deformation_) uv=candidate.deformation_->primitives.at(flat).normalTextureTexCoord;
-    else if(flat<variantNormalTexCoords_.size()) uv=variantNormalTexCoords_[flat];
-    else {
-      const auto* value=candidate.materialManager_.getMaterial(material);
-      if(value->normalTextureIndex!=UINT32_MAX) uv=value->normalTextureTransform.texCoord;
-    }
+    if(flat<variantNormalTexCoords_.size()) uv=variantNormalTexCoords_[flat];
+    else if(candidate.deformation_) uv=candidate.deformation_->primitives.at(flat).normalTextureTexCoord;
+    else uv=GltfSourceNormalTexCoord(candidate.gltfModel_,primitive);
     if(uv>1) mergeFailure("generated frame normal texture UV must be zero or one");
-    candidate.variantNormalTexCoords_.push_back(uv); ++flat;
+    candidate.variantNormalTexCoords_.push_back(uv);
+    candidate.bindNormalTexCoords_.push_back(flat<bindNormalTexCoords_.size()?bindNormalTexCoords_[flat]:uv);
+    ++flat;
   }
   candidate.createSampler();
   auto retiredMaterials=materialRetirementMask();
@@ -1244,6 +1262,8 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareSubtreeCloneGeneratio
   candidate.variantOriginalModel_=variantOriginalModel_;
   if(variantOriginalDeformation_) candidate.variantOriginalDeformation_=cloneDeformation(*variantOriginalDeformation_,projected);
   candidate.variantNormalTexCoords_=variantNormalTexCoords_;
+  candidate.bindNormalTexCoords_=bindNormalTexCoords_;
+  candidate.importedMaterialNormalTexCoords_=importedMaterialNormalTexCoords_;
   candidate.sourceMaterialToRuntime_=sourceMaterialToRuntime_;
   candidate.sourcePrimitiveImplicitMaterials_=sourcePrimitiveImplicitMaterials_;
   candidate.exportMaterialSources_=exportMaterialSources_;
@@ -1341,7 +1361,9 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
   EXCHANGE_ASSET(sceneCatalog_); EXCHANGE_ASSET(selectedScene_); EXCHANGE_ASSET(additionalSceneRoots_);
   EXCHANGE_ASSET(sceneRootOrder_); EXCHANGE_ASSET(sceneRootsDirty_); EXCHANGE_ASSET(mergedAssets_);
   EXCHANGE_ASSET(deformation_); EXCHANGE_ASSET(materialVariants_); EXCHANGE_ASSET(selectedMaterialVariant_);
-  EXCHANGE_ASSET(variantOriginalModel_); EXCHANGE_ASSET(variantOriginalDeformation_); EXCHANGE_ASSET(variantNormalTexCoords_);
+  EXCHANGE_ASSET(variantOriginalModel_); EXCHANGE_ASSET(variantOriginalDeformation_);
+  EXCHANGE_ASSET(variantNormalTexCoords_); EXCHANGE_ASSET(bindNormalTexCoords_);
+  EXCHANGE_ASSET(importedMaterialNormalTexCoords_);
   swapSourceModel(exportSource_,other.exportSource_); EXCHANGE_ASSET(sourcePath_);
   EXCHANGE_ASSET(renderSetupSourceFingerprint_); EXCHANGE_ASSET(renderSetupSourceSceneCount_);
   EXCHANGE_ASSET(renderSetupSourceNodeCount_); EXCHANGE_ASSET(renderSetupSourceVariantCount_);

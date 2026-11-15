@@ -103,12 +103,15 @@ int32_t importedExportTextureIndex(const tinygltf::Material& source,GltfMaterial
 MaterialRenderProperties properties(uint32_t id,const container::material::Material& material) {
   return {id,material.alphaMode==container::material::AlphaMode::Blend || material.transmissionFactor>0.f,
       material.alphaMode==container::material::AlphaMode::Mask,material.doubleSided,
-      material.specularGlossinessWorkflow,material.unlit,material.heightScale};
+      material.specularGlossinessWorkflow,material.unlit,material.heightScale,
+      material.normalTextureIndex == UINT32_MAX ? std::nullopt :
+          std::optional<uint32_t>(material.normalTextureTransform.texCoord)};
 }
 bool sameRouting(const MaterialRenderProperties& a,const MaterialRenderProperties& b) {
   return a.gpuMaterialIndex==b.gpuMaterialIndex && a.transparent==b.transparent && a.alphaMasked==b.alphaMasked &&
       a.doubleSided==b.doubleSided && a.specularGlossiness==b.specularGlossiness && a.unlit==b.unlit &&
-      std::bit_cast<uint32_t>(a.heightScale)==std::bit_cast<uint32_t>(b.heightScale);
+      std::bit_cast<uint32_t>(a.heightScale)==std::bit_cast<uint32_t>(b.heightScale) &&
+      a.normalTexCoord==b.normalTexCoord;
 }
 std::vector<int32_t> materialSourceOwners(std::span<const uint32_t> mapping,size_t count,
     const MaterialGenerationLimits& limits) {
@@ -1328,6 +1331,11 @@ std::optional<uint32_t> SceneManager::materialNormalTexCoord(uint32_t runtime) c
   if(!material) invalid("Normal texture coordinate query requires an existing runtime material");
   if(material->normalTextureIndex==UINT32_MAX) return std::nullopt;
   return material->normalTextureTransform.texCoord;
+}
+
+std::optional<uint32_t> SceneManager::importedMaterialNormalTexCoord(int32_t source) const noexcept {
+  if(source<0 || size_t(source)>=importedMaterialNormalTexCoords_.size()) return std::nullopt;
+  return importedMaterialNormalTexCoords_[size_t(source)];
 }
 
 uint64_t SceneManager::materialLifecyclePreparationBytes(size_t count) {

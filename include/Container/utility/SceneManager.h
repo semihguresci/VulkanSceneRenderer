@@ -24,6 +24,7 @@
 #include "Container/geometry/GltfCameraAuthoring.h"
 #include "Container/geometry/GltfMaterialVariants.h"
 #include "Container/geometry/GltfMaterialExport.h"
+#include "Container/geometry/GltfPrimitiveFrameVariants.h"
 #include "Container/geometry/GltfMergeGeometry.h"
 #include "Container/geometry/GltfMergeRuntimeData.h"
 #include "Container/geometry/GltfSessionMerge.h"
@@ -116,6 +117,25 @@ struct MaterialRenderProperties {
   bool specularGlossiness{false};
   bool unlit{false};
   float heightScale{0.0f};
+  std::optional<uint32_t> normalTexCoord;
+};
+
+struct CanonicalPrimitiveFrameView {
+  container::geometry::gltf::CanonicalPrimitiveFrameMetadata metadata;
+  const container::geometry::Mesh* mesh{};
+  const container::geometry::gltf::DeformationPrimitive* definition{};
+  uint32_t retainedNormalTexCoord{};
+};
+
+struct PrimitiveNormalFrameLimits {
+  container::geometry::gltf::PrimitiveFrameVariantLimits frames;
+  uint64_t maxGeneratedCorners{8192};
+};
+
+struct PrimitiveNormalFrameVariant {
+  container::geometry::Mesh mesh;
+  std::optional<container::geometry::gltf::DeformationPrimitive> definition;
+  std::shared_ptr<const container::geometry::gltf::PreparedDeformationFrames> preparedFrames;
 };
 
 struct SceneMergeGenerationLimits {
@@ -770,10 +790,16 @@ class SceneManager {
   // Explicit resident normal-slot provenance. No map returns nullopt; an
   // invalid runtime material throws instead of resolving the scene fallback.
   [[nodiscard]] std::optional<uint32_t> materialNormalTexCoord(uint32_t runtime) const;
+  [[nodiscard]] std::optional<uint32_t> importedMaterialNormalTexCoord(int32_t source) const noexcept;
   // Imported primitive's retained tangent UV basis, independent of current
   // material bindings. Empty for unproved/procedural primitives, inconsistent
   // source mappings or an absent source TEXCOORD accessor. Never allocates.
   [[nodiscard]] std::optional<uint32_t> retainedPrimitiveNormalTexCoord(uint32_t runtimePrimitive) const noexcept;
+  [[nodiscard]] std::optional<CanonicalPrimitiveFrameView> canonicalPrimitiveFrameView(
+      uint32_t runtimePrimitive) const noexcept;
+  [[nodiscard]] PrimitiveNormalFrameVariant preparePrimitiveNormalFrameVariant(
+      uint32_t runtimePrimitive, uint32_t texCoord,
+      const PrimitiveNormalFrameLimits& limits = {}) const;
 
   glm::vec4 resolveMaterialColor(uint32_t materialIndex) const;
   glm::vec4 resolveMaterialEmissive(uint32_t materialIndex) const;
@@ -1095,6 +1121,8 @@ class SceneManager {
   // Source-flat tangent UV policy captured for every imported primitive,
   // including static assets without variants; updated on frame regeneration.
   std::vector<uint32_t> variantNormalTexCoords_{};
+  std::vector<uint32_t> bindNormalTexCoords_{};
+  std::vector<std::optional<uint32_t>> importedMaterialNormalTexCoords_{};
   tinygltf::Model exportSource_{};
   struct CameraProjectionIdentity;
   struct CameraProjectionNamespace;
