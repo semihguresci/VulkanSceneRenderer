@@ -19,6 +19,15 @@ projectIfcBrepSplineEdge(const ParametricSurface &surface,
                          std::span<const glm::vec3> sharedPoints,
                          double metersPerUnit, std::stop_token stop = {});
 
+// Find crease crossings inside one edge's original native sample intervals.
+// Returned additions keep the source curve's exact positions and traversal
+// order.
+[[nodiscard]] std::vector<CurveSample>
+sampleIfcBrepSplineEdgeCreases(const ParametricSurface &surface,
+                               const ParametricCurve &source,
+                               std::span<const CurveSample> samples,
+                               double metersPerUnit, std::stop_token stop = {});
+
 // Input boundaries contain the exact shared edge samples. Refinement only
 // inserts interior vertices, leaving adjacent faces' boundary meshes identical.
 // A validated polar seam partitions the face along the source samples and a

@@ -88,6 +88,11 @@ readIfcSurfaceCharts(const std::unordered_map<uint32_t, Entity> &entities,
                      std::optional<double> radiansPerAngleUnit,
                      std::vector<ParametricSurface> &charts, std::string &error,
                      std::stop_token stop = {});
+// Physical witnesses at exact knot crossings of a bounded authored pcurve.
+[[nodiscard]] std::vector<glm::dvec3>
+sampleIfcPcurveCreasePoints(const ParametricCurve &uv,
+                           const ParametricSurface &surface,
+                           std::stop_token stop = {});
 [[nodiscard]] std::vector<std::array<glm::dvec3, 3>>
 readIfcSectionedSurfaceMesh(
     const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,
