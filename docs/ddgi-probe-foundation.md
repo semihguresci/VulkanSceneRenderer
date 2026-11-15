@@ -62,8 +62,33 @@ cutout coverage matches independently authored strip geometry exactly, while
 wrong-normal, full and empty controls remain distinct. Results are in
 `build/codex-gltf-validation/ray-footprint-normal-alpha-final-dfc887-native/results.json`
 on renderer `dfc887d53da4bb81ac75196f7d554ce0e9bf40e8110aaac72a6c592c8b9e84a4`.
-Dispatch timing, texture sizes and owned allocations are recorded; hardware
-bandwidth counters are unavailable on this device.
+The results record dispatch timing, texture sizes and owned allocations.
+The local Windows account lacks access to the NVIDIA hardware bandwidth
+counters. [NVIDIA counter permissions](https://developer.nvidia.com/nvidia-development-tools-solutions-err-nvgpuctrperm-nsight-graphics)
+
+To reproduce the checkerboard comparison, build the renderer, the CTest
+control shader and the path transport contracts. The GPU tests are opt-in.
+
+```powershell
+cmake --build out/build/windows-release --config Release --target VulkanSceneRenderer ddgi_footprint_control_shader path_transport_gpu_tests
+$env:CONTAINER_RUN_GPU_DDGI_FOOTPRINT = '1'
+$env:CONTAINER_RUN_GPU_PATH_TRANSPORT = '1'
+ctest --test-dir out/build/windows-release -C Release -R '^(ddgi_ray_footprint_gpu_regression|path_transport_gpu_tests)$' --output-on-failure
+```
+
+The checkerboard test stages a private copy of the renderer with a zero-width
+DDGI ray cone and verifies that only the trace shader differs. It records
+eight frame timings per technique and variant alongside the receiver mean
+and temporal RMS. The sampling contract also tests a view exposing only
+physical mips 3–5. Invalid gradients use mip 3, a one-level gradient uses
+mip 4, and a larger footprint clamps to mip 5.
+
+On the RTX 2080 SUPER with driver 610.88, filtering reduced receiver temporal
+RMS from 0.1150 to 0.0443 in both raster techniques. The filtered mean was
+within 0.8% of the uniform emitter control. Median trace time was 0.0873 ms
+filtered and 0.0811 ms at mip zero in Forward, and 0.0881 ms filtered and
+0.0879 ms at mip zero in Deferred. These timings are from the validation
+capture run.
 
 Direct-hit lighting supports directional, punctual and rectangle/disk emitters,
 emission, vertex colors, normal maps and diffuse energy attenuation from

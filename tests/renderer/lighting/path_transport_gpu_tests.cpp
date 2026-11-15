@@ -269,7 +269,7 @@ protected:
                                                VMA_ALLOCATION_CREATE_MAPPED_BIT)) {}
     ~Buffer() { memory.destroyBuffer(buffer); }
   };
-  std::vector<Result> run(std::span<const Query> input) {
+  std::vector<Result> run(std::span<const Query> input, vk::ImageView view = {}) {
     if (input.empty()) throw std::invalid_argument("Reference path transport empty queries");
     Buffer queries(*memory, input.size_bytes()), output(*memory, input.size() * sizeof(Result));
     std::memcpy(queries.buffer.allocation_info.pMappedData, input.data(), input.size_bytes());
@@ -289,7 +289,8 @@ protected:
     for (uint32_t i = 0; i < 2; ++i)
       device->raii().updateDescriptorSets(vk::WriteDescriptorSet(*sets.front(), i, 0, 1,
           vk::DescriptorType::eStorageBuffer, nullptr, &buffers[i]), {});
-    const vk::DescriptorImageInfo sampledImage({}, contractImageView,
+    const auto sampledView = view ? view : vk::ImageView(contractImageView);
+    const vk::DescriptorImageInfo sampledImage({}, sampledView,
                                                vk::ImageLayout::eShaderReadOnlyOptimal);
     device->raii().updateDescriptorSets(vk::WriteDescriptorSet(*sets.front(), 2, 0, 1,
         vk::DescriptorType::eSampledImage, &sampledImage, {}), {});
@@ -1572,6 +1573,51 @@ TEST_F(PathTransportGpu, InvalidRayGradientsUseAnExplicitBaseMip) {
     EXPECT_FLOAT_EQ(value.auxiliary.x, 0.f);
     EXPECT_EQ(value.valuePdf, value.directionPdf); // Exact SampleLevel(..., 0) control.
     EXPECT_FLOAT_EQ(value.valuePdf.y, 1.f);
+  }
+}
+TEST_F(PathTransportGpu, RayGradientsRespectRestrictedMipView) {
+  // The full image retains distinct colours in the omitted finer and coarser mips.
+  constexpr uint32_t baseMip = 3;
+  constexpr uint32_t levelCount = 3;
+  constexpr uint32_t viewWidth = kContractTextureWidth >> baseMip;
+  const vk::ImageViewCreateInfo viewInfo(
+      {}, vk::Image(contractImage), vk::ImageViewType::e2D,
+      vk::Format::eR8G8B8A8Unorm, {},
+      {vk::ImageAspectFlagBits::eColor, baseMip, levelCount, 0, 1});
+  const vk::raii::ImageView view(device->raii(), viewInfo);
+
+  struct Sample {
+    float gradient;
+    float referenceLod;
+    uint32_t physicalMip;
+    bool usable;
+  };
+  constexpr std::array samples{
+      Sample{0.f, 0.f, baseMip, false},
+      Sample{std::numeric_limits<float>::quiet_NaN(), 0.f, baseMip, false},
+      Sample{2.f / viewWidth, 1.f, baseMip + 1, true},
+      // The valid 512-texel footprint requests LOD 9 from a 3-level view.
+      Sample{16.f, 9.f, baseMip + levelCount - 1, true},
+  };
+  std::array<Query, samples.size()> input;
+  for (size_t i = 0; i < samples.size(); ++i) {
+    auto &query = input[i];
+    query.controls = {27, 0, 0, 0};
+    query.light = {.5f, .5f, 0, 0};
+    query.footprintA = {1.f, 0.f, 0.f, 1.f};
+    query.previousMean = {samples[i].gradient, samples[i].referenceLod, 0, 0};
+  }
+
+  const auto output = run(input, *view);
+  for (size_t i = 0; i < samples.size(); ++i) {
+    SCOPED_TRACE(i);
+    EXPECT_FLOAT_EQ(output[i].auxiliary.x, float(samples[i].usable));
+    const glm::vec4 expected =
+        glm::vec4(contractMipColour(samples[i].physicalMip)) / 255.f;
+    for (uint32_t channel = 0; channel < 4; ++channel) {
+      EXPECT_NEAR(output[i].valuePdf[channel], expected[channel], 1.f / 255.f);
+      EXPECT_NEAR(output[i].valuePdf[channel], output[i].directionPdf[channel], 1e-5f);
+    }
   }
 }
 TEST_F(PathTransportGpu, DispersionChannelIorsMatchTheSharedRasterMapping) {

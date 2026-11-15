@@ -1182,6 +1182,22 @@ set_tests_properties(ddgi_bim_room_plan_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
     LABELS "bim;ddgi;requires-vulkan;requires-display;visual-regression")
 
+if(Python3_Interpreter_FOUND)
+    set(DDGI_FOOTPRINT_CONTROL_SPIRV "${CMAKE_BINARY_DIR}/test_shaders/ddgi_trace_mip_zero.comp.spv")
+    add_slang_output(DDGI_FOOTPRINT_CONTROL_OUTPUTS "${SHADERS_DIR}/ddgi_trace.slang"
+        computeMain "${DDGI_FOOTPRINT_CONTROL_SPIRV}"
+        -capability spvRayQueryKHR -DCONTAINER_TEST_DDGI_MIP_ZERO=1)
+    add_custom_target(ddgi_footprint_control_shader DEPENDS ${DDGI_FOOTPRINT_CONTROL_OUTPUTS})
+    add_test(NAME ddgi_ray_footprint_gpu_regression
+        COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ddgi_ray_footprint_runtime_regression.py"
+                --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+                --baseline-shader "${DDGI_FOOTPRINT_CONTROL_SPIRV}"
+                --output "${TEST_RESULTS_DIR}/ddgi-ray-footprint" --managed-output --require-opt-in)
+    set_tests_properties(ddgi_ray_footprint_gpu_regression PROPERTIES
+        SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1200
+        LABELS "ddgi;requires-vulkan;requires-display;visual-regression")
+endif()
+
 add_test(NAME ifc_area_profiles_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ifc_area_profiles_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
