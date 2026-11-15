@@ -2426,6 +2426,24 @@ bool SceneManager::applyMaterialVariant(SceneGraph& graph,const MaterialVariantG
     // edited UVs, including ones restored by Undo, select per-binding ranges.
     const auto primitives=materialVariants_.primitives();
     if (primitives.size()!=texCoords.size()) return false;
+    std::vector<std::optional<uint32_t>> forwardNormalTexCoords(forward?primitives.size():0);
+    for (const auto& assignment:edit.assignments) {
+      const auto& node=*graph.getNode(assignment.node);
+      if (node.primitiveIndex>=runtimePrimitiveToSource_.size()) return false;
+      const auto sourceIndex=runtimePrimitiveToSource_[node.primitiveIndex];
+      if (sourceIndex<0 || size_t(sourceIndex)>=primitives.size()) return false;
+      const auto& primitive=primitives[size_t(sourceIndex)];
+      if (size_t(node.sourceMeshIndex)!=primitive.sourceMesh ||
+          size_t(node.sourcePrimitiveIndex)!=primitive.sourcePrimitive) return false;
+      const auto& source=gltfModel_.meshes[primitive.sourceMesh].primitives[primitive.sourcePrimitive];
+      if (!forward || (source.attributes.contains("NORMAL") && source.attributes.contains("TANGENT"))) continue;
+      const auto uv=materialNormalTexCoord(assignment.after);
+      if (!uv) continue;
+      auto& shared=forwardNormalTexCoords[size_t(sourceIndex)];
+      if (shared && shared!=uv)
+        throw std::runtime_error("Material variant instances of a shared primitive require conflicting normal texture UV sets");
+      shared=uv;
+    }
     for (size_t index=0;index<primitives.size();++index) {
       const auto& primitive=primitives[index];
       int32_t material=primitive.defaultMaterial;
