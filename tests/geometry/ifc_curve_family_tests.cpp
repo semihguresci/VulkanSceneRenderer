@@ -810,6 +810,160 @@ TEST(IfcCurveStyles, MappedStyleTransformsDashesAndWidthOnlyForItsOccurrence) {
   EXPECT_FALSE(pickCurveAtXY(model, other, {.5, .08}));
 }
 
+std::string metricCurveLayer(std::string_view item) {
+  return "#26=IFCPRESENTATIONLAYERWITHSTYLE('Curve defaults',$,(" +
+         std::string(item) + "),$,.T.,.F.,.F.,(#24));";
+}
+
+TEST(IfcCurveStyles, LayerDefaultsInheritAndAllowIndividualOverrides) {
+  enum class DirectStyle { None, ByLayer, Width, Continuous };
+  for (const bool millimetres : {false, true}) {
+    const double units = millimetres ? 1000. : 1.;
+    for (const auto style : {DirectStyle::None, DirectStyle::ByLayer,
+                             DirectStyle::Width, DirectStyle::Continuous}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "millimetres=" << millimetres
+                   << " directStyle=" << static_cast<int>(style));
+      auto definitions = stylePolyline(units) + metricCurveStyle(units) +
+                         metricCurveLayer("#10");
+      switch (style) {
+      case DirectStyle::None:
+        break;
+      case DirectStyle::ByLayer:
+        definitions +=
+            "#31=IFCDRAUGHTINGPREDEFINEDCURVEFONT('by layer');"
+            "#34=IFCDRAUGHTINGPREDEFINEDCOLOUR('by layer');"
+            "#32=IFCCURVESTYLE($,#31,IFCDESCRIPTIVEMEASURE('by layer'),#34,.T.);";
+        break;
+      case DirectStyle::Width:
+        definitions += "#32=IFCCURVESTYLE($,$,IFCPOSITIVELENGTHMEASURE(" +
+                       std::to_string(.4 * units) + "),$,.T.);";
+        break;
+      case DirectStyle::Continuous:
+        definitions += "#31=IFCDRAUGHTINGPREDEFINEDCURVEFONT('continuous');"
+                       "#34=IFCCOLOURRGB($,0.125,0.75,0.25);"
+                       "#32=IFCCURVESTYLE($,#31,$,#34,.T.);";
+        break;
+      }
+      if (style != DirectStyle::None)
+        definitions += "#33=IFCSTYLEDITEM(#10,(#32),$);";
+      auto source = fixture(definitions);
+      if (millimetres)
+        setMillimetreUnits(source);
+      const auto model = container::geometry::ifc::LoadFromStep(source);
+      ASSERT_NO_FATAL_FAILURE(complete(model));
+      ASSERT_EQ(model.elements.size(), 1u);
+      const auto &element = model.elements.front();
+      const bool continuous = style == DirectStyle::Continuous;
+      EXPECT_EQ(element.color, continuous ? glm::vec4(.125, .75, .25, 1)
+                                          : glm::vec4(.75, .25, .125, 1));
+      EXPECT_TRUE(element.hasAuthoredCurveWidth);
+      if (continuous)
+        expectCurveEndpoints(worldCurveEndpoints(model, element),
+                             solidPolylineEndpoints);
+      else
+        expectCurveEndpoints(worldCurveEndpoints(model, element),
+                             dashedPolylineEndpoints);
+      const double width = style == DirectStyle::Width ? .4 : .2;
+      EXPECT_TRUE(pickCurveAtXY(model, element, {.5, .4 * width}));
+      EXPECT_FALSE(pickCurveAtXY(model, element, {.5, .6 * width}));
+      EXPECT_EQ(pickCurveAtXY(model, element, {1.25, 0}), continuous);
+      EXPECT_TRUE(pickCurveAtXY(model, element, {3, .25}));
+      EXPECT_EQ(pickCurveAtXY(model, element, {3, .75}), continuous);
+    }
+  }
+}
+
+TEST(IfcCurveStyles, LayerStyleTracksMappedOccurrencesAndCloserExplicitStyle) {
+  for (const bool leafOverride : {false, true}) {
+    SCOPED_TRACE(leafOverride);
+    auto definitions =
+        stylePolyline(1000.) + metricCurveStyle(1000.) +
+        metricCurveLayer("#47") +
+        "#40=IFCCARTESIANPOINT((0.,0.,0.));"
+        "#41=IFCAXIS2PLACEMENT3D(#40,$,$);"
+        "#42=IFCSHAPEREPRESENTATION($,'Axis','Curve3D',(#10));"
+        "#43=IFCREPRESENTATIONMAP(#41,#42);"
+        "#44=IFCCARTESIANPOINT((10000.,0.,0.));"
+        "#45=IFCCARTESIANTRANSFORMATIONOPERATOR3D($,$,#44,2.,$);"
+        "#46=IFCCARTESIANTRANSFORMATIONOPERATOR3D($,$,#40,1.,$);"
+        "#47=IFCMAPPEDITEM(#43,#45); #48=IFCMAPPEDITEM(#43,#46);";
+    if (leafOverride)
+      definitions +=
+          "#31=IFCDRAUGHTINGPREDEFINEDCURVEFONT('continuous');"
+          "#34=IFCCOLOURRGB($,0.125,0.75,0.25);"
+          "#32=IFCCURVESTYLE($,#31,IFCPOSITIVELENGTHMEASURE(400.),#34,.T.);"
+          "#33=IFCSTYLEDITEM(#10,(#32),$);";
+    auto source =
+        fixture(definitions, "#47,#48", "'Axis','MappedRepresentation'");
+    setMillimetreUnits(source);
+    const auto model = container::geometry::ifc::LoadFromStep(source);
+    ASSERT_NO_FATAL_FAILURE(complete(model));
+    ASSERT_EQ(model.elements.size(), 2u);
+    const auto mapped =
+        std::ranges::find_if(model.elements, [](const auto &element) {
+          return element.transform[3].x > 9.f;
+        });
+    ASSERT_NE(mapped, model.elements.end());
+    const auto &other =
+        model.elements[mapped == model.elements.begin() ? 1 : 0];
+    EXPECT_TRUE(mapped->hasAuthoredCurveWidth);
+    EXPECT_EQ(other.hasAuthoredCurveWidth, leafOverride);
+    EXPECT_EQ(mapped->color, leafOverride ? glm::vec4(.125, .75, .25, 1)
+                                          : glm::vec4(.75, .25, .125, 1));
+    const auto mappedEndpoints = [](auto points) {
+      for (auto &p : points)
+        p = {10 + 2 * p.x, 2 * p.y, 2 * p.z};
+      return points;
+    };
+    if (leafOverride)
+      expectCurveEndpoints(worldCurveEndpoints(model, *mapped),
+                           mappedEndpoints(solidPolylineEndpoints));
+    else
+      expectCurveEndpoints(worldCurveEndpoints(model, *mapped),
+                           mappedEndpoints(dashedPolylineEndpoints));
+    expectCurveEndpoints(worldCurveEndpoints(model, other),
+                         solidPolylineEndpoints);
+    const double scaledWidth = leafOverride ? .8 : .4;
+    EXPECT_TRUE(pickCurveAtXY(model, *mapped, {11., .4 * scaledWidth}));
+    EXPECT_FALSE(pickCurveAtXY(model, *mapped, {11., .6 * scaledWidth}));
+    EXPECT_EQ(pickCurveAtXY(model, *mapped, {12.5, 0.}), leafOverride);
+    EXPECT_TRUE(pickCurveAtXY(model, other, {1.25, 0.}));
+    EXPECT_EQ(pickCurveAtXY(model, other, {.5, .16}), leafOverride);
+  }
+}
+
+TEST(IfcCurveStyles, LayerStyleKeepsIndependentFieldFallbacks) {
+  const auto definitions = stylePolyline(1.) + metricCurveStyle(1.) +
+                           metricCurveLayer("#10");
+  const auto model = container::geometry::ifc::LoadFromStep(fixture(
+      definitions + "#31=IFCDRAUGHTINGPREDEFINEDCOLOUR('red');"
+                    "#32=IFCCURVESTYLE($,$,IFCPOSITIVELENGTHMEASURE(0.4),#31,.F.);"
+                    "#33=IFCSTYLEDITEM(#10,(#32),$);"));
+  const auto unstyled =
+      container::geometry::ifc::LoadFromStep(fixture(stylePolyline(1.)));
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  ASSERT_EQ(model.elements.size(), 1u);
+  ASSERT_EQ(unstyled.elements.size(), 1u);
+  const auto &element = model.elements.front();
+  EXPECT_FALSE(element.hasAuthoredCurveWidth);
+  EXPECT_EQ(element.color, unstyled.elements.front().color);
+  expectCurveEndpoints(worldCurveEndpoints(model, element),
+                       dashedPolylineEndpoints);
+
+  const auto conflicting = container::geometry::ifc::LoadFromStep(fixture(
+      definitions + "#32=IFCCURVESTYLE($,$,IFCPOSITIVELENGTHMEASURE(0.4),$,.T.);"
+                    "#33=IFCPRESENTATIONLAYERWITHSTYLE('Other defaults',$,"
+                    "(#10),$,.T.,.F.,.F.,(#32));"));
+  ASSERT_NO_FATAL_FAILURE(complete(conflicting));
+  ASSERT_EQ(conflicting.elements.size(), 1u);
+  EXPECT_FALSE(conflicting.elements.front().hasAuthoredCurveWidth);
+  EXPECT_EQ(conflicting.elements.front().color, unstyled.elements.front().color);
+  expectCurveEndpoints(
+      worldCurveEndpoints(conflicting, conflicting.elements.front()),
+      solidPolylineEndpoints);
+}
+
 TEST(IfcCurveStyles, InvalidAndDraughtingDimensionsFallBackToDrawableCurve) {
   for (const bool draughting : {false, true}) {
     SCOPED_TRACE(draughting);
