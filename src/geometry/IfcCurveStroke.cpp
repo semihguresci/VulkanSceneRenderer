@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string_view>
 
 #include <glm/geometric.hpp>
 
@@ -25,6 +26,19 @@ const StepValue *argument(const Entity &entity, size_t index) {
                  index < entity.args.list.size()
              ? &entity.args.list[index]
              : nullptr;
+}
+
+bool omitted(const StepValue *value) {
+  return !value || value->kind == StepValue::Kind::Omitted;
+}
+
+bool byLayer(const StepValue *value) {
+  return value && value->kind == StepValue::Kind::String &&
+         value->text == "by layer";
+}
+
+bool namedByLayer(const Entity *item, std::string_view type) {
+  return item && item->type == type && byLayer(argument(*item, 0));
 }
 
 std::optional<double> number(const StepValue *value) {
@@ -106,15 +120,33 @@ glm::vec3 atDistance(glm::vec3 a, glm::vec3 b, double at, double length) {
 IfcCurveStroke
 readIfcCurveStroke(const std::unordered_map<uint32_t, Entity> &entities,
                    const Entity &curveStyle) {
-  if (curveStyle.type != "IFCCURVESTYLE")
+  if (curveStyle.type != "IFCCURVESTYLE" ||
+      curveStyle.args.kind != StepValue::Kind::List)
     return {};
+  const auto *rawFont = argument(curveStyle, 1);
+  const auto *rawWidth = argument(curveStyle, 2);
+  const auto *rawColor = argument(curveStyle, 3);
+  const auto *font = referenced(entities, rawFont);
+  IfcCurveStroke result;
+  result.patternFromLayer = omitted(rawFont) ||
+                            namedByLayer(font, "IFCDRAUGHTINGPREDEFINEDCURVEFONT");
+  result.widthFromLayer =
+      omitted(rawWidth) ||
+      (rawWidth->kind == StepValue::Kind::List &&
+       rawWidth->text == "IFCDESCRIPTIVEMEASURE" && rawWidth->list.size() == 1 &&
+       byLayer(&rawWidth->list.front()));
+  result.colorFromLayer =
+      omitted(rawColor) ||
+      namedByLayer(referenced(entities, rawColor), "IFCDRAUGHTINGPREDEFINEDCOLOUR");
+
   const auto *scope = argument(curveStyle, 4);
-  if (scope && scope->kind != StepValue::Kind::Omitted &&
+  if (!omitted(scope) &&
       (scope->kind != StepValue::Kind::Enum || scope->text != "T"))
-    return {}; // Paper-space dimensions require a plotting scale.
-  const double width = length(argument(curveStyle, 2)).value_or(0.);
-  return {positive(width) ? width : 0.,
-          readPattern(entities, referenced(entities, argument(curveStyle, 1)))};
+    return result; // Paper-space dimensions require a plotting scale.
+  const double width = length(rawWidth).value_or(0.);
+  if (positive(width)) result.width = width;
+  result.pattern = readPattern(entities, font);
+  return result;
 }
 
 std::optional<IfcCurveStrokePaths>

@@ -352,8 +352,16 @@ width-defined dots, butt-ended dashes and rounded joins in forward and deferred
 rendering on devices with or without Vulkan wide lines. Source colors remain
 unlit and respect curve visibility, depth and section clipping.
 
-Paper-space styles, layer-derived dimensions and named drafting fonts fall back
-to the default model stroke. Dot patterns require an explicit numeric width.
+An IFC presentation layer can provide the model-space stroke and color of a
+curve, geometric set or mapped item. Each omitted or explicit `by layer` field
+inherits its layer default. An item's own width, pattern or color overrides the
+corresponding default. A direct `continuous` font clears a layer's dash pattern.
+Each mapped occurrence uses its own layer and scale. Conflicting layer styles
+for the same item are ignored. Layer visibility and editing flags are outside
+this coverage. [IFC presentation layer](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcPresentationLayerWithStyle.htm)
+
+Paper-space dimensions and other named drafting fonts fall back to the default
+model stroke. Dot patterns require an explicit or inherited numeric width.
 Invalid or over-budget optional style fields fall back independently where
 possible. Indexed render curves are limited to 65,536 source/sample points.
 Disconnected, invalid or nonfinite paths are rejected before buffer mutation.
@@ -703,9 +711,11 @@ Use
 `ifc_periodic_spline_seams_gpu_regression` to verify depth, source colors and
 the torus bore in forward/deferred with TAA off/on.
 Curve style regressions check metric dashes and widths across metre and
-millimetre imports, reflected mapped placements and through-corner phase.
-With the same opt-in, run `ifc_curve_style_gpu_regression` to compare projected
-stroke widths and verify that viewport selection follows visible dashes.
+millimetre imports, reflected mapped placements, layer inheritance and
+through-corner phase. With the same opt-in, run
+`ifc_curve_style_gpu_regression` to compare projected stroke widths, direct
+styles and inherited styles on a shared curve, and verify that viewport
+selection follows visible dashes.
 Sectioned branch regressions check split/merge and multiway source corners,
 zero-width branch tips and constant collapsed strips,
 metre/millimetre stations, sloped crowns and sampled triangle chord error,

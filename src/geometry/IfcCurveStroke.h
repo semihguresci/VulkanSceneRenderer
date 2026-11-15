@@ -18,6 +18,9 @@ struct IfcCurveStroke {
   // Alternating visible and invisible lengths in IFC model units. A visible
   // length of zero denotes a point glyph.
   std::vector<double> pattern;
+  bool widthFromLayer = false;
+  bool patternFromLayer = false;
+  bool colorFromLayer = false;
 };
 
 struct IfcCurveStrokePaths {
@@ -26,8 +29,8 @@ struct IfcCurveStrokePaths {
   std::vector<glm::vec3> dots;
 };
 
-// Resolve each optional presentation field independently. Empty fields keep
-// the importing application's existing stroke defaults.
+// Mark omitted or explicit 'by layer' fields for the caller to inherit.
+// Empty explicit fields keep the importing application's stroke defaults.
 [[nodiscard]] IfcCurveStroke
 readIfcCurveStroke(const std::unordered_map<uint32_t, Entity> &entities,
                    const Entity &curveStyle);

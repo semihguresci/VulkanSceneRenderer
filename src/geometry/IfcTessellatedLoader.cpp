@@ -18,6 +18,7 @@
 #include <array>
 #include <cctype>
 #include <cmath>
+#include <compare>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
@@ -65,6 +66,30 @@ struct GeometryInstance {
   std::optional<glm::vec4> curveColor{};
   // Sectioned surfaces and their pcurves can vary with the product's guides.
   const MeshGroup *contextualGroup{};
+};
+
+struct CurveStrokeStyles {
+  uint32_t width{};
+  uint32_t pattern{};
+
+  auto operator<=>(const CurveStrokeStyles &) const = default;
+};
+
+struct CurveStyleReference {
+  uint32_t styleId{};
+  std::optional<glm::vec4> color;
+};
+
+struct ItemCurveStyle {
+  CurveStyleReference explicitStyle;
+  uint32_t legacyStroke{};
+};
+
+struct CurvePresentation {
+  std::optional<glm::vec4> color;
+  std::optional<glm::vec4> directColor;
+  const CurveStyleReference *layer{};
+  CurveStrokeStyles stroke;
 };
 
 struct StoreyMetadata {
@@ -2076,7 +2101,7 @@ private:
   }
 
   uint32_t firstCurveStroke(const StepValue *styles, size_t depth,
-                            StyleWalk &walk) {
+                            StyleWalk &walk, uint32_t &firstStyle) {
     for (const auto &value : asList(styles)) {
       if (!walk.budget.visit(depth))
         break;
@@ -2092,11 +2117,13 @@ private:
         const auto [entry, fresh] = curveStrokesByStyle_.try_emplace(*id);
         if (fresh)
           entry->second = detail::readIfcCurveStroke(entities_, *style);
+        if (!firstStyle)
+          firstStyle = *id;
         if (entry->second.width > 0 || !entry->second.pattern.empty())
           return *id;
       } else if (style->type == "IFCPRESENTATIONSTYLEASSIGNMENT") {
-        if (const auto stroke =
-                firstCurveStroke(argAt(*style, 0), depth + 1, walk))
+        if (const auto stroke = firstCurveStroke(
+                argAt(*style, 0), depth + 1, walk, firstStyle))
           return stroke;
       }
     }
@@ -2124,22 +2151,58 @@ private:
   void cacheStyleColors() {
     for (const auto id : sortedEntityIds_) {
       checkCancellation();
-      const Entity *styledItem = entity(id);
-      if (styledItem == nullptr || styledItem->type != "IFCSTYLEDITEM") {
+      const Entity *source = entity(id);
+      if (!source)
+        continue;
+      if (source->type == "IFCPRESENTATIONLAYERWITHSTYLE") {
+        StyleWalk strokeWalk{};
+        uint32_t curveStyle = 0;
+        firstCurveStroke(argAt(*source, 7), 0, strokeWalk, curveStyle);
+        if (!curveStyle)
+          continue;
+        StyleWalk colorWalk{};
+        const CurveStyleReference layer{curveStyle,
+                                        colorFromRef(curveStyle, 0, colorWalk)};
+        for (const auto &assignment : asList(argAt(*source, 2))) {
+          checkCancellation();
+          const auto itemRef = refValue(&assignment);
+          const auto *item = itemRef ? entity(*itemRef) : nullptr;
+          if (!item || (!detail::isCurveEntity(item->type) &&
+                        item->type != "IFCMAPPEDITEM" &&
+                        item->type != "IFCGEOMETRICCURVESET" &&
+                        item->type != "IFCGEOMETRICSET"))
+            continue;
+          const auto [entry, fresh] =
+              layerCurveStyleByItem_.try_emplace(*itemRef, layer);
+          // This inverse is single-valued. Avoid choosing a style based on
+          // file order when layers with different styles claim the same item.
+          if (!fresh && entry->second.styleId != curveStyle)
+            entry->second = {};
+        }
         continue;
       }
-      const auto itemRef = firstRef(*styledItem, 0);
+      if (source->type != "IFCSTYLEDITEM")
+        continue;
+      const auto itemRef = firstRef(*source, 0);
       if (!itemRef.has_value()) {
         continue;
       }
       StyleWalk walk{};
-      if (auto color = firstStyleColor(argAt(*styledItem, 1), 0, walk)) {
+      if (auto color = firstStyleColor(argAt(*source, 1), 0, walk)) {
         styleColorByItem_[*itemRef] = *color;
       }
       StyleWalk strokeWalk{};
-      if (const auto stroke =
-              firstCurveStroke(argAt(*styledItem, 1), 0, strokeWalk))
-        curveStrokeByItem_[*itemRef] = stroke;
+      uint32_t curveStyle = 0;
+      const auto stroke = firstCurveStroke(argAt(*source, 1), 0, strokeWalk,
+                                           curveStyle);
+      if (curveStyle) {
+        StyleWalk curveColorWalk{};
+        auto &itemStyle = curveStyleByItem_[*itemRef];
+        itemStyle.explicitStyle =
+            {curveStyle, colorFromRef(curveStyle, 0, curveColorWalk)};
+        if (stroke)
+          itemStyle.legacyStroke = stroke;
+      }
     }
 
     for (const auto id : sortedEntityIds_) {
@@ -2174,6 +2237,49 @@ private:
         faceColorsByFaceSet_[*mappedTo] = std::move(faceColors);
       }
     }
+  }
+
+  CurveStrokeStyles authoredCurveStroke(uint32_t styleId) const {
+    const auto &stroke = curveStrokesByStyle_.at(styleId);
+    return {stroke.width > 0 ? styleId : 0,
+            stroke.pattern.empty() ? 0 : styleId};
+  }
+
+  void applyCurvePresentation(uint32_t item,
+                              CurvePresentation &presentation) const {
+    if (const auto layer = layerCurveStyleByItem_.find(item);
+        layer != layerCurveStyleByItem_.end() && layer->second.styleId) {
+      presentation.layer = &layer->second;
+      presentation.stroke = authoredCurveStroke(layer->second.styleId);
+      presentation.color = layer->second.color ? layer->second.color
+                                                : presentation.directColor;
+    }
+    const auto style = curveStyleByItem_.find(item);
+    if (!presentation.layer) {
+      if (const auto color = styleColorByItem_.find(item);
+          color != styleColorByItem_.end()) {
+        presentation.color = color->second;
+        presentation.directColor = color->second;
+      }
+      if (style != curveStyleByItem_.end() && style->second.legacyStroke)
+        presentation.stroke = authoredCurveStroke(style->second.legacyStroke);
+      return;
+    }
+    if (style == curveStyleByItem_.end())
+      return;
+
+    const auto &itemStyle = style->second;
+    const auto defaults = authoredCurveStroke(presentation.layer->styleId);
+    const auto authored = authoredCurveStroke(itemStyle.explicitStyle.styleId);
+    const auto &fields = curveStrokesByStyle_.at(itemStyle.explicitStyle.styleId);
+    presentation.stroke = {
+        fields.widthFromLayer ? defaults.width : authored.width,
+        fields.patternFromLayer ? defaults.pattern : authored.pattern};
+    if (itemStyle.explicitStyle.color)
+      presentation.directColor = itemStyle.explicitStyle.color;
+    const auto &color = fields.colorFromLayer ? presentation.layer->color
+                                               : itemStyle.explicitStyle.color;
+    presentation.color = color ? color : presentation.directColor;
   }
 
   void cacheVoidRelations() {
@@ -6800,7 +6906,7 @@ private:
 
   std::optional<MeshGroup> appendRenderCurve(uint32_t id,
                                              std::span<const glm::vec3> points,
-                                             uint32_t strokeId) {
+                                             CurveStrokeStyles stroke) {
     const auto color = styleColorByItem_.contains(id) ? styleColorByItem_.at(id)
                                                       : defaultColor();
     const auto group = [&](bool metric) {
@@ -6809,28 +6915,26 @@ private:
     };
     const std::array<size_t, 1> counts{points.size()};
     const float pickRadius = .005f / unitScale_;
-    if (strokeId) {
-      const auto &stroke = curveStrokesByStyle_.at(strokeId);
-      if (!stroke.pattern.empty()) {
-        const auto dashed =
-            detail::splitIfcCurveStroke(points, counts, stroke.pattern, stop_);
-        if (dashed) {
-          if (stroke.width > 0 &&
-              appendMetricPolylineGeometry(model_, dashed->points,
-                                           dashed->counts, dashed->dots,
-                                           nextMeshId_, stroke.width, stop_))
-            return group(true);
-          if (dashed->dots.empty() &&
-              appendPolylineGeometry(model_, dashed->points, dashed->counts,
-                                     nextMeshId_, pickRadius, stop_))
-            return group(false);
-        }
+    const double width =
+        stroke.width ? curveStrokesByStyle_.at(stroke.width).width : 0.;
+    if (stroke.pattern) {
+      const auto &pattern = curveStrokesByStyle_.at(stroke.pattern).pattern;
+      if (const auto dashed =
+              detail::splitIfcCurveStroke(points, counts, pattern, stop_)) {
+        if (width > 0 &&
+            appendMetricPolylineGeometry(model_, dashed->points, dashed->counts,
+                                         dashed->dots, nextMeshId_, width, stop_))
+          return group(true);
+        if (dashed->dots.empty() &&
+            appendPolylineGeometry(model_, dashed->points, dashed->counts,
+                                   nextMeshId_, pickRadius, stop_))
+          return group(false);
       }
-      if (stroke.width > 0 &&
-          appendMetricPolylineGeometry(model_, points, counts, {}, nextMeshId_,
-                                       stroke.width, stop_))
-        return group(true);
     }
+    if (width > 0 &&
+        appendMetricPolylineGeometry(model_, points, counts, {}, nextMeshId_,
+                                     width, stop_))
+      return group(true);
     if (appendPolylineGeometry(model_, points, counts, nextMeshId_, pickRadius,
                                stop_))
       return group(false);
@@ -6838,7 +6942,8 @@ private:
   }
 
   const MeshGroup *contextualGeometry(const Entity &source,
-                                      SectionedGuides guides, uint32_t stroke,
+                                      SectionedGuides guides,
+                                      CurveStrokeStyles stroke,
                                       std::string &error) {
     const auto [entry, fresh] = contextualGeometry_.try_emplace(
         std::tuple(source.id, stroke, std::move(guides.sameFrame),
@@ -6897,8 +7002,8 @@ private:
   collectGeometryInstances(uint32_t ref, const glm::mat4 &transform,
                            std::vector<GeometryInstance> &instances,
                            RepresentationWalk &walk, const Entity *product,
-                           std::optional<glm::vec4> curveColor = std::nullopt,
-                           uint32_t context = 0, uint32_t curveStroke = 0) {
+                           CurvePresentation presentation = {},
+                           uint32_t context = 0) {
     if (!walk.budget.visit(walk.visiting.size())) {
       walk.exceeded = true;
       return;
@@ -6918,12 +7023,9 @@ private:
       return;
     }
 
-    if (const auto style = styleColorByItem_.find(ref);
-        style != styleColorByItem_.end())
-      curveColor = style->second;
-    if (const auto style = curveStrokeByItem_.find(ref);
-        style != curveStrokeByItem_.end())
-      curveStroke = style->second;
+    applyCurvePresentation(ref, presentation);
+    const auto &curveColor = presentation.color;
+    const auto stroke = presentation.stroke;
 
     const auto *tag = argAt(*source, 2);
     const bool isGuide = source->type == "IFCOFFSETCURVEBYDISTANCES" && tag &&
@@ -6943,7 +7045,8 @@ private:
           !guides.differentFrame.empty()) {
         std::string error;
         const auto *group = contextualGeometry(
-            *source, std::move(guides), sectioned ? 0 : curveStroke, error);
+            *source, std::move(guides), sectioned ? CurveStrokeStyles{} : stroke,
+            error);
         if (group)
           instances.push_back({ref, transform, curveColor, group});
         else
@@ -6956,10 +7059,10 @@ private:
     }
 
     if (detail::isCurveEntity(source->type)) {
-      if (curveStroke) {
+      if (stroke.width || stroke.pattern) {
         std::string error;
         if (const auto *group =
-                contextualGeometry(*source, {}, curveStroke, error))
+                contextualGeometry(*source, {}, stroke, error))
           instances.push_back({ref, transform, curveColor, group});
         else
           reportGeometryIssue(ref, product, std::move(error));
@@ -6968,7 +7071,7 @@ private:
       if (!groupsByItem_.contains(ref) && !conversionErrors_.contains(ref)) {
         std::string error;
         const auto points = readRenderCurve(ref, error);
-        if (auto group = appendRenderCurve(ref, points, 0)) {
+        if (auto group = appendRenderCurve(ref, points, {})) {
           groupsByItem_[ref] = {*group};
         } else {
           conversionErrors_[ref] =
@@ -6997,7 +7100,7 @@ private:
           return;
         if (item.kind == StepValue::Kind::Ref)
           collectGeometryInstances(item.ref, transform, instances, walk,
-                                   product, curveColor, context, curveStroke);
+                                   product, presentation, context);
         else if (!walk.budget.visit(walk.visiting.size()))
           walk.exceeded = true;
         else
@@ -7118,7 +7221,7 @@ private:
         if (walk.exceeded) return;
         if (rep.kind == StepValue::Kind::Ref)
           collectGeometryInstances(rep.ref, transform, instances, walk, product,
-                                   curveColor, context, curveStroke);
+                                   presentation, context);
         else if (!walk.budget.visit(walk.visiting.size()))
           walk.exceeded = true;
         else
@@ -7134,7 +7237,7 @@ private:
         if (walk.exceeded) return;
         if (item.kind == StepValue::Kind::Ref)
           collectGeometryInstances(item.ref, transform, instances, walk,
-                                   product, curveColor, context, curveStroke);
+                                   product, presentation, context);
         else if (!walk.budget.visit(walk.visiting.size()))
           walk.exceeded = true;
         else
@@ -7151,8 +7254,7 @@ private:
         return;
       }
       collectGeometryInstances(*sourceRef, transform * mappedItemFrame(*source),
-                               instances, walk, product, curveColor, context,
-                               curveStroke);
+                               instances, walk, product, presentation, context);
       return;
     }
 
@@ -7164,15 +7266,14 @@ private:
       }
       collectGeometryInstances(*mappedRepRef,
                                transform * representationMapFrame(*source),
-                               instances, walk, product, curveColor, context,
-                               curveStroke);
+                               instances, walk, product, presentation, context);
       return;
     }
 
     if (source->type == "IFCSTYLEDITEM") {
       if (const auto itemRef = firstRef(*source, 0); itemRef.has_value()) {
         collectGeometryInstances(*itemRef, transform, instances, walk, product,
-                                 curveColor, context, curveStroke);
+                                 presentation, context);
       }
       return;
     }
@@ -7580,12 +7681,13 @@ private:
   std::unordered_map<uint32_t, glm::vec4> styleColorByItem_{};
   std::unordered_map<uint32_t, std::optional<glm::vec4>>
       styleColorByReference_{};
-  std::unordered_map<uint32_t, uint32_t> curveStrokeByItem_{};
+  std::unordered_map<uint32_t, ItemCurveStyle> curveStyleByItem_{};
+  std::unordered_map<uint32_t, CurveStyleReference> layerCurveStyleByItem_{};
   std::unordered_map<uint32_t, detail::IfcCurveStroke> curveStrokesByStyle_{};
   std::unordered_map<uint32_t, std::vector<glm::vec4>> faceColorsByFaceSet_{};
   std::unordered_map<uint32_t, std::vector<MeshGroup>> groupsByItem_{};
   // Node-owned groups keep GeometryInstance references valid as the map grows.
-  std::map<std::tuple<uint32_t, uint32_t, std::vector<uint32_t>,
+  std::map<std::tuple<uint32_t, CurveStrokeStyles, std::vector<uint32_t>,
                       std::vector<uint32_t>>,
            std::pair<std::optional<MeshGroup>, std::string>>
       contextualGeometry_{};

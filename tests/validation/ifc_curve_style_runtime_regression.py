@@ -87,22 +87,28 @@ def write_fixture(path):
         local = step.add("IFCLOCALPLACEMENT", "$", position)
         step.add("IFCBUILDINGELEMENTPROXY", f"'{index + 1:022d}'", "$", f"'{name}'", "$", "$", local, shape, "$", "$")
 
+    # The interior collinear vertex lies inside an authored dash. Both
+    # occurrences reuse this curve while taking their styles at the mapped item.
+    stations = (0., 2670., CURVE_LENGTH_MM)
+    points = [step.point(station - CURVE_LENGTH_MM / 2., 0., 0.) for station in stations]
+    curve = step.add("IFCPOLYLINE", f"({','.join(points)})")
+    curves = step.add("IFCGEOMETRICCURVESET", f"({curve})")
+    source_rep = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'GeometricCurveSet'", f"({curves})")
+    mapping = step.add("IFCREPRESENTATIONMAP", model_frame, source_rep)
+    assignments = []
     for index, (name, y, width, scale, color) in enumerate(STROKES):
-        # The interior collinear vertex lies inside an authored dash.
-        stations = (0., 2670., CURVE_LENGTH_MM)
-        points = [step.point(station - CURVE_LENGTH_MM / 2., 0., 0.) for station in stations]
-        curve = step.add("IFCPOLYLINE", f"({','.join(points)})")
         rgb = step.add("IFCCOLOURRGB", "$", *color)
         style = step.add("IFCCURVESTYLE", f"'{name}'", font, f"IFCPOSITIVELENGTHMEASURE({width})", rgb, ".T.")
-        step.add("IFCSTYLEDITEM", curve, f"({style})", "$")
-        curves = step.add("IFCGEOMETRICCURVESET", f"({curve})")
-        rep = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'GeometricCurveSet'", f"({curves})")
-        if scale != 1.:
-            mapping = step.add("IFCREPRESENTATIONMAP", model_frame, rep)
-            transform = step.add("IFCCARTESIANTRANSFORMATIONOPERATOR3D", "$", "$", step.point(0., 0., 0.), scale, "$")
-            mapped = step.add("IFCMAPPEDITEM", mapping, transform)
-            rep = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'MappedRepresentation'", f"({mapped})")
+        transform = step.add("IFCCARTESIANTRANSFORMATIONOPERATOR3D", "$", "$", step.point(0., 0., 0.), scale, "$")
+        mapped = step.add("IFCMAPPEDITEM", mapping, transform)
+        assignments.append((mapped, style))
+        rep = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'MappedRepresentation'", f"({mapped})")
         product(index, name, rep, y)
+    (cyan, cyan_style), (orange, orange_style) = assignments
+    step.add("IFCPRESENTATIONLAYERWITHSTYLE", "'Corridor strokes'", "$", f"({cyan},{orange})", "$",
+             ".T.", ".F.", ".F.", f"({orange_style})")
+    # Cyan directly overrides the orange layer default.
+    step.add("IFCSTYLEDITEM", cyan, f"({cyan_style})", "$")
 
     for index, (name, left, right, depth) in enumerate(PANELS, len(STROKES)):
         lo, hi = -PANEL_HALF_HEIGHT, PANEL_HALF_HEIGHT
