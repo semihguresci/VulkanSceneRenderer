@@ -18,7 +18,8 @@ GRAPH_NODES = (1, 3)
 TECHNIQUES = ("forward-raster", "deferred-raster")
 DEFAULT_COHORTS = ("generated", "authored", "missing")
 SEAM_COHORTS = ("seam", "skin-seam")
-COHORTS = (*DEFAULT_COHORTS, "morphed", *SEAM_COHORTS)
+COHORTS = (*DEFAULT_COHORTS, "morphed", *SEAM_COHORTS, "large")
+LARGE_GRID_CELLS = 40
 MORPH_DELTAS = ((0, 0.125, 0), (0, 0.125, 0), (0, 0.25, 0))
 SEAM_POSITIONS = ((-.95, 0, 0), (.95, 0, 0), (0, .86, 0), (0, -.86, 0))
 SEAM_INDICES = (0, 1, 2, 1, 0, 3)
@@ -54,6 +55,27 @@ def skin_inverse_bind(x):
             for y in (0, SECOND_JOINT_HEIGHT)]
 
 
+def large_geometry():
+    count = LARGE_GRID_CELLS
+    # U0 increases along +Y and V along +X. Flipping U for UV1 changes
+    # (T, sign) from (+Y, -1) to (-Y, +1) on both triangles of every cell.
+    positions, uv0, uv1 = [], [], []
+    for row in range(count + 1):
+        for column in range(count + 1):
+            x, y = column / count, row / count
+            positions.append((2 * x - 1, 1.6 * y - .8, 0))
+            uv0.append((y, x))
+            uv1.append((-y, x))
+    indices = []
+    for row in range(count):
+        for column in range(count):
+            lower_left = row * (count + 1) + column
+            upper_left = lower_left + count + 1
+            indices.extend((lower_left, lower_left + 1, upper_left + 1,
+                            lower_left, upper_left + 1, upper_left))
+    return positions, uv0, uv1, indices
+
+
 def write_fixture(path, mode, *, reference=None, morphed_reference=False):
     from gltf_accessor_runtime_regression import Asset
     from gltf_tangent_uv_runtime_regression import (
@@ -63,8 +85,12 @@ def write_fixture(path, mode, *, reference=None, morphed_reference=False):
     asset = Asset()
     seam = mode in SEAM_COHORTS
     skinned = mode == "skin-seam"
-    positions, uv0, uv1, corners = (SEAM_POSITIONS, SEAM_UV0, SEAM_UV1, SEAM_INDICES) if seam else (
-        POSITIONS, UV0, UV1, INDICES)
+    if mode == "large":
+        positions, uv0, uv1, corners = large_geometry()
+    elif seam:
+        positions, uv0, uv1, corners = SEAM_POSITIONS, SEAM_UV0, SEAM_UV1, SEAM_INDICES
+    else:
+        positions, uv0, uv1, corners = POSITIONS, UV0, UV1, INDICES
     if morphed_reference:
         positions = [tuple(p + d for p, d in zip(position, delta, strict=True))
                      for position, delta in zip(positions, MORPH_DELTAS, strict=True)]
@@ -123,7 +149,7 @@ def write_fixture(path, mode, *, reference=None, morphed_reference=False):
         material = add_material(0)
         if mode != "missing":
             add_material(1)
-        tangent = [WRONG_UV0_TANGENT] * len(positions) if mode == "authored" or seam else None
+        tangent = [WRONG_UV0_TANGENT] * len(positions) if mode in ("authored", "large") or seam else None
         shared = add_mesh(material, tangent)
         meshes = (shared, shared)
         if mode != "missing":
@@ -368,7 +394,28 @@ def verify_seam_frames():
             np.testing.assert_allclose(np.append(tangent, sign), frame, atol=1e-12, rtol=0)
 
 
-def inspect_export(path, *, authored=False, morphed=False, seam=False, skinned=False):
+def verify_large_frames():
+    import numpy as np
+    from gltf_tangent_uv_runtime_regression import TANGENT, WRONG_UV0_TANGENT
+
+    positions, uv0, uv1, indices = large_geometry()
+    require(len(indices) > 8192, "The large grid must exceed the former corner limit")
+    corners = np.asarray(indices).reshape(-1, 3)
+    vertices = np.asarray(positions, dtype=np.float32)[corners]
+    edges = vertices[:, 1:] - vertices[:, :1]
+    normals = np.cross(edges[:, 0], edges[:, 1])
+    require(np.all(normals[:, 2] > 0), "The large grid has incorrect winding")
+    for uv, frame in ((uv0, WRONG_UV0_TANGENT), (uv1, TANGENT)):
+        coordinates = np.asarray(uv, dtype=np.float32)[corners]
+        jacobian = coordinates[:, 1:] - coordinates[:, :1]
+        tangent, bitangent = np.linalg.solve(jacobian, edges).transpose(1, 0, 2)
+        tangent /= np.linalg.norm(tangent, axis=1, keepdims=True)
+        sign = np.sign(np.sum(np.cross(normals, tangent) * bitangent, axis=1))
+        actual = np.column_stack((tangent, sign))
+        np.testing.assert_allclose(actual, np.broadcast_to(frame, actual.shape), atol=1e-6, rtol=0)
+
+
+def inspect_export(path, *, authored=False, morphed=False, seam=False, skinned=False, large=False):
     import numpy as np
     from gltf_accessor_runtime_regression import decode_accessor, load_asset
     from gltf_merge_runtime_regression import image_pixels
@@ -392,8 +439,12 @@ def inspect_export(path, *, authored=False, morphed=False, seam=False, skinned=F
     require(len(instances) == 2 and instances[0][1]["material"] != instances[1][1]["material"],
             "Export collapsed distinct bindings of the shared mesh")
     np.testing.assert_allclose([item[0] for item in instances], PLACEMENTS, atol=1e-5, rtol=0)
-    positions, uv0, uv1, corners = (SEAM_POSITIONS, SEAM_UV0, SEAM_UV1, SEAM_INDICES) if seam else (
-        POSITIONS, UV0, UV1, INDICES)
+    if large:
+        positions, uv0, uv1, corners = large_geometry()
+    elif seam:
+        positions, uv0, uv1, corners = SEAM_POSITIONS, SEAM_UV0, SEAM_UV1, SEAM_INDICES
+    else:
+        positions, uv0, uv1, corners = POSITIONS, UV0, UV1, INDICES
     extension = "KHR_materials_variants"
     if seam:
         require([variant["name"] for variant in model["extensions"][extension]["variants"]]
@@ -484,7 +535,13 @@ def main():
     print(f"Live normal UV fixtures and captures: {output}", flush=True)
     sources = output / "sources"
     sources.mkdir(parents=True, exist_ok=False)
-    source_models = {cohort: write_fixture(sources / f"{cohort}.gltf", cohort) for cohort in COHORTS}
+    source_models = {cohort: write_fixture(sources / f"{cohort}.gltf", cohort)
+                     for cohort in COHORTS if cohort != "large"}
+    if "large" in cohorts:
+        verify_large_frames()
+        write_fixture(sources / "large.gltf", "large")
+        for case, uvs in CONTROLS.items():
+            write_fixture(sources / f"large-literal-{case}.gltf", "large", reference=uvs)
     control_models = [write_fixture(sources / f"literal-{case}.gltf", "literal", reference=uvs)
                       for case, uvs in CONTROLS.items()]
     verify_source_order([source_models["generated"], *control_models])
@@ -518,7 +575,7 @@ def main():
     try:
         for technique in args.technique or TECHNIQUES:
             controls = {}
-            if any(cohort not in ("morphed", *SEAM_COHORTS) for cohort in cohorts):
+            if any(cohort not in ("morphed", "large", *SEAM_COHORTS) for cohort in cohorts):
                 controls = {case: run(technique, sources / f"literal-{case}.gltf", f"literal-{case}")[13] for case in CONTROLS}
                 report["checks"].append(dict(technique=technique, literalDifferentiation=verify_oracles(controls)))
             specialized_controls = {}
@@ -538,10 +595,14 @@ def main():
                 morphed = cohort == "morphed"
                 seam = cohort in SEAM_COHORTS
                 skinned = cohort == "skin-seam"
+                large = cohort == "large"
+                authored = cohort in ("authored", "large")
                 index_count = len(SEAM_INDICES) if seam else 3
+                if large:
+                    index_count = 6 * LARGE_GRID_CELLS ** 2
                 expected = controls
-                if morphed or seam:
-                    prefix = "seam" if seam else "morph"
+                if morphed or seam or large:
+                    prefix = "seam" if seam else ("morph" if morphed else "large")
                     if prefix not in specialized_controls:
                         specialized_controls[prefix] = {
                             case: run(technique, sources / f"{prefix}-literal-{case}.gltf", f"{prefix}-literal-{case}")[13]
@@ -570,11 +631,11 @@ def main():
                 if skinned:
                     verify_skin_pose(frames[67]["state"], (False, False))
                     verify_skin_pose(frames[73]["state"], (True, False))
-                variant_visual = "initial" if cohort == "authored" or seam else "assigned"
+                variant_visual = "initial" if authored or seam else "assigned"
                 report["checks"].append(dict(technique=technique, cohort=cohort,
                                              namedVariant=image_match(frames[67], expected[variant_visual]),
                                              namedVariantUndo=image_match(frames[73], expected["edited"])))
-                materials = inspect_export(save, authored=cohort == "authored", morphed=morphed, seam=seam, skinned=skinned)
+                materials = inspect_export(save, authored=authored, morphed=morphed, seam=seam, skinned=skinned, large=large)
                 portable, files = portable_copy(save, output / f"{technique}-{cohort}-portable")
                 reload_options = dict(sequence=sources / "seam-reload.json") if seam else {}
                 reloaded = run(technique, portable, f"{cohort}-reload", reload_frames if seam else (13,), **reload_options)

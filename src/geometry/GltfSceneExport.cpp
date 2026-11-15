@@ -1423,6 +1423,15 @@ tinygltf::Primitive serializePrimitive(tinygltf::Model& output,
   primitive.extensions_json_string.clear();
 
   Bytes position, normal, tangent, color, uv0, uv1, indices;
+  if (split) {
+    const auto count = mesh.vertices().size();
+    position.reserve(count * 3u * sizeof(float));
+    normal.reserve(count * 3u * sizeof(float));
+    color.reserve(count * 4u * sizeof(float));
+    uv0.reserve(count * 2u * sizeof(float));
+    uv1.reserve(count * 2u * sizeof(float));
+    indices.reserve(mesh.indices().size() * sizeof(uint32_t));
+  }
   std::array<double, 3> minimum{std::numeric_limits<double>::max(),
                               std::numeric_limits<double>::max(),
                               std::numeric_limits<double>::max()};
@@ -1497,15 +1506,17 @@ bool variantUsesOtherNormalUv(const MaterialVariantPrimitive& primitive,
 }
 
 GltfPrimitiveTangentVariant preparePortableTangentSplit(const geometry::Mesh& mesh,
-    uint32_t texCoord, bool retainOtherUv, uint64_t& remaining) {
+    uint32_t texCoord, bool retainOtherUv, uint64_t& remainingBytes,
+    uint64_t& remainingWork) {
   const auto regenerate = [&](const geometry::Mesh& source, uint32_t uv) {
-    if (source.indices().size() > kMaxLiveNormalFrameCorners)
-      fail("portable tangent seam export exceeds the tangent generation corner limit");
-    // Account for regenerated vertex storage, the split map and MikkTSpace
-    // scratch before entering the generator, including any alternate UV run.
-    chargeTangentSplitBytes(remaining, source.vertices().size(), sizeof(geometry::Vertex) * 3u);
-    chargeTangentSplitBytes(remaining, source.indices().size(), 512u);
-    return RegenerateGltfPrimitiveTangents(source, uv, true);
+    // Budget copied and grown vertex storage, per-corner tangent frames,
+    // indices, and the seam lookup and remap before generating either UV.
+    // MikkTSpace meters its allocations and work separately.
+    constexpr size_t cornerBytes = sizeof(geometry::Vertex) + sizeof(glm::vec4) +
+                                   8u * sizeof(uint32_t) + 96u;
+    chargeTangentSplitBytes(remainingBytes, source.vertices().size(), sizeof(geometry::Vertex) * 3u);
+    chargeTangentSplitBytes(remainingBytes, source.indices().size(), cornerBytes);
+    return RegenerateGltfPrimitiveTangents(source, uv, true, &remainingWork);
   };
   auto first = regenerate(mesh, texCoord);
   if (!retainOtherUv) return first;
@@ -1689,8 +1700,9 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   output.nodes.resize(snapshot.graph.nodeCount());
   std::map<uint32_t, tinygltf::Primitive> primitives;
   std::map<std::pair<uint32_t, uint32_t>, std::optional<tinygltf::Primitive>> splitPrimitives;
-  // Cumulative tangent-generation work and additional split buffer payload.
+  // All bindings and alternate UVs share the work and additional buffer allowances.
   uint64_t remainingTangentSplitBytes = 1024ull * 1024ull * 1024ull;
+  uint64_t remainingTangentSplitWork = kDefaultGltfTangentWorkBudget;
   std::map<std::pair<uint32_t, uint32_t>, int> meshes;
   std::vector<MaterialVariantExportPrimitive> variantExports;
   std::map<int, int> sourceToRuntime;
@@ -1884,7 +1896,7 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
             const bool retainOtherUv = variantUsesOtherNormalUv(materialVariants->primitives()[size_t(sourcePrimitive)],
                 output.materials, snapshot.sourceMaterialToRuntimeIndices, binding.texCoord);
             const auto variant = preparePortableTangentSplit(canonical, binding.texCoord, retainOtherUv,
-                                                             remainingTangentSplitBytes);
+                remainingTangentSplitBytes, remainingTangentSplitWork);
             if (!variant.sourceVertexMap.empty())
               split->second = serializePrimitive(output, canonical, source, &variant, &remainingTangentSplitBytes);
           }

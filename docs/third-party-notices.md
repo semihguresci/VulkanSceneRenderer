@@ -13,6 +13,9 @@ prefixes as `GLM-1.0.3-LICENSE.txt` and `VMA-3.5.0-LICENSE.txt`. Builds using th
 optional portable Vulkan SDK core also include the actual 1.4.363 header and
 loader notices. Those build headers and the separately selected Vulkan runtime
 loader are recorded independently.
+Live glTF tangent generation also compiles a modified MikkTSpace implementation
+with work and scratch budgets. Its source revision and zlib notice are in
+`THIRD_PARTY_LICENSES/MikkTSpace-bounded-zlib.txt`.
 The eleven other selected runtime libraries have versioned notices from their
 actual package prefixes. `THIRD_PARTY_LICENSES/selected-dependencies.json` and
 `build-info.json` retain their exact versions, notice hashes and compatibility

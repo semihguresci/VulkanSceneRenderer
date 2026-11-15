@@ -215,7 +215,7 @@ class SceneController {
   [[nodiscard]] PreparedMaterialRouting prepareMaterialRouting(
       std::span<const container::scene::MaterialRenderProperties> materials,
       uint32_t imageCount,bool showDiagCube,uint64_t expectedSceneEpoch,
-      const MaterialRoutingLimits& limits) const;
+      const MaterialRoutingLimits& limits, uint64_t* tangentWorkRemaining = nullptr) const;
   [[nodiscard]] PreparedMaterialRouting prepareMaterialRouting(
       std::span<const container::scene::MaterialRenderProperties> materials,
       uint32_t imageCount,bool showDiagCube,uint64_t expectedSceneEpoch) const;
@@ -228,7 +228,7 @@ class SceneController {
       std::span<const container::scene::MaterialRenderProperties> materials,
       const container::scene::PreparedMaterialBindingChange& bindings,
       uint32_t imageCount,bool showDiagCube,uint64_t expectedSceneEpoch,
-      const MaterialRoutingLimits& limits) const;
+      const MaterialRoutingLimits& limits, uint64_t* tangentWorkRemaining = nullptr) const;
   [[nodiscard]] PreparedMaterialRouting prepareMaterialRouting(
       std::span<const container::scene::MaterialRenderProperties> materials,
       const container::scene::PreparedMaterialBindingChange& bindings,
@@ -404,7 +404,7 @@ class SceneController {
   [[nodiscard]] PreparedMaterialRouting prepareMaterialRoutingImpl(
       std::span<const container::scene::MaterialRenderProperties>,
       const container::scene::PreparedMaterialBindingChange*,uint32_t,bool,uint64_t,
-      const MaterialRoutingLimits&) const;
+      const MaterialRoutingLimits&,uint64_t* tangentWorkRemaining) const;
   struct PrimitiveBounds {
     glm::vec3 center{0.0f};
     float radius{0.0f};
@@ -429,7 +429,7 @@ class SceneController {
       std::span<const container::scene::MaterialRenderProperties> prospective = {},
       const container::scene::PreparedMaterialBindingChange* bindings = nullptr) const;
   [[nodiscard]] NormalFrameGeometry configureNormalFrameGeometry(
-      std::span<const NormalFrameBinding>) const;
+      std::span<const NormalFrameBinding>,uint64_t* tangentWorkRemaining = nullptr) const;
   [[nodiscard]] GltfDeformationSceneUpdate updateConfiguredDeformation(
       GltfDeformationScene*, std::span<const uint32_t> renderPrimitives, bool resetHistory) const;
   void rebuildDeformationBindStreams();

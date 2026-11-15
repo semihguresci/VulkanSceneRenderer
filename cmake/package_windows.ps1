@@ -514,6 +514,7 @@ if ($openVdbEnabled -or $nanoCodecNotices.Count -gt 0) {
 foreach ($package in @('mikktspace', 'shader-slang', 'vulkan', 'vulkan-headers', 'vulkan-loader')) {
     Copy-Item -LiteralPath (Join-Path $dependencyDirectory "$package/copyright") -Destination (Join-Path $licensesDirectory "$package.txt")
 }
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'src/third_party/mikktspace_bounded/LICENSE.txt') -Destination (Join-Path $licensesDirectory 'MikkTSpace-bounded-zlib.txt')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Apache-2.0.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Boost-1.0.txt') -Destination $licensesDirectory
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'cmake/licenses/Earcut-ISC.txt') -Destination $licensesDirectory

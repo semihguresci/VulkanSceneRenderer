@@ -4,14 +4,20 @@
 #include <gtest/gtest.h>
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <mikktspace.h>
 
 #include <array>
+#include <cmath>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
+#include <string_view>
+#include <utility>
 #include <vector>
 
 namespace {
 using namespace container::geometry::gltf;
+using container::geometry::Mesh;
 using container::geometry::Vertex;
 
 constexpr std::array<uint32_t, 3> indices{0, 1, 2};
@@ -61,6 +67,102 @@ void expectVerticesEqual(const std::vector<Vertex>& a, const std::vector<Vertex>
     EXPECT_EQ(a[i].colorAlpha, b[i].colorAlpha);
   }
 }
+
+Mesh tangentGrid(uint32_t columns, uint32_t rows) {
+  std::vector<Vertex> vertices;
+  std::vector<uint32_t> triangles;
+  vertices.reserve((columns + 1u) * (rows + 1u));
+  triangles.reserve(columns * rows * 6u);
+  for (uint32_t y = 0; y <= rows; ++y) {
+    for (uint32_t x = 0; x <= columns; ++x) {
+      Vertex vertex;
+      vertex.position = {float(x), float(y), .0625f * float((3u * x + 5u * y) % 7u)};
+      vertex.normal = {0, 0, 1};
+      vertex.tangent = {0, 1, 0, -1};
+      vertex.texCoord = {float(x), float(y)};
+      const auto mirroredX = x <= columns / 2u ? x : columns - x;
+      const float uvRow = float(y) + .0625f * float((5u * x + 3u * y) % 7u);
+      vertex.texCoord1 = {float(mirroredX), uvRow};
+      vertices.push_back(vertex);
+      if (x == columns || y == rows) continue;
+      const auto lowerLeft = y * (columns + 1u) + x;
+      const auto upperLeft = lowerLeft + columns + 1u;
+      triangles.insert(triangles.end(), {lowerLeft, lowerLeft + 1u, upperLeft + 1u,
+                                        lowerLeft, upperLeft + 1u, upperLeft});
+    }
+  }
+  return Mesh(std::move(vertices), std::move(triangles));
+}
+
+Mesh tangentFan(uint32_t faceCount) {
+  std::vector<Vertex> vertices(faceCount + 1u);
+  std::vector<uint32_t> triangles;
+  triangles.reserve(faceCount * 3u);
+  for (uint32_t face = 0; face < faceCount; ++face) {
+    const float angle = float(face) * (2.f * std::numbers::pi_v<float> / float(faceCount));
+    auto& vertex = vertices[face + 1u];
+    vertex.position = {std::cos(angle), std::sin(angle), 0.f};
+    vertex.texCoord = glm::vec2(vertex.position);
+    triangles.insert(triangles.end(), {0u, face + 1u, (face + 1u) % faceCount + 1u});
+  }
+  for (auto& vertex : vertices) {
+    vertex.normal = {0, 0, 1};
+    vertex.tangent = {0, 1, 0, -1};
+  }
+  return Mesh(std::move(vertices), std::move(triangles));
+}
+
+// Call the original library directly so expected corner frames are
+// independent of the metering and runtime seam splitting paths.
+void calculateReferenceCorners(const Mesh& mesh, uint32_t uvSet,
+                               std::vector<glm::vec4>& expected) {
+  expected.assign(mesh.indices().size(), glm::vec4(0));
+  struct Reference {
+    const Mesh& mesh;
+    uint32_t uvSet;
+    std::vector<glm::vec4>& expected;
+
+    static size_t corner(int face, int vertex) {
+      return size_t(face) * 3u + size_t(vertex);
+    }
+    static Reference& from(const SMikkTSpaceContext* context) {
+      return *static_cast<Reference*>(context->m_pUserData);
+    }
+    const Vertex& vertex(int face, int vertex) const {
+      return mesh.vertices()[mesh.indices()[corner(face, vertex)]];
+    }
+  } reference{mesh, uvSet, expected};
+
+  SMikkTSpaceInterface callbacks{};
+  callbacks.m_getNumFaces = [](const SMikkTSpaceContext* context) {
+    return static_cast<int>(Reference::from(context).mesh.indices().size() / 3u);
+  };
+  callbacks.m_getNumVerticesOfFace = [](const SMikkTSpaceContext*, int) { return 3; };
+  callbacks.m_getPosition = [](const SMikkTSpaceContext* context, float* out, int face, int corner) {
+    const auto& value = Reference::from(context).vertex(face, corner).position;
+    for (int axis = 0; axis < 3; ++axis) out[axis] = value[axis];
+  };
+  callbacks.m_getNormal = [](const SMikkTSpaceContext* context, float* out, int face, int corner) {
+    const auto& value = Reference::from(context).vertex(face, corner).normal;
+    for (int axis = 0; axis < 3; ++axis) out[axis] = value[axis];
+  };
+  callbacks.m_getTexCoord = [](const SMikkTSpaceContext* context, float* out, int face, int corner) {
+    const auto& input = Reference::from(context);
+    const auto& vertex = input.vertex(face, corner);
+    const auto& value = input.uvSet == 1 ? vertex.texCoord1 : vertex.texCoord;
+    out[0] = value.x;
+    out[1] = value.y;
+  };
+  callbacks.m_setTSpaceBasic = [](const SMikkTSpaceContext* context, const float* tangent,
+                                 float sign, int face, int vertex) {
+    Reference::from(context).expected[Reference::corner(face, vertex)] =
+        {tangent[0], tangent[1], tangent[2], sign};
+  };
+  const SMikkTSpaceContext context{&callbacks, &reference};
+  ASSERT_TRUE(genTangSpaceDefault(&context));
+}
+
+constexpr uint64_t generousTangentWork = 64ull * 1024 * 1024;
 } // namespace
 
 TEST(GltfPrimitiveFrameVariants, IndexedTangentSeamDuplicatesOnlyConflictingCornerFrames) {
@@ -109,6 +211,87 @@ TEST(GltfPrimitiveFrameVariants, IndexedTangentSeamDuplicatesOnlyConflictingCorn
   }
   EXPECT_EQ(source.indices(), originalIndices);
   expectVerticesEqual(source.vertices(), vertices);
+}
+
+TEST(GltfPrimitiveFrameVariants, BoundedTangentEditMatchesUpstreamOnLargeConnectedMesh) {
+  const auto source = tangentGrid(64, 48);
+  ASSERT_GT(source.indices().size(), 8192u);
+  auto work = generousTangentWork;
+  const auto split = RegenerateGltfPrimitiveTangents(source, 1, true, &work);
+  EXPECT_LT(work, generousTangentWork);
+  ASSERT_EQ(split.mesh.indices().size(), source.indices().size());
+  ASSERT_EQ(split.sourceVertexMap.size(), split.mesh.vertices().size());
+  ASSERT_GT(split.sourceVertexMap.size(), source.vertices().size());
+
+  std::vector<glm::vec4> reference;
+  calculateReferenceCorners(source, 1, reference);
+  bool positive = false;
+  bool negative = false;
+  for (size_t corner = 0; corner < source.indices().size(); ++corner) {
+    const auto index = split.mesh.indices()[corner];
+    ASSERT_LT(index, split.mesh.vertices().size());
+    ASSERT_EQ(split.sourceVertexMap[index], source.indices()[corner]) << corner;
+    const auto& canonical = source.vertices()[source.indices()[corner]];
+    const auto& actual = split.mesh.vertices()[index];
+    ASSERT_EQ(actual.position, canonical.position) << corner;
+    ASSERT_EQ(actual.normal, canonical.normal) << corner;
+    ASSERT_EQ(actual.texCoord1, canonical.texCoord1) << corner;
+    const auto expected = glm::normalize(glm::vec3(reference[corner]) -
+        canonical.normal * glm::dot(canonical.normal, glm::vec3(reference[corner])));
+    for (int axis = 0; axis < 3; ++axis)
+      ASSERT_NEAR(actual.tangent[axis], expected[axis], 1e-5f) << corner;
+    ASSERT_EQ(actual.tangent.w, reference[corner].w) << corner;
+    positive |= actual.tangent.w > 0;
+    negative |= actual.tangent.w < 0;
+  }
+  EXPECT_TRUE(positive);
+  EXPECT_TRUE(negative);
+}
+
+TEST(GltfPrimitiveFrameVariants, HighValenceFanExceedsWorkAllowedForSameSizeGrid) {
+  const auto regular = tangentGrid(16, 12);
+  const auto fan = tangentFan(16u * 12u * 2u);
+  const auto original = fan;
+  ASSERT_EQ(regular.indices().size(), fan.indices().size());
+  auto gridWork = generousTangentWork;
+  auto fanWork = generousTangentWork;
+  const auto gridResult = RegenerateGltfPrimitiveTangents(regular, 0, true, &gridWork);
+  const auto fanResult = RegenerateGltfPrimitiveTangents(fan, 0, true, &fanWork);
+  EXPECT_EQ(gridResult.mesh.indices(), regular.indices());
+  EXPECT_EQ(fanResult.mesh.indices(), fan.indices());
+  ASSERT_LT(fanWork, gridWork);
+
+  auto boundedWork = generousTangentWork - gridWork;
+  try {
+    (void)RegenerateGltfPrimitiveTangents(fan, 0, true, &boundedWork);
+    FAIL() << "Expected the fan to exhaust the work budget";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string_view(error.what()).find("work budget"), std::string_view::npos);
+  }
+  EXPECT_EQ(fan.indices(), original.indices());
+  expectVerticesEqual(fan.vertices(), original.vertices());
+
+  auto retryWork = generousTangentWork;
+  const auto retry = RegenerateGltfPrimitiveTangents(fan, 0, true, &retryWork);
+  EXPECT_EQ(retryWork, fanWork);
+  expectVerticesEqual(retry.mesh.vertices(), fanResult.mesh.vertices());
+}
+
+TEST(GltfPrimitiveFrameVariants, WorkspaceLimitRejectsBeforePublishingTangentEdit) {
+  const auto source = tangentGrid(2, 2);
+  const auto original = source;
+  auto work = generousTangentWork;
+  try {
+    (void)RegenerateGltfPrimitiveTangents(source, 1, true, &work, 1);
+    FAIL() << "Expected a one-byte workspace to reject tangent generation";
+  } catch (const std::runtime_error& error) {
+    EXPECT_NE(std::string_view(error.what()).find("workspace budget"), std::string_view::npos);
+  }
+  EXPECT_EQ(source.indices(), original.indices());
+  expectVerticesEqual(source.vertices(), original.vertices());
+
+  const auto retry = RegenerateGltfPrimitiveTangents(source, 1, true);
+  EXPECT_GT(retry.mesh.vertices().size(), original.vertices().size());
 }
 
 TEST(GltfPrimitiveFrameVariants, OppositeUvsReplaceAuthoredTangentOnlyForTheRequestedBinding) {

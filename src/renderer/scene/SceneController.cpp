@@ -905,8 +905,8 @@ SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting
 }
 SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting(
     std::span<const container::scene::MaterialRenderProperties> materials,uint32_t images,bool showDiag,
-    uint64_t epoch,const MaterialRoutingLimits& limits) const {
-  return prepareMaterialRoutingImpl(materials,nullptr,images,showDiag,epoch,limits);
+    uint64_t epoch,const MaterialRoutingLimits& limits,uint64_t* tangentWorkRemaining) const {
+  return prepareMaterialRoutingImpl(materials,nullptr,images,showDiag,epoch,limits,tangentWorkRemaining);
 }
 SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting(
     std::span<const container::scene::MaterialRenderProperties> materials,
@@ -916,13 +916,13 @@ SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting
 SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting(
     std::span<const container::scene::MaterialRenderProperties> materials,
     const container::scene::PreparedMaterialBindingChange& bindings,uint32_t images,bool showDiag,uint64_t epoch,
-    const MaterialRoutingLimits& limits) const {
-  return prepareMaterialRoutingImpl(materials,&bindings,images,showDiag,epoch,limits);
+    const MaterialRoutingLimits& limits,uint64_t* tangentWorkRemaining) const {
+  return prepareMaterialRoutingImpl(materials,&bindings,images,showDiag,epoch,limits,tangentWorkRemaining);
 }
 SceneController::PreparedMaterialRouting SceneController::prepareMaterialRoutingImpl(
     std::span<const container::scene::MaterialRenderProperties> materials,
     const container::scene::PreparedMaterialBindingChange* bindings,uint32_t images,bool showDiag,
-    uint64_t epoch,const MaterialRoutingLimits& limits) const {
+    uint64_t epoch,const MaterialRoutingLimits& limits,uint64_t* tangentWorkRemaining) const {
   const auto fail=[](const char* reason) {throw std::runtime_error(std::string("Material routing: ")+reason);};
   if(!images || images>limits.maxImages || !device_ || !allocationManager_.memoryManager() ||
       epoch!=sceneManager_.generationEpoch()) fail("invalid frame/scene context");
@@ -1010,7 +1010,9 @@ SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting
   state.frameBindings=planNormalFrameBindings(materials,bindings);
   if(state.frameBindings!=normalFrameBindings_) {
     if(geometryRevision_==UINT64_MAX) fail("geometry revision exhausted");
-    state.normalFrames=configureNormalFrameGeometry(state.frameBindings);
+    uint64_t localTangentWork=container::geometry::gltf::kDefaultGltfTangentWorkBudget;
+    state.normalFrames=configureNormalFrameGeometry(state.frameBindings,
+        tangentWorkRemaining?tangentWorkRemaining:&localTangentWork);
     auto* scene=state.normalFrames.scene.get();
     if(scene) (void)updateConfiguredDeformation(scene,state.normalFrames.renderPrimitives,true);
     const auto vertices=scene?scene->bindVertices():std::span<const container::geometry::Vertex>(sceneManager_.vertices());
@@ -1203,7 +1205,7 @@ std::vector<SceneController::NormalFrameBinding> SceneController::planNormalFram
 }
 
 SceneController::NormalFrameGeometry SceneController::configureNormalFrameGeometry(
-    std::span<const NormalFrameBinding> bindings) const {
+    std::span<const NormalFrameBinding> bindings,uint64_t* tangentWorkRemaining) const {
   NormalFrameGeometry output;
   const auto* canonical=sceneManager_.deformationData();
   if(bindings.empty()) {
@@ -1261,7 +1263,8 @@ SceneController::NormalFrameGeometry SceneController::configureNormalFrameGeomet
       // Bound each derived frame against the remaining aggregate preparation.
       container::scene::PrimitiveNormalFrameLimits variantLimits;
       variantLimits.frames.maxOutputBytes=std::min(variantLimits.frames.maxOutputBytes,limits.maxCpuBytes-budget.cpu);
-      auto variant=sceneManager_.preparePrimitiveNormalFrameVariant(binding.primitive,binding.texCoord,variantLimits);
+      auto variant=sceneManager_.preparePrimitiveNormalFrameVariant(binding.primitive,binding.texCoord,
+          variantLimits,tangentWorkRemaining);
       // The detached split stream also retains the original unreferenced vertices.
       if(variant.mesh.vertices().size()>corners)
         budget.bytes(variant.mesh.vertices().size()-corners,sizeof(Vertex)*8);

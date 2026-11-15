@@ -19,6 +19,7 @@
 
 extern "C" {
 #include <mikktspace.h>
+#include "mikktspace_bounded.h"
 }
 
 #include <glm/geometric.hpp>
@@ -26,6 +27,7 @@ extern "C" {
 #include <algorithm>
 #include <atomic>
 #include <array>
+#include <bit>
 #include <cctype>
 #include <cmath>
 #include <chrono>
@@ -568,7 +570,9 @@ glm::vec4 makeGeneratedTangent(const Vertex& vertex,
 void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
                                   const std::vector<uint32_t>& indices,
                                   uint32_t texCoord, const std::stop_token& stop = {},
-                                  std::span<glm::vec4> cornerTangents = {}) {
+                                  std::span<glm::vec4> cornerTangents = {},
+                                  uint64_t* workRemaining = nullptr,
+                                  size_t maxMikkScratchBytes = 0) {
   if (texCoord > 1)
     throw gltfError("normal texture", "tangent generation supports UV0 and UV1");
   std::vector<uint8_t> tangentWritten(vertices.size(), 0u);
@@ -591,9 +595,24 @@ void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
   mikkContext.m_pUserData = &tangentContext;
 
   checkModelImportCancellation(stop);
-  const bool generatedByMikk =
-      !vertices.empty() && indices.size() >= 3u &&
-      genTangSpaceDefault(&mikkContext) != 0;
+  bool generatedByMikk = false;
+  if (!vertices.empty() && indices.size() >= 3u) {
+    if (!workRemaining) {
+      generatedByMikk = genTangSpaceDefault(&mikkContext) != 0;
+    } else {
+      switch (genTangSpaceDefaultBounded(&mikkContext, workRemaining, maxMikkScratchBytes)) {
+        case MIKKTS_BOUNDED_SUCCESS: generatedByMikk = true; break;
+        case MIKKTS_BOUNDED_WORK_LIMIT:
+          throw gltfError("normal texture", "tangent generation exceeds its work budget");
+        case MIKKTS_BOUNDED_MEMORY_LIMIT:
+          throw gltfError("normal texture", "tangent generation exceeds its workspace budget");
+        case MIKKTS_BOUNDED_OUT_OF_MEMORY:
+          throw gltfError("normal texture", "could not allocate tangent generation scratch space");
+        default:
+          throw gltfError("normal texture", "invalid triangle data for tangent generation");
+      }
+    }
+  }
   checkModelImportCancellation(stop);
   if (!generatedByMikk) std::ranges::fill(cornerTangents, glm::vec4(0));
 
@@ -2117,19 +2136,30 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
 }
 
 GltfPrimitiveTangentVariant RegenerateGltfPrimitiveTangents(
-    const Mesh& source, uint32_t texCoord, bool splitTangentSeams) {
+    const Mesh& source, uint32_t texCoord, bool splitTangentSeams,
+    uint64_t* workRemaining, size_t maxMikkScratchBytes) {
   const auto vertexCount = source.vertices().size();
   const auto cornerCount = source.indices().size();
   // MikkTSpace packs a face and corner into a signed int.
   constexpr auto maxMikkCorners = (uint64_t{std::numeric_limits<int>::max()} / 4) * 3;
   constexpr auto maxVertexCount = std::numeric_limits<uint32_t>::max();
-  if (vertexCount > maxVertexCount || cornerCount > maxMikkCorners || cornerCount % 3 != 0 ||
-      std::ranges::any_of(source.indices(), [vertexCount](uint32_t index) { return index >= vertexCount; }))
+  if (vertexCount > maxVertexCount || cornerCount > maxMikkCorners || cornerCount % 3 != 0)
+    throw gltfError("normal texture", "tangent generation requires complete in-range triangles");
+  uint64_t localWork = kDefaultGltfTangentWorkBudget;
+  auto& remaining = workRemaining ? *workRemaining : localWork;
+  // Charge the C++ passes and worst-case comparisons in the seam map before
+  // duplicating input storage. The C generator meters its own traversal.
+  const uint64_t cppWork = uint64_t(vertexCount) * 8 + uint64_t(cornerCount) *
+      (12 + (splitTangentSeams ? 6 * std::bit_width(cornerCount) : 0));
+  if (cppWork > remaining)
+    throw gltfError("normal texture", "tangent generation exceeds its work budget");
+  remaining -= cppWork;
+  if (std::ranges::any_of(source.indices(), [vertexCount](uint32_t index) { return index >= vertexCount; }))
     throw gltfError("normal texture", "tangent generation requires complete in-range triangles");
   auto vertices = source.vertices();
   auto indices = source.indices();
   std::vector<glm::vec4> cornerTangents(splitTangentSeams ? cornerCount : 0, glm::vec4(0));
-  generateTangentsFromGeometry(vertices, indices, texCoord, {}, cornerTangents);
+  generateTangentsFromGeometry(vertices, indices, texCoord, {}, cornerTangents, &remaining, maxMikkScratchBytes);
   std::vector<uint32_t> sourceVertexMap;
   if (splitTangentSeams) {
     // Select the first frame for each original vertex. Remember each other

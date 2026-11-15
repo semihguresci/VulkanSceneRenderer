@@ -129,7 +129,7 @@ struct CanonicalPrimitiveFrameView {
 
 struct PrimitiveNormalFrameLimits {
   container::geometry::gltf::PrimitiveFrameVariantLimits frames;
-  uint64_t maxGeneratedCorners{container::geometry::gltf::kMaxLiveNormalFrameCorners};
+  uint64_t maxMorphedGeneratedCorners{container::geometry::gltf::kMaxLiveMorphedNormalFrameCorners};
 };
 
 struct PrimitiveNormalFrameVariant {
@@ -799,7 +799,7 @@ class SceneManager {
       uint32_t runtimePrimitive) const noexcept;
   [[nodiscard]] PrimitiveNormalFrameVariant preparePrimitiveNormalFrameVariant(
       uint32_t runtimePrimitive, uint32_t texCoord,
-      const PrimitiveNormalFrameLimits& limits = {}) const;
+      const PrimitiveNormalFrameLimits& limits = {}, uint64_t* tangentWorkRemaining = nullptr) const;
 
   glm::vec4 resolveMaterialColor(uint32_t materialIndex) const;
   glm::vec4 resolveMaterialEmissive(uint32_t materialIndex) const;
