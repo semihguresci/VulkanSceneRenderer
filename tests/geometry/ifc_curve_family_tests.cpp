@@ -3145,6 +3145,217 @@ const std::string miterSectionedFixture =
     "right'),#24);"
     "#40=IFCSECTIONEDSURFACE(#4,(#22,#23),(#30,#30));";
 
+std::string independentMiterGuide(GuideSectionFixture &step,
+                                  std::initializer_list<glm::dvec2> points) {
+  std::string refs;
+  for (const auto p : points) {
+    if (!refs.empty())
+      refs += ',';
+    refs += step.point(p.x, p.y, 0);
+  }
+  const auto basis = step.add("IFCPOLYLINE((" + refs + "))");
+  return step.guide("left", basis, {{0, 0, 0}});
+}
+
+TEST(IfcCurveFamilies, SectionedMiterGuidesKeepBulgedRailAndSharedRow) {
+  GuideSectionFixture step;
+  step.definitions = miterSectionedFixture;
+  const auto guide =
+      independentMiterGuide(step, {{0, -2}, {6, -3}, {12, -2}, {12, 10}});
+  constexpr double knot = 6. / 13.;
+  const auto uv = [&](double u, double v) {
+    std::ostringstream point;
+    point.precision(17);
+    point << "IFCCARTESIANPOINT((" << u << ',' << v << "))";
+    return step.add(point.str());
+  };
+  const auto pcurve = [&](glm::dvec2 a, glm::dvec2 b) {
+    const auto line =
+        step.add("IFCPOLYLINE((" + uv(a.x, a.y) + "," + uv(b.x, b.y) + "))");
+    return step.add("IFCPCURVE(#40," + line + ")");
+  };
+  const auto rail = pcurve({0, 0}, {2, 0});
+  const auto row = pcurve({knot, 0}, {knot, 1});
+  const auto axis = step.add("IFCGEOMETRICCURVESET((" + guide + "," + rail +
+                             "," + row + "))");
+  step.product("guided-miter", axis);
+
+  const auto frame =
+      step.add("IFCAXIS2PLACEMENT3D(" + step.point(0, 0, 0) + ",$,$)");
+  const auto target = step.add("IFCCARTESIANTRANSFORMATIONOPERATOR3D($,$," +
+                               step.point(30, 5, 1) + ",2.,$)");
+  const auto mapped = [&](const std::string &representation) {
+    const auto map =
+        step.add("IFCREPRESENTATIONMAP(" + frame + "," + representation + ")");
+    return step.add("IFCMAPPEDITEM(" + map + "," + target + ")");
+  };
+  const auto axisRep = step.add(
+      "IFCSHAPEREPRESENTATION($,'Axis','GeometricCurveSet',(" + axis + "))");
+  const auto bodyRep =
+      step.add("IFCSHAPEREPRESENTATION($,'Body','SectionedSurface',(#40))");
+  step.product("mapped-guided-miter", mapped(axisRep), mapped(bodyRep));
+
+  const auto model = step.load();
+  const std::array<glm::dvec3, 6> required{{{6, -3, 0},
+                                            {60. / 13., 0, 0},
+                                            {48. / 13., 2, 0},
+                                            {12, -2, 0},
+                                            {10, 0, 0},
+                                            {8, 2, 0}}};
+  for (const bool transformed : {false, true}) {
+    SCOPED_TRACE(transformed);
+    const auto body = sectionedProductMesh(
+        model, transformed ? "mapped-guided-miter" : "guided-miter");
+    const double scale = transformed ? 2. : 1.;
+    const glm::dvec3 translation =
+        transformed ? glm::dvec3(30, 5, 1) : glm::dvec3(0);
+    // The bulge adds a triangular wedge of base 12 m and height 1 m.
+    EXPECT_NEAR(checkSectionedMesh(body), 86 * scale * scale, 1e-4);
+    for (const auto &point : required) {
+      const auto expected = translation + scale * point;
+      EXPECT_TRUE(std::ranges::any_of(
+          body.indices,
+          [&](uint32_t index) {
+            return glm::length(glm::dvec3(body.vertices.at(index).position) -
+                               expected) < 1e-5;
+          }))
+          << expected.x << ',' << expected.y << ',' << expected.z;
+    }
+  }
+
+  size_t railCurves = 0, rowCurves = 0;
+  for (const auto &range : model.nativeCurveRanges) {
+    const auto p = [&](size_t offset) {
+      return glm::dvec3(
+          model.vertices.at(model.indices.at(range.firstIndex + offset))
+              .position);
+    };
+    const auto a = p(0), b = p(range.indexCount - 1);
+    if (glm::length(a - glm::dvec3(0, -2, 0)) < 1e-6 &&
+        glm::length(b - glm::dvec3(12, 10, 0)) < 1e-6) {
+      ++railCurves;
+      double distance = 0.;
+      bool hasKnot = false, hasMiter = false;
+      for (size_t j = 0; j < range.indexCount; j += 2) {
+        distance += glm::length(p(j + 1) - p(j));
+        for (const auto point : {p(j), p(j + 1)}) {
+          hasKnot |= point == glm::dvec3(6, -3, 0);
+          hasMiter |= point == glm::dvec3(12, -2, 0);
+        }
+      }
+      EXPECT_NEAR(distance, 12. + 2. * std::sqrt(37.), 1e-5);
+      EXPECT_TRUE(hasKnot && hasMiter);
+    }
+    if (glm::length(a - required[0]) < 1e-5 &&
+        glm::length(b - required[2]) < 1e-5)
+      ++rowCurves;
+  }
+  EXPECT_GE(railCurves, 2u) << "Expected independent guide and lifted rail";
+  EXPECT_GE(rowCurves, 1u) << "Expected cross section at native U=6/13";
+}
+
+TEST(IfcCurveFamilies, SectionedMiterGuidesRejectAmbiguousCornerPlaneCrossings) {
+  GuideSectionFixture step;
+  step.definitions = miterSectionedFixture;
+  // Signed distance to the miter plane X+Y=10 changes sign three times.
+  const auto guide = independentMiterGuide(
+      step, {{0, -2}, {10, -2}, {12, -1}, {10, -.5}, {12, 1}, {12, 10}});
+  const auto axis = step.add("IFCGEOMETRICCURVESET((" + guide + "))");
+  step.product("invalid-miter-guide", axis);
+  step.product("unguided-miter");
+  const auto model = step.load();
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+  EXPECT_FALSE(model.nativeCurveRanges.empty());
+  EXPECT_TRUE(
+      sectionedProductMesh(model, "invalid-miter-guide").indices.empty());
+  EXPECT_FALSE(sectionedProductMesh(model, "unguided-miter").indices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  const auto &diagnostic = model.importReport.diagnostics.front();
+  EXPECT_EQ(diagnostic.entityId, 40u);
+  EXPECT_EQ(diagnostic.productGuid, "invalid-miter-guide");
+  EXPECT_NE(diagnostic.reason.find(guide), std::string::npos)
+      << diagnostic.reason;
+  // Before the bisecting plane acquires its three crossings, the sweeping
+  // plane first touches the guide's intervening vertex.
+  EXPECT_NE(diagnostic.reason.find("touches a section plane without crossing"),
+            std::string::npos)
+      << diagnostic.reason;
+}
+
+TEST(IfcCurveFamilies, SectionedMiterGuidesKeepSharedBasisVerticalCrown) {
+  GuideSectionFixture step;
+  step.definitions = miterSectionedFixture;
+  const auto guide =
+      step.guide("crown", "#4", {{0, 0, 0}, {4, 0, 2}, {10, 0, 0}, {20, 0, 0}});
+  step.definitions +=
+      "#45=IFCCARTESIANPOINT((0.,0.5)); #46=IFCCARTESIANPOINT((2.,0.5));"
+      "#47=IFCPOLYLINE((#45,#46)); #48=IFCPCURVE(#40,#47);";
+  const auto axis = step.add("IFCGEOMETRICCURVESET((" + guide + ",#48))");
+  step.product("vertical-miter-guide", axis);
+  const auto model = step.load();
+  const auto body = sectionedProductMesh(model, "vertical-miter-guide");
+  EXPECT_GT(checkSectionedMesh(body), 80.);
+  EXPECT_NEAR(maximumBodyHeight(body), 2., 1e-6);
+  // The guide raises the crown at U=.4. The unbound outer columns retain
+  // their original positions in the same ruled row and at the miter.
+  const std::array<glm::dvec3, 6> expected{{{4.8, -2, 0},
+                                            {4, 0, 2},
+                                            {3.2, 2, 0},
+                                            {12, -2, 0},
+                                            {10, 0, 0},
+                                            {8, 2, 0}}};
+  for (const auto point : expected) {
+    EXPECT_TRUE(std::ranges::any_of(
+        body.indices,
+        [&](uint32_t index) {
+          return glm::length(glm::dvec3(body.vertices.at(index).position) -
+                             point) < 1e-6;
+        }))
+        << point.x << ',' << point.y << ',' << point.z;
+  }
+
+  size_t crownCurves = 0;
+  for (const auto &range : model.nativeCurveRanges) {
+    std::vector<glm::dvec3> points;
+    for (size_t j = 0; j < range.indexCount; ++j)
+      points.emplace_back(
+          model.vertices.at(model.indices.at(range.firstIndex + j)).position);
+    if (points.empty() || points.front() != glm::dvec3(0) ||
+        points.back() != glm::dvec3(10, 10, 0))
+      continue;
+    ++crownCurves;
+    ASSERT_EQ(points.size() % 2, 0u);
+    EXPECT_EQ(std::ranges::count(points, glm::dvec3(4, 0, 2)), 2);
+    EXPECT_EQ(std::ranges::count(points, glm::dvec3(10, 0, 0)), 2);
+    EXPECT_NEAR(length(points), std::sqrt(20.) + std::sqrt(40.) + 10., 1e-5);
+  }
+  EXPECT_EQ(crownCurves, 2u) << "Expected shared guide and lifted crown pcurve";
+}
+
+TEST(IfcCurveFamilies, SectionedMiterGuidesRejectSharedBasisLateralOffset) {
+  GuideSectionFixture step;
+  step.definitions = miterSectionedFixture;
+  // The lateral offset vanishes at both endpoint anchors and at the corner.
+  // Its standalone Axis curve stays continuous, but leaves the ruled plane.
+  const auto guide = step.guide(
+      "crown", "#4", {{0, 0, 0}, {4, -1, 0}, {10, 0, 0}, {20, 0, 0}});
+  const auto axis = step.add("IFCGEOMETRICCURVESET((" + guide + "))");
+  step.product("lateral-miter-guide", axis);
+  const auto model = step.load();
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+  EXPECT_FALSE(model.nativeCurveRanges.empty());
+  EXPECT_TRUE(
+      sectionedProductMesh(model, "lateral-miter-guide").indices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  const auto &diagnostic = model.importReport.diagnostics.front();
+  EXPECT_EQ(diagnostic.entityId, 40u);
+  EXPECT_NE(diagnostic.reason.find(guide), std::string::npos)
+      << diagnostic.reason;
+  EXPECT_NE(diagnostic.reason.find("can only offset vertically"),
+            std::string::npos)
+      << diagnostic.reason;
+}
+
 TEST(IfcCurveFamilies, SectionedSharpJoinsUseSharedHalfAngleMiters) {
   for (bool reversed : {false, true}) {
     for (bool branched : {false, true}) {

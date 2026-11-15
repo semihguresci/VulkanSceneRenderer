@@ -29,6 +29,49 @@ bool oppositeSigns(double a, double b) {
   return (a < 0 && b > 0) || (a > 0 && b < 0);
 }
 
+struct LinearPlaneResidual {
+  double constant, linear, quadratic;
+
+  [[nodiscard]] double at(double t) const {
+    return std::fma(std::fma(quadratic, t, linear), t, constant);
+  }
+
+  [[nodiscard]] double scale() const {
+    return std::max({std::abs(constant), std::abs(linear),
+                     std::abs(quadratic)});
+  }
+};
+
+void appendLinearPlaneEvents(LinearPlaneResidual residual,
+                             std::vector<double> &events) {
+  const auto appendInterior = [&](double root) {
+    if (root > roundoff && root < 1 - roundoff)
+      events.push_back(root);
+  };
+  const double scale = residual.scale();
+  if (scale == 0)
+    return;
+  const double a = residual.quadratic / scale;
+  const double b = residual.linear / scale;
+  const double c = residual.constant / scale;
+  if (std::abs(a) <= roundoff) {
+    if (std::abs(b) > roundoff)
+      appendInterior(-c / b);
+    return;
+  }
+  const double discriminant = std::fma(b, b, -4 * a * c);
+  const double error = roundoff * (b * b + std::abs(4 * a * c));
+  if (discriminant < -error)
+    return;
+  if (discriminant <= error) {
+    appendInterior(-b / (2 * a));
+    return;
+  }
+  const double q = -.5 * (b + std::copysign(std::sqrt(discriminant), b));
+  appendInterior(q / a);
+  appendInterior(c / q);
+}
+
 // Both residual endpoints are known to bracket the root. Use secant in the
 // inner interval and bisect otherwise to ensure the bracket always shrinks.
 template <class Evaluate>
@@ -220,6 +263,126 @@ public:
     return breaks;
   }
 
+  std::vector<double> prepareLinear(std::span<const double> stations) {
+    if (!guide_.domain || guide_.period != 0)
+      fail("independent linear guide requires a bounded nonperiodic curve");
+    std::vector<double> knots = sharedBreaks(guide_.domain->first,
+                                             guide_.domain->second);
+    knots.insert(knots.begin(), guide_.domain->first);
+    knots.push_back(guide_.domain->second);
+    if (knots.size() > maxSamples)
+      fail("independent linear guide exceeds its knot budget");
+    for (double knot : knots) {
+      container::util::checkModelImportCancellation(stop_);
+      const auto point = evaluate(knot);
+      if (!samples_.empty()) {
+        const double chord = glm::length(point - samples_.back().point);
+        if (!(chord > 0) || !std::isfinite(chord))
+          fail("independent linear guide has a collapsed span");
+      }
+      samples_.push_back({knot, point});
+    }
+
+    std::vector<double> breaks;
+    size_t work = 0;
+    const auto consume = [&] {
+      container::util::checkModelImportCancellation(stop_);
+      if (samples_.size() > maxProjections - work)
+        fail("exceeds the independent linear guide projection budget");
+      work += samples_.size();
+    };
+    auto firstPlane = rawPlane(stations.front());
+    int order = 0;
+    for (size_t i = 1; i < stations.size(); ++i) {
+      consume();
+      const auto lastPlane = rawPlane(stations[i]);
+      const double scale =
+          std::max(glm::length(firstPlane.normal), glm::length(lastPlane.normal));
+      const auto normal = firstPlane.normal / scale;
+      const auto delta = lastPlane.normal / scale - normal;
+      const auto travel = lastPlane.origin - firstPlane.origin;
+      const double squared = glm::dot(delta, delta);
+      const double closest = squared > 0
+                                 ? std::clamp(-glm::dot(normal, delta) / squared,
+                                              0., 1.)
+                                 : 0.;
+      if (glm::length(normal + closest * delta) <= 1e-8)
+        fail("independent linear guide has a degenerate section-plane family");
+      std::vector<LinearPlaneResidual> residuals;
+      residuals.reserve(samples_.size());
+      std::vector<double> events{0., 1.};
+      for (const auto &sample : samples_) {
+        const auto relative = sample.point - firstPlane.origin;
+        const LinearPlaneResidual residual{
+            glm::dot(relative, normal),
+            glm::dot(relative, delta) - glm::dot(travel, normal),
+            -glm::dot(travel, delta)};
+        if (!std::isfinite(residual.constant) || !std::isfinite(residual.linear) ||
+            !std::isfinite(residual.quadratic))
+          fail("has a nonfinite linear section-plane residual");
+        if (residual.scale() == 0)
+          fail("one guide point lies in a continuum of section planes");
+        appendLinearPlaneEvents(residual, events);
+        residuals.push_back(residual);
+      }
+      std::ranges::sort(events);
+      events.erase(std::unique(events.begin(), events.end(), [](double a, double b) {
+                     return b - a <= roundoff;
+                   }),
+                   events.end());
+      if (events.size() - 1 > maxSamples - linearRuns_.size())
+        fail("exceeds the independent linear guide station budget");
+      const double u0 = stations[i - 1], u1 = stations[i];
+      consume();
+      auto previous = linearHit(residuals, normal, 0.);
+      for (size_t j = 1; j < events.size(); ++j) {
+        consume();
+        const double a = events[j - 1], b = events[j];
+        const double first = std::lerp(u0, u1, a), last = std::lerp(u0, u1, b);
+        const auto next = linearHit(residuals, normal + b * delta, b);
+        consume();
+        const double middle = std::midpoint(a, b);
+        const auto interior = linearHit(residuals, normal + middle * delta, middle);
+        if (!(last > first) || interior.vertex)
+          fail("independent linear guide intersections cannot be separated");
+        const size_t edge = interior.index;
+        const auto &r = residuals[edge], &s = residuals[edge + 1];
+        if (order == 0)
+          order = next.parameter > previous.parameter ? 1 : -1;
+        if (!(order * (next.parameter - previous.parameter) > 0) ||
+            !linearProgress(r, s, a, b, order))
+          fail("independent linear guide reverses its section order or folds");
+        linearRuns_.push_back({first, last, u0, u1, r, s, edge,
+                               previous.point, next.point});
+        if (next.vertex && next.index > 0 && next.index + 1 < samples_.size() &&
+            last > stations.front() && last < stations.back())
+          breaks.push_back(last);
+        previous = next;
+      }
+      firstPlane = lastPlane;
+    }
+    return breaks;
+  }
+
+  glm::dvec3 linearPoint(double station) const {
+    container::util::checkModelImportCancellation(stop_);
+    const auto run = std::ranges::lower_bound(linearRuns_, station, {},
+                                               &LinearRun::last);
+    if (run == linearRuns_.end())
+      fail("has no certified guide bracket for a section plane");
+    if (station == run->first)
+      return run->firstPoint;
+    if (station == run->last)
+      return run->lastPoint;
+    const double t = (station - run->baseFirst) / (run->baseLast - run->baseFirst);
+    const double left = run->before.at(t);
+    const double right = run->after.at(t);
+    const double fraction = left / (left - right);
+    if (!std::isfinite(fraction) || fraction < -roundoff || fraction > 1 + roundoff)
+      fail("leaves its certified guide bracket");
+    return linearGuidePoint(run->edge, std::clamp(fraction, 0., 1.));
+  }
+
   static std::vector<double>
   stationWitnesses(std::span<const double> stations) {
     const size_t divisions =
@@ -242,6 +405,97 @@ private:
     double station, parameter;
   };
 
+  struct LinearHit {
+    size_t index;
+    bool vertex;
+    double parameter;
+    glm::dvec3 point;
+  };
+
+  struct LinearRun {
+    double first, last, baseFirst, baseLast;
+    LinearPlaneResidual before, after;
+    size_t edge;
+    glm::dvec3 firstPoint, lastPoint;
+  };
+
+  glm::dvec3 linearGuidePoint(size_t edge, double fraction) const {
+    const auto &a = samples_[edge].point, &b = samples_[edge + 1].point;
+    return {std::lerp(a.x, b.x, fraction), std::lerp(a.y, b.y, fraction),
+            std::lerp(a.z, b.z, fraction)};
+  }
+
+  LinearHit linearHit(std::span<const LinearPlaneResidual> residuals,
+                      glm::dvec3 normal, double t) const {
+    const auto sign = [&](const LinearPlaneResidual &r, double value) {
+      return std::abs(value) > roundoff * r.scale() ? (value > 0 ? 1 : -1) : 0;
+    };
+    const auto transverse = [&](size_t edge) {
+      const auto chord = samples_[edge + 1].point - samples_[edge].point;
+      return std::abs(glm::dot(chord, normal)) >
+             glm::length(chord) * glm::length(normal) * 1e-8;
+    };
+    std::optional<LinearHit> hit;
+    const auto registerHit = [&](LinearHit next) {
+      if (hit)
+        fail("independent linear guide has multiple section-plane intersections");
+      hit = next;
+    };
+    double before = residuals.front().at(t);
+    int previous = 0;
+    int current = sign(residuals.front(), before);
+    for (size_t i = 0; i < residuals.size(); ++i) {
+      if ((i & 255u) == 0)
+        container::util::checkModelImportCancellation(stop_);
+      const bool last = i + 1 == residuals.size();
+      const double after = last ? 0. : residuals[i + 1].at(t);
+      const int next = last ? 0 : sign(residuals[i + 1], after);
+      if (current == 0) {
+        if (!last && next == 0)
+          fail("independent linear guide overlaps a section plane");
+        if ((i && !transverse(i - 1)) || (!last && !transverse(i)) ||
+            (i && !last && previous == next))
+          fail("independent linear guide touches a section plane without crossing");
+        registerHit({i, true, samples_[i].parameter, samples_[i].point});
+      } else if (current * next < 0) {
+        if (!transverse(i))
+          fail("independent linear guide intersection is tangent");
+        const double fraction = before / (before - after);
+        registerHit({i, false,
+                     std::lerp(samples_[i].parameter, samples_[i + 1].parameter,
+                               fraction),
+                     linearGuidePoint(i, fraction)});
+      }
+      previous = current;
+      current = next;
+      before = after;
+    }
+    if (!hit)
+      fail("independent linear guide does not reach a section plane");
+    return *hit;
+  }
+
+  bool linearProgress(LinearPlaneResidual a, LinearPlaneResidual b,
+                      double first, double last, int order) const {
+    // The derivative of a/(a-b) has the sign of a*b' - a'*b. The cubic
+    // cancels, so endpoints and one critical point bound every open run.
+    const double scale = std::max(a.scale(), b.scale());
+    a = {a.constant / scale, a.linear / scale, a.quadratic / scale};
+    b = {b.constant / scale, b.linear / scale, b.quadratic / scale};
+    const LinearPlaneResidual derivative{
+        a.constant * b.linear - a.linear * b.constant,
+        2 * (a.constant * b.quadratic - a.quadratic * b.constant),
+        a.linear * b.quadratic - a.quadratic * b.linear};
+    const auto advances = [&](double t) {
+      return order * derivative.at(t) >= -roundoff * derivative.scale();
+    };
+    const double critical = derivative.quadratic == 0
+                                ? first
+                                : -.5 * derivative.linear / derivative.quadratic;
+    return advances(first) && advances(last) &&
+           (critical <= first || critical >= last || advances(critical));
+  }
+
   glm::dvec3 evaluate(double parameter) const {
     const auto value = guide_.point(parameter);
     if (!value || !finite(*value))
@@ -249,14 +503,19 @@ private:
     return *value;
   }
 
-  IfcSectionPlane plane(double station) const {
+  IfcSectionPlane rawPlane(double station) const {
     const auto p = sectionPlane_(station);
     if (!p || !finite(p->origin) || !finite(p->normal))
       fail("cannot resolve the section plane at a directrix station");
     const auto length = glm::length(p->normal);
     if (!(length > 0) || !std::isfinite(length))
       fail("has a degenerate section-plane normal");
-    return {p->origin, p->normal / length};
+    return *p;
+  }
+
+  IfcSectionPlane plane(double station) const {
+    const auto raw = rawPlane(station);
+    return {raw.origin, raw.normal / glm::length(raw.normal)};
   }
 
   double project(glm::dvec3 point, const IfcSectionPlane &p) const {
@@ -459,6 +718,7 @@ private:
   std::vector<CurveSample> samples_;
   std::vector<Witness> witnesses_;
   std::vector<Witness> mappedKnots_;
+  std::vector<LinearRun> linearRuns_;
   glm::dvec3 guideAxis_{0};
   double minAlignment_ = 0;
   double minSpan_ = std::numeric_limits<double>::infinity();
@@ -470,7 +730,7 @@ private:
 IfcSectionedGuide resolveIfcSectionedGuide(
     uint32_t sourceId, ParametricCurve guide, bool sharedBasis,
     std::span<const double> stationBreaks, IfcSectionPlaneAt sectionPlane,
-    double pointTolerance, std::stop_token stop) {
+    double pointTolerance, std::stop_token stop, bool piecewiseLinear) {
   container::util::checkModelImportCancellation(stop);
   auto resolver = std::make_shared<GuideIntersection>(
       sourceId, std::move(guide), std::move(sectionPlane), pointTolerance,
@@ -489,6 +749,14 @@ IfcSectionedGuide resolveIfcSectionedGuide(
       if (!std::isfinite(station) || station < first || station > last)
         return std::nullopt;
       return resolver->sharedPoint(station);
+    };
+  } else if (piecewiseLinear) {
+    result.breaks = resolver->prepareLinear(stationBreaks);
+    result.point = [resolver, first,
+                    last](double station) -> std::optional<glm::dvec3> {
+      if (!std::isfinite(station) || station < first || station > last)
+        return std::nullopt;
+      return resolver->linearPoint(station);
     };
   } else {
     resolver->prepareIndependent(stationBreaks);

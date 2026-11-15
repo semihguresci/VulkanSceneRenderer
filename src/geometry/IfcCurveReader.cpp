@@ -2638,6 +2638,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
     result.allowCoincidentEdges = tagLayout.coincidentEdges || coincidentEdges;
     result.creaseU = std::move(tagTransitionStations);
     const auto vBreaks = sections->front().curve.breaks;
+    IfcSectionPlaneAt planarMiterPlane;
+    glm::dvec3 planarMiterUp{};
     if (!miters.empty()) {
       if (uBreaks.size() > 4097)
         throw std::runtime_error("Sectioned miter exceeds its anchor budget");
@@ -2746,9 +2748,37 @@ Surface Reader::surfaceImpl(uint32_t id) {
           }
         // Straight spans are ruled between authored sections and miter anchors.
         // Both incident spans reuse the same half-angle cross section exactly.
-        const auto control = [=](size_t k,
-                                 double v) -> std::optional<glm::dvec3> {
-          const double u = uBreaks[k];
+        struct MiterRows {
+          std::vector<double> parameters, stations;
+          std::vector<glm::dvec3> origins, directions;
+        };
+        std::vector<glm::dvec3> directions;
+        directions.reserve(anchors.size());
+        for (size_t k = 0; k < anchors.size(); ++k) {
+          const auto miter = miters.find(uBreaks[k]);
+          directions.push_back(
+              miter != miters.end()
+                  ? miter->second
+                  : normalized(k + 1 < anchors.size()
+                                   ? anchors[k + 1] - anchors[k]
+                                   : anchors[k] - anchors[k - 1]));
+        }
+        const auto rows = std::make_shared<const MiterRows>(
+            MiterRows{uBreaks, std::move(stations), std::move(anchors),
+                      std::move(directions)});
+        const auto interval = [rows](double u) {
+          const auto &parameters = rows->parameters;
+          const auto upper = std::ranges::upper_bound(parameters, u);
+          const size_t i =
+              upper == parameters.end()
+                  ? parameters.size() - 2
+                  : std::max(size_t(1), size_t(upper - parameters.begin())) - 1;
+          return std::pair(i, (u - parameters[i]) /
+                                  (parameters[i + 1] - parameters[i]));
+        };
+        const auto control = [rows, sections, up](
+                                 size_t k, double v) -> std::optional<glm::dvec3> {
+          const double u = rows->parameters[k];
           auto upper = std::upper_bound(
               sections->begin(), sections->end(), u,
               [](double t, const Section &s) { return t < s.parameter; });
@@ -2761,33 +2791,36 @@ Surface Reader::surfaceImpl(uint32_t id) {
           if (!p || !q)
             return std::nullopt;
           const double fraction = std::clamp(
-              (stations[k] - a.station) / (b.station - a.station), 0., 1.);
+              (rows->stations[k] - a.station) / (b.station - a.station), 0., 1.);
           const auto local = *p * (1 - fraction) + *q * fraction;
-          const auto direction =
-              miters.contains(u)
-                  ? miters.at(u)
-                  : normalized(k + 1 < anchors.size()
-                                   ? anchors[k + 1] - anchors[k]
-                                   : anchors[k] - anchors[k - 1]);
-          return anchors[k] + glm::cross(up, direction) * local.x +
-                 up * local.y;
+          return rows->origins[k] +
+                 glm::cross(up, rows->directions[k]) * local.x + up * local.y;
         };
-        result.point = [=](double u, double v) -> std::optional<glm::dvec3> {
+        result.point = [interval, control, first, last](
+                           double u, double v) -> std::optional<glm::dvec3> {
           if (!std::isfinite(u) || !std::isfinite(v) || u < first || u > last ||
               v < 0 || v > 1)
             return std::nullopt;
-          const auto upper =
-              std::upper_bound(uBreaks.begin(), uBreaks.end(), u);
-          const size_t i =
-              upper == uBreaks.end()
-                  ? uBreaks.size() - 2
-                  : std::max(size_t(1), size_t(upper - uBreaks.begin())) - 1;
+          const auto [i, t] = interval(u);
           const auto a = control(i, v), b = control(i + 1, v);
           if (!a || !b)
             return std::nullopt;
-          return *a * (1 - (u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i])) +
-                 *b * ((u - uBreaks[i]) / (uBreaks[i + 1] - uBreaks[i]));
+          return glm::mix(*a, *b, t);
         };
+        planarMiterPlane = [rows, interval, first, last, up](
+                               double u) -> std::optional<IfcSectionPlane> {
+          if (!std::isfinite(u) || u < first || u > last)
+            return std::nullopt;
+          const auto [i, t] = interval(u);
+          // Fixed lateral profile coordinates make each ruled row lie in
+          // this plane. Keep the raw normal affine for exact guide matching.
+          const auto direction =
+              glm::mix(rows->directions[i], rows->directions[i + 1], t);
+          return IfcSectionPlane{
+              glm::mix(rows->origins[i], rows->origins[i + 1], t),
+              direction - up * glm::dot(up, direction)};
+        };
+        planarMiterUp = up;
         const auto start = initial.curve.point(0), end = initial.curve.point(1);
         if (!start || !end || std::abs(end->x - start->x) <= tolerance_ * .01)
           throw std::runtime_error(
@@ -2823,19 +2856,40 @@ Surface Reader::surfaceImpl(uint32_t id) {
                                  "' uses a different representation frame");
     }
     if (!matchingGuides.empty()) {
-      if (!miters.empty())
+      if (!miters.empty() && !planarMiterPlane)
         throw std::runtime_error(
-            "Guided sectioned surfaces require a smooth directrix at guide #" +
+            "Guide at a sharp join requires a planar linear miter at guide #" +
             std::to_string(matchingGuides.begin()->second));
       if (matchingGuides.size() > 128)
         throw std::runtime_error(
             "Sectioned surface exceeds its guide count budget");
-      const auto planeAt =
+      const IfcSectionPlaneAt normalPlaneAt =
           [sectionAt](double u) -> std::optional<IfcSectionPlane> {
         const auto frame = sectionAt(u);
         return frame ? std::optional(
                            IfcSectionPlane{frame->origin, frame->normal})
                      : std::nullopt;
+      };
+      const auto &planeAt = planarMiterPlane ? planarMiterPlane : normalPlaneAt;
+      const auto guideSectionAt =
+          [sectionAt, planarMiterPlane, planarMiterUp](double u) {
+        auto frame = sectionAt(u);
+        if (frame && planarMiterPlane) {
+          const auto plane = planarMiterPlane(u);
+          if (!plane)
+            return std::optional<CrossSection>{};
+          frame->origin = plane->origin;
+          frame->normal = normalized(plane->normal);
+          frame->up = planarMiterUp;
+          frame->lateral = glm::cross(frame->up, frame->normal);
+        }
+        return frame;
+      };
+      const auto originalPoint =
+          [templatePoint, miterPoint = planarMiterPlane
+                                          ? result.point : decltype(result.point){}](
+              const CrossSection &frame, double u, double v) {
+        return miterPoint ? miterPoint(u, v) : templatePoint(frame, v);
       };
       // IFC exporters independently round guides and authored profile points.
       const double planeTolerance = tolerance_, anchorTolerance = chordError_;
@@ -2845,6 +2899,32 @@ Surface Reader::surfaceImpl(uint32_t id) {
       columns.push_back(1);
       std::ranges::sort(columns);
       columns.erase(std::unique(columns.begin(), columns.end()), columns.end());
+      if (planarMiterPlane) {
+        const auto reason =
+            "Guide #" + std::to_string(matchingGuides.begin()->second) +
+            " at a planar miter requires fixed lateral profile columns";
+        if (!tagLayout.intermittentTags.empty())
+          throw std::runtime_error(reason);
+        for (size_t i = 0; i < positions.size(); ++i) {
+          const auto &position = get(reference(&positions[i]));
+          if (miters.contains((*sections)[i].parameter) &&
+              !omitted(arg(position, 2)))
+            throw std::runtime_error(
+                "Guide #" + std::to_string(matchingGuides.begin()->second) +
+                " at a planar miter cannot replace the explicitly directed "
+                "cross section #" + std::to_string(position.id));
+        }
+        for (double v : columns) {
+          container::util::checkModelImportCancellation(stop_);
+          const auto anchor = sections->front().curve.point(v);
+          if (!anchor || std::ranges::any_of(*sections, [&](const Section &s) {
+                const auto point = s.curve.point(v);
+                return !point ||
+                       std::abs(point->x - anchor->x) > tolerance_ * .01;
+              }))
+            throw std::runtime_error(reason);
+        }
+      }
       std::vector<bool> intermittentColumns(columns.size());
       for (const auto &row : tagLayout.retainedColumns)
         for (size_t column = 0; column < row.size(); ++column)
@@ -2869,16 +2949,55 @@ Surface Reader::surfaceImpl(uint32_t id) {
         if (column == columns.end() || *column != v)
           throw std::runtime_error("Guide #" + std::to_string(ref) +
                                    " does not identify a section vertex");
-        const bool sharedBasis = reference(arg(get(ref), 0)) == directrixId;
+        const auto &source = get(ref);
+        const auto &basis = referenced(source, 0);
+        const bool sharedBasis = basis.id == directrixId;
+        const bool exactPolyline = planarMiterPlane && !sharedBasis;
+        if (planarMiterPlane) {
+          const bool linearBasis =
+              basis.type == "IFCPOLYLINE" ||
+              (basis.type == "IFCINDEXEDPOLYCURVE" &&
+               (omitted(arg(basis, 1)) ||
+                std::ranges::all_of(list(arg(basis, 1)),
+                                    [](const StepValue &segment) {
+                                      return segment.text == "IFCLINEINDEX";
+                                    })));
+          if (!linearBasis)
+            throw std::runtime_error("Guide #" + std::to_string(ref) +
+                                     " at a planar miter requires a linear polyline basis");
+          if (sharedBasis) {
+            const double z = planarMiterPlane(stationBreaks.front())->origin.z;
+            if (glm::length(planarMiterUp - glm::dvec3(0, 0, 1)) > 1e-8 ||
+                std::ranges::any_of(stationBreaks, [&](double station) {
+                  return planarMiterPlane(station)->origin.z != z;
+                }))
+              throw std::runtime_error(
+                  "Guide #" + std::to_string(ref) +
+                  " on the directrix requires horizontal miter rows");
+          }
+          for (const auto &offsetRef : list(arg(source, 1), 4096)) {
+            const auto &offset = get(reference(&offsetRef));
+            for (size_t component : {1u, 2u, 3u}) {
+              const auto *value = arg(offset, component);
+              if (!(sharedBasis && component == 2) &&
+                  !omitted(value) && number(value) != 0.)
+                throw std::runtime_error(
+                    "Guide #" + std::to_string(ref) +
+                    (sharedBasis ? " at a miter can only offset vertically"
+                                 : " at a miter requires an unoffset independent polyline"));
+            }
+          }
+        }
         auto guide =
             resolveIfcSectionedGuide(ref, read(ref), sharedBasis, stationBreaks,
-                                     planeAt, planeTolerance, stop_);
+                                     planeAt, planeTolerance, stop_, exactPolyline);
         std::vector<glm::dvec2> corrections;
         corrections.reserve(sections->size());
         for (const auto &section : *sections) {
-          const auto frame = sectionAt(section.parameter);
+          const auto frame = guideSectionAt(section.parameter);
           const auto point = guide.point(section.parameter);
-          const auto expected = frame ? templatePoint(*frame, v) : std::nullopt;
+          const auto expected =
+              frame ? originalPoint(*frame, section.parameter, v) : std::nullopt;
           if (!point || !expected ||
               glm::length(*point - *expected) > anchorTolerance)
             throw std::runtime_error("Guide #" + std::to_string(ref) +
@@ -2901,7 +3020,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
       if (uBreaks.size() > 4097 || uBreaks.size() * columns.size() > 262144)
         throw std::runtime_error(
             "Sectioned guide grid exceeds its validation budget");
-      const auto adjacent = [sections, columns, guides, templatePoint,
+      const auto adjacent = [sections, columns, guides, originalPoint,
                              intermittentColumns,
                              retainedColumns =
                                  std::move(tagLayout.retainedColumns),
@@ -2912,7 +3031,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
         std::array<uint32_t, 2> guideIds{};
         for (unsigned side = 0; side < 2; ++side) {
           const size_t i = left + side;
-          const auto original = templatePoint(frame, columns[i]);
+          const auto original = originalPoint(frame, u, columns[i]);
           if (!original)
             throw std::runtime_error("Undefined tagged cross-section point");
           authored[side] = *original;
@@ -2924,7 +3043,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
             const auto after = retainedColumns[frame.index + 1][i];
             const auto anchor = before ? before : after;
             if (anchor && guides[*anchor]) {
-              const auto retained = templatePoint(frame, columns[*anchor]);
+              const auto retained = originalPoint(frame, u, columns[*anchor]);
               if (retained && *retained == *original)
                 guidedColumn = *anchor;
             }
@@ -2978,7 +3097,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
         container::util::checkModelImportCancellation(stop_);
         for (double t : {0., .25, .5, .75, 1.}) {
           const double u = std::lerp(uBreaks[i - 1], uBreaks[i], t);
-          const auto frame = sectionAt(u);
+          const auto frame = guideSectionAt(u);
           if (!frame)
             throw std::runtime_error(
                 "Undefined section at guide validation station");
@@ -2995,7 +3114,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
               ? std::make_shared<
                     std::map<double, std::vector<std::array<glm::dvec3, 2>>>>()
               : nullptr;
-      result.point = [sectionAt, columns, adjacent,
+      result.point = [guideSectionAt, columns, adjacent,
                       rows](double u, double v) -> std::optional<glm::dvec3> {
         if (!std::isfinite(u) || !std::isfinite(v) || v < 0 || v > 1)
           return std::nullopt;
@@ -3007,7 +3126,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
         if (rows) {
           auto [row, inserted] = rows->try_emplace(u);
           if (inserted) {
-            const auto section = sectionAt(u);
+            const auto section = guideSectionAt(u);
             if (!section)
               return std::nullopt;
             if (rows->size() > 262144 / columns.size())
@@ -3020,7 +3139,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
             return std::nullopt;
           p = row->second[left];
         } else {
-          const auto section = sectionAt(u);
+          const auto section = guideSectionAt(u);
           if (!section)
             return std::nullopt;
           p = adjacent(*section, u, left);
@@ -3058,6 +3177,12 @@ Surface Reader::surfaceImpl(uint32_t id) {
         // native crease parameter so both incident panels share the miter.
         for (const auto &corner : sharpCorners)
           guideMeshStations.push_back(corner.parameter);
+        // Distinct authored guide knots can sit close to a miter but carry
+        // different heights. Keep their exact parameters for mesh and pcurves.
+        if (planarMiterPlane && !matchingGuides.empty())
+          guideMeshStations.insert(guideMeshStations.end(),
+                                   result.creaseU.begin(),
+                                   result.creaseU.end());
         std::ranges::sort(guideMeshStations);
         guideMeshStations.erase(
             std::unique(guideMeshStations.begin(), guideMeshStations.end()),
