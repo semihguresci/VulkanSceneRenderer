@@ -17,19 +17,25 @@ SPHERE_RADIUS = 1.68
 CAP_RADIUS = 1.57
 CAP_NORMAL = (.8, 0., .6)
 CAP_OFFSET = .6 * CAP_RADIUS
-RADII = (SPHERE_RADIUS, CAP_RADIUS)
+HOLED_RADIUS = 2.
+HOLE_HEIGHT = 1.6
+HOLE_RADIUS = math.sqrt(HOLED_RADIUS ** 2 - HOLE_HEIGHT ** 2)
+RADII = (SPHERE_RADIUS, CAP_RADIUS, HOLED_RADIUS)
 PRODUCTS = (
-    Profile("Shared meridian sphere", (-2.55, -.15), (.11, .64, .92)),
-    Profile("Tilted cap", (1.90, -.15), (.18, .78, .32)),
+    Profile("Shared meridian sphere", (-2.55, -1.40), (.11, .64, .92)),
+    Profile("Tilted cap", (1.90, -1.40), (.18, .78, .32)),
+    Profile("Sphere with opposite-cut hole", (0., 1.85), (.16, .48, .93)),
 )
 EAST_COLOR = (.91, .31, .09)
 CAP_BASE_COLOR = (.66, .20, .78)
+HOLE_DISK_COLOR = (.95, .36, .10)
 
 
-def surface_probe(index, name, x, y):
+def surface_probe(index, name, x, y, *, z=None):
     # Project an analytic surface point onto the depth plane used by write_sequence.
     cx, cy = PRODUCTS[index].center
-    z = math.sqrt(RADII[index] ** 2 - x * x - y * y)
+    if z is None:
+        z = math.sqrt(RADII[index] ** 2 - x * x - y * y)
     scale = (DISTANCE - DEPTH) / (DISTANCE - z)
     return (index, name, ((cx + x) * scale - cx, (cy + y) * scale - cy), True)
 
@@ -48,6 +54,13 @@ FIXTURE = Fixture(PRODUCTS, (
     surface_probe(1, "near tilted rim", .27, .88),
     (1, "clipped shoulder of full sphere", (-.72, .15), False),
     (1, "clear outside cap", (1.95, -.18), False),
+    surface_probe(2, "disk on the opposite meridian", 0., 0., z=HOLE_HEIGHT),
+    surface_probe(2, "disk west of the opposite meridian", -.72, .10, z=HOLE_HEIGHT),
+    surface_probe(2, "disk east of the opposite meridian", .67, -.31, z=HOLE_HEIGHT),
+    surface_probe(2, "spherical cut above the hole", 0., 1.37),
+    surface_probe(2, "spherical cut below the hole", 0., -1.37),
+    surface_probe(2, "spherical trim beside the hole", 1.43, .24),
+    (2, "clear outside holed sphere", (2.23, .12), False),
 ), None, None)
 
 
@@ -74,13 +87,14 @@ def semicircle_edges(step, normal, offset, radius):
             step.add("IFCEDGECURVE", last, first, circle, ".T."))
 
 
-def advanced_face(step, surface, edges, name, color, reverse=False):
-    sense = ".F." if reverse else ".T."
-    ordered = reversed(edges) if reverse else edges
-    oriented = [step.add("IFCORIENTEDEDGE", "*", "*", edge, sense) for edge in ordered]
-    loop = step.add("IFCEDGELOOP", f"({','.join(oriented)})")
-    bound = step.add("IFCFACEOUTERBOUND", loop, ".T.")
-    face = step.add("IFCADVANCEDFACE", f"({bound})", surface, ".T.")
+def advanced_face(step, surface, loops, name, color):
+    bounds = []
+    for index, uses in enumerate(loops):
+        oriented = [step.add("IFCORIENTEDEDGE", "*", "*", edge, ".T." if forward else ".F.")
+                    for edge, forward in uses]
+        loop = step.add("IFCEDGELOOP", f"({','.join(oriented)})")
+        bounds.append(step.add("IFCFACEOUTERBOUND" if index == 0 else "IFCFACEBOUND", loop, ".T."))
+    face = step.add("IFCADVANCEDFACE", f"({','.join(bounds)})", surface, ".T.")
     rgb = step.add("IFCCOLOURRGB", "$", *color)
     appearance = step.add("IFCSURFACESTYLERENDERING", rgb, "0.", "$", "$", "$", "$", "$", "$", ".NOTDEFINED.")
     style = step.add("IFCSURFACESTYLE", f"'{name}'", ".BOTH.", f"({appearance})")
@@ -88,24 +102,62 @@ def advanced_face(step, surface, edges, name, color, reverse=False):
     return face
 
 
+def opposite_hole(step, context):
+    center = (0., 0., 0.)
+    # The placed +X seam is behind the sphere. Its opposite meridian lies
+    # on the camera-facing half and crosses the center of the circular hole.
+    pole, reference = (0., 1., 0.), (0., 0., -1.)
+    frame = placement(step, center, pole, reference)
+    surface = step.add("IFCSPHERICALSURFACE", frame, HOLED_RADIUS)
+    meridian = step.add("IFCCIRCLE", placement(step, center, (1., 0., 0.), reference), HOLED_RADIUS)
+    low, high = -math.pi / 2., math.pi / 2.
+    trim = step.add("IFCTRIMMEDCURVE", meridian, f"(IFCPARAMETERVALUE({low}))",
+                    f"(IFCPARAMETERVALUE({high}))", ".T.", ".PARAMETER.")
+    pcurves = []
+    for angle in (0., math.tau):
+        a, b = step.point(angle, low), step.point(angle, high)
+        line = step.add("IFCPOLYLINE", f"({a},{b})")
+        definition = step.add("IFCDEFINITIONALREPRESENTATION", context, "$", "'Curve2D'", f"({line})")
+        pcurves.append(step.add("IFCPCURVE", surface, definition))
+    curve = step.add("IFCSEAMCURVE", trim, f"({','.join(pcurves)})", ".CURVE3D.")
+    south = step.add("IFCVERTEXPOINT", step.point(0., -HOLED_RADIUS, 0.))
+    north = step.add("IFCVERTEXPOINT", step.point(0., HOLED_RADIUS, 0.))
+    seam = step.add("IFCEDGECURVE", south, north, curve, ".T.")
+
+    disk_frame = placement(step, (0., 0., HOLE_HEIGHT), (0., 0., 1.), (1., 0., 0.))
+    circle = step.add("IFCCIRCLE", disk_frame, HOLE_RADIUS)
+    start = step.add("IFCVERTEXPOINT", step.point(HOLE_RADIUS, 0., HOLE_HEIGHT))
+    rim = step.add("IFCEDGECURVE", start, start, circle, ".T.")
+    wall = advanced_face(step, surface, (((seam, True), (seam, False)), ((rim, False),)),
+                         "Spherical wall around the hole", PRODUCTS[2].color)
+    disk = advanced_face(step, step.add("IFCPLANE", disk_frame), (((rim, True),),),
+                         "Disk in the spherical hole", HOLE_DISK_COLOR)
+    return wall, disk
+
+
 def write_fixture(path):
     step = StepFixture()
     step.add("IFCSIUNIT", "*", ".LENGTHUNIT.", "$", ".METRE.")
+    step.add("IFCSIUNIT", "*", ".PLANEANGLEUNIT.", "$", ".RADIAN.")
     origin = placement(step, (0., 0., 0.), (0., 0., 1.), (1., 0., 0.))
     context = step.add("IFCGEOMETRICREPRESENTATIONCONTEXT", "$", "'Model'", 3, 1e-6, origin, "$")
     sphere = step.add("IFCSPHERICALSURFACE", origin, SPHERE_RADIUS)
     meridian = semicircle_edges(step, (1., 0., 0.), 0., SPHERE_RADIUS)
-    west = advanced_face(step, sphere, meridian, "West hemisphere", PRODUCTS[0].color, reverse=True)
-    east = advanced_face(step, sphere, meridian, "East hemisphere", EAST_COLOR)
+    west = advanced_face(step, sphere, (tuple((edge, False) for edge in reversed(meridian)),),
+                         "West hemisphere", PRODUCTS[0].color)
+    east = advanced_face(step, sphere, (tuple((edge, True) for edge in meridian),), "East hemisphere", EAST_COLOR)
 
     cap_surface = step.add("IFCSPHERICALSURFACE", origin, CAP_RADIUS)
     cap_rim = semicircle_edges(step, CAP_NORMAL, CAP_OFFSET, CAP_RADIUS)
-    cap = advanced_face(step, cap_surface, cap_rim, "Tilted spherical face", PRODUCTS[1].color)
+    cap = advanced_face(step, cap_surface, (tuple((edge, True) for edge in cap_rim),),
+                        "Tilted spherical face", PRODUCTS[1].color)
     base_frame = placement(step, tuple(CAP_OFFSET * value for value in CAP_NORMAL),
                            tuple(-value for value in CAP_NORMAL), (0., 1., 0.))
     base_surface = step.add("IFCPLANE", base_frame)
-    disk = advanced_face(step, base_surface, cap_rim, "Tilted disk", CAP_BASE_COLOR, reverse=True)
-    for index, (product, faces) in enumerate(zip(PRODUCTS, ((west, east), (cap, disk)), strict=True)):
+    disk = advanced_face(step, base_surface, (tuple((edge, False) for edge in reversed(cap_rim)),),
+                         "Tilted disk", CAP_BASE_COLOR)
+    shells = ((west, east), (cap, disk), opposite_hole(step, context))
+    for index, (product, faces) in enumerate(zip(PRODUCTS, shells, strict=True)):
         shell = step.add("IFCCLOSEDSHELL", f"({','.join(faces)})")
         brep = step.add("IFCADVANCEDBREP", shell)
         rep = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'AdvancedBrep'", f"({brep})")
@@ -134,13 +186,25 @@ def sphere_hits(ray, index):
     return discriminant, relative_camera + t[..., None] * ray
 
 
+def hole_disk_hits(ray):
+    import numpy as np
+
+    x, y = PRODUCTS[2].center
+    camera = np.array([-x, -y, DISTANCE])
+    t = (HOLE_HEIGHT - DISTANCE) / ray[..., 2]
+    return camera + t[..., None] * ray
+
+
 def expected_depth(index, point, pixel, matrix):
     import numpy as np
 
     ray = world_ray((pixel[0], HEIGHT - 1 - pixel[1]), np.linalg.inv(matrix))
     discriminant, hit = sphere_hits(ray, index)
-    require(discriminant > 0 and (index == 0 or hit @ CAP_NORMAL > CAP_OFFSET),
+    require(discriminant > 0 and (index != 1 or hit @ CAP_NORMAL > CAP_OFFSET),
             f"Positive depth probe outside the analytic spherical trim: {point}")
+    if index == 2 and hit[2] > HOLE_HEIGHT:
+        hit = hole_disk_hits(ray)
+        require(np.linalg.norm(hit[:2]) < HOLE_RADIUS, f"Depth probe outside the circular hole: {point}")
     x, y = PRODUCTS[index].center
     clip = matrix @ [*(hit + [x, y, 0.]), 1.]
     return clip[2] / clip[3]
@@ -161,13 +225,19 @@ def check_pixels(image, _fixture):
                     (HEIGHT / 2. - yy - .5) * scale, np.full_like(xx, -1.)), axis=-1)
     sphere_disc, sphere = sphere_hits(ray, 0)
     cap_disc, cap = sphere_hits(ray, 1)
+    holed_disc, holed = sphere_hits(ray, 2)
+    disk = hole_disk_hits(ray)
     sphere_interior = (sphere_disc > 0.) & (sphere[..., 2] > .60 * SPHERE_RADIUS)
     cap_interior = (cap_disc > 0.) & (cap[..., 2] > .55 * CAP_RADIUS)
     cap_margin = cap @ CAP_NORMAL - CAP_OFFSET
+    holed_wall = (holed_disc > 0.) & (holed[..., 2] > .53 * HOLED_RADIUS) & (holed[..., 2] < HOLE_HEIGHT - .08)
+    hole_disk = np.linalg.norm(disk[..., :2], axis=-1) < HOLE_RADIUS - .16
     masks = (
         ("West hemisphere", sphere_interior & (sphere[..., 0] < -.17), 2, 0),
         ("East hemisphere", sphere_interior & (sphere[..., 0] > .17), 0, 2),
         ("Tilted spherical face", cap_interior & (cap_margin > .15), 1, 0),
+        ("Spherical wall around the hole", holed_wall, 2, 0),
+        ("Disk in the spherical hole", hole_disk, 0, 2),
     )
     results = {}
     for label, mask, dominant, opposite in masks:
@@ -178,13 +248,18 @@ def check_pixels(image, _fixture):
         require(coverage >= .98 and colored >= .98, f"Missing or incorrectly styled {label}: {coverage}, {colored}")
         results[label] = dict(pixels=len(colors), visibleFraction=coverage, styledFraction=colored)
     meridian = sphere_interior & (np.abs(sphere[..., 0]) < .10)
+    opposite = holed_wall & (np.abs(holed[..., 0]) < .12)
     clipped = cap_interior & (cap_margin < -.16)
-    require(np.count_nonzero(meridian) >= 100 and np.count_nonzero(clipped) >= 450, "Insufficient trim witness pixels")
+    require(np.count_nonzero(meridian) >= 100 and np.count_nonzero(opposite) >= 100 and np.count_nonzero(clipped) >= 450,
+            "Insufficient trim witness pixels")
     seam_coverage = float(np.mean(visible[meridian]))
+    opposite_coverage = float(np.mean(visible[opposite]))
     clipped_coverage = float(np.mean(visible[clipped]))
     require(seam_coverage == 1., f"Open shared pole seam: {seam_coverage}")
+    require(opposite_coverage == 1., f"Open opposite meridian beside the spherical hole: {opposite_coverage}")
     require(clipped_coverage < .01, f"Visible geometry past the tilted cap edge: {clipped_coverage}")
     results["Shared meridian"] = dict(pixels=int(np.count_nonzero(meridian)), visibleFraction=seam_coverage)
+    results["Opposite meridian around hole"] = dict(pixels=int(np.count_nonzero(opposite)), visibleFraction=opposite_coverage)
     results["Clipped spherical shoulder"] = dict(pixels=int(np.count_nonzero(clipped)), visibleFraction=clipped_coverage)
     return results
 
@@ -217,7 +292,7 @@ def main():
             results.append(record(renderer, output, model, sequence, frames, technique, taa, FIXTURE,
                                   expected_depth=expected_depth, check_image=check_pixels))
             save_json(output / "results.json", results)
-            print(f"PASS {technique}, TAA {taa}: sphere seam, clipped cap, and {len(frames)} depth samples", flush=True)
+            print(f"PASS {technique}, TAA {taa}: spherical seams, clipped cap, hole, and {len(frames)} depth samples", flush=True)
     return 0
 
 
