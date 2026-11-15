@@ -415,7 +415,9 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     // samples owns 4*pi/rayCount steradians; the equivalent cone's diameter
     // growth per unit travel drives hit-texture filtering.
     RayCone cone = (RayCone)0;
+#if !defined(CONTAINER_TEST_DDGI_MIP_ZERO)
     cone.spread = RayConeSolidAngleSpread(update.rayCount);
+#endif
     for (uint crossed = 0u; crossed <= DDGI_MAX_GLASS_CROSSINGS; ++crossed)
     {
         DdgiClosestHit hit = DdgiTraceClosest(ray);

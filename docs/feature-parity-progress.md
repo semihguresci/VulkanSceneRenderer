@@ -3378,9 +3378,8 @@ mean was within 0.8% of the control. Median trace GPU time on the RTX 2080 SUPER
 was 0.086–0.087 ms with footprints and 0.097 ms at mip zero for this fixture.
 Hardware bandwidth counters remain open. Evidence is in
 `out/feature-parity/ray-footprint-acceptance/results.json`.
-To repeat the comparison, run `tests/validation/ddgi_ray_footprint_runtime_regression.py`
-against two runtime copies with the same executable. In the baseline copy,
-rebuild only the DDGI trace shader with the hit footprint width set to zero.
+The build generates the comparison shader. CTest runs the matched captures.
+[DDGI footprint regression](ddgi-probe-foundation.md#runtime-and-lighting-policy)
 
 ### 2026-11-06 Local tracker integration
 
