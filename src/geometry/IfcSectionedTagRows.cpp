@@ -6,6 +6,7 @@
 #include <cmath>
 #include <iterator>
 #include <limits>
+#include <memory>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -455,6 +456,135 @@ IfcSectionTagLayout
 alignIfcSectionTagRows(std::span<const IfcSectionTagRow> sections,
                        double sourceTolerance, std::stop_token stop) {
   return Alignment(sourceTolerance, stop).run(sections);
+}
+
+ParametricCurve alignIfcIndexedSectionCurve(ParametricCurve source,
+                                           std::vector<double> parameters,
+                                           uint32_t profileId) {
+  const auto fail = [profileId](const char *reason) {
+    throw std::runtime_error("Sectioned profile #" + std::to_string(profileId) +
+                             ": " + reason);
+  };
+  if (!source.point || !source.domain || source.dimension != 2 ||
+      source.period != 0 || parameters.size() < 2 ||
+      parameters.size() > maxColumns || !std::isfinite(source.domain->first) ||
+      !std::isfinite(source.domain->second - source.domain->first) ||
+      parameters.front() != source.domain->first ||
+      parameters.back() != source.domain->second)
+    fail("indexed tag parameters must span a bounded 2D source curve");
+
+  struct Slot {
+    double native, aligned;
+    glm::dvec3 point;
+  };
+  struct ParameterMap {
+    ParametricCurve source;
+    std::vector<Slot> slots;
+
+    size_t interval(double v) const {
+      const auto upper = std::ranges::lower_bound(slots, v, {}, &Slot::aligned);
+      return upper == slots.begin() ? 0 : size_t(upper - slots.begin() - 1);
+    }
+
+    double nativeParameter(size_t i, double v) const {
+      const auto &a = slots[i], &b = slots[i + 1];
+      const double fraction = (v - a.aligned) / (b.aligned - a.aligned);
+      return std::lerp(a.native, b.native, fraction);
+    }
+
+    std::optional<glm::dvec3> point(size_t i, double v) const {
+      if (v == slots[i].aligned)
+        return slots[i].point;
+      if (v == slots[i + 1].aligned)
+        return slots[i + 1].point;
+      return source.point(nativeParameter(i, v));
+    }
+  };
+  auto map = std::make_shared<ParameterMap>();
+  map->source = std::move(source);
+  map->slots.reserve(parameters.size());
+  ParametricCurve curve;
+  curve.domain = {{0., 1.}};
+  curve.dimension = 2;
+  curve.breaks.reserve(parameters.size() - 2);
+  for (size_t i = 0; i < parameters.size(); ++i) {
+    const double native = parameters[i];
+    const double aligned = double(i) / double(parameters.size() - 1);
+    if (!std::isfinite(native) || (i && !(native > parameters[i - 1])))
+      fail("indexed tag parameters must be finite and strictly increasing");
+    const auto point = map->source.point(native);
+    if (!point || !finite(*point))
+      fail("an indexed tag point is undefined on its source curve");
+    map->slots.push_back({native, aligned, *point});
+    if (i && i + 1 < parameters.size())
+      curve.breaks.push_back(aligned);
+  }
+  const auto valid = [](double v) { return std::isfinite(v) && v >= 0 && v <= 1; };
+  curve.point = [map, valid](double v) -> std::optional<glm::dvec3> {
+    return valid(v) ? map->point(map->interval(v), v) : std::nullopt;
+  };
+  if (map->source.derivative)
+    curve.derivative = [map, valid](double v) -> std::optional<glm::dvec3> {
+      if (!valid(v))
+        return std::nullopt;
+      const size_t i = map->interval(v);
+      const auto &a = map->slots[i], &b = map->slots[i + 1];
+      const auto d = curveDerivative(map->source, map->nativeParameter(i, v));
+      const double scale = (b.native - a.native) / (b.aligned - a.aligned);
+      if (!d || !std::isfinite(scale))
+        return std::nullopt;
+      const auto derivative = *d * scale;
+      return finite(derivative) ? std::optional(derivative) : std::nullopt;
+    };
+  curve.sampler = [map, valid](double a, double b, double error,
+                              size_t limit) -> std::vector<CurveSample> {
+    if (!valid(a) || !valid(b) || a == b || limit < 2)
+      return {};
+    const bool reversed = b < a;
+    if (reversed)
+      std::swap(a, b);
+    std::vector<CurveSample> result;
+    for (size_t i = map->interval(a);
+         i + 1 < map->slots.size() && map->slots[i].aligned < b; ++i) {
+      const auto &left = map->slots[i], &right = map->slots[i + 1];
+      const double first = std::max(a, left.aligned),
+                   last = std::min(b, right.aligned);
+      if (!(last > first))
+        continue;
+      const size_t remaining = limit - result.size() + !result.empty();
+      const double lo = map->nativeParameter(i, first);
+      const double hi = map->nativeParameter(i, last);
+      const auto part = sampleCurve(map->source, lo, hi, error, remaining);
+      if (part.size() < 2 || part.size() > remaining)
+        return {};
+      // Re-pin native sampler endpoints to the exact requested nodes. A
+      // source sampler may have derived them by arithmetic on its subdomain.
+      const double epsilon =
+          roundoff * std::max({std::abs(lo), std::abs(hi), hi - lo});
+      if (!(std::abs(part.front().parameter - lo) <= epsilon) ||
+          !(std::abs(part.back().parameter - hi) <= epsilon))
+        return {};
+      const auto start = map->point(i, first), end = map->point(i, last);
+      if (!start || !end || !finite(*start) || !finite(*end))
+        return {};
+      if (result.empty())
+        result.push_back({first, *start});
+      for (size_t j = 1; j + 1 < part.size(); ++j) {
+        const auto &sample = part[j];
+        const double fraction =
+            (sample.parameter - left.native) / (right.native - left.native);
+        const double v = std::lerp(left.aligned, right.aligned, fraction);
+        if (!(v > result.back().parameter && v < last) || !finite(sample.point))
+          return {};
+        result.push_back({v, sample.point});
+      }
+      result.push_back({last, *end});
+    }
+    if (reversed)
+      std::ranges::reverse(result);
+    return result;
+  };
+  return curve;
 }
 
 } // namespace container::geometry::ifc::detail

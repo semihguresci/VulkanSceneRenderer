@@ -56,7 +56,7 @@ checks are free of validation and synchronization errors.
 | Boolean/clipping results | Nested union/difference/intersection of supported closed, oriented mesh solids; plane, boxed and polygon-bounded half-space difference/intersection honors IFC agreement flags. Cycles, invalid operators, open/nonmanifold operands and unbounded unions are rejected with diagnostics. Styled results override operand colors; otherwise source face colors are retained. |
 | `IfcSweptDiskSolid` | Solid/hollow disks on bounded 3D curves, including splines, closed loops and mitered C0 joins. Explicit extents retain the directrix's source parameter domain. Straight and open tangential line/arc paths retain their analytic conversion. Disconnected paths, detected tube overlaps, curvature folds, turns above 120 degrees and segments too short for their miters reject atomically. |
 | `IfcSweptDiskSolidPolygonal` | Polyline or omitted-segment indexed-polycurve directrices, optional circular fillets, hollow walls and closed seams. Omitted fillets retain mitered joins. Radius/segment constraints and tangent-extent overlap are checked; adjacent fillets may meet exactly. |
-| `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Tagged breaklines can appear and disappear at authored zero-width tips. Ordered tags also support repeated-run splits and guide-driven transitions, including guides through straight planar miters with fixed lateral profile columns. Compatible planar, nonplanar and curved sharp joins use shared half-angle miters. |
+| `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Tagged breaklines can appear and disappear at authored zero-width tips. Guides can bind to open cross profiles or to indexed profile point tags. Compatible planar, nonplanar and curved sharp joins use shared half-angle miters. |
 | `IfcSurfaceOfLinearExtrusion`, `IfcSurfaceOfRevolution` | Drawable open surface charts and pcurve/advanced-face bases. Centerlines, rounded rectangles, hollow circles and rectangles, and disjoint composite `CURVE` members retain their own domains and placements. Standalone revolution requires a regular, one-sided meridian. |
 | Auxiliary curves | Native Vulkan line lists for the concrete IFC 4.3 curve families listed below, including curves inside `IFCGEOMETRICCURVESET`. Closed paths retain their final segment; independent paths remain separate. Mapped instances, placements, units, curve colors and product identity are retained. Unbounded curves require explicit trims or segments. |
 
@@ -542,11 +542,22 @@ their positions remain exact. Contradictory anchors, duplicate matches, guides
 in different frames, and detected folds, crossings or gaps produce diagnostics
 with source IDs. A guide can control one point per cross section for each tag.
 While a breakline is collapsed, it follows any guide bound to its retained
-anchor. Direct guides on repeated or intermittent tags and indexed-curve tag
-lists remain outside guide coverage. There is a 128-guide limit per surface
-and a 4,097-sample limit per guide. Independent guides on smooth directrices
-use chord-refined support and require a monotone projection on the section
-normal.
+anchor. Direct guides on repeated or intermittent tags remain outside guide
+coverage. There is a 128-guide limit per surface and a 4,097-sample limit per
+guide. Independent guides on smooth directrices use chord-refined support and
+require a monotone projection on the section normal.
+
+An open profile backed by an indexed 2D polycurve can supply its tags in the
+point list's `TagList`. The importer looks up labels by point index and matches
+columns in curve traversal order. Segment endpoints shared by adjacent
+segments occupy one column. Unused points contribute no columns, and empty
+labels leave their columns unbound. All sections must have the same traversed
+tag order, including unbound columns. An `IfcArcIndex` retains its analytic
+curvature and assigns its through-point a column at the point's actual native
+parameter. Over a guided curved span, the surface interpolates the guide
+displacements between adjacent tagged points on top of that analytic shape.
+Guided arcs at a sharp miter and branching indexed tag runs are outside this
+coverage. [IFC point-list tags](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcCartesianPointList2D.htm)
 
 Straight planar miters support guides where the authored profiles have fixed
 lateral columns. The guide follows the planes of the ruled miter rows,
@@ -561,10 +572,10 @@ offsets from the same kinked directrix are outside this guide coverage.
 
 Enable `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` and run
 `ctest -R '^ifc_sectioned_guides_gpu_regression$' --output-on-failure` in the
-configured build directory. The fixed-camera fixture checks the guided crown,
-narrowing and widening on a smooth directrix, plus the wider shoulder and
-shared bend edge of a guided planar miter. It runs Forward and Deferred raster
-with TAA off and on.
+configured build directory. The fixed-camera fixture checks indexed guide
+tags in scrambled storage order, a quarter-arc profile and the shared bend
+edge of a guided planar miter. It runs Forward and Deferred raster with TAA
+off and on.
 Run `ifc_sectioned_tags_gpu_regression` with the same switch to check the
 authored breakline tips, lane and shoulders in those modes.
 

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/geometry/ParametricCurve.h"
+
 #include <cstdint>
 #include <map>
 #include <optional>
@@ -36,5 +38,12 @@ struct IfcSectionTagLayout {
 [[nodiscard]] IfcSectionTagLayout
 alignIfcSectionTagRows(std::span<const IfcSectionTagRow> sections,
                        double sourceTolerance, std::stop_token stop = {});
+
+// Place each strictly increasing source parameter at its uniform ordinal on
+// [0, 1]. The analytic source curve is retained between the tagged points.
+[[nodiscard]] ParametricCurve
+alignIfcIndexedSectionCurve(ParametricCurve source,
+                            std::vector<double> parameters,
+                            uint32_t profileId);
 
 } // namespace container::geometry::ifc::detail

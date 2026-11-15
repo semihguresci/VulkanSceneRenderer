@@ -22,6 +22,9 @@ SHARP_ORIGIN = (-2.63, -2.22)
 SHARP_PATH = ((0., 0.), (10., 0.), (10., 10.))
 OUTER_RAIL = ((0., -2.), (6., -3.), (12., -2.), (12., 10.))
 SHARP_OUTLINE = (*OUTER_RAIL, (8., 10.), (8., 2.), (0., 2.))
+ARC_ORIGIN = (3.35, -2.24)
+ARC_HALF_LENGTH = 1.25
+ARC_RADIUS = 1.08
 
 
 def sharp_probe(name, x, y, positive=True):
@@ -31,9 +34,18 @@ def sharp_probe(name, x, y, positive=True):
                      (cy + SHARP_SCALE * y) * factor - cy), positive)
 
 
+def arc_probe(name, x, y, z=None, *, positive=True):
+    cx, cy = ARC_ORIGIN
+    if z is None:
+        z = math.sqrt(ARC_RADIUS ** 2 - y ** 2)
+    factor = (DISTANCE - DEPTH) / (DISTANCE - z)
+    return (2, name, ((cx + x) * factor - cx, (cy + y) * factor - cy), positive)
+
+
 FIXTURE = Fixture((
     Profile("Guided pavement", (0., 0.), (.24, .68, .88)),
     Profile("Widened sharp join", SHARP_ORIGIN, (.88, .43, .12)),
+    Profile("Tagged quarter-circle profile", ARC_ORIGIN, (.52, .31, .87)),
 ), (
     (0, "center crown", (-.08, CENTER + .20), True),
     (0, "resolved shoulder", (.3, CENTER - .38), True),
@@ -52,6 +64,13 @@ FIXTURE = Fixture((
     sharp_probe("clear reentrant corner", 7.62, 2.44, False),
     sharp_probe("outgoing approach", 10.64, 6.75),
     sharp_probe("beyond outgoing edge", 12.39, 5.56, False),
+    arc_probe("near the tall edge", -.49, .29 * ARC_RADIUS),
+    arc_probe("across the authored arc point", .20, .56 * ARC_RADIUS),
+    arc_probe("midway across the curved flank", -.20, .78 * ARC_RADIUS),
+    arc_probe("near the shallow edge", .61, .91 * ARC_RADIUS),
+    arc_probe("past the arc start", -1.59, .44 * ARC_RADIUS, positive=False),
+    arc_probe("clear beyond the shallow edge", 0., ARC_RADIUS + .23, 0., positive=False),
+    arc_probe("clear below the tall edge", .17, -.26, ARC_RADIUS, positive=False),
 ), None, None)
 
 
@@ -62,14 +81,16 @@ def section_point(step, station, basis, lateral="$", vertical="$"):
 
 def pavement_product(step, context, index, surface, guide_ids, origin):
     product = FIXTURE.products[index]
-    guide_set = step.add("IFCGEOMETRICCURVESET", f"({','.join(guide_ids)})")
+    guide_set = step.add("IFCGEOMETRICCURVESET", f"({','.join(guide_ids)})") if guide_ids else None
     body = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'SectionedSurface'", f"({surface})")
-    axis = step.add("IFCSHAPEREPRESENTATION", context, "'Axis'", "'GeometricCurveSet'", f"({guide_set})")
+    representations = [body]
+    if guide_set:
+        representations.append(step.add("IFCSHAPEREPRESENTATION", context, "'Axis'", "'GeometricCurveSet'", f"({guide_set})"))
     rgb = step.add("IFCCOLOURRGB", "$", *product.color)
     appearance = step.add("IFCSURFACESTYLERENDERING", rgb, "0.", "$", "$", "$", "$", "$", "$", ".NOTDEFINED.")
     style = step.add("IFCSURFACESTYLE", f"'{product.name}'", ".BOTH.", f"({appearance})")
     step.add("IFCSTYLEDITEM", surface, f"({style})", "$")
-    shape = step.add("IFCPRODUCTDEFINITIONSHAPE", "$", "$", f"({body},{axis})")
+    shape = step.add("IFCPRODUCTDEFINITIONSHAPE", "$", "$", f"({','.join(representations)})")
     position = step.add("IFCAXIS2PLACEMENT3D", step.point(origin[0], 0., origin[1]),
                         step.direction(0., -1., 0.), step.direction(1., 0., 0.))
     placement = step.add("IFCLOCALPLACEMENT", "$", position)
@@ -99,6 +120,20 @@ def sharp_join(step, context):
     pavement_product(step, context, 1, surface, (guide,), SHARP_ORIGIN)
 
 
+def curved_profile(step, context):
+    ends = [step.point(x, 0., 0.) for x in (-ARC_HALF_LENGTH, ARC_HALF_LENGTH)]
+    directrix = step.add("IFCPOLYLINE", f"({','.join(ends)})")
+    locations = [step.add("IFCAXIS2PLACEMENTLINEAR", section_point(step, s, directrix), "$", "$")
+                 for s in (0., 2. * ARC_HALF_LENGTH)]
+    # Storage ends with the unbound tag at 30 degrees along the quarter arc.
+    points = f"(({ARC_RADIUS},0.),(0.,{ARC_RADIUS}),({ARC_RADIUS / 2.},{ARC_RADIUS * math.sqrt(.75)}))"
+    tagged = step.add("IFCCARTESIANPOINTLIST2D", points, "('shallow','tall','arc through')")
+    curve = step.add("IFCINDEXEDPOLYCURVE", tagged, "(IFCARCINDEX((2,3,1)))", ".F.")
+    section = step.add("IFCARBITRARYOPENPROFILEDEF", ".CURVE.", "$", curve)
+    surface = step.add("IFCSECTIONEDSURFACE", directrix, f"({','.join(locations)})", f"({section},{section})")
+    pavement_product(step, context, 2, surface, (), ARC_ORIGIN)
+
+
 def write_fixture(path):
     step = StepFixture()
     step.add("IFCSIUNIT", "*", ".LENGTHUNIT.", "$", ".METRE.")
@@ -107,9 +142,12 @@ def write_fixture(path):
     directrix = step.add("IFCPOLYLINE", f"({step.point(-HALF_LENGTH, 0., 0.)},{step.point(HALF_LENGTH, 0., 0.)})")
     locations = [step.add("IFCAXIS2PLACEMENTLINEAR", section_point(step, s, directrix), "$", "$")
                  for s in (0., HALF_LENGTH * 2)]
-    tags = "('narrow','crown','wide')"
-    section = step.add("IFCOPENCROSSPROFILEDEF", ".CURVE.", "$", ".T.",
-                       f"({HALF_WIDTH},{HALF_WIDTH})", "(0.,0.)", tags, step.point(-HALF_WIDTH, 0.))
+    # The indices traverse narrow, crown, wide. The coordinate table and its
+    # labels have a different order, and the crown joins two line segments.
+    tagged = step.add("IFCCARTESIANPOINTLIST2D", f"(({HALF_WIDTH},0.),({-HALF_WIDTH},0.),(0.,0.))",
+                      "('wide','narrow','crown')")
+    curve = step.add("IFCINDEXEDPOLYCURVE", tagged, "(IFCLINEINDEX((2,3)),IFCLINEINDEX((3,1)))", ".F.")
+    section = step.add("IFCARBITRARYOPENPROFILEDEF", ".CURVE.", "$", curve)
     surface = step.add("IFCSECTIONEDSURFACE", directrix, f"({','.join(locations)})", f"({section},{section})")
     guide_ids = []
     for tag, lateral, crest, height in (("narrow", -HALF_WIDTH, -.45, 0.),
@@ -124,6 +162,7 @@ def write_fixture(path):
     # source Z elevations visible as depth. The curve frame's lateral axis is -Y.
     pavement_product(step, context, 0, surface, guide_ids, (0., CENTER))
     sharp_join(step, context)
+    curved_profile(step, context)
     header = "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('ViewDefinition [DesignTransferView]'),'2;1');\n"
     header += (f"FILE_NAME('{path.name}','2026-11-14T00:00:00',(''),(''),'Container','','');\n"
                "FILE_SCHEMA(('IFC4X3_ADD2'));\nENDSEC;\nDATA;\n")
@@ -137,6 +176,22 @@ def surface_height(x, y):
     return CROWN * station * (1 - abs(lateral) / width), station, width
 
 
+def arc_hit(ray):
+    import numpy as np
+
+    # The camera ray meets the front quadrant of a cylinder with X as its axis.
+    cx, cy = ARC_ORIGIN
+    a = ray[..., 1] ** 2 + ray[..., 2] ** 2
+    b = -cy * ray[..., 1] + DISTANCE * ray[..., 2]
+    c = cy ** 2 + DISTANCE ** 2 - ARC_RADIUS ** 2
+    discriminant = b ** 2 - a * c
+    t = (-b - np.sqrt(np.maximum(0., discriminant))) / a
+    hit = t[..., None] * ray + [0., 0., DISTANCE]
+    valid = ((discriminant > 0.) & (t > 0.) & (hit[..., 1] >= cy) & (hit[..., 2] >= 0.) &
+             (np.abs(hit[..., 0] - cx) < ARC_HALF_LENGTH))
+    return hit, valid
+
+
 def expected_depth(index, point, pixel, matrix):
     import numpy as np
 
@@ -145,6 +200,11 @@ def expected_depth(index, point, pixel, matrix):
         hit = (-DISTANCE / ray[2]) * ray + [0., 0., DISTANCE]
         u, v = (hit[:2] - SHARP_ORIGIN) / SHARP_SCALE
         require(polygon(u, v, SHARP_OUTLINE), f"Probe outside guided sharp join: {point}")
+        clip = matrix @ [*hit, 1.]
+        return clip[2] / clip[3]
+    if index == 2:
+        hit, valid = arc_hit(ray)
+        require(valid, f"Probe outside tagged circular profile: {point}")
         clip = matrix @ [*hit, 1.]
         return clip[2] / clip[3]
     # Intersect the ray with the analytically ruled ramp. Each shoulder's
@@ -214,6 +274,23 @@ def check_pixels(image, fixture):
             f"Guided sharp join area {area}, expected {expected_area}")
     result[fixture.products[1].name] = dict(clearShoulderFraction=clear_fraction, estimatedAreaM2=area,
                                             expectedAreaM2=expected_area)
+
+    x = (xx + .5 - WIDTH / 2.) * pitch
+    y = (HEIGHT / 2. - yy - .5) * pitch
+    ray = np.stack((x / DISTANCE, y / DISTANCE, np.full_like(x, -1.)), axis=-1)
+    hit, valid = arc_hit(ray)
+    cx, cy = ARC_ORIGIN
+    band = (hit[..., 1] - cy) / ARC_RADIUS
+    arc_interior = valid & (np.abs(hit[..., 0] - cx) < ARC_HALF_LENGTH - .16) & (band > .14) & (band < .87)
+    arc_count = int(np.count_nonzero(arc_interior))
+    arc_style = pixels[:, :, 2] > pixels[:, :, 0] + 18
+    arc_styled = float(np.mean((foreground & arc_style)[arc_interior]))
+    clear_arc = (np.abs(x - cx) < .86) & (y > cy + ARC_RADIUS + .11) & (y < cy + ARC_RADIUS + .28)
+    arc_exterior = float(np.mean(foreground[clear_arc]))
+    require(arc_count >= 500 and arc_styled >= .98, f"Missing or unstyled tagged quarter circle: {arc_styled}")
+    require(np.count_nonzero(clear_arc) >= 200 and arc_exterior < .01, f"Filled circular profile exterior: {arc_exterior}")
+    result[fixture.products[2].name] = dict(interiorPixels=arc_count, styledFraction=arc_styled,
+                                            clearArcFraction=arc_exterior)
     return result
 
 
@@ -245,7 +322,7 @@ def main():
             results.append(record(renderer, output, model, sequence, frames, technique, taa, FIXTURE,
                                   expected_depth=expected_depth, check_image=check_pixels))
             save_json(output / "results.json", results)
-            print(f"PASS {technique}, TAA {taa}: smooth and sharp guided sections and {len(frames)} depth samples", flush=True)
+            print(f"PASS {technique}, TAA {taa}: guided sections, tagged arc and {len(frames)} depth samples", flush=True)
     return 0
 
 

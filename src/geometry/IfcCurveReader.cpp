@@ -571,6 +571,12 @@ ParametricCurve transformedProfile(ParametricCurve parent,
   return sharedCurve(std::move(r));
 }
 
+struct IndexedSectionTags {
+  std::vector<std::string> labels;
+  std::vector<double> parameters;
+  bool curved{};
+};
+
 class Reader {
 public:
   Reader(const std::unordered_map<uint32_t, Entity> &entities, double units,
@@ -623,7 +629,8 @@ private:
   std::pair<double, glm::dvec3>
   distanceExpression(const Entity &, const ParametricCurve &, uint32_t basisId);
   ParametricCurve polyline(const Entity &,
-                          std::vector<IfcCenterLineSegment> *centerLine = nullptr);
+                          std::vector<IfcCenterLineSegment> *centerLine = nullptr,
+                          IndexedSectionTags *sectionTags = nullptr);
   ParametricCurve spline(const Entity &);
   ParametricCurve trimmed(const Entity &);
   ParametricCurve segment(const Entity &, bool polynomialProfile = false);
@@ -637,8 +644,8 @@ private:
   Surface surfaceImpl(uint32_t id);
   std::vector<Surface> sweptSurfaceCharts(const Entity &);
   std::vector<Surface> trimmedSurfaceCharts(const Entity &);
-  ParametricCurve profile(uint32_t id);
-  ParametricCurve profileImpl(uint32_t id);
+  ParametricCurve profile(uint32_t id, IndexedSectionTags *sectionTags = nullptr);
+  ParametricCurve profileImpl(uint32_t id, IndexedSectionTags *sectionTags);
   const Entity &profileBasis(const Entity &e) const;
   ParametricCurve parameterCurve(uint32_t id, uint32_t basis);
   double toParameter(const ParametricCurve &c, Measure m, double origin) const {
@@ -759,9 +766,11 @@ double signedCenterLineCurvature(const IfcCenterLineSegment &piece) {
 }
 
 ParametricCurve Reader::polyline(
-    const Entity &e, std::vector<IfcCenterLineSegment> *centerLine) {
+    const Entity &e, std::vector<IfcCenterLineSegment> *centerLine,
+    IndexedSectionTags *sectionTags) {
   std::vector<glm::dvec3> points;
   unsigned dimension = 0;
+  const std::vector<StepValue> *storedLabels = nullptr;
   if (e.type == "IFCPOLYLINE") {
     consumePoints(list(arg(e, 0)).size());
     for (const auto &v : list(arg(e, 0))) {
@@ -785,10 +794,30 @@ ParametricCurve Reader::polyline(
         throw std::runtime_error("Mixed indexed curve dimensions");
       points.emplace_back(p[0], p[1], dimension == 3 ? p[2] : 0);
     }
+    if (sectionTags) {
+      if (dimension != 2)
+        throw std::runtime_error("Tagged section profile requires a 2D point list");
+      const auto &labels = list(arg(pl, 1));
+      if (labels.size() != points.size() ||
+          !std::ranges::all_of(labels, [](const StepValue &label) {
+            return label.kind == StepValue::Kind::String;
+          }))
+        throw std::runtime_error("Indexed section TagList in point list #" +
+                                 std::to_string(pl.id) +
+                                 " requires one label per stored point");
+      storedLabels = &labels;
+    }
   }
   if (centerLine && dimension != 2)
     throw std::runtime_error("Centerline curve must be two dimensional");
   std::vector<ParametricCurve> pieces;
+  const auto addTag = [&](size_t index, double parameter) {
+    if (sectionTags->labels.size() >= 4097)
+      throw std::runtime_error(
+          "Indexed section profile exceeds its tag column budget");
+    sectionTags->labels.push_back((*storedLabels)[index].text);
+    sectionTags->parameters.push_back(parameter);
+  };
   const auto line = [&](size_t a, size_t b) {
     if (a >= points.size() || b >= points.size() ||
         glm::length(points[b] - points[a]) <= 1e-15)
@@ -799,6 +828,11 @@ ParametricCurve Reader::polyline(
     const auto p = points[a], q = points[b], d = q - p;
     if (centerLine)
       appendCenterLinePiece(*centerLine, {glm::dvec2(p), glm::dvec2(q)});
+    if (sectionTags) {
+      if (pieces.empty())
+        addTag(a, 0.);
+      addTag(b, double(pieces.size() + 1));
+    }
     // Keep authored endpoints exact. A pcurve endpoint may sit on the
     // inclusive boundary of its spline surface's native knot domain.
     const auto interpolate = [p, q](double t) {
@@ -819,7 +853,7 @@ ParametricCurve Reader::polyline(
   };
   if (e.type == "IFCPOLYLINE" || omitted(arg(e, 1))) {
     for (size_t i = 1; i < points.size(); ++i)
-      if (centerLine || points[i] != points[i - 1])
+      if (centerLine || sectionTags || points[i] != points[i - 1])
         line(i - 1, i);
   } else {
     size_t previous = std::numeric_limits<size_t>::max();
@@ -852,6 +886,8 @@ ParametricCurve Reader::polyline(
       if (n2 <= 1e-24 * glm::dot(ab, ab) * glm::dot(ac, ac)) {
         if (centerLine)
           throw std::runtime_error("Centerline ArcIndex has collinear or coincident points");
+        if (sectionTags)
+          throw std::runtime_error("Indexed section ArcIndex has collinear or coincident points");
         line(index[0], index[1]);
         line(index[1], index[2]);
         continue;
@@ -878,11 +914,34 @@ ParametricCurve Reader::polyline(
       curve.domain = {{0, 1}};
       curve.breaks = {middle / sweep};
       curve.constantSpeed = radius * std::abs(sweep);
-      curve.point = [center, u, w, radius,
-                     sweep](double t) -> std::optional<glm::dvec3> {
+      const auto evaluate = [center, u, w, radius, sweep](double t) {
         return center +
                radius * (u * std::cos(t * sweep) + w * std::sin(t * sweep));
       };
+      curve.point = evaluate;
+      if (sectionTags) {
+        if (pieces.empty())
+          addTag(index.front(), 0.);
+        const double start = double(pieces.size());
+        const double parameter = start + middle / sweep;
+        if (!(parameter > start && parameter < start + 1))
+          throw std::runtime_error(
+              "Indexed section ArcIndex has an invalid through point");
+        addTag(index[1], parameter);
+        addTag(index.back(), start + 1);
+        sectionTags->curved = true;
+        const double through = parameter - start;
+        curve.breaks = {through};
+        curve.point = [evaluate, a, b, c, through](double t) {
+          if (t == 0.)
+            return a;
+          if (t == through)
+            return b;
+          if (t == 1.)
+            return c;
+          return evaluate(t);
+        };
+      }
       curve.derivative = [u, w, radius,
                           sweep](double t) -> std::optional<glm::dvec3> {
         return radius * sweep *
@@ -1666,7 +1725,7 @@ const Entity &Reader::profileBasis(const Entity &e) const {
   return *base;
 }
 
-ParametricCurve Reader::profile(uint32_t id) {
+ParametricCurve Reader::profile(uint32_t id, IndexedSectionTags *sectionTags) {
   if (++nodes_ > 4096 || visiting_.size() >= 64 || !visiting_.insert(id).second)
     throw std::runtime_error("Cyclic or excessive profile reference tree");
   struct Visit {
@@ -1675,7 +1734,7 @@ ParametricCurve Reader::profile(uint32_t id) {
     ~Visit() { set.erase(id); }
   } visit{visiting_, id};
   try {
-    return profileImpl(id);
+    return profileImpl(id, sectionTags);
   } catch (const std::runtime_error &error) {
     const auto &e = get(id);
     throw std::runtime_error(e.type + " #" + std::to_string(id) + ": " +
@@ -1683,11 +1742,12 @@ ParametricCurve Reader::profile(uint32_t id) {
   }
 }
 
-ParametricCurve Reader::profileImpl(uint32_t id) {
+ParametricCurve Reader::profileImpl(uint32_t id,
+                                   IndexedSectionTags *sectionTags) {
   const auto &e = get(id);
   if (e.type == "IFCDERIVEDPROFILEDEF" || e.type == "IFCMIRROREDPROFILEDEF") {
     const auto transform = profileTransform(id);
-    return transformedProfile(profile(transform.parent), transform);
+    return transformedProfile(profile(transform.parent, sectionTags), transform);
   }
   if (e.type == "IFCOPENCROSSPROFILEDEF") {
     if (enumeration(arg(e, 0)) != "CURVE" || !angle_ || *angle_ <= 0)
@@ -1734,7 +1794,15 @@ ParametricCurve Reader::profileImpl(uint32_t id) {
   }
   if (e.type == "IFCARBITRARYOPENPROFILEDEF" ||
       e.type == "IFCARBITRARYCLOSEDPROFILEDEF") {
-    auto c = read(reference(arg(e, 2)));
+    const auto &source = referenced(e, 2);
+    const bool tagged = sectionTags && e.type == "IFCARBITRARYOPENPROFILEDEF" &&
+                        source.type == "IFCINDEXEDPOLYCURVE" &&
+                        !omitted(arg(referenced(source, 0), 1));
+    if (tagged && !omitted(arg(source, 2)) && boolean(arg(source, 2)))
+      throw std::runtime_error(
+          "Tagged indexed section is marked self-intersecting");
+    auto c = tagged ? sharedCurve(polyline(source, nullptr, sectionTags))
+                    : read(source.id);
     if (c.dimension != 2 || !c.domain)
       throw std::runtime_error(
           "Swept surface profile must be a bounded 2D curve");
@@ -2373,6 +2441,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
     };
     auto sections = std::make_shared<std::vector<Section>>();
     std::vector<IfcSectionTagRow> tagRows;
+    std::vector<IndexedSectionTags> indexedRows;
+    indexedRows.reserve(positions.size());
     std::string family;
     bool coincidentEdges = false;
     bool allPlacementAxesDefault = true;
@@ -2400,7 +2470,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
       auto station = curveLength(
           directrix, sections->empty() ? t : sections->front().parameter, t,
           tolerance_ * .01);
-      auto c = profile(p.id);
+      auto &indexed = indexedRows.emplace_back();
+      auto c = profile(p.id, &indexed);
       if (!base || !station || !c.domain || c.period ||
           c.domain->second <= c.domain->first)
         throw std::runtime_error(
@@ -2449,13 +2520,41 @@ Surface Reader::surfaceImpl(uint32_t id) {
         return glm::dvec3(glm::dot(p, base->x), glm::dot(p, base->y),
                           glm::dot(p, base->z));
       };
-      c = remap(std::move(c), endpoints.first, endpoints.second, 1);
+      if (indexed.labels.empty())
+        c = remap(std::move(c), endpoints.first, endpoints.second, 1);
       sections->push_back(
           {t, *station, std::move(c), local(up), local(normal)});
       tagRows.push_back(std::move(tagRow));
     }
     IfcSectionTagLayout tagLayout;
-    if (tagRows.front().tags.empty()) {
+    const auto indexedTags = std::ranges::find_if(
+        indexedRows, [](const auto &row) { return !row.labels.empty(); });
+    const bool curvedIndexedTags = std::ranges::any_of(
+        indexedRows, [](const auto &row) { return row.curved; });
+    if (indexedTags != indexedRows.end()) {
+      const auto &labels = indexedTags->labels;
+      const auto &referenceRow = tagRows[size_t(indexedTags - indexedRows.begin())];
+      for (size_t i = 0; i < indexedRows.size(); ++i) {
+        auto &row = indexedRows[i];
+        if (row.labels.empty() || row.labels != labels)
+          throw std::runtime_error(
+              "Indexed section TagList in profile #" +
+              std::to_string(tagRows[i].profileId) +
+              " differs from the traversed tag order of profile #" +
+              std::to_string(referenceRow.profileId));
+        auto &curve = (*sections)[i].curve;
+        curve = sharedCurve(alignIfcIndexedSectionCurve(
+            std::move(curve), std::move(row.parameters), tagRows[i].profileId));
+      }
+      for (size_t i = 0; i < labels.size(); ++i) {
+        if (labels[i].empty())
+          continue;
+        const auto [column, inserted] = tagLayout.taggedColumns.try_emplace(
+            labels[i], double(i) / double(labels.size() - 1), true);
+        if (!inserted)
+          column->second.second = false;
+      }
+    } else if (tagRows.front().tags.empty()) {
       for (size_t i = 0; i < sections->size(); ++i)
         if (!tagRows[i].tags.empty() ||
             (*sections)[i].curve.breaks != sections->front().curve.breaks)
@@ -2638,6 +2737,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
     result.allowCoincidentEdges = tagLayout.coincidentEdges || coincidentEdges;
     result.creaseU = std::move(tagTransitionStations);
     const auto vBreaks = sections->front().curve.breaks;
+    if (indexedTags != indexedRows.end())
+      result.creaseV = vBreaks;
     IfcSectionPlaneAt planarMiterPlane;
     glm::dvec3 planarMiterUp{};
     if (!miters.empty()) {
@@ -2903,6 +3004,10 @@ Surface Reader::surfaceImpl(uint32_t id) {
         const auto reason =
             "Guide #" + std::to_string(matchingGuides.begin()->second) +
             " at a planar miter requires fixed lateral profile columns";
+        if (curvedIndexedTags)
+          throw std::runtime_error(
+              "Guide #" + std::to_string(matchingGuides.begin()->second) +
+              " at a planar miter requires linear cross-profile spans");
         if (!tagLayout.intermittentTags.empty())
           throw std::runtime_error(reason);
         for (size_t i = 0; i < positions.size(); ++i) {
@@ -3109,20 +3214,41 @@ Surface Reader::surfaceImpl(uint32_t id) {
       }
       // The drawable mesh samples many V values on the same station. Keep
       // its section rows local to this synchronous meshing pass.
-      auto rows =
-          meshing_
-              ? std::make_shared<
-                    std::map<double, std::vector<std::array<glm::dvec3, 2>>>>()
-              : nullptr;
-      result.point = [guideSectionAt, columns, adjacent,
-                      rows](double u, double v) -> std::optional<glm::dvec3> {
+      struct GuidedRow {
+        CrossSection frame;
+        std::vector<std::array<glm::dvec3, 2>> panels;
+      };
+      auto rows = meshing_ ? std::make_shared<std::map<double, GuidedRow>>()
+                           : nullptr;
+      result.point = [guideSectionAt, columns, adjacent, originalPoint,
+                      curvedIndexedTags, rows](double u, double v)
+                         -> std::optional<glm::dvec3> {
         if (!std::isfinite(u) || !std::isfinite(v) || v < 0 || v > 1)
           return std::nullopt;
         const auto upper = std::ranges::upper_bound(columns, v);
         const size_t left = upper == columns.end()
                                 ? columns.size() - 2
                                 : upper - columns.begin() - 1;
-        std::array<glm::dvec3, 2> p;
+        const double fraction =
+            (v - columns[left]) / (columns[left + 1] - columns[left]);
+        const auto interpolate =
+            [&](const CrossSection &frame, const std::array<glm::dvec3, 2> &p)
+                -> std::optional<glm::dvec3> {
+          if (fraction == 0.)
+            return p.front();
+          if (fraction == 1.)
+            return p.back();
+          if (!curvedIndexedTags)
+            return glm::mix(p[0], p[1], fraction);
+          const auto base = originalPoint(frame, u, v);
+          const auto a = originalPoint(frame, u, columns[left]);
+          const auto b = originalPoint(frame, u, columns[left + 1]);
+          if (!base || !a || !b)
+            return std::nullopt;
+          // The guides displace the endpoints of each panel. Apply their
+          // interpolated displacement to the analytic profile between them.
+          return *base + glm::mix(p[0] - *a, p[1] - *b, fraction);
+        };
         if (rows) {
           auto [row, inserted] = rows->try_emplace(u);
           if (inserted) {
@@ -3132,23 +3258,19 @@ Surface Reader::surfaceImpl(uint32_t id) {
             if (rows->size() > 262144 / columns.size())
               throw std::runtime_error(
                   "Sectioned guide mesh exceeds its row budget");
+            row->second.frame = *section;
             for (size_t i = 0; i + 1 < columns.size(); ++i)
-              row->second.push_back(adjacent(*section, u, i));
+              row->second.panels.push_back(adjacent(*section, u, i));
           }
-          if (row->second.empty())
+          if (row->second.panels.empty())
             return std::nullopt;
-          p = row->second[left];
-        } else {
-          const auto section = guideSectionAt(u);
-          if (!section)
-            return std::nullopt;
-          p = adjacent(*section, u, left);
+          return interpolate(row->second.frame, row->second.panels[left]);
         }
-        const double fraction =
-            (v - columns[left]) / (columns[left + 1] - columns[left]);
-        return p[0] * (1 - fraction) + p[1] * fraction;
+        const auto section = guideSectionAt(u);
+        return section ? interpolate(*section, adjacent(*section, u, left))
+                       : std::nullopt;
       };
-      result.ruledSectionPanels = true;
+      result.ruledSectionPanels = !curvedIndexedTags;
     }
     std::ranges::sort(result.creaseU);
     result.creaseU.erase(
@@ -3165,7 +3287,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
                     [first, last](double t) { return t < first || t > last; });
       for (const auto &p : samples)
         result.meshU.push_back(p.parameter);
-      if (!tagLayout.intermittentTags.empty() || result.ruledSectionPanels ||
+      if (!tagLayout.intermittentTags.empty() || !matchingGuides.empty() ||
           result.meshNormal) {
         // Distance conversion and curve sampling can generate different
         // parameters for one station. Give priority to authored sections,
