@@ -5104,7 +5104,8 @@ private:
 
   std::optional<MeshGroup>
   appendTriangleMesh(std::span<const TriangleVertices> triangles,
-                     glm::vec4 color) {
+                     glm::vec4 color,
+                     std::optional<glm::vec3> sharedApex = std::nullopt) {
     if (triangles.empty()) {
       return std::nullopt;
     }
@@ -5126,18 +5127,26 @@ private:
     const uint32_t firstIndex = static_cast<uint32_t>(model_.indices.size());
     glm::vec3 minBounds(std::numeric_limits<float>::max());
     glm::vec3 maxBounds(std::numeric_limits<float>::lowest());
+    std::optional<uint32_t> apexIndex;
 
     for (const auto &triangle : triangles) {
       const auto &positions = triangle.positions;
       const glm::vec3 normal =
           safeNormal(positions[0], positions[1], positions[2]);
-      const uint32_t base = static_cast<uint32_t>(model_.vertices.size());
       for (size_t i = 0; i < 3; ++i) {
+        const bool atApex = sharedApex && positions[i] == *sharedApex;
+        if (atApex && apexIndex) {
+          model_.indices.push_back(*apexIndex);
+          continue;
+        }
+        const auto index = static_cast<uint32_t>(model_.vertices.size());
+        if (atApex)
+          apexIndex = index;
         const auto n = triangle.normals ? (*triangle.normals)[i] : normal;
         const auto tangent = safeTangent(positions[0], positions[1], n);
         model_.vertices.push_back(makeVertex(positions[i], n, tangent));
+        model_.indices.push_back(index);
       }
-      model_.indices.insert(model_.indices.end(), {base, base + 1u, base + 2u});
 
       for (const auto &position : positions) {
         minBounds = glm::min(minBounds, position);
@@ -7166,10 +7175,14 @@ private:
               triangles.reserve(mesh->size());
               for (const auto &triangle : *mesh)
                 triangles.push_back({triangle.positions, triangle.normals});
+              const auto apex = charts.size() == 1 && charts.front().standaloneApex
+                  ? std::optional(glm::vec3(charts.front().standaloneApex->point))
+                  : std::nullopt;
               if (auto group = appendTriangleMesh(
                       triangles, styleColorByItem_.contains(ref)
                                      ? styleColorByItem_.at(ref)
-                                     : defaultColor()))
+                                     : defaultColor(),
+                      apex))
                 groupsByItem_[ref] = {*group};
               else
                 error =

@@ -92,11 +92,18 @@ struct GridMesher {
   size_t &evaluations;
   std::optional<Domain> seamU, seamV;
 
+  bool atApex(double v) const {
+    return surface.standaloneApex && v == surface.standaloneApex->v;
+  }
+
   glm::dvec3 evaluate(double u, double v) const {
     if (++evaluations > maxEvaluations)
       throw std::runtime_error("Swept surface exceeds its evaluation budget");
     if (evaluations % 1024 == 0)
       container::util::checkModelImportCancellation(stop);
+    // Every angular sample denotes the same point at a certified axis endpoint.
+    if (atApex(v))
+      return surface.standaloneApex->point;
     const auto p =
         surface.point(seamU && u == seamU->second ? seamU->first : u,
                       seamV && v == seamV->second ? seamV->first : v);
@@ -142,6 +149,8 @@ struct GridMesher {
 
   glm::dvec3 normalAt(double u, double v, double insideU, double insideV,
                       glm::dvec3 point) const {
+    if (atApex(v))
+      return surface.standaloneApex->normal;
     // A one-sided stencil remains in the cell. At a profile knot the
     // neighboring cell can therefore retain its own normal at the same point.
     const double du = (insideU - u) * 1e-4, dv = (insideV - v) * 1e-4;
@@ -166,7 +175,7 @@ struct GridMesher {
         normalAt(cell.u1, cell.v0, cell.u0, cell.v1, points[1]),
         normalAt(cell.u1, cell.v1, cell.u0, cell.v0, points[2]),
         normalAt(cell.u0, cell.v1, cell.u1, cell.v0, points[3])};
-    for (const auto indices : {std::array{0, 1, 2}, std::array{0, 2, 3}}) {
+    const auto appendTriangle = [&](std::array<size_t, 3> indices) {
       const auto normal = glm::cross(points[indices[1]] - points[indices[0]],
                                      points[indices[2]] - points[indices[0]]);
       CurvedFaceTriangle triangle;
@@ -183,7 +192,12 @@ struct GridMesher {
         std::swap(triangle.normals[1], triangle.normals[2]);
       }
       result.push_back(triangle);
-    }
+    };
+    // Each cell adjoining the apex contributes one triangle to the fan.
+    if (!atApex(cell.v0))
+      appendTriangle({0, 1, 2});
+    if (!atApex(cell.v1))
+      appendTriangle({0, 2, 3});
   }
 };
 
@@ -217,7 +231,9 @@ void meshChart(GridMesher mesh, bool bareExtrusion,
   const auto &surface = mesh.surface;
   if (!surface.standaloneRegular)
     throw std::runtime_error(
-        "Swept surface does not have a regular standalone chart");
+        surface.radialGraphError.empty()
+            ? "Swept surface does not have a regular standalone chart"
+            : surface.radialGraphError);
   auto u = seedAxis(surface.uDomain, surface.meshU, surface.periods.x,
                     surface.angularScale.x);
   // Depth scales V for analytic evaluation. Its finite display convention
@@ -226,6 +242,12 @@ void meshChart(GridMesher mesh, bool bareExtrusion,
       bareExtrusion ? std::optional(Domain{0, 1}) : surface.vDomain;
   auto v = seedAxis(vDomain, surface.meshV, surface.periods.y,
                     surface.angularScale.y);
+  if (const auto &apex = surface.standaloneApex;
+      apex && ((apex->v != v.front() && apex->v != v.back()) ||
+               surface.periods.y != 0 || !finite(apex->point) ||
+               !finite(apex->normal) ||
+               glm::dot(apex->normal, apex->normal) <= 0))
+    throw std::runtime_error("Invalid swept surface apex frame");
   // Reuse the exact same point at opposite ends of a full period so a
   // floating-point residual at sin(2*pi) cannot leave an unwelded seam.
   mesh.seamU = closedAxis(u, surface.periods.x);

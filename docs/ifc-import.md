@@ -57,7 +57,7 @@ checks are free of validation and synchronization errors.
 | `IfcSweptDiskSolid` | Solid/hollow disks on bounded 3D curves, including splines, closed loops and mitered C0 joins. Explicit extents retain the directrix's source parameter domain. Straight and open tangential line/arc paths retain their analytic conversion. Disconnected paths, detected tube overlaps, curvature folds, turns above 120 degrees and segments too short for their miters reject atomically. |
 | `IfcSweptDiskSolidPolygonal` | Polyline or omitted-segment indexed-polycurve directrices, optional circular fillets, hollow walls and closed seams. Omitted fillets retain mitered joins. Radius/segment constraints and tangent-extent overlap are checked; adjacent fillets may meet exactly. |
 | `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Tagged breaklines can appear and disappear at authored zero-width tips. Guides can bind to open cross profiles or to indexed profile point tags. Compatible planar, nonplanar and curved sharp joins use shared half-angle miters. |
-| `IfcSurfaceOfLinearExtrusion`, `IfcSurfaceOfRevolution` | Drawable open surface charts and pcurve/advanced-face bases. Centerlines, rounded rectangles, hollow circles and rectangles, and disjoint composite `CURVE` members retain their own domains and placements. Standalone revolution requires a regular, one-sided meridian. |
+| `IfcSurfaceOfLinearExtrusion`, `IfcSurfaceOfRevolution` | Drawable open surface charts and pcurve/advanced-face bases. Centerlines, rounded rectangles, hollow circles and rectangles, and disjoint composite `CURVE` members retain their own domains and placements. A standalone revolution can include one certified smooth endpoint on the axis. |
 | Auxiliary curves | Native Vulkan line lists for the concrete IFC 4.3 curve families listed below, including curves inside `IFCGEOMETRICCURVESET`. Closed paths retain their final segment; independent paths remain separate. Mapped instances, placements, units, curve colors and product identity are retained. Unbounded curves require explicit trims or segments. |
 
 Polygon triangulation uses Mapbox Earcut, a header-only vcpkg dependency
@@ -201,8 +201,17 @@ A polar seam can join the apex to a monotone rim, including a chain of
 segments with opposite uses and two verified native pcurves per segment.
 The same cut construction as for spherical caps selects an original rim
 vertex clear of the holes. Cusps, axis crossings,
-nonmonotone meridians, unsupported spline creases, composite axis-touching
-profiles and standalone polar tessellation remain outside this coverage.
+nonmonotone meridians, unsupported spline creases and composite axis-touching
+profiles remain outside this coverage.
+
+A standalone revolution or its rectangular trim uses the same endpoint
+certification. When the trim includes the endpoint, the mesh shares one apex
+vertex with the analytic limiting normal. The angular seam uses identical
+positions at both ends of a full revolution. Standalone surfaces stay open at
+the rim and at both sides of a partial angular trim. Run
+`ifc_standalone_revolution_axis_gpu_regression` with
+`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` for analytic depth and coverage
+comparisons in Forward and Deferred raster with TAA off and on.
 Run `ifc_revolution_axis_gpu_regression` with
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` for the analytic paraboloid fixtures in
 Forward and Deferred raster with TAA off and on.
@@ -902,7 +911,7 @@ implementation tasks and independent geometry/rendering acceptance criteria.
 Ambiguous tag transitions, guides at curved or spatial miters, incompatible
 sharp joins, other singular charts and polar trims with separate meridians or holes meeting an authored
 seam remain outside native coverage. Swept surface limits include standalone
-revolutions without a regular one-sided meridian and multi-chart boundaries
+revolutions with cusps, axis crossings, or uncertified singular meridians and multi-chart boundaries
 without enough 3D geometry to select their chart. IFC swept surfaces use
 `CURVE` profiles. An arbitrary `AREA` profile with voids can be used with an
 `IfcExtrudedAreaSolid`.

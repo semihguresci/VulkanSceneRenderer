@@ -1,6 +1,7 @@
-"""Capture smooth IFC paraboloid axis endpoints and explicit seam topology."""
+"""Capture IFC paraboloid axis endpoints, angular trims and explicit seams."""
 
 import argparse
+from functools import partial
 import math
 import os
 from pathlib import Path
@@ -21,6 +22,10 @@ PRODUCTS = (
     Profile("Shared axial meridians", (-2.10, -.22), (.11, .67, .93)),
     Profile("Full-turn axial seam", (2.10, -.22), (.15, .79, .31)),
 )
+STANDALONE_PRODUCTS = (
+    Profile("Standalone paraboloid", (-2.10, -.22), (.11, .67, .93)),
+    Profile("Angularly trimmed paraboloid", (2.10, -.22), (.90, .35, .10)),
+)
 SOUTH_COLOR = (.92, .34, .10)
 INFILL_COLOR = (.76, .19, .86)
 BASE_COLOR = (.72, .68, .19)
@@ -34,11 +39,11 @@ def cap_point(r, angle):
     return (r * math.cos(angle), r * math.sin(angle), height(r))
 
 
-def probe(index, name, r, angle):
-    cx, cy = PRODUCTS[index].center
+def probe(index, name, r, angle, *, products=PRODUCTS, visible=True):
+    cx, cy = products[index].center
     x, y, z = cap_point(r, angle)
     scale = (DISTANCE - DEPTH) / (DISTANCE - z)
-    return index, name, ((cx + x) * scale - cx, (cy + y) * scale - cy), True
+    return index, name, ((cx + x) * scale - cx, (cy + y) * scale - cy), visible
 
 
 FIXTURE = Fixture(PRODUCTS, (
@@ -61,6 +66,27 @@ FIXTURE = Fixture(PRODUCTS, (
 ), None, None)
 
 
+def standalone_probe(index, name, r, angle, *, visible=True):
+    return probe(index, name, r, angle, products=STANDALONE_PRODUCTS, visible=visible)
+
+
+STANDALONE_FIXTURE = Fixture(STANDALONE_PRODUCTS, (
+    standalone_probe(0, "smooth axis", 0., 0.),
+    standalone_probe(0, "full-turn seam", 1.10, 0.),
+    standalone_probe(0, "just before the seam", .91, -.12),
+    standalone_probe(0, "just after the seam", .91, .12),
+    standalone_probe(0, "opposite meridian", 1.44, math.pi),
+    standalone_probe(0, "clear outside the rim", 1.91, 2.35, visible=False),
+    standalone_probe(1, "near the trimmed axis", .20, .94),
+    standalone_probe(1, "inside the first trim", 1.20, FIRST_ANGLE + .17),
+    standalone_probe(1, "inside the last trim", 1.25, LAST_ANGLE - .17),
+    standalone_probe(1, "near the trimmed rim", 1.47, .96),
+    standalone_probe(1, "clear before the first trim", 1.20, FIRST_ANGLE - .18, visible=False),
+    standalone_probe(1, "clear after the last trim", 1.25, LAST_ANGLE + .18, visible=False),
+    standalone_probe(1, "clear beyond the trimmed rim", 1.92, .94, visible=False),
+), None, None)
+
+
 def spline(step, controls):
     points = [step.point(*point) for point in controls]
     return step.add("IFCBSPLINECURVEWITHKNOTS", 2, f"({','.join(points)})",
@@ -79,11 +105,15 @@ def advanced_face(step, surface, loops, name, color, same_sense=True):
         loop = step.add("IFCEDGELOOP", f"({','.join(oriented)})")
         bounds.append(step.add("IFCFACEOUTERBOUND" if index == 0 else "IFCFACEBOUND", loop, ".T."))
     face = step.add("IFCADVANCEDFACE", f"({','.join(bounds)})", surface, ".T." if same_sense else ".F.")
+    apply_style(step, face, name, color)
+    return face
+
+
+def apply_style(step, item, name, color):
     rgb = step.add("IFCCOLOURRGB", "$", *color)
     rendering = step.add("IFCSURFACESTYLERENDERING", rgb, "0.", "$", "$", "$", "$", "$", "$", ".NOTDEFINED.")
     style = step.add("IFCSURFACESTYLE", f"'{name}'", ".BOTH.", f"({rendering})")
-    step.add("IFCSTYLEDITEM", face, f"({style})", "$")
-    return face
+    step.add("IFCSTYLEDITEM", item, f"({style})", "$")
 
 
 def meridian(step, angle):
@@ -101,7 +131,7 @@ def vertex(step, radius, angle):
     return step.add("IFCVERTEXPOINT", step.point(*cap_point(radius, angle)))
 
 
-def write_fixture(path):
+def revolution_surface():
     step = StepFixture()
     step.add("IFCSIUNIT", "*", ".LENGTHUNIT.", "$", ".METRE.")
     step.add("IFCSIUNIT", "*", ".PLANEANGLEUNIT.", "$", ".RADIAN.")
@@ -114,6 +144,30 @@ def write_fixture(path):
     axis = step.add("IFCAXIS1PLACEMENT", step.point(*origin), step.direction(0., 1., 0.))
     sweep_frame = placement(step, origin, (0., -1., 0.), x_axis)
     surface = step.add("IFCSURFACEOFREVOLUTION", profile, sweep_frame, axis)
+    return step, context, surface
+
+
+def add_product(step, context, index, product, kind, item):
+    identifier = "Body" if kind == "AdvancedBrep" else "Surface"
+    rep = step.add("IFCSHAPEREPRESENTATION", context, f"'{identifier}'", f"'{kind}'", f"({item})")
+    shape = step.add("IFCPRODUCTDEFINITIONSHAPE", "$", "$", f"({rep})")
+    x, y = product.center
+    position = placement(step, (x, 0., y), (0., -1., 0.), (1., 0., 0.))
+    local = step.add("IFCLOCALPLACEMENT", "$", position)
+    step.add("IFCBUILDINGELEMENTPROXY", f"'{index + 1:022d}'", "$", f"'{product.name}'",
+             "$", "$", local, shape, "$", "$")
+
+
+def save_fixture(path, step):
+    header = "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('ViewDefinition [DesignTransferView]'),'2;1');\n"
+    header += (f"FILE_NAME('{path.name}','2026-11-14T00:00:00',(''),(''),'Container','','');\n"
+               "FILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n")
+    path.write_text(header + "\n".join(step.elements) + "\nENDSEC;\nEND-ISO-10303-21;\n", encoding="ascii")
+
+
+def write_fixture(path):
+    step, context, surface = revolution_surface()
+    x_axis = (1., 0., 0.)
     base_frame = placement(step, (0., 0., height(RADIUS)), (0., 0., -1.), x_axis)
     plane = step.add("IFCPLANE", base_frame)
 
@@ -159,23 +213,24 @@ def write_fixture(path):
     for index, (product, faces) in enumerate(zip(PRODUCTS, shells, strict=True)):
         shell = step.add("IFCCLOSEDSHELL", f"({','.join(faces)})")
         brep = step.add("IFCADVANCEDBREP", shell)
-        rep = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'AdvancedBrep'", f"({brep})")
-        shape = step.add("IFCPRODUCTDEFINITIONSHAPE", "$", "$", f"({rep})")
-        x, y = product.center
-        position = placement(step, (x, 0., y), (0., -1., 0.), x_axis)
-        local = step.add("IFCLOCALPLACEMENT", "$", position)
-        step.add("IFCBUILDINGELEMENTPROXY", f"'{index + 1:022d}'", "$", f"'{product.name}'",
-                 "$", "$", local, shape, "$", "$")
-    header = "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('ViewDefinition [DesignTransferView]'),'2;1');\n"
-    header += (f"FILE_NAME('{path.name}','2026-11-14T00:00:00',(''),(''),'Container','','');\n"
-               "FILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n")
-    path.write_text(header + "\n".join(step.elements) + "\nENDSEC;\nEND-ISO-10303-21;\n", encoding="ascii")
+        add_product(step, context, index, product, "AdvancedBrep", brep)
+    save_fixture(path, step)
 
 
-def paraboloid_hit(ray, index):
+def write_standalone_fixture(path):
+    step, context, surface = revolution_surface()
+    trim = step.add("IFCRECTANGULARTRIMMEDSURFACE", surface, FIRST_ANGLE, PROFILE_START,
+                    LAST_ANGLE, PROFILE_END, ".T.", ".T.")
+    for index, (product, item) in enumerate(zip(STANDALONE_PRODUCTS, (surface, trim), strict=True)):
+        apply_style(step, item, product.name, product.color)
+        add_product(step, context, index, product, "Surface3D", item)
+    save_fixture(path, step)
+
+
+def paraboloid_hit(ray, index, *, fixture=FIXTURE):
     import numpy as np
 
-    cx, cy = PRODUCTS[index].center
+    cx, cy = fixture.products[index].center
     camera = np.array([-cx, -cy, DISTANCE])
     a = CURVATURE * np.sum(ray[..., :2] ** 2, axis=-1)
     b = ray[..., 2] + 2. * CURVATURE * (ray[..., :2] @ camera[:2])
@@ -188,18 +243,18 @@ def paraboloid_hit(ray, index):
     return hit, valid
 
 
-def expected_depth(index, point, pixel, matrix):
+def expected_depth(index, point, pixel, matrix, *, fixture=FIXTURE):
     import numpy as np
 
     ray = world_ray((pixel[0], HEIGHT - 1 - pixel[1]), np.linalg.inv(matrix))
-    hit, valid = paraboloid_hit(ray, index)
+    hit, valid = paraboloid_hit(ray, index, fixture=fixture)
     require(valid, f"Positive depth probe outside the analytic cap: {point}")
-    x, y = PRODUCTS[index].center
+    x, y = fixture.products[index].center
     clip = matrix @ [*(hit + [x, y, 0.]), 1.]
     return clip[2] / clip[3]
 
 
-def check_pixels(image, _fixture):
+def capture_pixels(image):
     import numpy as np
     from PIL import Image
 
@@ -211,6 +266,13 @@ def check_pixels(image, _fixture):
     yy, xx = np.mgrid[:HEIGHT, :WIDTH]
     rays = np.stack(((xx + .5 - WIDTH / 2.) * scale,
                      (HEIGHT / 2. - yy - .5) * scale, np.full_like(xx, -1.)), axis=-1)
+    return pixels, visible, rays
+
+
+def check_pixels(image, _fixture):
+    import numpy as np
+
+    pixels, visible, rays = capture_pixels(image)
     split, split_valid = paraboloid_hit(rays, 0)
     full, full_valid = paraboloid_hit(rays, 1)
     radius = np.linalg.norm(full[..., :2], axis=-1)
@@ -246,10 +308,46 @@ def check_pixels(image, _fixture):
     return results
 
 
+def check_standalone_pixels(image, fixture):
+    import numpy as np
+
+    pixels, visible, rays = capture_pixels(image)
+    full, full_valid = paraboloid_hit(rays, 0, fixture=fixture)
+    sector, sector_valid = paraboloid_hit(rays, 1, fixture=fixture)
+    full_r = np.linalg.norm(full[..., :2], axis=-1)
+    sector_r = np.linalg.norm(sector[..., :2], axis=-1)
+    angle = np.arctan2(sector[..., 1], sector[..., 0])
+    full_interior = full_valid & (full_r < RADIUS - .15)
+    sector_interior = sector_valid & (sector_r < RADIUS - .13) & (sector_r > .17)
+    trim_margin = .13
+    inside_trim = sector_interior & (angle > FIRST_ANGLE + trim_margin) & (angle < LAST_ANGLE - trim_margin)
+    outside_trim = sector_interior & ((angle < FIRST_ANGLE - trim_margin) | (angle > LAST_ANGLE + trim_margin))
+    near_axis = full_valid & (full_r < .21)
+    seam = full_interior & (full[..., 0] > .1) & (np.abs(full[..., 1]) < .11)
+    results = {}
+    for label, mask, dominant, opposite in (
+        ("Full paraboloid interior", full_interior, 2, 0),
+        ("Full paraboloid axis", near_axis, 2, 0),
+        ("Full paraboloid seam", seam, 2, 0),
+        ("Angular trim interior", inside_trim, 0, 2),
+    ):
+        colors = pixels[mask]
+        require(len(colors) >= 120, f"Insufficient analytic interior for {label}")
+        styled = float(np.mean(colors[:, dominant] > colors[:, opposite] + 18))
+        coverage = float(np.mean(visible[mask]))
+        require(coverage >= .99 and styled >= .98, f"Missing or incorrectly styled {label}: {coverage}, {styled}")
+        results[label] = dict(pixels=len(colors), visibleFraction=coverage, styledFraction=styled)
+    clear = float(np.mean(visible[outside_trim]))
+    require(np.count_nonzero(outside_trim) > 500 and clear < .01, f"Filled outside angular trim: {clear}")
+    results["Outside angular trim"] = dict(pixels=int(np.count_nonzero(outside_trim)), visibleFraction=clear)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--fixture", choices=("advanced", "standalone"), default="advanced")
     parser.add_argument("--managed-output", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
     args = parser.parse_args()
@@ -262,19 +360,23 @@ def main():
         output = Path(tempfile.mkdtemp(prefix="run-", dir=output))
     else:
         output.mkdir(parents=True)
-    model, sequence = output / "smooth-revolution-axis.ifc", output / "depth-witnesses.json"
-    write_fixture(model)
-    frames = write_sequence(sequence, FIXTURE)
+    standalone = args.fixture == "standalone"
+    fixture = STANDALONE_FIXTURE if standalone else FIXTURE
+    model = output / ("standalone-revolution-axis.ifc" if standalone else "smooth-revolution-axis.ifc")
+    sequence = output / "depth-witnesses.json"
+    (write_standalone_fixture if standalone else write_fixture)(model)
+    frames = write_sequence(sequence, fixture)
     if args.generate_only:
         return 0
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     results = []
     for technique in TECHNIQUES:
         for taa in (False, True):
-            results.append(record(renderer, output, model, sequence, frames, technique, taa, FIXTURE,
-                                  expected_depth=expected_depth, check_image=check_pixels))
+            results.append(record(renderer, output, model, sequence, frames, technique, taa, fixture,
+                                  expected_depth=partial(expected_depth, fixture=fixture),
+                                  check_image=check_standalone_pixels if standalone else check_pixels))
             save_json(output / "results.json", results)
-            print(f"PASS {technique}, TAA {taa}: smooth cap, axial seams, and {len(frames)} depth samples", flush=True)
+            print(f"PASS {technique}, TAA {taa}: {args.fixture} revolution and {len(frames)} depth samples", flush=True)
     return 0
 
 

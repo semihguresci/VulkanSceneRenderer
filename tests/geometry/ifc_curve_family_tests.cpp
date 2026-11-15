@@ -11,8 +11,10 @@
 #include <fstream>
 #include <glm/geometric.hpp>
 #include <gtest/gtest.h>
+#include <limits>
 #include <map>
 #include <numbers>
+#include <optional>
 #include <set>
 #include <span>
 #include <sstream>
@@ -1766,6 +1768,243 @@ TEST(IfcCurveFamilies,
       area += .5 * glm::length(n);
     }
     EXPECT_NEAR(area, 12 * pi, .02);
+  }
+}
+
+// The quadratic Bezier meridian (2t, t²), 0 <= t <= 1, gives the
+// paraboloid height r²/4. The default IFC knot interval is [2, 5].
+std::string smoothRevolutionDefinition(
+    const std::array<glm::dvec2, 3> &controls, bool placed = false,
+    std::string_view knots = "2.,5.") {
+  std::ostringstream step;
+  for (size_t i = 0; i < controls.size(); ++i)
+    step << '#' << i + 2 << "=IFCCARTESIANPOINT((" << controls[i].x << ','
+         << controls[i].y << "));";
+  step << "#5=IFCBSPLINECURVEWITHKNOTS(2,(#2,#3,#4),.UNSPECIFIED.,.F.,.F.,"
+          "(3,3),(" << knots << "),.UNSPECIFIED.);"
+          "#6=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#5);"
+          "#7=IFCCARTESIANPOINT((0.,0.,0.));"
+          "#8=IFCDIRECTION((0.,1.,0.)); #10=IFCAXIS1PLACEMENT(#7,#8);";
+  if (placed) {
+    step << "#13=IFCMIRROREDPROFILEDEF(.CURVE.,$,#6,*,$);"
+            "#14=IFCCARTESIANPOINT((3000.,5000.,-2000.));"
+            "#15=IFCDIRECTION((1.,0.,0.)); #16=IFCDIRECTION((0.,1.,0.));"
+            "#17=IFCAXIS2PLACEMENT3D(#14,#15,#16);"
+            "#9=IFCSURFACEOFREVOLUTION(#13,#17,#10);";
+  } else {
+    step << "#9=IFCSURFACEOFREVOLUTION(#6,$,#10);";
+  }
+  return step.str();
+}
+
+struct StandaloneParaboloidFrame {
+  glm::dvec3 apex{0, 0, 0}, radial{1, 0, 0}, axis{0, 1, 0}, side{0, 0, 1};
+  double unitsPerMeter{1};
+
+  glm::dvec3 local(glm::dvec3 point) const {
+    const auto p = (point - apex) / unitsPerMeter;
+    return {glm::dot(p, radial), glm::dot(p, axis), glm::dot(p, side)};
+  }
+
+  glm::dvec3 normal(glm::dvec3 p) const {
+    return glm::normalize((p.x / 2) * radial - axis + (p.z / 2) * side);
+  }
+};
+
+void expectStandaloneParaboloid(const Model &model,
+                                 const StandaloneParaboloidFrame &frame,
+                                 double sense, double radius,
+                                 std::optional<double> halfAngle = {},
+                                 double innerRadius = 0) {
+  ASSERT_NO_FATAL_FAILURE(completeSweptMesh(model));
+  ASSERT_EQ(model.meshRanges.size(), 1u);
+  ASSERT_EQ(model.elements.size(), 1u);
+  using Position = std::array<float, 3>;
+  std::set<Position> positions;
+  std::map<std::pair<Position, Position>, std::pair<unsigned, int>> edges;
+  std::optional<uint32_t> apexIndex;
+  glm::dvec3 minimum(std::numeric_limits<double>::max());
+  glm::dvec3 maximum(std::numeric_limits<double>::lowest());
+  double area = 0;
+  unsigned apexTriangles = 0, boundaryEdges = 0;
+  for (size_t i = 0; i < model.indices.size(); i += 3) {
+    std::array<glm::dvec3, 3> local, points;
+    std::array<Position, 3> keys;
+    unsigned apexCorners = 0;
+    for (size_t j = 0; j < local.size(); ++j) {
+      const uint32_t index = model.indices[i + j];
+      ASSERT_LT(index, model.vertices.size());
+      const auto &vertex = model.vertices[index];
+      points[j] = vertex.position;
+      keys[j] = {vertex.position.x, vertex.position.y, vertex.position.z};
+      positions.insert(keys[j]);
+      const auto p = local[j] = frame.local(points[j]);
+      minimum = glm::min(minimum, p);
+      maximum = glm::max(maximum, p);
+      const double r = std::hypot(p.x, p.z);
+      EXPECT_NEAR(p.y, r * r / 4, 2e-6);
+      EXPECT_GE(r, innerRadius - 2e-6);
+      EXPECT_LE(r, radius + 2e-6);
+      EXPECT_GT(sense * glm::dot(glm::dvec3(vertex.normal), frame.normal(p)),
+                .99999);
+      if (r < 1e-7) {
+        ++apexCorners;
+        if (!apexIndex)
+          apexIndex = index;
+        EXPECT_EQ(index, *apexIndex);
+        EXPECT_EQ(points[j], frame.apex);
+        EXPECT_EQ(glm::dvec3(vertex.normal), -sense * frame.axis);
+      } else if (halfAngle) {
+        EXPECT_LE(std::abs(std::atan2(-p.z, p.x)), *halfAngle + 2e-6);
+      }
+    }
+    ASSERT_LE(apexCorners, 1u);
+    apexTriangles += apexCorners;
+    const auto face = glm::cross(points[1] - points[0], points[2] - points[0]);
+    const auto centroid = (local[0] + local[1] + local[2]) / 3.;
+    EXPECT_GT(sense * glm::dot(face, frame.normal(centroid)), 0.);
+    area += glm::length(face) / (2 * frame.unitsPerMeter * frame.unitsPerMeter);
+    for (size_t j = 0; j < keys.size(); ++j) {
+      const auto &a = keys[j], &b = keys[(j + 1) % keys.size()];
+      ASSERT_NE(a, b);
+      auto &edge = edges[std::minmax(a, b)];
+      ++edge.first;
+      edge.second += a < b ? 1 : -1;
+    }
+  }
+  if (innerRadius == 0) {
+    ASSERT_TRUE(apexIndex);
+    EXPECT_GT(apexTriangles, 2u);
+    EXPECT_EQ(std::ranges::count_if(model.vertices, [&](const auto &vertex) {
+      return glm::dvec3(vertex.position) == frame.apex;
+    }), 1);
+  } else {
+    EXPECT_FALSE(apexIndex);
+  }
+  // Weld by exact position to check disk topology and paired edges across
+  // the full-turn seam, independently of ordinary vertex indexing.
+  const size_t euler = halfAngle || innerRadius == 0 ? 1u : 0u;
+  EXPECT_EQ(positions.size() + model.indices.size() / 3, edges.size() + euler);
+  const auto boundary = [&](Position key) {
+    const auto p = frame.local({key[0], key[1], key[2]});
+    const double r = std::hypot(p.x, p.z);
+    unsigned sides = 0;
+    if (std::abs(r - radius) < 2e-6)
+      sides |= 1;
+    if (innerRadius > 0 && std::abs(r - innerRadius) < 2e-6)
+      sides |= 2;
+    if (halfAngle) {
+      const double angle = std::atan2(-p.z, p.x);
+      if (r < 1e-7 || std::abs(angle + *halfAngle) < 2e-6)
+        sides |= 4;
+      if (r < 1e-7 || std::abs(angle - *halfAngle) < 2e-6)
+        sides |= 8;
+    }
+    return sides;
+  };
+  for (const auto &[ends, use] : edges) {
+    EXPECT_LE(use.first, 2u);
+    if (use.first == 2) {
+      EXPECT_EQ(use.second, 0);
+    } else {
+      ++boundaryEdges;
+      EXPECT_NE(boundary(ends.first) & boundary(ends.second), 0u);
+    }
+  }
+  EXPECT_GT(boundaryEdges, 2u);
+  const auto expectedMinimum = halfAngle
+      ? glm::dvec3(innerRadius * std::cos(*halfAngle),
+                   innerRadius * innerRadius / 4, -radius * std::sin(*halfAngle))
+      : glm::dvec3(-radius, innerRadius * innerRadius / 4, -radius);
+  const glm::dvec3 expectedMaximum(radius, radius * radius / 4,
+      halfAngle ? radius * std::sin(*halfAngle) : radius);
+  EXPECT_LT(glm::length(minimum - expectedMinimum), 3e-6);
+  EXPECT_LT(glm::length(maximum - expectedMaximum), 3e-6);
+  const double sweepAngle = 2 * halfAngle.value_or(pi);
+  const auto primitive = [](double r) { return std::pow(1 + r * r / 4, 1.5); };
+  const double expectedArea = 4 * sweepAngle / 3 *
+                              (primitive(radius) - primitive(innerRadius));
+  EXPECT_NEAR(area, expectedArea, halfAngle ? .002 : .02);
+}
+
+TEST(IfcCurveFamilies, StandaloneSmoothRevolutionWeldsApexAndFullTurnSeam) {
+  constexpr std::array<glm::dvec2, 3> controls{{{0, 0}, {1, 0}, {2, 1}}};
+  const auto direct = container::geometry::ifc::LoadFromStep(
+      fixture(smoothRevolutionDefinition(controls), "#9", "'Surface','Surface3D'"));
+  ASSERT_NO_FATAL_FAILURE(expectStandaloneParaboloid(direct, {}, 1, 2));
+
+  auto millimetres = fixture(smoothRevolutionDefinition(
+      {{{2000, 1000}, {1000, 0}, {0, 0}}}, true), "#9", "'Surface','Surface3D'");
+  setMillimetreUnits(millimetres);
+  const auto placed = container::geometry::ifc::LoadFromStep(millimetres);
+  ASSERT_NO_FATAL_FAILURE(expectStandaloneParaboloid(
+      placed, {{3000, 5000, -2000}, {0, 1, 0}, {0, 0, 1}, {1, 0, 0}, 1000}, -1, 2));
+  EXPECT_TRUE(placed.unitMetadata.hasMetersPerUnit);
+  EXPECT_FLOAT_EQ(placed.unitMetadata.metersPerUnit, .001f);
+}
+
+TEST(IfcCurveFamilies, TrimmedSmoothRevolutionKeepsApexAndReversesItsSense) {
+  constexpr std::array<glm::dvec2, 3> controls{{{0, 0}, {1, 0}, {2, 1}}};
+  const auto definitions = sweptDegreeUnits + smoothRevolutionDefinition(controls);
+  for (const bool reverse : {false, true}) {
+    SCOPED_TRACE(reverse);
+    const auto model = container::geometry::ifc::LoadFromStep(fixture(
+        definitions + "#11=IFCRECTANGULARTRIMMEDSURFACE(#9,350.," +
+            (reverse ? "4.25,10.,2.,.T.,.F.);" : "2.,10.,4.25,.T.,.T.);"),
+        "#11", "'Surface','Surface3D'"));
+    ASSERT_NO_FATAL_FAILURE(expectStandaloneParaboloid(
+        model, {}, reverse ? -1 : 1, 1.5, pi / 18));
+  }
+  const auto withoutApex = container::geometry::ifc::LoadFromStep(fixture(
+      definitions + "#11=IFCRECTANGULARTRIMMEDSURFACE(#9,350.,2.75,10.,4.25,.T.,.T.);",
+      "#11", "'Surface','Surface3D'"));
+  ASSERT_NO_FATAL_FAILURE(expectStandaloneParaboloid(
+      withoutApex, {}, 1, 1.5, pi / 18, .5));
+}
+
+TEST(IfcCurveFamilies, TrimmedSmoothRevolutionKeepsExactAuthoredKnotEnd) {
+  constexpr std::array<glm::dvec2, 3> controls{{{0, 0}, {1, 0}, {2, 1}}};
+  // Adding the span to the first knot rounds to zero, outside the spline domain.
+  const auto definitions =
+      smoothRevolutionDefinition(controls, false, "-1.E8,-1.E-20");
+  const auto model = container::geometry::ifc::LoadFromStep(fixture(
+      sweptDegreeUnits + definitions +
+          "#11=IFCRECTANGULARTRIMMEDSURFACE(#9,350.,-1.E8,10.,-1.E-20,.T.,.T.);",
+      "#11", "'Surface','Surface3D'"));
+  ASSERT_NO_FATAL_FAILURE(
+      expectStandaloneParaboloid(model, {}, 1, 2, pi / 18));
+}
+
+TEST(IfcCurveFamilies, InvalidSmoothRevolutionLeavesValidSiblingUnchanged) {
+  const std::string sibling =
+      "#101=IFCCARTESIANPOINT((3.,0.)); #102=IFCCARTESIANPOINT((4.,0.));"
+      "#103=IFCPOLYLINE((#101,#102)); #104=IFCARBITRARYOPENPROFILEDEF(.CURVE.,$,#103);"
+      "#105=IFCDIRECTION((0.,0.,1.)); #106=IFCSURFACEOFLINEAREXTRUSION(#104,$,#105,2.);";
+  const auto reference = container::geometry::ifc::LoadFromStep(
+      fixture(sibling, "#106", "'Surface','Surface3D'"));
+  ASSERT_NO_FATAL_FAILURE(completeSweptMesh(reference));
+  for (const auto &controls : std::array<std::array<glm::dvec2, 3>, 2>{{
+           {{{-1, 0}, {1, 0}, {2, 1}}}, {{{0, 0}, {1, .25}, {2, 1}}},
+       }}) {
+    const auto definitions = smoothRevolutionDefinition(controls) + sibling +
+        "#11=IFCRECTANGULARTRIMMEDSURFACE(#9,0.,2.,1.,4.25,.T.,.T.);";
+    for (const std::string item : {"#9", "#11"}) {
+      SCOPED_TRACE(item);
+      const auto model = container::geometry::ifc::LoadFromStep(
+          fixture(definitions, item + ",#106", "'Surface','Surface3D'"));
+      EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+      ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+      EXPECT_EQ(model.importReport.diagnostics.front().entityId,
+                item == "#9" ? 9u : 11u);
+      EXPECT_FALSE(model.importReport.diagnostics.front().reason.empty());
+      EXPECT_EQ(model.indices, reference.indices);
+      ASSERT_EQ(model.meshRanges.size(), reference.meshRanges.size());
+      ASSERT_EQ(model.vertices.size(), reference.vertices.size());
+      for (size_t i = 0; i < model.vertices.size(); ++i) {
+        EXPECT_EQ(model.vertices[i].position, reference.vertices[i].position);
+        EXPECT_EQ(model.vertices[i].normal, reference.vertices[i].normal);
+      }
+    }
   }
 }
 

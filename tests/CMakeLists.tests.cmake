@@ -1281,6 +1281,14 @@ set_tests_properties(ifc_revolution_axis_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 650
     LABELS "bim;requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME ifc_standalone_revolution_axis_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ifc_revolution_axis_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>" --fixture standalone
+            --output "${TEST_RESULTS_DIR}/ifc-standalone-revolution-axis" --managed-output)
+set_tests_properties(ifc_standalone_revolution_axis_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 650
+    LABELS "bim;requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME ifc_periodic_spline_seams_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ifc_periodic_spline_seams_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"

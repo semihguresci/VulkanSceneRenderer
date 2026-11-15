@@ -2232,6 +2232,14 @@ std::vector<Surface> Reader::sweptSurfaceCharts(const Entity &e) {
         surface.radialGraph =
             makeRevolvedRadialGraph(c, samples, frame, origin, axis, radial,
                                     tolerance, surface.radialGraphError);
+        if (const auto &graph = surface.radialGraph) {
+          // The certified radial graph gives the limiting normal where the
+          // angular tangent vanishes. Keep the native spline parameter for V.
+          surface.standaloneApex = SweptSurfaceApex{
+              graph->apexParameter, graph->frame.origin,
+              glm::cross(graph->frame.x, graph->frame.y)};
+          surface.standaloneRegular = true;
+        }
       }
     }
   }
@@ -2282,7 +2290,9 @@ std::vector<Surface> Reader::trimmedSurfaceCharts(const Entity &e) {
                             extentOf(start.y, last.y, sense.y, 0));
     if (base.periods.y && extent.y > base.periods.y)
       throw std::runtime_error("Rectangular surface trim exceeds one V period");
-    for (double u : {start.x, start.x + sense.x * extent.x})
+    const glm::dvec2 basisPeriods = base.periods;
+    const double endU = basisPeriods.x ? start.x + sense.x * extent.x : last.x;
+    for (double u : {start.x, endU})
       for (double v : {start.y, last.y})
         if (!base.point(u, v))
           throw std::runtime_error(
@@ -2290,10 +2300,16 @@ std::vector<Surface> Reader::trimmedSurfaceCharts(const Entity &e) {
     const glm::dvec2 trimPeriods(extent.x == base.periods.x ? extent.x : 0,
                                  extent.y == base.periods.y ? extent.y : 0);
     const auto map = [=](glm::dvec2 p) {
-      for (unsigned axis = 0; axis < 2; ++axis)
+      for (unsigned axis = 0; axis < 2; ++axis) {
         if (trimPeriods[axis])
           p[axis] = wrapped(p[axis], trimPeriods[axis]);
-      return start + sense * p;
+        // Reconstructing start + sense * extent can round outside the
+        // basis domain when the authored endpoints have different scales.
+        p[axis] = !basisPeriods[axis] && p[axis] == extent[axis]
+                      ? last[axis]
+                      : start[axis] + sense[axis] * p[axis];
+      }
+      return p;
     };
     Surface result{
         .point = [=, evaluate = base.point](
@@ -2347,6 +2363,13 @@ std::vector<Surface> Reader::trimmedSurfaceCharts(const Entity &e) {
     result.innerProfile = base.innerProfile;
     result.reverseMeshWinding = base.reverseMeshWinding;
     result.standaloneRegular = base.standaloneRegular;
+    result.radialGraphError = std::move(base.radialGraphError);
+    if (const auto &apex = base.standaloneApex;
+        apex && (apex->v == start.y || apex->v == last.y)) {
+      result.standaloneApex = SweptSurfaceApex{
+          apex->v == start.y ? 0. : extent.y, apex->point,
+          apex->normal * (sense.x * sense.y)};
+    }
     base = std::move(result);
   }
   return bases;
