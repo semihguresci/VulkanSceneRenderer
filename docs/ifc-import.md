@@ -128,10 +128,11 @@ by one certified period. An explicit face can also place an entirely inferred
 outer bound or hole against its authored loops. The importer translates only
 inferred loops by whole periods and requires a unique placement with all holes
 strictly inside the outer bound and disjoint from one another. Doubly periodic
-spline bands
-can follow a primitive winding on both axes, such as two U turns and one V
-turn. Their trims must form opposite monotone loops with exactly one cover
-between periodic images. The companion of an authored winding loop can use
+spline bands can follow a primitive winding on both axes, such as two U turns
+and one V turn. The opposite trims can double back along their winding. Those
+bands use a cut between existing samples whose two ends join disjoint loops
+without crossing their periodic copies. The importer checks for a single cover
+before refining the surface. The companion of an authored winding loop can use
 inferred coordinates throughout. A cut between existing samples preserves the
 original edge positions. Both copies of the artificial cut receive matching samples at
 sharp knot crossings. The importer also rejects overlapping translated interiors in
@@ -854,8 +855,8 @@ charts and polar trims with multiple seams or holes meeting a
 seam cut remain outside native coverage. Swept surface limits include profiles
 with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.
-Nonmonotone periodic winding bands require further work.
-Periodic trim layouts without a unique chart placement are diagnosed.
+Periodic trims that need a cut through new boundary samples and layouts without
+a unique chart placement are diagnosed.
 Each omitted
 representation is reported. A full IFC backend remains an option if future
 assets need these capabilities.

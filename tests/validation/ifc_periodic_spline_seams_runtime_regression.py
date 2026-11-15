@@ -1,6 +1,7 @@
 """Capture exact IFC spline shells with authored pcurves and bare 3D trims."""
 
 import argparse
+from itertools import pairwise
 import math
 import os
 from pathlib import Path
@@ -27,6 +28,12 @@ CREASE_PARAMETER = AXIS_KNOTS[0] + (AXIS_KNOTS[1] - AXIS_KNOTS[0]) * CREASE_FRAC
 CREASE_HEIGHT = HALF_HEIGHT * (2. * CREASE_FRACTION - 1.)
 CYLINDER_RINGS = ((-HALF_HEIGHT, RADIUS), (CREASE_HEIGHT, RADIUS - .27), (HALF_HEIGHT, RADIUS))
 TORUS_MAJOR, TORUS_TUBE = 1.20, .42
+# The sides are normalized native UV. Opposite horizontal moves followed by
+# a downward move rule out every linear progress coordinate for winding (2, 1).
+AUTHORED_RAIL = ((0., 0.), (.3125, .15625), (.625, .15625), (.625, .265625),
+                 (.4375, .265625), (.4375, .203125), (.34375, .203125),
+                 (.34375, .328125), (.65625, .328125), (2., 1.))
+BARE_RAIL = ((0., .25), (2., 1.25))
 PRODUCTS = (
     Profile("U-closed unclamped rational cylinder", (-3.61, -.06), (.12, .63, .90)),
     Profile("V-closed unclamped rational cylinder", (3.61, -.06), (.92, .40, .13)),
@@ -120,8 +127,8 @@ def polyline(step, points):
 
 def associated(step, context, kind, curve3d, segments, preferred=".CURVE3D."):
     pcurves = []
-    for surface, a, b in segments:
-        curve2d = polyline(step, (step.point(*a), step.point(*b)))
+    for surface, *points in segments:
+        curve2d = polyline(step, (step.point(*point) for point in points))
         definition = step.add("IFCDEFINITIONALREPRESENTATION", context, "$", "'Curve2D'", step_list((curve2d,)))
         pcurves.append(step.add("IFCPCURVE", surface, definition))
     return step.add(kind, curve3d, step_list(pcurves), preferred)
@@ -203,32 +210,46 @@ def torus(step, context, product):
     return (face,)
 
 
-def helix_curve(step, quarter_offset):
-    # The two turns around the main circle take eight quarter spans. On
-    # each, the tube takes half a quarter. Multiply the homogeneous
-    # quadratic Bezier data to obtain the exact quartic torus curve.
+def torus_trace(step, rail):
+    # Split the UV polyline at native quarter knots, then multiply the two
+    # homogeneous quadratic Bezier segments for each exact quartic span.
     circle = tuple((x * w, y * w, w) for (x, y), w in zip(CIRCLE, WEIGHTS, strict=True))
+
+    def circle_span(start, end):
+        quarter = math.floor(2. * (start + end))
+        p, q, r = (circle[(2 * quarter + i) % 8] for i in range(3))
+        a, b = 4. * start - quarter, 4. * end - quarter
+
+        def blend(t, s):
+            return tuple((1. - t) * (1. - s) * x + (t * (1. - s) + s * (1. - t)) * y + t * s * z
+                         for x, y, z in zip(p, q, r, strict=True))
+
+        return blend(a, a), blend(a, b), blend(b, b)
+
     controls, weights = [], []
-    for span in range(8):
-        u = [circle[(2 * span + i) % 8] for i in range(3)]
-        v = [circle[(2 * (span // 2 + quarter_offset) + i) % 8] for i in range(3)]
-        left = tuple((a + b) / 2. for a, b in zip(v[0], v[1], strict=True))
-        right = tuple((a + b) / 2. for a, b in zip(v[1], v[2], strict=True))
-        middle = tuple((a + b) / 2. for a, b in zip(left, right, strict=True))
-        v = (v[0], left, middle) if span % 2 == 0 else (middle, right, v[2])
-        product = [[0.] * 4 for _ in range(5)]
-        for i, (x, y, u_weight) in enumerate(u):
-            for j, (tube_x, tube_y, v_weight) in enumerate(v):
-                radius = TORUS_MAJOR * v_weight + TORUS_TUBE * tube_x
-                point = (radius * x, radius * y, TORUS_TUBE * u_weight * tube_y, u_weight * v_weight)
-                fraction = math.comb(2, i) * math.comb(2, j) / math.comb(4, i + j)
-                for component, value in enumerate(point):
-                    product[i + j][component] += value * fraction
-        for x, y, z, weight in product[0 if span == 0 else 1:]:
-            controls.append(step.point(x / weight, y / weight, z / weight))
-            weights.append(weight)
+    for start, end in pairwise(rail):
+        splits = {0., 1.}
+        for a, b in zip(start, end, strict=True):
+            lo, hi = sorted((a, b))
+            splits.update((k / 4. - a) / (b - a)
+                          for k in range(math.floor(4. * lo) + 1, math.ceil(4. * hi)))
+        for t0, t1 in pairwise(sorted(splits)):
+            u, v = (circle_span(a + (b - a) * t0, a + (b - a) * t1) for a, b in zip(start, end, strict=True))
+            product = [[0.] * 4 for _ in range(5)]
+            for i, (x, y, u_weight) in enumerate(u):
+                for j, (tube_x, tube_y, v_weight) in enumerate(v):
+                    radius = TORUS_MAJOR * v_weight + TORUS_TUBE * tube_x
+                    point = (radius * x, radius * y, TORUS_TUBE * u_weight * tube_y, u_weight * v_weight)
+                    fraction = math.comb(2, i) * math.comb(2, j) / math.comb(4, i + j)
+                    for component, value in enumerate(point):
+                        product[i + j][component] += value * fraction
+            for x, y, z, weight in product[1 if controls else 0:]:
+                controls.append(step.point(x / weight, y / weight, z / weight))
+                weights.append(weight)
+    spans = (len(controls) - 1) // 4
     curve = step.add("IFCRATIONALBSPLINECURVEWITHKNOTS", 4, step_list(controls), ".UNSPECIFIED.", ".T.", ".F.",
-                     "(5,4,4,4,4,4,4,4,5)", "(1,2,3,4,5,6,7,8,9)", ".UNSPECIFIED.", step_list(weights))
+                     step_list((5, *((4,) * (spans - 1)), 5)), step_list(range(1, spans + 2)),
+                     ".UNSPECIFIED.", step_list(weights))
     return step.add("IFCVERTEXPOINT", controls[0]), curve
 
 
@@ -239,13 +260,13 @@ def mixed_torus(step, context, product):
     v0, v1 = TUBE_KNOTS[0], TUBE_KNOTS[-1]
     du, dv = u1 - u0, v1 - v0
     boundaries = []
-    for quarter in (0, 1):
-        vertex, curve = helix_curve(step, quarter)
-        # One edge has authored pcurves offset by one full U period across
-        # the two faces. The other edge is shared native 3D geometry only.
-        if quarter == 0:
-            lifts = ((lower, (u0, v0), (u0 + 2 * du, v0 + dv)),
-                     (upper, (u0 - du, v0), (u0 + du, v0 + dv)))
+    for rail in (AUTHORED_RAIL, BARE_RAIL):
+        vertex, curve = torus_trace(step, rail)
+        # The bent rail has authored pcurves offset by one full U period.
+        # Its companion is shared native 3D geometry only.
+        if rail == AUTHORED_RAIL:
+            lifts = tuple((surface, *((u0 + du * (u + turn), v0 + dv * v) for u, v in rail))
+                          for surface, turn in ((lower, 0), (upper, -1)))
             curve = associated(step, context, "IFCSURFACECURVE", curve, lifts, ".PCURVE_S1.")
         boundaries.append(edge(step, vertex, vertex, curve))
 
@@ -356,6 +377,28 @@ def circle_parameter_fraction(angle):
     return (quadrant + local) / 4.
 
 
+def mixed_band_regions(major, tube):
+    import numpy as np
+
+    band = (*AUTHORED_RAIL, *reversed(BARE_RAIL), AUTHORED_RAIL[0])
+    inside = np.zeros_like(major, dtype=bool)
+    clearance = np.full_like(major, np.inf)
+    # In normalized coordinates the lifted band lies in [0, 2] × [0, 1.25].
+    for u_offset, v_offset in ((0., 0.), (0., 1.), (1., 0.), (1., 1.)):
+        u, v = major + u_offset, tube + v_offset
+        for (a, b), (c, d) in pairwise(band):
+            if b != d:
+                inside ^= ((b > v) != (d > v)) & (u < a + (c - a) * (v - b) / (d - b))
+        # The two vertical chart cuts are internal to the surface. Keep the
+        # color witnesses clear only of real rails, including periodic copies.
+        for rail in (AUTHORED_RAIL, BARE_RAIL):
+            for (a, b), (c, d) in pairwise(rail):
+                du, dv = c - a, d - b
+                t = np.clip(((u - a) * du + (v - b) * dv) / (du * du + dv * dv), 0., 1.)
+                clearance = np.minimum(clearance, np.hypot(u - (a + t * du), v - (b + t * dv)))
+    return inside, clearance
+
+
 def check_pixels(image, _fixture):
     import numpy as np
     from PIL import Image
@@ -375,7 +418,7 @@ def check_pixels(image, _fixture):
         # compared with the camera distance, so this is safely inside the wall.
         x = (xx + .5 - WIDTH / 2.) / scale - cx
         y = (HEIGHT / 2. - yy - .5) / scale - cy
-        masks.append((product.name, (np.abs(x) < .37) & (np.abs(y) < 1.17), dominant, opposite))
+        masks.append((product.name, (np.abs(x) < .37) & (np.abs(y) < 1.17), dominant, opposite, 500))
     scale = projection / (DISTANCE - TORUS_TUBE)
     holes = []
     for index, product in enumerate(PRODUCTS[2:], 2):
@@ -385,23 +428,27 @@ def check_pixels(image, _fixture):
         crown = np.abs(radius - TORUS_MAJOR) < .20
         holes.append((product.name, radius < TORUS_MAJOR - TORUS_TUBE - .15))
         if index == 2:
-            masks.append((product.name, crown, 1, 0))
+            masks.append((product.name, crown, 1, 0, 500))
             continue
         z = np.sqrt(np.maximum(0., TORUS_TUBE ** 2 - (radius - TORUS_MAJOR) ** 2))
         major = circle_parameter_fraction(np.arctan2(y, x))
         tube = circle_parameter_fraction(np.arctan2(z, radius - TORUS_MAJOR))
-        # Unwrapped pcurves have slope 1/2 in normalized native coordinates.
-        # The phase is invariant under whole chart turns along either axis.
-        phase = np.mod(2. * tube - major, 1.)
-        masks.append(("Mixed winding band", crown & (phase > .13) & (phase < .37), 0, 1))
-        masks.append(("Complementary band", crown & (phase > .63) & (phase < .87), 1, 0))
+        inside, clearance = mixed_band_regions(major, tube)
+        safe = crown & (clearance > .03)
+        straight = np.mod(2. * tube - major, 1.) < .5
+        masks.append(("Mixed winding band", safe & inside, 0, 1, 500))
+        masks.append(("Complementary band", safe & ~inside, 1, 0, 500))
+        # Both colors must follow the backtracking rail through the region
+        # where its assigned band differs from the straight helix.
+        masks.append(("Backtracking rail inside", safe & inside & ~straight, 0, 1, 75))
+        masks.append(("Backtracking rail outside", safe & ~inside & straight, 1, 0, 75))
         require(np.mean(visible[crown]) == 1., "Mixed winding faces leave a visible gap")
     results = {}
-    for label, mask, dominant, opposite in masks:
+    for label, mask, dominant, opposite, minimum in masks:
         colors = pixels[mask]
         coverage = float(np.mean(visible[mask]))
         styled = float(np.mean(colors[:, dominant] > colors[:, opposite] + 14))
-        require(len(colors) >= 500 and coverage == 1. and styled > .98,
+        require(len(colors) >= minimum and coverage == 1. and styled > .98,
                 f"Missing seam coverage or incorrect style on {label}: {coverage}, {styled}")
         results[label] = dict(pixels=len(colors), visibleFraction=coverage, styledFraction=styled)
     for label, hole in holes:

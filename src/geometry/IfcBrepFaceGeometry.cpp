@@ -1,4 +1,5 @@
 #include "IfcBrepFaceGeometry.h"
+#include "IfcBrepTrimPlacement.h"
 
 #include "Container/utility/ModelImportCancellation.h"
 #include <algorithm>
@@ -226,6 +227,10 @@ private:
                                double epsilon, const std::stop_token &stop);
   void joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
                       bool sameSense);
+  void joinAxialBand(std::vector<std::vector<Vertex>> &rings, UV winding,
+                     UV oppositeWinding, bool sameSense);
+  void joinNonmonotoneSplineBand(std::vector<std::vector<Vertex>> &rings,
+                                  UV winding, bool sameSense);
   double bandProgress(UV uv) const {
     return glm::dot(bandProgress_, uv - low_);
   }
@@ -1016,6 +1021,10 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
     }
   }
   std::vector<uint32_t> indices;
+  const bool monotoneBand = bandFirstSize_ && bandDirection_ != UV(0);
+  const bool cutSplineBand = bandFirstSize_ && !monotoneBand;
+  const bool splinePolygon =
+      !monotoneBand && !fanPoint_ && s_.spline && bool(s_.derivatives);
   bool bandGrid = false;
   std::array<Edge, 2> bandCuts{};
   if (bandFirstSize_) {
@@ -1034,7 +1043,7 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
     normalized.push_back((uv - low_) / scale_);
     for (uint32_t i = 0; i < center; ++i)
       indices.insert(indices.end(), {i, (i + 1) % center, center});
-  } else if (bandFirstSize_ && vertices_.size() == 2 * bandFirstSize_) {
+  } else if (monotoneBand && vertices_.size() == 2 * bandFirstSize_) {
     const auto count = static_cast<uint32_t>(bandFirstSize_);
     const double offset =
         bandProgress(vertices_.back().uv) - bandProgress(vertices_.front().uv);
@@ -1109,7 +1118,7 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
       }
     }
   }
-  if (bandFirstSize_ && !bandGrid) {
+  if (monotoneBand && !bandGrid) {
     // A zipper connects the two monotone rings without Earcut's long fans
     // across a full revolution. Boundary sample counts can differ.
     uint32_t a = 0, b = static_cast<uint32_t>(vertices_.size() - 1);
@@ -1141,7 +1150,7 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
       }
     }
   } else if (!bandGrid && !fanPoint_) {
-    if (s_.spline && s_.derivatives)
+    if (splinePolygon)
       indices = triangulateSplinePolygon(polygon);
     else
       indices = mapbox::earcut<uint32_t>(polygon);
@@ -1151,8 +1160,16 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
   double triangulatedArea = 0;
   for (size_t i = 0; i + 2 < indices.size(); i += 3) {
     Triangle t{indices[i], indices[i + 1], indices[i + 2]};
-    double area = orient(normalized[t[0]], normalized[t[1]], normalized[t[2]]);
-    if (std::abs(area) <= 1e-18)
+    const auto a = normalized[t[0]], b = normalized[t[1]], c = normalized[t[2]];
+    double area = orient(a, b, c);
+    // Distinct trim corners can lie on the same chart line to numerical
+    // precision. Drop zero-width ears before restoring the real edge chains.
+    const double roundoff = splinePolygon
+                                ? 1e-12 * std::max({glm::length(b - a),
+                                                    glm::length(c - b),
+                                                    glm::length(a - c)})
+                                : 1e-18;
+    if (std::abs(area) <= roundoff)
       continue;
     if ((area > 0) != sameSense) {
       std::swap(t[1], t[2]);
@@ -1169,12 +1186,12 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
   if (initial.empty() ||
       std::abs(expectedArea - triangulatedArea) > std::abs(expectedArea) * 1e-7)
     throw std::runtime_error("Invalid curved face parameter triangulation");
-  if (checkPeriodicCover)
+  if (checkPeriodicCover && !cutSplineBand)
     validatePeriodicCover(initial, normalized, checks);
   // Earcut elides collinear UV samples (e.g. all samples on a cylinder's cap).
   // Restore them before refinement so the adjacent cap keeps identical edges.
   const bool restoreChains =
-      bool(s_.derivatives) && !fanPoint_ && !bandFirstSize_;
+      bool(s_.derivatives) && !fanPoint_ && !monotoneBand;
   for (uint32_t v = 0; !restoreChains && v < used.size(); ++v) {
     if (used[v])
       continue;
@@ -1207,6 +1224,8 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
       throw std::runtime_error(
           "Curved face boundary restoration changed its area");
   }
+  if (cutSplineBand)
+    validatePeriodicCover(initial, normalized, checks);
   if (interiorPoint_) {
     const auto uv = inverse(Point(interiorPoint_->point));
     const auto p = (uv - low_) / scale_;
@@ -1625,9 +1644,10 @@ void Mesher::joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
         best = norm;
       }
     }
-  if (progress == UV(0))
-    throw std::runtime_error("Spline band bounds have no common monotone "
-                             "chart in their winding class");
+  if (progress == UV(0)) {
+    joinNonmonotoneSplineBand(rings, turns * s_.periods, sameSense);
+    return;
+  }
 
   // The transform has determinant one. Each boundary now forms a
   // period-one graph. A single cover exists precisely when the graphs
@@ -1718,6 +1738,124 @@ void Mesher::joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
   rings.resize(1);
 }
 
+void Mesher::joinNonmonotoneSplineBand(
+    std::vector<std::vector<Vertex>> &rings, UV winding, bool sameSense) {
+  const auto parameters = [](const std::vector<Vertex> &ring) {
+    std::vector<UV> points;
+    points.reserve(ring.size());
+    for (const auto &v : ring)
+      points.push_back(v.uv);
+    return points;
+  };
+  const auto first = parameters(rings[0]), second = parameters(rings[1]);
+  const auto cut =
+      cutIfcBrepPeriodicSplineBand(first, second, winding, s_.periods, sameSense);
+
+  // Keep the original 3D samples in cyclic order. Duplicate only the two cut
+  // endpoints, translating the lifts by the winding vector on the far side.
+  std::vector<Vertex> stitched;
+  stitched.reserve(first.size() + second.size() + 2);
+  const auto append = [&](const std::vector<Vertex> &rail, size_t start,
+                          UV lift, UV advance) {
+    const auto begin = stitched.size();
+    for (size_t i = start; i < rail.size(); ++i)
+      stitched.push_back({rail[i].uv + lift, rail[i].point});
+    for (size_t i = 0; i < start; ++i)
+      stitched.push_back({rail[i].uv + lift + advance, rail[i].point});
+    const auto head = stitched[begin];
+    stitched.push_back({head.uv + advance, head.point});
+  };
+  append(rings[0], cut.firstStart, UV(0), winding);
+  bandFirstSize_ = stitched.size();
+  append(rings[1], cut.secondStart, cut.secondOffset + winding, -winding);
+  rings[0] = std::move(stitched);
+  rings.resize(1);
+}
+
+void Mesher::joinAxialBand(std::vector<std::vector<Vertex>> &rings,
+                          UV winding, UV oppositeWinding, bool sameSense) {
+  const unsigned axis = std::abs(winding.x) > 0 ? 0 : 1;
+  const unsigned other = 1 - axis;
+  const double period = s_.periods[axis];
+  if (!period || std::abs(winding[other]) > 1e-10 ||
+      std::abs(std::abs(winding[axis]) - period) > period * 1e-8)
+    throw std::runtime_error(
+        "Unsupported multiple winding curved face chart");
+  auto &first = rings[0];
+  auto &second = rings[1];
+  if (s_.spline) {
+    const auto advances = [axis](const std::vector<Vertex> &rail, double step) {
+      const double sign = step > 0 ? 1. : -1.;
+      const double begin = rail.front().uv[axis];
+      double prior = begin;
+      for (const auto &vertex : std::span(rail).subspan(1)) {
+        const double current = vertex.uv[axis];
+        if (sign * (current - prior) <= 0)
+          return false;
+        prior = current;
+      }
+      return sign * (begin + step - prior) > 0;
+    };
+    if (!advances(first, winding[axis]) ||
+        !advances(second, oppositeWinding[axis])) {
+      UV periodWinding(0);
+      periodWinding[axis] = std::copysign(period, winding[axis]);
+      joinNonmonotoneSplineBand(rings, periodWinding, sameSense);
+      return;
+    }
+  }
+  if (s_.periods[other]) {
+    double a = 0, b = 0;
+    for (const auto &v : first)
+      a += v.uv[other];
+    for (const auto &v : second)
+      b += v.uv[other];
+    const double difference = b / second.size() - a / first.size();
+    const double sense = (sameSense ? 1. : -1.) *
+                         (winding[axis] > 0 ? 1. : -1.) *
+                         (axis == 0 ? 1. : -1.);
+    if (difference * sense <= 0) {
+      const double shift =
+          sense * s_.periods[other] *
+          (std::floor(-difference * sense / s_.periods[other]) + 1);
+      for (auto &v : second)
+        v.uv[other] += shift;
+    }
+  }
+  const double end = first.front().uv[axis] + winding[axis];
+  size_t start = 0;
+  double distance = period;
+  for (size_t i = 0; i < second.size(); ++i) {
+    const double d = (second[i].uv[axis] - end) / period;
+    const double candidate = std::abs(d - std::round(d)) * period;
+    if (candidate < distance) {
+      start = i;
+      distance = candidate;
+    }
+  }
+  std::rotate(second.begin(), second.begin() + start, second.end());
+  second.front().uv[axis] +=
+      std::round((end - second.front().uv[axis]) / period) * period;
+  for (size_t i = 1; i < second.size(); ++i)
+    second[i].uv[axis] +=
+        std::round((second[i - 1].uv[axis] - second[i].uv[axis]) / period) *
+        period;
+  first.push_back({first.front().uv + winding, first.front().point});
+  second.push_back({second.front().uv + oppositeWinding, second.front().point});
+  const double sign = winding[axis] > 0 ? 1 : -1;
+  for (const auto *ring : {&first, &second})
+    for (size_t i = 1; i < ring->size(); ++i)
+      if (sign * ((*ring)[i].uv[axis] - (*ring)[i - 1].uv[axis]) *
+              (ring == &first ? 1 : -1) <=
+          0)
+        throw std::runtime_error("Periodic band bounds must be monotone in "
+                                 "their cyclic parameter");
+  bandFirstSize_ = first.size();
+  bandProgress_[axis] = bandDirection_[axis] = 1;
+  first.insert(first.end(), second.begin(), second.end());
+  rings.resize(1);
+}
+
 std::vector<CurvedFaceTriangle>
 Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
             bool explicitOuter, bool sameSense,
@@ -1787,65 +1925,7 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
     if (!authoredChart.empty() && s_.periods.x && s_.periods.y) {
       joinSplineBand(rings, winding[0], sameSense);
     } else {
-      const unsigned axis = std::abs(winding[0].x) > 0 ? 0 : 1;
-      const unsigned other = 1 - axis;
-      const double period = s_.periods[axis];
-      if (!period || std::abs(winding[0][other]) > 1e-10 ||
-          std::abs(std::abs(winding[0][axis]) - period) > period * 1e-8)
-        throw std::runtime_error(
-            "Unsupported multiple winding curved face chart");
-      auto &first = rings[0];
-      auto &second = rings[1];
-      if (s_.periods[other]) {
-        double a = 0, b = 0;
-        for (const auto &v : first)
-          a += v.uv[other];
-        for (const auto &v : second)
-          b += v.uv[other];
-        const double difference = b / second.size() - a / first.size();
-        const double sense = (sameSense ? 1. : -1.) *
-                             (winding[0][axis] > 0 ? 1. : -1.) *
-                             (axis == 0 ? 1. : -1.);
-        if (difference * sense <= 0) {
-          const double shift =
-              sense * s_.periods[other] *
-              (std::floor(-difference * sense / s_.periods[other]) + 1);
-          for (auto &v : second)
-            v.uv[other] += shift;
-        }
-      }
-      const double end = first.front().uv[axis] + winding[0][axis];
-      size_t start = 0;
-      double distance = period;
-      for (size_t i = 0; i < second.size(); ++i) {
-        const double d = (second[i].uv[axis] - end) / period;
-        const double candidate = std::abs(d - std::round(d)) * period;
-        if (candidate < distance) {
-          start = i;
-          distance = candidate;
-        }
-      }
-      std::rotate(second.begin(), second.begin() + start, second.end());
-      second.front().uv[axis] +=
-          std::round((end - second.front().uv[axis]) / period) * period;
-      for (size_t i = 1; i < second.size(); ++i)
-        second[i].uv[axis] +=
-            std::round((second[i - 1].uv[axis] - second[i].uv[axis]) / period) *
-            period;
-      first.push_back({first.front().uv + winding[0], first.front().point});
-      second.push_back({second.front().uv + winding[1], second.front().point});
-      const double sign = winding[0][axis] > 0 ? 1 : -1;
-      for (const auto *ring : {&first, &second})
-        for (size_t i = 1; i < ring->size(); ++i)
-          if (sign * ((*ring)[i].uv[axis] - (*ring)[i - 1].uv[axis]) *
-                  (ring == &first ? 1 : -1) <=
-              0)
-            throw std::runtime_error("Periodic band bounds must be monotone in "
-                                     "their cyclic parameter");
-      bandFirstSize_ = first.size();
-      bandProgress_[axis] = bandDirection_[axis] = 1;
-      first.insert(first.end(), second.begin(), second.end());
-      rings.resize(1);
+      joinAxialBand(rings, winding[0], winding[1], sameSense);
     }
   } else {
     if (std::ranges::any_of(winding, winds))

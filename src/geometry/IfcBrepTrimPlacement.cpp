@@ -5,6 +5,7 @@
 #include <cmath>
 #include <glm/common.hpp>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 
 namespace container::geometry::ifc::detail {
@@ -382,6 +383,307 @@ std::vector<UV> TrimPlacement::run() {
   return std::move(*solution_);
 }
 
+struct BandSegment {
+  Segment geometry;
+  std::array<size_t, 2> samples;
+};
+
+bool touchBeyondSharedEndpoints(const BandSegment &a, const BandSegment &b) {
+  if (!segmentsMeet(a.geometry, b.geometry))
+    return false;
+  const std::array p{a.geometry.a, a.geometry.b};
+  const std::array q{b.geometry.a, b.geometry.b};
+  for (size_t i = 0; i < p.size(); ++i)
+    for (size_t j = 0; j < q.size(); ++j) {
+      const UV difference = glm::abs(p[i] - q[j]);
+      if (a.samples[i] != b.samples[j] || difference.x > epsilon ||
+          difference.y > epsilon)
+        continue;
+      // Straight noncollinear rays can only meet at the common endpoint.
+      // Collinear rays in the same direction overlap beyond that endpoint.
+      const UV awayA = p[1 - i] - p[i], awayB = q[1 - j] - q[j];
+      return side(segment(p[i], p[1 - i]), p[i] + awayB) == 0 &&
+             awayA.x * awayB.x + awayA.y * awayB.y > 0;
+    }
+  return true;
+}
+
+BandSegment translated(BandSegment s, UV shift) {
+  s.geometry.a += shift;
+  s.geometry.b += shift;
+  s.geometry.bounds = s.geometry.bounds.translated(shift);
+  return s;
+}
+
+struct BandRail {
+  std::vector<UV> points;
+  std::vector<BandSegment> edges;
+  std::vector<double> maxEndpointX;
+  Bounds bounds;
+  double openArea = 0.;
+};
+
+class BandCutSearch {
+public:
+  BandCutSearch(std::span<const UV> first, std::span<const UV> second,
+                UV winding, UV periods, bool sameSense)
+      : first_(first), second_(second), winding_(winding), periods_(periods),
+        sameSense_(sameSense) {}
+
+  PeriodicSplineBandCut run();
+
+private:
+  void checkWork() {
+    if (++checks_ > maxChecks)
+      throw std::runtime_error(
+          "Spline band cut search exceeds its work budget");
+  }
+
+  BandRail rail(std::span<const UV> source, size_t firstIndex, UV shift,
+                UV winding);
+
+  // Work in period-normalized coordinates. Segment contacts only need the
+  // integer copies whose bounding boxes can meet, including exact tangencies.
+  template <class Visit> bool anyImage(Bounds a, Bounds b, Visit visit) {
+    std::array<int, 2> first{}, last{};
+    for (unsigned axis = 0; axis < 2; ++axis) {
+      const double lo = a.low[axis] - b.high[axis] - epsilon;
+      const double hi = a.high[axis] - b.low[axis] + epsilon;
+      if (!periods_[axis]) {
+        if (lo > 0 || hi < 0)
+          return false;
+        continue;
+      }
+      const double start = std::ceil(lo), end = std::floor(hi);
+      if (start > end)
+        return false;
+      if (std::abs(start) > 64 || std::abs(end) > 64)
+        throw std::runtime_error(
+            "Spline band image search exceeds its period budget");
+      first[axis] = static_cast<int>(start);
+      last[axis] = static_cast<int>(end);
+    }
+    for (int u = first[0]; u <= last[0]; ++u)
+      for (int v = first[1]; v <= last[1]; ++v) {
+        checkWork();
+        if (visit(UV(u, v)))
+          return true;
+      }
+    return false;
+  }
+
+  bool touchesRail(const BandSegment &edge, const BandRail &rail, UV shift,
+                   bool skipEarlier);
+  bool railsIntersect(const BandRail &a, const BandRail &b);
+  bool visibleCut(const BandSegment &cut, const BandRail &a, const BandRail &b);
+
+  std::span<const UV> first_, second_;
+  UV winding_, periods_, scale_{}, origin_{};
+  bool sameSense_;
+  size_t checks_ = 0;
+};
+
+BandRail BandCutSearch::rail(std::span<const UV> source, size_t firstIndex,
+                             UV shift, UV winding) {
+  BandRail rail;
+  rail.points.reserve(source.size());
+  rail.edges.reserve(source.size());
+  rail.maxEndpointX.reserve(source.size());
+  for (const UV raw : source) {
+    const UV p = ((raw + shift) - origin_) / scale_;
+    const UV delta = glm::abs(
+        ((raw + shift) - (source.front() + shift) - (raw - source.front())) /
+        scale_);
+    if (!finite(p) || delta.x > 8 * epsilon || delta.y > 8 * epsilon)
+      throw std::runtime_error("Spline band translation loses chart precision");
+    rail.points.push_back(p);
+    rail.bounds.include(p);
+  }
+  const UV closure = rail.points.front() + winding;
+  rail.bounds.include(closure);
+  for (unsigned axis = 0; axis < 2; ++axis)
+    if (periods_[axis] &&
+        rail.bounds.high[axis] - rail.bounds.low[axis] > 16 + epsilon)
+      throw std::runtime_error("Spline band rail exceeds its period budget");
+  for (size_t i = 0; i < rail.points.size(); ++i) {
+    const size_t next = (i + 1) % rail.points.size();
+    const UV a = rail.points[i], b = next ? rail.points[next] : closure;
+    const UV d = glm::abs(b - a);
+    if (std::max(d.x, d.y) <= epsilon)
+      throw std::runtime_error("Spline band has a degenerate rail segment");
+    rail.openArea += cross(a, b);
+    rail.edges.push_back({segment(a, b), {firstIndex + i, firstIndex + next}});
+  }
+  std::ranges::sort(rail.edges, {}, [](const auto &edge) {
+    return edge.geometry.bounds.low.x;
+  });
+  double maximum = -std::numeric_limits<double>::infinity();
+  for (const auto &edge : rail.edges) {
+    maximum = std::max(maximum, edge.geometry.bounds.high.x);
+    rail.maxEndpointX.push_back(maximum);
+  }
+  return rail;
+}
+
+bool BandCutSearch::touchesRail(const BandSegment &source, const BandRail &rail,
+                                UV shift, bool skipEarlier) {
+  const auto bounds = source.geometry.bounds.translated(-shift);
+  const auto start =
+      std::ranges::lower_bound(rail.maxEndpointX, bounds.low.x - epsilon);
+  if (start == rail.maxEndpointX.end())
+    return false;
+  const auto query = translated(source, -shift);
+  for (size_t i = start - rail.maxEndpointX.begin(); i < rail.edges.size();
+       ++i) {
+    checkWork();
+    const auto &edge = rail.edges[i];
+    if (edge.geometry.bounds.low.x > bounds.high.x + epsilon)
+      break;
+    if (skipEarlier && edge.samples[0] <= source.samples[0])
+      continue;
+    if (touchBeyondSharedEndpoints(query, edge))
+      return true;
+  }
+  return false;
+}
+
+bool BandCutSearch::railsIntersect(const BandRail &a, const BandRail &b) {
+  const bool same = &a == &b;
+  return anyImage(a.bounds, b.bounds, [&](UV shift) {
+    if (same && (shift.x < 0 || (shift.x == 0 && shift.y < 0)))
+      return false;
+    const auto bBounds = b.bounds.translated(shift);
+    for (const auto &edge : a.edges) {
+      checkWork();
+      if (meets(edge.geometry.bounds, bBounds) &&
+          touchesRail(edge, b, shift, same && shift == UV(0)))
+        return true;
+    }
+    return false;
+  });
+}
+
+bool BandCutSearch::visibleCut(const BandSegment &cut, const BandRail &a,
+                               const BandRail &b) {
+  const auto box = cut.geometry.bounds;
+  const auto contacts = [&](const BandRail &rail) {
+    return anyImage(box, rail.bounds, [&](UV shift) {
+      return touchesRail(cut, rail, shift, false);
+    });
+  };
+  return !contacts(a) && !contacts(b) && !anyImage(box, box, [&](UV shift) {
+    return shift != UV(0) &&
+           touchBeyondSharedEndpoints(cut, translated(cut, shift));
+  });
+}
+
+PeriodicSplineBandCut BandCutSearch::run() {
+  if (first_.size() < 3 || second_.size() < 3 || first_.size() > maxSamples ||
+      second_.size() > maxSamples - first_.size() || !finite(winding_) ||
+      !finite(periods_) || periods_.x < 0 || periods_.y < 0)
+    throw std::runtime_error("Invalid periodic spline band inputs");
+  Bounds sourceBounds;
+  for (const auto source : {first_, second_})
+    for (const UV p : source) {
+      if (!finite(p))
+        throw std::runtime_error("Nonfinite spline band rail parameter");
+      sourceBounds.include(p);
+    }
+  origin_ = first_.front();
+  scale_ = sourceBounds.high - sourceBounds.low;
+  UV winding(0), baseShift(0);
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    const double period = periods_[axis];
+    if (period) {
+      scale_[axis] = period;
+      const double turns = winding_[axis] / period;
+      winding[axis] = std::round(turns);
+      baseShift[axis] =
+          std::round((origin_[axis] - second_.front()[axis]) / period);
+      if (!std::isfinite(turns) || std::abs(turns - winding[axis]) > 1e-8 ||
+          std::abs(winding[axis]) > 8 || !std::isfinite(baseShift[axis]) ||
+          std::abs(baseShift[axis]) > maxPeriodOffset)
+        throw std::runtime_error(
+            "Spline band winding or placement exceeds its period budget");
+    } else if (std::abs(winding_[axis]) > scale_[axis] * epsilon) {
+      throw std::runtime_error("Spline band winds along a nonperiodic axis");
+    }
+  }
+  if (!finite(scale_) || scale_.x <= 0 || scale_.y <= 0 ||
+      std::gcd(static_cast<int>(winding.x), static_cast<int>(winding.y)) != 1)
+    throw std::runtime_error("Spline band requires bounded primitive winding");
+
+  const auto a = rail(first_, 0, UV(0), winding);
+  const auto b = rail(second_, first_.size(), baseShift * periods_, -winding);
+  if (railsIntersect(a, a) || railsIntersect(b, b) || railsIntersect(a, b))
+    throw std::runtime_error("Spline band bounds intersect a periodic image");
+
+  int limit = 1;
+  for (unsigned axis = 0; axis < 2; ++axis)
+    if (periods_[axis])
+      limit =
+          std::max(limit, 1 + static_cast<int>(std::ceil(std::max(
+                                  a.bounds.high[axis] - a.bounds.low[axis],
+                                  b.bounds.high[axis] - b.bounds.low[axis]))));
+  const auto candidate = [&](size_t i, size_t j, UV shift) {
+    checkWork();
+    // Translation adds cross(shift, winding) to an open rail's shoelace
+    // sum. Rotation and the two cut edges then cancel the chosen anchor
+    // coordinates, leaving only the relative translation of the rails.
+    const double area =
+        a.openArea + b.openArea +
+        cross(winding, b.points.front() - a.points.front() + 2. * shift);
+    const double orientedArea = sameSense_ ? area : -area;
+    if (!(orientedArea > epsilon) ||
+        (periods_.x && periods_.y && orientedArea >= 2. - epsilon))
+      return false;
+    const UV start = a.points[i], end = b.points[j] + shift;
+    const UV delta = glm::abs(end - start);
+    return std::max(delta.x, delta.y) > epsilon &&
+           visibleCut({segment(start, end), {i, first_.size() + j}}, a, b);
+  };
+
+  // Try the same/nearby images at every existing sample before spending
+  // time on connectors that reach farther around a folded rail.
+  for (const int firstRadius : {0, 2}) {
+    const int lastRadius = firstRadius == 0 ? 1 : limit;
+    if (firstRadius > lastRadius)
+      continue;
+    for (size_t i = 0; i < a.points.size(); ++i)
+      for (size_t j = 0; j < b.points.size(); ++j) {
+        UV center(0);
+        for (unsigned axis = 0; axis < 2; ++axis)
+          if (periods_[axis])
+            center[axis] = std::round(a.points[i][axis] - b.points[j][axis]);
+        for (int radius = firstRadius; radius <= lastRadius; ++radius)
+          for (int u = periods_.x ? -radius : 0; u <= (periods_.x ? radius : 0);
+               ++u)
+            for (int v = periods_.y ? -radius : 0;
+                 v <= (periods_.y ? radius : 0); ++v) {
+              if (std::max(std::abs(u), std::abs(v)) != radius)
+                continue;
+              const UV shift = center + UV(u, v);
+              if (!candidate(i, j, shift))
+                continue;
+              const UV offset = (baseShift + shift) * periods_;
+              if (!finite(offset))
+                throw std::runtime_error(
+                    "Spline band cut offset exceeds chart precision");
+              for (size_t sample = 0; sample < second_.size(); ++sample) {
+                const UV stored =
+                    ((second_[sample] + offset) - origin_) / scale_;
+                const UV error = glm::abs(stored - (b.points[sample] + shift));
+                if (!finite(stored) || error.x > epsilon || error.y > epsilon)
+                  throw std::runtime_error(
+                      "Spline band cut offset loses chart precision");
+              }
+              return {i, j, offset};
+            }
+      }
+  }
+  throw std::runtime_error("Spline band has no valid cut at a shared sample");
+}
+
 } // namespace
 
 std::vector<glm::dvec2>
@@ -389,6 +691,12 @@ placeIfcBrepPeriodicTrimLoops(std::span<const CurvedFaceChartLoop> loops,
                               std::span<const uint8_t> anchored,
                               glm::dvec2 periods, std::stop_token stop) {
   return TrimPlacement(loops, anchored, periods, stop).run();
+}
+
+PeriodicSplineBandCut cutIfcBrepPeriodicSplineBand(
+    std::span<const glm::dvec2> first, std::span<const glm::dvec2> second,
+    glm::dvec2 winding, glm::dvec2 periods, bool sameSense) {
+  return BandCutSearch(first, second, winding, periods, sameSense).run();
 }
 
 } // namespace container::geometry::ifc::detail
