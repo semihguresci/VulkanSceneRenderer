@@ -856,19 +856,19 @@ public:
     return nativeCurveStrokeDrawLists_;
   }
   [[nodiscard]] const std::vector<DrawCommand> &
-  floorPlanGroundDrawCommands() const {
-    return floorPlanGround_.drawCommands;
+  floorPlanGroundDrawCommands(std::string_view storey = {}) const {
+    return floorPlanGround_.commands(storey);
   }
   [[nodiscard]] const std::vector<DrawCommand> &
-  floorPlanSourceElevationDrawCommands() const {
-    return floorPlanSourceElevation_.drawCommands;
+  floorPlanSourceElevationDrawCommands(std::string_view storey = {}) const {
+    return floorPlanSourceElevation_.commands(storey);
   }
   [[nodiscard]] const std::vector<DrawCommand> &floorPlanDrawCommands() const {
     return floorPlanGroundDrawCommands();
   }
   [[nodiscard]] std::vector<BimDrawingExportLine>
   floorPlanDrawingExportLines(bool sourceElevation, glm::vec3 color,
-                              float lineWidthMm) const;
+                              float lineWidthMm, std::string_view storey = {}) const;
   [[nodiscard]] bool hasFloorPlanOverlay() const {
     return floorPlanGround_.valid() || floorPlanSourceElevation_.valid();
   }

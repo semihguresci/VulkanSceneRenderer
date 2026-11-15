@@ -194,6 +194,10 @@ For models with plan linework, **Floor plan overlay** shows it in Deferred
 raster, Forward raster, and Path tracing. Choose the projection, depth test, color, opacity,
 and line width in the BIM panel. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
 
+**Storey filter** limits both elevation modes and SVG drawing export to the
+selected storey. **Show storey only** and **Plan slice preset** apply that same
+filter. Choose **All storeys** to restore the full plan.
+
 In **BIM Elevation View**, choose **Technical** and apply the view to draw lines
 over the shaded model in Deferred or Forward raster. **Depth-tested lines**
 hides lines behind filled geometry.

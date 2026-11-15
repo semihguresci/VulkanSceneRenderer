@@ -256,6 +256,7 @@ struct CaptureEvent {
   std::optional<CapturePhysicsJointCreate> physicsJointCreate;
   std::optional<float> physicsJointMotorVelocity;
   std::optional<int> bimLodBias;
+  std::optional<std::string> bimStoreyFilter;
   std::optional<CaptureBimFloorPlan> bimFloorPlan;
   std::optional<CaptureBimAnnotations> bimAnnotations;
   std::optional<CaptureBimClash> bimClash;
@@ -614,6 +615,12 @@ public:
         event.bimLodBias = value.at("bimLodBias").get<int>();
         if (*event.bimLodBias < -8 || *event.bimLodBias > 8)
           throw std::invalid_argument("BIM LOD bias must be in [-8,8]");
+      }
+      if (value.contains("bimStoreyFilter")) {
+        const auto &label = value.at("bimStoreyFilter");
+        if (!label.is_string() || label.get_ref<const std::string&>().size() > 4096)
+          throw std::invalid_argument("Capture bimStoreyFilter must be a string of at most 4096 bytes");
+        event.bimStoreyFilter = label.get<std::string>();
       }
       if (value.contains("bimFloorPlan"))
         event.bimFloorPlan = bimFloorPlan(value.at("bimFloorPlan"));
