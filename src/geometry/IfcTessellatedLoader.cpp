@@ -8,6 +8,7 @@
 #include "IfcAreaProfileGeometry.h"
 #include "IfcBrepFaceGeometry.h"
 #include "IfcBrepPcurveLift.h"
+#include "IfcBrepTrimPlacement.h"
 #include "IfcCurveReader.h"
 #include "IfcCurveStroke.h"
 #include "IfcStructuralAreaShapes.h"
@@ -3961,6 +3962,7 @@ private:
         }
     }
 
+    std::vector<uint8_t> anchored(bounds.size());
     for (size_t i = 0; i < bounds.size(); ++i) {
       const auto &uses = bounds[i].uses;
       if (uses.empty()) {
@@ -3971,11 +3973,8 @@ private:
       // 3D-only edge. Only inferred coordinates may be translated to meet it.
       const auto anchor = std::ranges::find_if(
           uses, [&](const auto &use) { return !edges.at(use.edge).inferred; });
-      if (anchor == uses.end() && explicitOuter && (periods.x || periods.y)) {
-        error = "Periodic spline trim loop needs an authored pcurve anchor";
-        return false;
-      }
-      const size_t start = anchor == uses.end() ? 0 : anchor - uses.begin();
+      anchored[i] = anchor != uses.end();
+      const size_t start = anchored[i] ? anchor - uses.begin() : 0;
       size_t sampleOffset = 0;
       for (const auto &use : std::span(uses).first(start))
         sampleOffset += edgeCache.at(use.edge).points.size() - 1;
@@ -4052,6 +4051,29 @@ private:
         std::rotate(loops[i].begin(), loops[i].end() - 1, loops[i].end());
       std::rotate(loops[i].begin(), loops[i].begin() + sampleOffset,
                   loops[i].end());
+    }
+    if (explicitOuter && (periods.x || periods.y) &&
+        std::ranges::find(anchored, uint8_t{0}) != anchored.end()) {
+      if (std::ranges::any_of(charts, [](const auto &chart) {
+            return chart.closure != chart.vertices.front();
+          })) {
+        error = "Explicit periodic spline trim loop winds around its chart";
+        return false;
+      }
+      try {
+        const auto shifts = detail::placeIfcBrepPeriodicTrimLoops(
+            charts, anchored, periods, stop_);
+        for (size_t i = 0; i < charts.size(); ++i) {
+          if (shifts[i] == glm::dvec2(0))
+            continue;
+          for (auto &uv : charts[i].vertices)
+            uv += shifts[i];
+          charts[i].closure += shifts[i];
+        }
+      } catch (const std::runtime_error &failure) {
+        error = failure.what();
+        return false;
+      }
     }
     return true;
   }

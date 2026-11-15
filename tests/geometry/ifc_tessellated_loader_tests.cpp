@@ -1,3 +1,4 @@
+#include "../../src/geometry/IfcBrepTrimPlacement.h"
 #include "Container/geometry/IfcTessellatedLoader.h"
 #include "Container/geometry/IfcxLoader.h"
 #include "Container/geometry/ParametricCurve.h"
@@ -40,6 +41,56 @@ TEST(IfcTessellatedLoader, CancelledImportDoesNotReadOrParse) {
 
 using container::geometry::ImportCompleteness;
 using IfcModel = container::geometry::ifc::Model;
+
+container::geometry::ifc::detail::CurvedFaceChartLoop
+trimRectangle(double left, double bottom, double right, double top) {
+  return {{{left, bottom}, {right, bottom}, {right, top}, {left, top}},
+          {left, bottom}};
+}
+
+TEST(IfcTrimPlacement, ResolvesAUniqueHoleLiftFromTheirJointTopology) {
+  using container::geometry::ifc::detail::placeIfcBrepPeriodicTrimLoops;
+  const auto outer = trimRectangle(0, 0, 20, 10);
+  const auto first = trimRectangle(1, 2, 4, 4);
+  const auto second = trimRectangle(2, 3, 3, 6);
+  const auto anchor = trimRectangle(11.5, 5, 12.5, 6.5);
+  const glm::dvec2 periods(10, 0);
+  const std::array ambiguous{outer, first};
+  const std::array<uint8_t, 2> outerAnchored{1, 0};
+  EXPECT_THROW(
+      (void)placeIfcBrepPeriodicTrimLoops(ambiguous, outerAnchored, periods),
+      std::runtime_error);
+
+  // The anchored hole rules out the second hole's translated copy. That
+  // makes the first hole move to avoid intersecting the second one.
+  const std::array unique{outer, first, second, anchor};
+  const std::array<uint8_t, 4> anchored{1, 0, 0, 1};
+  const auto shifts = placeIfcBrepPeriodicTrimLoops(unique, anchored, periods);
+  EXPECT_EQ(shifts, (std::vector<glm::dvec2>{{0, 0}, {10, 0}, {0, 0}, {0, 0}}));
+}
+
+TEST(IfcTrimPlacement, PlacesAnInferredOuterBoundOnBothPeriodicAxes) {
+  using container::geometry::ifc::detail::placeIfcBrepPeriodicTrimLoops;
+  const std::array loops{trimRectangle(0, 0, 3, 4),
+                         trimRectangle(21, -20, 22, -19)};
+  const std::array<uint8_t, 2> anchored{0, 1};
+  const auto shifts =
+      placeIfcBrepPeriodicTrimLoops(loops, anchored, glm::dvec2(10, 7));
+  EXPECT_EQ(shifts, (std::vector<glm::dvec2>{{20, -21}, {0, 0}}));
+}
+
+TEST(IfcTrimPlacement, RejectsAHoleThatCrossesAConcaveOuterBound) {
+  using container::geometry::ifc::detail::CurvedFaceChartLoop;
+  using container::geometry::ifc::detail::placeIfcBrepPeriodicTrimLoops;
+  const CurvedFaceChartLoop outer{
+      {{0, 0}, {5, 0}, {5, 1}, {1, 1}, {1, 4}, {5, 4}, {5, 5}, {0, 5}},
+      {0, 0}};
+  const std::array loops{outer, trimRectangle(2, .5, 4, 4.5)};
+  const std::array<uint8_t, 2> anchored{1, 0};
+  // Every hole vertex lies inside a lobe, but the side edges cross the notch.
+  EXPECT_THROW((void)placeIfcBrepPeriodicTrimLoops(loops, anchored, {10, 0}),
+               std::runtime_error);
+}
 
 std::string polygonFixture(std::string_view points, std::string_view face,
                            std::string_view pnIndex = "$",
