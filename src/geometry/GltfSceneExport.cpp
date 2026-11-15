@@ -2,6 +2,7 @@
 #include <Container/geometry/GltfMaterialVariants.h>
 #include <Container/geometry/GltfMaterialExport.h>
 #include <Container/geometry/GltfMaterialTextureAuthoring.h>
+#include <Container/geometry/GltfModelLoader.h>
 #include <Container/geometry/GltfAnimation.h>
 #include <Container/geometry/GltfInteractivity.h>
 #include <Container/geometry/GltfDeformation.h>
@@ -1328,9 +1329,49 @@ void appendAnimationRestores(tinygltf::Model& model, const tinygltf::Model& rest
     model.extensionsUsed.push_back("KHR_animation_pointer");
 }
 
+void chargeTangentSplitBytes(uint64_t& remaining, size_t count, size_t stride) {
+  if (count > remaining / stride) fail("portable tangent seam export exceeds its byte budget");
+  remaining -= uint64_t(count) * stride;
+}
+
+int appendSplitVertexAccessor(tinygltf::Model& output, int sourceIndex,
+                              std::span<const uint32_t> sourceVertexMap,
+                              uint64_t& remaining) {
+  tinygltf::Accessor accessor;
+  Bytes bytes;
+  size_t stride = 0;
+  size_t encodedSize = 0;
+  {
+    // Finish reading before appending a view or accessor. Appends can move
+    // the packed source storage held by CheckedAccessor.
+    const CheckedAccessor reader(output, sourceIndex, "tangent seam vertex attribute",
+        {AccessorUsage::VertexAttribute, HasRequiredExtension(output, "KHR_accessor_float64")});
+    accessor = reader.accessor();
+    encodedSize = reader.encodedElementSize();
+    stride = (encodedSize + 3u) & ~size_t(3u);
+    chargeTangentSplitBytes(remaining, sourceVertexMap.size(), stride);
+    bytes.resize(sourceVertexMap.size() * stride);
+    for (size_t vertex = 0; vertex < sourceVertexMap.size(); ++vertex)
+      reader.readEncodedElement(sourceVertexMap[vertex],
+          std::span(bytes).subspan(vertex * stride, encodedSize));
+  }
+  if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_DOUBLE)
+    alignBuffer(output.buffers.front().data, sizeof(double));
+  accessor.bufferView = appendView(output, bytes, TINYGLTF_TARGET_ARRAY_BUFFER);
+  if (stride != encodedSize) output.bufferViews.back().byteStride = stride;
+  accessor.byteOffset = 0;
+  accessor.count = sourceVertexMap.size();
+  accessor.sparse = {};
+  output.accessors.push_back(std::move(accessor));
+  return static_cast<int>(output.accessors.size() - 1);
+}
+
 tinygltf::Primitive serializePrimitive(tinygltf::Model& output,
-                                       const geometry::Mesh& mesh,
-                                       const tinygltf::Primitive* source) {
+                                       const geometry::Mesh& canonical,
+                                       const tinygltf::Primitive* source,
+                                       const GltfPrimitiveTangentVariant* split = nullptr,
+                                       uint64_t* remaining = nullptr) {
+  const auto& mesh = split ? split->mesh : canonical;
   if (mesh.empty() || mesh.indices().size() % 3 != 0)
     fail("runtime primitive is empty or not a triangle list");
   for (auto index : mesh.indices())
@@ -1343,13 +1384,36 @@ tinygltf::Primitive serializePrimitive(tinygltf::Model& output,
   if (source) {
     for (const auto& [_, accessorIndex] : source->attributes)
       if (accessorIndex < 0 || size_t(accessorIndex) >= output.accessors.size() ||
-          output.accessors[size_t(accessorIndex)].count != mesh.vertices().size())
+          output.accessors[size_t(accessorIndex)].count != canonical.vertices().size())
         fail("source auxiliary attribute no longer matches the runtime vertex order");
     for (const auto& target : source->targets)
       for (const auto& [_, accessorIndex] : target)
         if (accessorIndex < 0 || size_t(accessorIndex) >= output.accessors.size() ||
-            output.accessors[size_t(accessorIndex)].count != mesh.vertices().size())
+            output.accessors[size_t(accessorIndex)].count != canonical.vertices().size())
           fail("source morph target no longer matches the runtime vertex order");
+  }
+  if (split) {
+    const auto& map = split->sourceVertexMap;
+    if (!source || !source->targets.empty() || !remaining ||
+        map.size() != mesh.vertices().size() || map.size() <= canonical.vertices().size())
+      fail("portable tangent seam geometry has invalid source provenance");
+    for (size_t vertex = 0; vertex < map.size(); ++vertex)
+      if (map[vertex] >= canonical.vertices().size() ||
+          (vertex < canonical.vertices().size() && map[vertex] != vertex))
+        fail("portable tangent seam geometry changed the canonical vertex prefix");
+    chargeTangentSplitBytes(*remaining, mesh.vertices().size(), sizeof(float) * 14u);
+    chargeTangentSplitBytes(*remaining, mesh.indices().size(), sizeof(uint32_t));
+    // Core streams are written from the split geometry below. Auxiliary
+    // accessors retain the exact authored component type and stored values.
+    std::map<int, int> remapped;
+    for (auto& [semantic, accessor] : primitive.attributes) {
+      if (semantic == "POSITION" || semantic == "NORMAL" || semantic == "TANGENT" ||
+          semantic == "COLOR_0" || semantic == "TEXCOORD_0" || semantic == "TEXCOORD_1")
+        continue;
+      auto [entry, inserted] = remapped.try_emplace(accessor, -1);
+      if (inserted) entry->second = appendSplitVertexAccessor(output, accessor, map, *remaining);
+      accessor = entry->second;
+    }
   }
   primitive.mode = TINYGLTF_MODE_TRIANGLES;
   // These index-bearing/compressed source representations describe old vertex
@@ -1378,7 +1442,8 @@ tinygltf::Primitive serializePrimitive(tinygltf::Model& output,
       append(color, vertex.color[axis]);
     }
     append(color, vertex.colorAlpha);
-    for (int axis = 0; axis < 4; ++axis) append(tangent, vertex.tangent[axis]);
+    if (!split)
+      for (int axis = 0; axis < 4; ++axis) append(tangent, vertex.tangent[axis]);
     for (int axis = 0; axis < 2; ++axis) {
       append(uv0, vertex.texCoord[axis]);
       append(uv1, vertex.texCoord1[axis]);
@@ -1397,10 +1462,12 @@ tinygltf::Primitive serializePrimitive(tinygltf::Model& output,
   output.accessors[positions].minValues.assign(minimum.begin(), minimum.end());
   output.accessors[positions].maxValues.assign(maximum.begin(), maximum.end());
   const bool authoredNormals = !source || source->attributes.contains("NORMAL");
-  const bool authoredTangents = authoredNormals && (!source || source->attributes.contains("TANGENT"));
+  const bool authoredTangents = !split && authoredNormals && (!source || source->attributes.contains("TANGENT"));
   // Preserve absence as authored provenance: missing-base deformation frames
   // must continue to regenerate after morphing/skinning when this file reloads.
-  if (authoredNormals) attribute("NORMAL", std::move(normal), TINYGLTF_TYPE_VEC3);
+  // Split copies must retain the original smooth normals across the new
+  // index boundaries, even when the source had its normals generated.
+  if (authoredNormals || split) attribute("NORMAL", std::move(normal), TINYGLTF_TYPE_VEC3);
   else primitive.attributes.erase("NORMAL");
   if (authoredTangents) attribute("TANGENT", std::move(tangent), TINYGLTF_TYPE_VEC4);
   else primitive.attributes.erase("TANGENT");
@@ -1412,6 +1479,44 @@ tinygltf::Primitive serializePrimitive(tinygltf::Model& output,
                                       TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT,
                                       TINYGLTF_TARGET_ELEMENT_ARRAY_BUFFER);
   return primitive;
+}
+
+bool variantUsesOtherNormalUv(const MaterialVariantPrimitive& primitive,
+                              std::span<const tinygltf::Material> materials,
+                              std::span<const int32_t> sourceMaterialToRuntime,
+                              uint32_t texCoord) {
+  return std::ranges::any_of(primitive.mappings, [&](const auto& mapping) {
+    const int source = mapping.second;
+    if (source < 0 || (!sourceMaterialToRuntime.empty() && size_t(source) >= sourceMaterialToRuntime.size()))
+      fail("portable tangent seam has an invalid variant material");
+    const auto runtime = sourceMaterialToRuntime.empty() ? source : sourceMaterialToRuntime[size_t(source)];
+    if (runtime < 0 || size_t(runtime) >= materials.size()) fail("portable tangent seam variant material is unavailable");
+    const auto binding = ReadGltfMaterialTextureBinding(materials[size_t(runtime)], GltfMaterialTextureSlot::Normal);
+    return binding.index >= 0 && binding.texCoord == (texCoord ^ 1u);
+  });
+}
+
+GltfPrimitiveTangentVariant preparePortableTangentSplit(const geometry::Mesh& mesh,
+    uint32_t texCoord, bool retainOtherUv, uint64_t& remaining) {
+  const auto regenerate = [&](const geometry::Mesh& source, uint32_t uv) {
+    if (source.indices().size() > kMaxLiveNormalFrameCorners)
+      fail("portable tangent seam export exceeds the tangent generation corner limit");
+    // Account for regenerated vertex storage, the split map and MikkTSpace
+    // scratch before entering the generator, including any alternate UV run.
+    chargeTangentSplitBytes(remaining, source.vertices().size(), sizeof(geometry::Vertex) * 3u);
+    chargeTangentSplitBytes(remaining, source.indices().size(), 512u);
+    return RegenerateGltfPrimitiveTangents(source, uv, true);
+  };
+  auto first = regenerate(mesh, texCoord);
+  if (!retainOtherUv) return first;
+  auto other = regenerate(first.mesh, texCoord ^ 1u);
+  if (other.sourceVertexMap.empty()) return first;
+  // Preserve both UV bases' topology. The second split addresses the first
+  // split's vertices; auxiliary accessor rows still come from the canonical
+  // primitive, so compose the two maps before serializing.
+  if (!first.sourceVertexMap.empty())
+    for (auto& vertex : other.sourceVertexMap) vertex = first.sourceVertexMap.at(vertex);
+  return other;
 }
 
 std::string resourceName(const Bytes& bytes) {
@@ -1560,6 +1665,8 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   if (!snapshot.sourceAuthoredTangentUvMask.empty() &&
       snapshot.sourceAuthoredTangentUvMask.size() != sourcePrimitives.size())
     fail("normal UV provenance does not cover the source primitives");
+  const auto materialVariants = snapshot.source
+      ? std::optional{ParseMaterialVariants(*snapshot.source)} : std::nullopt;
   bool hasDeformation = !output.skins.empty();
   for (const auto* primitive : sourcePrimitives)
     hasDeformation |= !primitive->targets.empty() || primitive->attributes.contains("JOINTS_0");
@@ -1581,6 +1688,9 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
   output.nodes.clear();
   output.nodes.resize(snapshot.graph.nodeCount());
   std::map<uint32_t, tinygltf::Primitive> primitives;
+  std::map<std::pair<uint32_t, uint32_t>, std::optional<tinygltf::Primitive>> splitPrimitives;
+  // Cumulative tangent-generation work and additional split buffer payload.
+  uint64_t remainingTangentSplitBytes = 1024ull * 1024ull * 1024ull;
   std::map<std::pair<uint32_t, uint32_t>, int> meshes;
   std::vector<MaterialVariantExportPrimitive> variantExports;
   std::map<int, int> sourceToRuntime;
@@ -1758,12 +1868,34 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
         node.mesh = found->second;
         continue;
       }
-      auto primitive = primitives.find(current.primitiveIndex);
-      if (primitive == primitives.end()) {
-        const auto index = current.primitiveIndex;
-        auto encoded = serializePrimitive(output, snapshot.geometry.meshes()[index],
-            sourcePrimitive >= 0 ? sourcePrimitives[size_t(sourcePrimitive)] : nullptr);
-        primitive = primitives.emplace(index, std::move(encoded)).first;
+      const auto primitiveIndex = current.primitiveIndex;
+      const auto& canonical = snapshot.geometry.meshes()[primitiveIndex];
+      const auto* source = sourcePrimitive >= 0 ? sourcePrimitives[size_t(sourcePrimitive)] : nullptr;
+      bool regenerateTangents = false;
+      const tinygltf::Primitive* encoded = nullptr;
+      if (source && !snapshot.sourceAuthoredTangentUvMask.empty()) {
+        const auto binding = ReadGltfMaterialTextureBinding(
+            output.materials.at(current.materialIndex), GltfMaterialTextureSlot::Normal);
+        regenerateTangents = binding.index >= 0 && (binding.texCoord > 1 ||
+            !(snapshot.sourceAuthoredTangentUvMask[size_t(sourcePrimitive)] & (1u << binding.texCoord)));
+        if (regenerateTangents && binding.texCoord <= 1 && source->targets.empty()) {
+          auto [split, inserted] = splitPrimitives.try_emplace({primitiveIndex, binding.texCoord});
+          if (inserted) {
+            const bool retainOtherUv = variantUsesOtherNormalUv(materialVariants->primitives()[size_t(sourcePrimitive)],
+                output.materials, snapshot.sourceMaterialToRuntimeIndices, binding.texCoord);
+            const auto variant = preparePortableTangentSplit(canonical, binding.texCoord, retainOtherUv,
+                                                             remainingTangentSplitBytes);
+            if (!variant.sourceVertexMap.empty())
+              split->second = serializePrimitive(output, canonical, source, &variant, &remainingTangentSplitBytes);
+          }
+          if (split->second) encoded = &*split->second;
+        }
+      }
+      if (!encoded) {
+        auto primitive = primitives.find(primitiveIndex);
+        if (primitive == primitives.end())
+          primitive = primitives.emplace(primitiveIndex, serializePrimitive(output, canonical, source)).first;
+        encoded = &primitive->second;
       }
       tinygltf::Mesh mesh;
       if (sourcePrimitive >= 0) {
@@ -1771,30 +1903,25 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
         mesh.primitives.clear();
       }
       mesh.name = current.name;
-      mesh.primitives.push_back(primitive->second);
+      mesh.primitives.push_back(*encoded);
       mesh.primitives.front().material = static_cast<int>(current.materialIndex);
-      if (sourcePrimitive >= 0 && !snapshot.sourceAuthoredTangentUvMask.empty()) {
-        const auto binding = ReadGltfMaterialTextureBinding(
-            output.materials.at(current.materialIndex), GltfMaterialTextureSlot::Normal);
-        if (binding.index >= 0 && (binding.texCoord > 1 ||
-            !(snapshot.sourceAuthoredTangentUvMask[size_t(sourcePrimitive)] & (1u << binding.texCoord)))) {
-          auto& generated = mesh.primitives.front();
-          generated.attributes.erase("TANGENT");
-          int zeroPosition = -1;
-          for (auto& morph : generated.targets) {
-            if (!morph.erase("TANGENT") || !morph.empty()) continue;
-            // Retain tangent-only targets' slot IDs and animation weights.
-            if (zeroPosition < 0) {
-              const auto count = snapshot.geometry.meshes()[current.primitiveIndex].vertices().size();
-              if (count > SIZE_MAX / (3 * sizeof(float))) fail("empty morph target is too large");
-              zeroPosition = appendAccessor(output, Bytes(count * 3 * sizeof(float)),
-                  count, TINYGLTF_TYPE_VEC3, TINYGLTF_COMPONENT_TYPE_FLOAT,
-                  TINYGLTF_TARGET_ARRAY_BUFFER);
-              output.accessors[zeroPosition].minValues.assign(3,0.0);
-              output.accessors[zeroPosition].maxValues.assign(3,0.0);
-            }
-            morph.emplace("POSITION", zeroPosition);
+      if (regenerateTangents) {
+        auto& generated = mesh.primitives.front();
+        generated.attributes.erase("TANGENT");
+        int zeroPosition = -1;
+        for (auto& morph : generated.targets) {
+          if (!morph.erase("TANGENT") || !morph.empty()) continue;
+          // Retain tangent-only targets' slot IDs and animation weights.
+          if (zeroPosition < 0) {
+            const auto count = canonical.vertices().size();
+            if (count > SIZE_MAX / (3 * sizeof(float))) fail("empty morph target is too large");
+            zeroPosition = appendAccessor(output, Bytes(count * 3 * sizeof(float)),
+                count, TINYGLTF_TYPE_VEC3, TINYGLTF_COMPONENT_TYPE_FLOAT,
+                TINYGLTF_TARGET_ARRAY_BUFFER);
+            output.accessors[zeroPosition].minValues.assign(3, 0.0);
+            output.accessors[zeroPosition].maxValues.assign(3, 0.0);
           }
+          morph.emplace("POSITION", zeroPosition);
         }
       }
       node.mesh = static_cast<int>(output.meshes.size());
@@ -1804,8 +1931,8 @@ tinygltf::Model buildExportModel(const SceneExportSnapshot& snapshot) {
       output.meshes.push_back(std::move(mesh));
     }
   }
-  if (snapshot.source)
-    CopyMaterialVariantMetadataForExport(output,ParseMaterialVariants(*snapshot.source),snapshot.sourceMaterialToRuntimeIndices,variantExports);
+  if (materialVariants)
+    CopyMaterialVariantMetadataForExport(output,*materialVariants,snapshot.sourceMaterialToRuntimeIndices,variantExports);
   std::map<int, int> entries;
   for (const auto& [nodeIndex, correction] : corrections) {
     tinygltf::Node wrapper;

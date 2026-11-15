@@ -81,7 +81,7 @@ Under **UV mapping**, edit **Coordinates** (UV0/UV1), **Offset**, **Scale** and 
 
 Successful actions enter the existing **Undo (Ctrl+Z)** / **Redo (Ctrl+Y)** history. Undo/redo uses the current animation clock. Export the edited primary asset through **Save As**; **Save scene** and Ctrl+S reuse the last successful save path. Rejected texture edits report an error beside **Texture slots**. Correct the path/settings and retry.
 
-Assign and base normal-map UV edits prepare the tangent frame for each affected glTF surface. The requested coordinates must exist on every affected surface, including retained default and variant uses. Frame regeneration is limited to 8,192 triangle corners per primitive. Static and skin-only primitives whose new coordinates require splitting indexed vertices at tangent seams report an error before publishing the edit.
+Assign and base normal-map UV edits prepare the tangent frame for each affected glTF surface. The requested coordinates must exist on every affected surface, including retained default and variant uses. Frame regeneration is limited to 8,192 triangle corners per primitive. Static and skinned surfaces split shared vertices where the selected UV needs different tangents on each side of a seam. Saving preserves the split geometry and its skin weights for the edited binding.
 
 Specular-glossiness materials expose one shared specular/glossiness source, labeled **sRGB color / linear alpha**: RGB supplies specular color and alpha supplies glossiness. Their dormant metallic-roughness slot is disabled with an explanation. A separate legacy roughness map retains its **Linear data** role. Clearing a binding does not delete unused images or texture records from the resource catalog.
 

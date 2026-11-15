@@ -1343,6 +1343,15 @@ set_tests_properties(gltf_live_normal_uv_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1200
     LABELS "requires-vulkan;requires-display;gltf;visual-regression")
 
+add_test(NAME gltf_live_normal_uv_tangent_seams_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/gltf_live_normal_uv_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/gltf-live-normal-uv-tangent-seams" --managed-output --require-opt-in
+            --cohort seam --cohort skin-seam)
+set_tests_properties(gltf_live_normal_uv_tangent_seams_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
+    LABELS "requires-vulkan;requires-display;gltf;visual-regression")
+
 add_test(NAME transparent_post_process_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/transparent_post_process_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"

@@ -129,7 +129,7 @@ struct CanonicalPrimitiveFrameView {
 
 struct PrimitiveNormalFrameLimits {
   container::geometry::gltf::PrimitiveFrameVariantLimits frames;
-  uint64_t maxGeneratedCorners{8192};
+  uint64_t maxGeneratedCorners{container::geometry::gltf::kMaxLiveNormalFrameCorners};
 };
 
 struct PrimitiveNormalFrameVariant {
