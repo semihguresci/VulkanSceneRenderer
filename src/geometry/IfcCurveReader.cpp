@@ -102,15 +102,30 @@ struct SplineSurfaceAxis {
 
 using SplineSurfaceGrid = std::vector<std::vector<SplineSurfaceControl>>;
 
+bool splineTraceDerivativesAgree(const glm::dvec3 &a, const glm::dvec3 &b,
+                                 double wa, double wb, double tolerance,
+                                 double spanWidth,
+                                 std::optional<double> &gauge) {
+  // A transverse-constant difference of the logarithmic weight derivatives
+  // adds only a multiple of the shared homogeneous trace.
+  const double difference = wb - wa;
+  if (!gauge)
+    gauge = difference;
+  return finite(a) && finite(b) && std::isfinite(difference) &&
+         glm::length(a - b) <=
+             std::max(tolerance / spanWidth,
+                      1e-10 * std::max(glm::length(a), glm::length(b))) &&
+         std::abs(difference - *gauge) <=
+             1e-10 * std::max({1. / spanWidth, std::abs(wa), std::abs(wb)});
+}
+
 template <class ControlAt>
 bool splineTracesAreSmooth(const ControlAt &control, size_t transverseCount,
                            unsigned degree, size_t incoming, double before,
                            size_t outgoing, double after, double tolerance) {
-  // Normalize homogeneous derivatives by each endpoint weight. A
-  // transverse-constant difference of the remaining logarithmic weight
-  // derivatives adds only a multiple of the shared homogeneous trace.
   if (!(before > 0) || !(after > 0))
     return false;
+  const double spanWidth = std::min(before, after);
   const double inScale = degree / before, outScale = degree / after;
   std::optional<double> gauge;
   for (size_t j = 0; j < transverseCount; ++j) {
@@ -120,67 +135,11 @@ bool splineTracesAreSmooth(const ControlAt &control, size_t transverseCount,
     const auto da = (inScale * ar) * (a.point - previous.point);
     const auto db = (outScale * br) * (next.point - b.point);
     const double wa = inScale * (1 - ar), wb = outScale * (br - 1);
-    const double difference = wb - wa;
-    if (!gauge)
-      gauge = difference;
-    if (!finite(da) || !finite(db) || !std::isfinite(difference) ||
-        glm::length(da - db) >
-            std::max(tolerance / std::min(before, after),
-                     1e-10 * std::max(glm::length(da), glm::length(db))) ||
-        std::abs(difference - *gauge) >
-            1e-10 * std::max({1., std::abs(wa), std::abs(wb)}))
+    if (!splineTraceDerivativesAgree(da, db, wa, wb, tolerance, spanWidth,
+                                    gauge))
       return false;
   }
   return true;
-}
-
-void certifySplineContinuity(SplineSurfaceAxis &axis,
-                             const SplineSurfaceAxis &other,
-                             const SplineSurfaceGrid &grid, bool swapAxes,
-                             double tolerance) {
-  const auto control = [&](size_t along, size_t across) -> const auto & {
-    return swapAxes ? grid[across][along] : grid[along][across];
-  };
-  std::erase_if(axis.creases, [&](double knot) {
-    const auto first = std::ranges::lower_bound(axis.knots, knot);
-    const auto row = size_t(first - axis.knots.begin() - 1);
-    // At an internal knot of multiplicity equal to the degree, both
-    // control spans meet at this row; the adjacent controls determine the
-    // limiting derivatives. Lower multiplicities are already C1.
-    return splineTracesAreSmooth(
-        control, other.count, axis.degree, row, knot - axis.knots[row], row,
-        axis.knots[row + axis.degree + 1] - knot, tolerance);
-  });
-  // For a clamped curve the endpoint traces are the first and last
-  // control polygons along the transverse axis. Compare both the controls
-  // and their weights, permitting one common homogeneous scale factor.
-  if (axis.knots.front() != axis.domain.first ||
-      axis.knots.back() != axis.domain.second)
-    return;
-  const size_t last = axis.count - 1;
-  const double logScale =
-      std::log(control(last, 0).weight) - std::log(control(0, 0).weight);
-  constexpr double relativePrecision =
-      256 * std::numeric_limits<double>::epsilon();
-  for (size_t j = 0; j < other.count; ++j) {
-    const auto &a = control(0, j), &b = control(last, j);
-    const double weightScale = std::log(b.weight) - std::log(a.weight);
-    if (glm::length(a.point - b.point) > tolerance ||
-        std::abs(weightScale - logScale) >
-            relativePrecision * std::max(1., std::abs(logScale)))
-      return;
-  }
-  const double period = axis.domain.second - axis.domain.first;
-  if (!std::isfinite(period) || !(period > 0))
-    return;
-  axis.period = period;
-  axis.meshKnots.insert(axis.meshKnots.begin(), axis.domain.first);
-
-  if (!splineTracesAreSmooth(control, other.count, axis.degree, last,
-                             axis.domain.second - axis.knots[last], 0,
-                             axis.knots[axis.degree + 1] - axis.domain.first,
-                             tolerance))
-    axis.creases.insert(axis.creases.begin(), axis.domain.first);
 }
 
 struct ActiveSplineBasis {
@@ -243,6 +202,113 @@ activeSplineBasis(const SplineSurfaceAxis &axis, double t, bool derivatives) {
     }
   }
   return basis;
+}
+
+struct SplineBoundaryControl {
+  glm::dvec3 point, derivative;
+  double logWeight, logWeightDerivative;
+};
+
+template <class ControlAt>
+std::optional<SplineBoundaryControl>
+splineBoundaryControl(const ControlAt &control, const ActiveSplineBasis &basis,
+                      unsigned degree, size_t across, const glm::dvec3 &origin) {
+  // Normalize locally before the contraction so small global weights do not
+  // underflow either the boundary point or its homogeneous weight.
+  double scale = 0;
+  for (unsigned i = 0; i <= degree; ++i)
+    if (basis.value[i] > 0)
+      scale = std::max(scale, control(basis.first + i, across).weight);
+  if (!(scale > 0))
+    return std::nullopt;
+  glm::dvec3 point(0), derivative(0);
+  double weight = 0, weightDerivative = 0;
+  for (unsigned i = 0; i <= degree; ++i) {
+    const auto &c = control(basis.first + i, across);
+    const auto local = c.point - origin;
+    const double ratio = c.weight / scale;
+    if (basis.value[i] != 0) {
+      const double w = basis.value[i] * ratio;
+      point += w * local;
+      weight += w;
+    }
+    if (basis.derivative[i] != 0) {
+      const double dw = basis.derivative[i] * ratio;
+      derivative += dw * local;
+      weightDerivative += dw;
+    }
+  }
+  if (!(weight > 0) || !std::isfinite(weight))
+    return std::nullopt;
+  point /= weight;
+  if (!finite(point))
+    return std::nullopt;
+  return SplineBoundaryControl{point,
+                               (derivative - weightDerivative * point) / weight,
+                               std::log(scale) + std::log(weight),
+                               weightDerivative / weight};
+}
+
+void certifySplineContinuity(SplineSurfaceAxis &axis,
+                             const SplineSurfaceAxis &other,
+                             const SplineSurfaceGrid &grid, bool swapAxes,
+                             double tolerance) {
+  const auto control = [&](size_t along, size_t across) -> const auto & {
+    return swapAxes ? grid[across][along] : grid[along][across];
+  };
+  std::erase_if(axis.creases, [&](double knot) {
+    const auto first = std::ranges::lower_bound(axis.knots, knot);
+    const auto row = size_t(first - axis.knots.begin() - 1);
+    // At multiplicity equal to the degree, the adjacent controls determine
+    // the limiting derivatives. Lower multiplicities are already C1.
+    return splineTracesAreSmooth(
+        control, other.count, axis.degree, row, knot - axis.knots[row], row,
+        axis.knots[row + axis.degree + 1] - knot, tolerance);
+  });
+
+  const auto [first, last] = axis.domain;
+  const double period = last - first;
+  if (!std::isfinite(period) || !(period > 0))
+    return;
+  const auto startBasis = activeSplineBasis(axis, first, true);
+  const auto endBasis = activeSplineBasis(axis, last, true);
+  if (!startBasis || !endBasis)
+    return;
+  const double startWidth =
+      axis.knots[startBasis->first + axis.degree + 1] - first;
+  const double endWidth = last - axis.knots[endBasis->first + axis.degree];
+  const double spanWidth = std::min(startWidth, endWidth);
+  constexpr double relativePrecision =
+      256 * std::numeric_limits<double>::epsilon();
+  std::optional<double> logScale, derivativeGauge;
+  bool smooth = true;
+  // Restrict the homogeneous tensor-product surface to each endpoint. The
+  // resulting splines share the transverse basis, so compare their control
+  // points and weights up to one common homogeneous scale.
+  for (size_t j = 0; j < other.count; ++j) {
+    const auto &origin = control(startBasis->first, j).point;
+    const auto a =
+        splineBoundaryControl(control, *startBasis, axis.degree, j, origin);
+    const auto b =
+        splineBoundaryControl(control, *endBasis, axis.degree, j, origin);
+    if (!a || !b || glm::length(a->point - b->point) > tolerance)
+      return;
+    const double weightScale = b->logWeight - a->logWeight;
+    if (!logScale)
+      logScale = weightScale;
+    if (std::abs(weightScale - *logScale) >
+        relativePrecision * std::max(1., std::abs(*logScale)))
+      return;
+    smooth = smooth &&
+             splineTraceDerivativesAgree(a->derivative, b->derivative,
+                                         a->logWeightDerivative,
+                                         b->logWeightDerivative, tolerance,
+                                         spanWidth, derivativeGauge);
+  }
+  axis.period = period;
+  axis.meshKnots.insert(axis.meshKnots.begin(), first);
+  if (!smooth)
+    axis.creases.insert(axis.creases.begin(), first);
 }
 
 struct SplineSurfaceData {

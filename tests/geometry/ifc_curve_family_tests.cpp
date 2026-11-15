@@ -981,6 +981,221 @@ using container::geometry::ifc::detail::ParametricSurface;
 using container::geometry::ifc::detail::readIfcSurface;
 using container::geometry::ifc::detail::readIfcSurfaceCharts;
 
+enum class UnclampedSplineBoundary {
+  Smooth,
+  Sharp,
+  SharpWeights,
+  OpenPosition,
+  OpenWeights,
+};
+
+SweptChartEntities unclampedSpline(bool rational, bool transpose,
+                                   UnclampedSplineBoundary boundary) {
+  using S = SweptChartEntities;
+  S step;
+  std::array<glm::dvec2, 6> ring{
+      {{2, 0}, {0, 2}, {-2, 0}, {0, -2}, {2, 0}, {0, 2}}};
+  if (boundary == UnclampedSplineBoundary::Sharp) {
+    ring[4] = {2.5, .5};
+    ring[5] = {-.5, 1.5};
+  }
+  if (boundary == UnclampedSplineBoundary::OpenPosition)
+    ring[5].x = .25;
+
+  const std::array<double, 6> weights{1, 2, 3, 4, 2, 4};
+  S::Value controls = S::list({}), weightGrid = S::list({});
+  for (size_t i = 0; i < (transpose ? 2u : ring.size()); ++i) {
+    S::Value row = S::list({}), weightRow = S::list({});
+    for (size_t j = 0; j < (transpose ? ring.size() : 2u); ++j) {
+      const size_t along = transpose ? j : i, across = transpose ? i : j;
+      auto p = ring[along];
+      double weight = weights[along];
+      if (across != 0)
+        weight *= boundary == UnclampedSplineBoundary::OpenWeights && along >= 4
+                      ? 4.
+                      : 3.;
+      if (boundary == UnclampedSplineBoundary::SharpWeights && across != 0 &&
+          along >= 4) {
+        // Swap the weights and shift the controls to preserve the evaluated
+        // position and tangent at this corner, while changing W'/W there.
+        weight = weights[along == 4 ? 5 : 4] * 3;
+        p += glm::dvec2(-2. / 3, 2. / 3);
+      }
+      const auto id = uint32_t(1 + 2 * along + across);
+      step.point(id, {p.x, p.y, across == 0 ? 0. : 2.});
+      row.list.push_back(S::ref(id));
+      weightRow.list.push_back(S::number(weight));
+    }
+    controls.list.push_back(std::move(row));
+    weightGrid.list.push_back(std::move(weightRow));
+  }
+
+  const auto values = [](std::initializer_list<double> numbers) {
+    auto list = S::list({});
+    for (double n : numbers)
+      list.list.push_back(S::number(n));
+    return list;
+  };
+  const auto periodicKnots = values({-2, -1, 0, 1, 2, 3, 4, 5, 6});
+  const auto periodicMultiplicities = values({1, 1, 1, 1, 1, 1, 1, 1, 1});
+  const auto axialKnots = values({-1, 3}), axialMultiplicities = values({2, 2});
+  const S::Value no{.kind = S::Value::Kind::Enum, .text = "F"};
+  const bool open = boundary == UnclampedSplineBoundary::OpenPosition ||
+                    boundary == UnclampedSplineBoundary::OpenWeights;
+  const S::Value claimedClosed{.kind = S::Value::Kind::Enum,
+                               .text = open ? "T" : "F"};
+  auto args = S::list({S::number(transpose ? 1 : 2),
+                       S::number(transpose ? 2 : 1),
+                       controls,
+                       {.kind = S::Value::Kind::Enum, .text = "UNSPECIFIED"},
+                       transpose ? no : claimedClosed,
+                       transpose ? claimedClosed : no,
+                       no,
+                       transpose ? axialMultiplicities : periodicMultiplicities,
+                       transpose ? periodicMultiplicities : axialMultiplicities,
+                       transpose ? axialKnots : periodicKnots,
+                       transpose ? periodicKnots : axialKnots,
+                       {.kind = S::Value::Kind::Enum, .text = "UNSPECIFIED"}});
+  if (rational)
+    args.list.push_back(std::move(weightGrid));
+  step.entities.emplace(20, S::Entity{20,
+                                      rational
+                                          ? "IFCRATIONALBSPLINESURFACEWITHKNOTS"
+                                          : "IFCBSPLINESURFACEWITHKNOTS",
+                                      std::move(args)});
+  return step;
+}
+
+TEST(IfcCurveFamilies,
+     UnclampedSplineCertifiesSmoothPolynomialAndRationalSeams) {
+  for (bool rational : {false, true}) {
+    for (bool transpose : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "rational=" << rational << " transpose=" << transpose);
+      const auto step =
+          unclampedSpline(rational, transpose, UnclampedSplineBoundary::Smooth);
+      std::vector<ParametricSurface> charts;
+      std::string error;
+      ASSERT_TRUE(readIfcSurfaceCharts(step.entities, 20, 1, {}, charts, error))
+          << error;
+      ASSERT_EQ(charts.size(), 1u);
+      const auto &chart = charts.front();
+      ASSERT_TRUE(chart.spline);
+      EXPECT_EQ(chart.periods, transpose ? glm::dvec2(0, 4) : glm::dvec2(4, 0));
+      EXPECT_EQ(transpose ? chart.vDomain : chart.uDomain, (std::pair{0., 4.}));
+      EXPECT_EQ(transpose ? chart.uDomain : chart.vDomain,
+                (std::pair{-1., 3.}));
+      EXPECT_TRUE(chart.creaseU.empty());
+      EXPECT_TRUE(chart.creaseV.empty());
+
+      // Uniform quadratic endpoint basis is (1/2, 1/2), and the first
+      // span midpoint uses (1/8, 3/4, 1/8). Neither is a control point.
+      const double z = rational ? 1.5 : 1.;
+      const glm::dvec3 seam =
+          rational ? glm::dvec3(2. / 3, 4. / 3, z) : glm::dvec3(1, 1, z);
+      const auto point = [&](double t, double axial) {
+        return transpose ? chart.point(axial, t) : chart.point(t, axial);
+      };
+      for (double t : {0., 4., -4., 8.}) {
+        const auto p = point(t, 1.);
+        ASSERT_TRUE(p) << t;
+        EXPECT_NEAR(glm::length(*p - seam), 0., 1e-12);
+      }
+      for (double t : {.5, -3.5, 8.5}) {
+        const auto p = point(t, 1.);
+        ASSERT_TRUE(p) << t;
+        EXPECT_NEAR(glm::length(*p - glm::dvec3(rational ? -.25 : 0., 1.5, z)),
+                    0., 1e-12);
+      }
+      EXPECT_FALSE(point(.5, 3.125));
+
+      ASSERT_TRUE(chart.derivatives);
+      const double tangent = rational ? 16. / 9 : 2.;
+      for (double t : {0., 4.}) {
+        const auto d =
+            transpose ? chart.derivatives(1, t) : chart.derivatives(t, 1);
+        ASSERT_TRUE(d);
+        const auto along = transpose ? d->second : d->first;
+        const auto across = transpose ? d->first : d->second;
+        EXPECT_NEAR(glm::length(along - glm::dvec3(-tangent, tangent, 0)), 0.,
+                    1e-12);
+        EXPECT_NEAR(
+            glm::length(across - glm::dvec3(0, 0, rational ? .375 : .5)), 0.,
+            1e-12);
+      }
+    }
+  }
+}
+
+TEST(IfcCurveFamilies, UnclampedSplineKeepsOneSidedTangentsAtSharpSeam) {
+  const auto step =
+      unclampedSpline(false, false, UnclampedSplineBoundary::Sharp);
+  std::string error;
+  const auto chart = readIfcSurface(step.entities, 20, 1, {}, error);
+  ASSERT_TRUE(chart) << error;
+  EXPECT_EQ(chart->periods, glm::dvec2(4, 0));
+  EXPECT_EQ(chart->creaseU, (std::vector<double>{0.}));
+  ASSERT_TRUE(chart->derivatives);
+  const auto first = chart->derivatives(0, 1), last = chart->derivatives(4, 1);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(last);
+  EXPECT_NEAR(glm::length(first->first - glm::dvec3(-2, 2, 0)), 0., 1e-12);
+  EXPECT_NEAR(glm::length(last->first - glm::dvec3(-3, 1, 0)), 0., 1e-12);
+}
+
+TEST(IfcCurveFamilies, UnclampedSplineDetectsDerivativeMismatchBetweenCorners) {
+  const auto step =
+      unclampedSpline(true, false, UnclampedSplineBoundary::SharpWeights);
+  std::string error;
+  const auto chart = readIfcSurface(step.entities, 20, 1, {}, error);
+  ASSERT_TRUE(chart) << error;
+  EXPECT_EQ(chart->periods, glm::dvec2(4, 0));
+  EXPECT_EQ(chart->creaseU, (std::vector<double>{0.}));
+  ASSERT_TRUE(chart->derivatives);
+  for (double axial : {-1., 1., 3.}) {
+    const auto first = chart->derivatives(0, axial);
+    const auto last = chart->derivatives(4, axial);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(last);
+    const glm::dvec3 expected(0, 0, axial == 1. ? -.5 : 0.);
+    EXPECT_NEAR(glm::length(last->first - first->first - expected), 0., 1e-12);
+  }
+}
+
+TEST(IfcCurveFamilies, UnclampedSplineDoesNotWrapAFalseClosureClaim) {
+  const auto step =
+      unclampedSpline(true, false, UnclampedSplineBoundary::OpenPosition);
+  std::string error;
+  const auto chart = readIfcSurface(step.entities, 20, 1, {}, error);
+  ASSERT_TRUE(chart) << error;
+  EXPECT_EQ(chart->periods, glm::dvec2(0));
+  const auto first = chart->point(0, 1), last = chart->point(4, 1);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(last);
+  EXPECT_NEAR(last->x - first->x, 1. / 6, 1e-12);
+  EXPECT_FALSE(chart->point(4.125, 1));
+}
+
+TEST(IfcCurveFamilies, UnclampedSplineRejectsCoincidentCornersWithOpenTrace) {
+  const auto step =
+      unclampedSpline(true, false, UnclampedSplineBoundary::OpenWeights);
+  std::string error;
+  const auto chart = readIfcSurface(step.entities, 20, 1, {}, error);
+  ASSERT_TRUE(chart) << error;
+  EXPECT_EQ(chart->periods, glm::dvec2(0));
+  for (double axial : {-1., 3.}) {
+    const auto first = chart->point(0, axial), last = chart->point(4, axial);
+    ASSERT_TRUE(first);
+    ASSERT_TRUE(last);
+    EXPECT_NEAR(glm::length(*first - *last), 0., 1e-12);
+  }
+  const auto first = chart->point(0, 1), last = chart->point(4, 1);
+  ASSERT_TRUE(first);
+  ASSERT_TRUE(last);
+  EXPECT_NEAR(last->z - first->z, .1, 1e-12);
+  EXPECT_FALSE(chart->point(4.125, 1));
+}
+
 void expectChartPoint(const ParametricSurface &chart, glm::dvec2 parameter,
                       glm::dvec3 expected) {
   const auto point = chart.point(parameter.x, parameter.y);
