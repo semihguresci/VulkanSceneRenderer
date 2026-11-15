@@ -1,4 +1,4 @@
-"""Capture exact IFC rational spline cylinders and torus with authored seams."""
+"""Capture exact IFC spline shells with authored pcurves and bare 3D trims."""
 
 import argparse
 import math
@@ -55,12 +55,14 @@ FIXTURE = Fixture(PRODUCTS, (
     probe(0, "left of U seam", cylinder_point(-.66, -.55)),
     probe(0, "right of U seam", cylinder_point(.58, .14)),
     probe(0, "near top U ring", cylinder_point(-.28, 1.29)),
+    probe(0, "where the U seam approaches the bare lower ring", cylinder_point(.02, -1.38)),
     (0, "outside side silhouette", (-1.43, -.36), False),
     (0, "above upper end", (.0, 1.80), False),
     probe(1, "near-side V seam", cylinder_point(0., -.86)),
     probe(1, "left of V seam", cylinder_point(-.64, .56)),
     probe(1, "right of V seam", cylinder_point(.68, -.44)),
     probe(1, "near bottom V ring", cylinder_point(.31, -1.29)),
+    probe(1, "where the V seam approaches the bare lower ring", cylinder_point(-.02, -1.38)),
     (1, "outside side silhouette", (1.40, .33), False),
     (1, "below lower end", (.0, -1.80), False),
     probe(2, "on major chart seam", torus_point(1.26, 0.)),
@@ -73,6 +75,7 @@ FIXTURE = Fixture(PRODUCTS, (
     probe(3, "far side of mixed winding", torus_point(1.13, 2.74)),
     probe(3, "crown between shared curves", torus_point(TORUS_MAJOR, 4.28)),
     probe(3, "toward inner radius", torus_point(.91, 5.29)),
+    probe(3, "on bare mixed winding edge", torus_point(TORUS_MAJOR, 0.)),
     (3, "clear mixed winding bore", (.05, -.11), False),
     (3, "clear beyond mixed winding ring", (-1.88, 0.), False),
 ), None, None)
@@ -110,7 +113,7 @@ def associated(step, context, kind, curve3d, segments, preferred=".CURVE3D."):
     return step.add(kind, curve3d, step_list(pcurves), preferred)
 
 
-def cylinder(step, context, product, periodic_u):
+def cylinder(step, context, product, *, periodic_u, rim_pcurves):
     rings = [[step.point(RADIUS * s, y, RADIUS * c) for c, s in CIRCLE]
              for y in (-HALF_HEIGHT, HALF_HEIGHT)]
     bottom, top = [step.add("IFCVERTEXPOINT", ring[0]) for ring in rings]
@@ -129,10 +132,12 @@ def cylinder(step, context, product, periodic_u):
 
     u0, u1 = ANGULAR_KNOTS[0], ANGULAR_KNOTS[-1]
     rims = []
-    for v, ring, linear in zip((bottom, top), rings, AXIS_KNOTS, strict=True):
+    for v, ring, linear, has_pcurve in zip((bottom, top), rings, AXIS_KNOTS, rim_pcurves, strict=True):
         curve = rational_circle(step, ring, ANGULAR_KNOTS)
-        rim = associated(step, context, "IFCSURFACECURVE", curve, ((surface, uv(u0, linear), uv(u1, linear)),))
-        rims.append(edge(step, v, v, rim))
+        if has_pcurve:
+            curve = associated(step, context, "IFCSURFACECURVE", curve,
+                               ((surface, uv(u0, linear), uv(u1, linear)),))
+        rims.append(edge(step, v, v, curve))
     native = [(surface, uv(angular, AXIS_KNOTS[0]), uv(angular, AXIS_KNOTS[1])) for angular in (u0, u1)]
     seam_curve = associated(step, context, "IFCSEAMCURVE",
                             polyline(step, (rings[0][0], rings[1][0])), native)
@@ -215,13 +220,15 @@ def mixed_torus(step, context, product):
     v0, v1 = TUBE_KNOTS[0], TUBE_KNOTS[-1]
     du, dv = u1 - u0, v1 - v0
     boundaries = []
-    for quarter, shift in ((0, -du), (1, 0.)):
+    for quarter in (0, 1):
         vertex, curve = helix_curve(step, quarter)
-        v = v0 + quarter * dv / 4.
-        lifts = ((lower, (u0, v), (u0 + 2 * du, v + dv)),
-                 (upper, (u0 + shift, v), (u0 + shift + 2 * du, v + dv)))
-        boundaries.append(edge(step, vertex, vertex,
-                               associated(step, context, "IFCSURFACECURVE", curve, lifts, ".PCURVE_S1.")))
+        # One edge has authored pcurves offset by one full U period across
+        # the two faces. The other edge is shared native 3D geometry only.
+        if quarter == 0:
+            lifts = ((lower, (u0, v0), (u0 + 2 * du, v0 + dv)),
+                     (upper, (u0 - du, v0), (u0 + du, v0 + dv)))
+            curve = associated(step, context, "IFCSURFACECURVE", curve, lifts, ".PCURVE_S1.")
+        boundaries.append(edge(step, vertex, vertex, curve))
 
     # A periodic band has two noncontractible IFCFACEBOUND rings.
     def band(surface, first, second, name, color):
@@ -247,7 +254,10 @@ def write_fixture(path):
     step.add("IFCSIUNIT", "*", ".PLANEANGLEUNIT.", "$", ".RADIAN.")
     origin = placement(step, (0., 0., 0.), Z_AXIS, X_AXIS)
     context = step.add("IFCGEOMETRICREPRESENTATIONCONTEXT", "$", "'Model'", 3, 1e-6, origin, "$")
-    shells = (cylinder(step, context, PRODUCTS[0], True), cylinder(step, context, PRODUCTS[1], False),
+    # Both caps share the exact rim EdgeCurves with the spline wall. The U wall
+    # gets both rim trims from 3D, and the V wall mixes a 3D rim and a pcurve rim.
+    shells = (cylinder(step, context, PRODUCTS[0], periodic_u=True, rim_pcurves=(False, False)),
+              cylinder(step, context, PRODUCTS[1], periodic_u=False, rim_pcurves=(False, True)),
               torus(step, context, PRODUCTS[2]), mixed_torus(step, context, PRODUCTS[3]))
     for index, (product, faces) in enumerate(zip(PRODUCTS, shells, strict=True)):
         shell = step.add("IFCCLOSEDSHELL", step_list(faces))
