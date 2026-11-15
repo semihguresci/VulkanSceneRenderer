@@ -41,6 +41,12 @@ struct RevolvedRadialGraph {
   SurfaceDerivatives derivatives;
 };
 
+struct SweptSurfaceApex {
+  double v;
+  glm::dvec3 point;
+  glm::dvec3 normal; // Native U × V orientation.
+};
+
 struct ParametricSurface {
   std::function<std::optional<glm::dvec3>(double, double)> point;
   glm::dvec2 angularScale{0};
@@ -63,6 +69,7 @@ struct ParametricSurface {
   bool innerProfile = false;
   bool reverseMeshWinding = false;
   bool standaloneRegular = true;
+  std::optional<SweptSurfaceApex> standaloneApex;
   bool ruledSectionPanels = false;
   bool spline = false;
   std::vector<double> creaseU, creaseV;
