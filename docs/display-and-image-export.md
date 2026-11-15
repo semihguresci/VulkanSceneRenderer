@@ -38,8 +38,13 @@ the model format, renderer revision and rendering engine in `bim`.
 `bim.floorPlan` records the overlay toggle, selected elevation, depth test,
 style and available draw counts for each elevation. `enabled` means the
 overlay was requested and the selected elevation has draw commands.
-`pipelineReady` indicates whether the selected pipeline is available. The
-viewport PNG shows the linework after depth testing and display processing.
+`pipelineReady` indicates whether the selected pipeline is available.
+`viewportRoute` identifies where the active view can show linework. Depth and
+other buffer-only views report `excluded-by-display-mode`. Overview can show
+linework in its Lit tile, and some diagnostics show it in grayscale.
+`bimFloorPlanImageRoute` records the route for each captured image and reports
+`excluded-from-scene-linear` for raw EXR. Actual coverage depends on the
+camera, linework, and depth test.
 
 Command-line examples:
 

@@ -78,6 +78,13 @@ def sequence_plan(mode, comparison):
             {"frame": 5, "technique": comparison},
             {"frame": 9, "technique": "deferred-raster"},
         ]
+    if mode == "depth-view":
+        return [4, 8, 12, 16], [
+            {"frame": 1, "bimFloorPlan": settings(enabled=False)},
+            {"frame": 5, "bimFloorPlan": settings(elevation="source-elevation")},
+            {"frame": 9, "technique": comparison},
+            {"frame": 13, "bimFloorPlan": settings(enabled=False)},
+        ]
     raise ValueError(mode)
 
 
@@ -114,6 +121,15 @@ def check_floor_plan_telemetry(sample, style):
     require(bim["modelFormat"] == "bim" and bim["revision"] == state["build"]["revision"]
             and bim["technique"] == state["technique"], bim)
     overlay = bim["floorPlan"]
+    if state["technique"] == "path-tracing":
+        route = "presentation-overlay"
+    elif metadata.get("displayMode") == 4:
+        route = "excluded-by-display-mode"
+    else:
+        route = "scene-color"
+    require(overlay["viewportRoute"] == route, overlay)
+    image_route = "excluded-from-scene-linear" if Path(sample["image"]).suffix == ".exr" else route
+    require(metadata["bimFloorPlanImageRoute"] == image_route, metadata)
     if style is None:
         style = settings(enabled=False, color=(.02, .02, .02), opacity=.85, width=1)
     require(overlay["requested"] == overlay["enabled"] == style["enabled"], overlay)
@@ -140,9 +156,10 @@ def record(renderer, model, output, technique, mode, report, *, comparison, gene
                                     "events": events}, indent=2) + "\n", encoding="utf-8")
     extension = "exr" if mode.startswith("linear") else "png"
     screenshot = output / f"{name}.{extension}"
+    display_mode = "depth" if mode == "depth-view" else "lit"
     command = [str(renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui", "--validation",
                "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1", "--no-taa", "--no-bloom",
-               "--render-technique", technique, "--display-mode", "lit", "--exposure", "1",
+               "--render-technique", technique, "--display-mode", display_mode, "--exposure", "1",
                "--camera-position", *map(str, POSITION), "--camera-target", *map(str, TARGET), "--camera-fov", str(FOV),
                "--sky", "plain", "--sky-horizon", "0", "0", "0", "--environment-intensity", "0",
                "--directional-intensity", "2", "--directional-direction", "-.3", "-.2", "-1", "--bounce-intensity", "0",
@@ -166,7 +183,8 @@ def record(renderer, model, output, technique, mode, report, *, comparison, gene
     samples = []
     for frame in frames:
         image = screenshot if frame == frames[-1] else output / f"{name}.frame-{frame:04}.{extension}"
-        active_technique = comparison if mode == "switch" and frame == 8 else technique
+        switched = (mode == "switch" and frame == 8) or (mode == "depth-view" and frame >= 12)
+        active_technique = comparison if switched else technique
         sample = read_capture(image, frame, active_technique)
         state = sample["state"]
         require(Path(state["scene"]["auxiliary"]).resolve() == model, "The authored BIM fixture was not loaded")
@@ -332,6 +350,10 @@ def main():
         switched = record(renderer, model, output, "deferred-raster", "switch", report,
                           comparison=args.comparison, generate_only=args.generate_only,
                           check_telemetry=not expect_missing)
+        depth_view = []
+        if args.comparison == "forward-raster" and not expect_missing:
+            depth_view = record(renderer, model, output, "deferred-raster", "depth-view", report,
+                                comparison=args.comparison, generate_only=args.generate_only, check_telemetry=True)
         if args.generate_only:
             return 0
         import numpy as np
@@ -342,6 +364,14 @@ def main():
         require(blue[0] == blue[2] and blue[0] > 100 and (blue[1] == 0 if expect_missing else blue[1] > 100),
                 f"Unexpected source-elevation overlay after switching renderers: {blue}")
         report["checks"]["liveTechniqueSwitchSourcePixels"] = blue
+        if depth_view:
+            fixed_camera(depth_view)
+            for before, after in (depth_view[:2], depth_view[2:]):
+                require(before["metadata"]["displayMode"] == after["metadata"]["displayMode"] == 4,
+                        "The depth view changed during the floor-plan toggle")
+                require(np.ptp(before["pixels"][:, :, 0]) > 0, "The depth control is a flat image")
+                np.testing.assert_array_equal(before["pixels"], after["pixels"])
+            report["checks"]["depthViewExcludesFloorPlan"] = True
         require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["executableSha256"],
                 "Renderer executable changed during capture")
         report["passed"] = True

@@ -7,6 +7,7 @@
 #include "Container/geometry/OpenVdbLoader.h"
 #include "Container/geometry/GltfMergePlacement.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
+#include "Container/renderer/bim/BimFloorPlanDisplay.h"
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimMeasurementSnapping.h"
 #include "Container/renderer/bim/BimSemanticColorMode.h"
@@ -7789,6 +7790,20 @@ void GuiManager::drawSceneControls(
       ImGui::Separator();
       ImGui::Checkbox("Floor plan overlay", &bimFloorPlanOverlayState_.enabled);
       if (bimFloorPlanOverlayState_.enabled) {
+        using container::renderer::BimFloorPlanViewportRoute;
+        switch (container::renderer::bimFloorPlanViewportRoute(activeRenderEngine_, gBufferViewMode_)) {
+        case BimFloorPlanViewportRoute::ExcludedByDisplayMode:
+          ImGui::TextWrapped("This display mode hides floor plans. Select Lit to see the overlay.");
+          break;
+        case BimFloorPlanViewportRoute::Overview:
+          ImGui::TextWrapped("Overview shows the floor plan in the Lit tile.");
+          break;
+        case BimFloorPlanViewportRoute::DiagnosticGrayscale:
+          ImGui::TextWrapped("This display mode can show floor plans in grayscale. Select Lit to see line colors.");
+          break;
+        default:
+          break;
+        }
         static constexpr const char *kFloorPlanElevationModeLabels[] = {
             "Projected on ground", "Source elevation"};
         int floorPlanElevationMode =

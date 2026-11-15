@@ -49,6 +49,7 @@
 #include "Container/renderer/effects/DisplayGradePreset.h"
 #include "Container/ecs/World.h"
 #include "Container/renderer/bim/BimDrawingExport.h"
+#include "Container/renderer/bim/BimFloorPlanDisplay.h"
 #include "Container/renderer/bim/BimFrameDrawRoutingPlanner.h"
 #include "Container/renderer/bim/BimGeoreferenceTransform.h"
 #include "Container/renderer/bim/BimLightingOverlayPlanner.h"
@@ -3501,6 +3502,11 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
       ? frame->bim.floorPlan
       : settings ? bimFloorPlanFrameStyle(*settings, drawCount != 0u) : FrameBimFloorPlanOverlayState{};
   const auto technique = frame ? frame->runtime.activeTechnique : subs_.activeTechnique->id();
+  const auto displayMode = frame
+      ? static_cast<container::ui::GBufferViewMode>(frame->debug.displayMode)
+      : frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config));
+  const auto viewportRoute = bimFloorPlanViewportRouteName(
+      bimFloorPlanViewportRoute(technique, displayMode));
   auto pipelineTechnique = technique;
   std::string_view pipeline;
   switch (technique) {
@@ -3538,6 +3544,7 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
                  {"technique", renderTechniqueName(technique)},
                  {"floorPlan", {{"requested", requested},
                      {"enabled", style.enabled},
+                     {"viewportRoute", viewportRoute},
                      {"elevation", elevation == Elevation::SourceElevation ? "source-elevation" : "projected-ground"},
                      {"depthTest", style.depthTest},
                      {"color", {style.color.r, style.color.g, style.color.b}},
@@ -7312,6 +7319,11 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
                           {"colorSpace", screenshot_.sceneLinear ? "linear-sRGB" : "sRGB"},
                           {"includesUi", !screenshot_.sceneLinear && !screenshot_.viewportOnly && subs_.guiManager != nullptr}};
   appendBimFloorPlanTelemetry(metadata, &params);
+  if (metadata.contains("bim")) {
+    metadata["bimFloorPlanImageRoute"] = params.screenshot.sceneLinear
+        ? nlohmann::json("excluded-from-scene-linear")
+        : metadata.at("bim").at("floorPlan").at("viewportRoute");
+  }
   if (referenceCapture) {
     const auto lens = referenceCapture->effectiveLens();
     const auto denoiser = referenceCapture->oidnStatus();
