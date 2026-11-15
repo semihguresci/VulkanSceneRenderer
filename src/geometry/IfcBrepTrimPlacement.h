@@ -14,4 +14,16 @@ placeIfcBrepPeriodicTrimLoops(std::span<const CurvedFaceChartLoop> loops,
                               std::span<const uint8_t> anchored,
                               glm::dvec2 periods, std::stop_token stop = {});
 
+struct PeriodicSplineBandCut {
+  size_t firstStart, secondStart;
+  glm::dvec2 secondOffset;
+};
+
+// The rails omit their duplicate terminal samples and close at their first
+// points shifted by opposite windings. The returned second offset places the
+// base cut endpoint. The matched cut uses that endpoint plus the winding.
+[[nodiscard]] PeriodicSplineBandCut cutIfcBrepPeriodicSplineBand(
+    std::span<const glm::dvec2> first, std::span<const glm::dvec2> second,
+    glm::dvec2 winding, glm::dvec2 periods, bool sameSense);
+
 } // namespace container::geometry::ifc::detail

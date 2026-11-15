@@ -15,6 +15,7 @@
 #include <map>
 #include <numbers>
 #include <set>
+#include <span>
 #include <sstream>
 
 namespace {
@@ -2903,6 +2904,11 @@ struct PeriodicSplineBuilder : CurvedBuilder {
 
   std::string pcurve(const std::string &basis,
                      std::initializer_list<glm::dvec2> points) {
+    return pcurve(basis, std::span(points.begin(), points.size()));
+  }
+
+  std::string pcurve(const std::string &basis,
+                     std::span<const glm::dvec2> points) {
     std::vector<std::string> controls;
     for (const auto p : points)
       controls.push_back(
@@ -3163,6 +3169,110 @@ struct PeriodicSplineBuilder : CurvedBuilder {
     const auto b = boundary(coincident ? 2 : 1, {0., 0.});
     face({bound({{a, true}}, false), bound({{b, false}}, false)}, lower);
     face({bound({{b, true}}, false), bound({{a, false}}, false)}, upper);
+    return finish();
+  }
+
+  std::pair<std::string, std::string>
+  torusOrthogonalRail(std::span<const glm::dvec2> points) {
+    // Restrict a homogeneous quadratic circle quadrant to [first,last].
+    // The endpoint and its first derivative fix the restricted control.
+    const auto circle = [](double first, double last) {
+      const int span = int(std::floor(2 * (first + last)));
+      const size_t quadrant = size_t(span % 4 + 4) % 4;
+      const double a = 4 * first - span, b = 4 * last - span;
+      std::array<glm::dvec3, 3> h;
+      for (size_t i = 0; i < h.size(); ++i) {
+        const double w = torusU.weight(i);
+        h[i] = {circleControls[2 * quadrant + i] * w, w};
+      }
+      const auto at = [&](double t) {
+        return (1 - t) * (1 - t) * h[0] + 2 * t * (1 - t) * h[1] + t * t * h[2];
+      };
+      const auto start = at(a);
+      const auto halfDerivative = (1 - a) * (h[1] - h[0]) + a * (h[2] - h[1]);
+      return std::array{start, start + (b - a) * halfDerivative, at(b)};
+    };
+
+    std::vector<std::string> controls, weights, knots{"0"}, multiplicities{"3"};
+    double joinWeight = 1.;
+    for (size_t i = 1; i < points.size(); ++i) {
+      const auto a = points[i - 1], b = points[i];
+      const int axis = a.x == b.x ? 1 : 0;
+      const auto fixed = circle(a[1 - axis], a[1 - axis]).front();
+      const auto fixedDirection = glm::dvec2(fixed) / fixed.z;
+      const auto [lo, hi] = std::minmax(a[axis], b[axis]);
+      std::vector<double> cuts{lo};
+      for (double q = std::floor(4 * lo) + 1; q < 4 * hi; ++q)
+        cuts.push_back(q / 4);
+      cuts.push_back(hi);
+      if (a[axis] > b[axis])
+        std::ranges::reverse(cuts);
+      for (size_t j = 1; j < cuts.size(); ++j) {
+        const auto arc = circle(cuts[j - 1], cuts[j]);
+        // Uniform scaling preserves each arc and shares its first
+        // homogeneous control with the preceding arc's last control.
+        const double gauge = joinWeight / arc.front().z;
+        for (size_t k = controls.empty() ? 0 : 1; k < arc.size(); ++k) {
+          const auto direction = glm::dvec2(arc[k]) / arc[k].z;
+          const auto u = axis == 0 ? direction : fixedDirection;
+          const auto v = axis == 1 ? direction : fixedDirection;
+          controls.push_back(point({(3 + v.x) * u.x, (3 + v.x) * u.y, v.y}));
+          weights.push_back(number(arc[k].z * gauge));
+        }
+        joinWeight = arc.back().z * gauge;
+        knots.push_back(std::to_string(knots.size()));
+        multiplicities.emplace_back("2");
+      }
+    }
+    multiplicities.back() = "3";
+    return {controls.front(),
+            add("IFCRATIONALBSPLINECURVEWITHKNOTS(2,(" + refs(controls) +
+                "),.UNSPECIFIED.,.T.,.F.,(" + refs(multiplicities) + "),(" +
+                refs(knots) + "),.UNSPECIFIED.,(" + refs(weights) + "))")};
+  }
+
+  std::string torusBacktrackingBands(bool intersectsImage) {
+    const auto grid = torusGrid();
+    const auto lower = surface(torusU, torusV, grid);
+    const auto upper = surface(torusU, torusV, grid);
+    constexpr std::array<glm::dvec2, 8> rail{{{0., .125},
+                                              {.375, .125},
+                                              {.375, .25},
+                                              {.125, .25},
+                                              {.125, .375},
+                                              {.625, .375},
+                                              {.625, .125},
+                                              {1., .125}}};
+    const auto nativeRail = [&](glm::dvec2 shift) {
+      auto result = rail;
+      for (auto &uv : result) {
+        uv += shift;
+        uv = {torusU.low + uv.x * (torusU.high - torusU.low),
+              torusV.low + uv.y * (torusV.high - torusV.low)};
+      }
+      return result;
+    };
+    const auto boundary = [&](glm::dvec2 shift, glm::dvec2 upperLift) {
+      auto geometry = rail;
+      for (auto &uv : geometry)
+        uv += shift;
+      const auto [corner, curve] = torusOrthogonalRail(geometry);
+      return edge(corner, corner,
+                  associated("IFCSURFACECURVE", curve,
+                             {pcurve(lower, nativeRail(shift)),
+                              pcurve(upper, nativeRail(shift + upperLift))}));
+    };
+    // B's translated copy intersects A at (3/8,3/16) only in the bad case.
+    const auto a = boundary({0, 0}, {0, 1});
+    const auto b = boundary(
+        intersectsImage ? glm::dvec2(.0625, .9375) : glm::dvec2(0, .5), {0, 0});
+    face({bound({{a, true}}, false), bound({{b, false}}, false)}, lower);
+    face({bound({{b, true}}, false), bound({{a, false}}, false)}, upper);
+    const auto color = add("IFCCOLOURRGB('Upper band',1.,0.,0.)");
+    const auto shading = add("IFCSURFACESTYLESHADING(" + color + ",0.)");
+    const auto style =
+        add("IFCSURFACESTYLE('Upper band',.BOTH.,(" + shading + "))");
+    add("IFCSTYLEDITEM(" + faces.back() + ",(" + style + "),$)");
     return finish();
   }
 };
@@ -3597,6 +3707,77 @@ TEST(IfcCurvedBrep,
   const auto &reason = model.importReport.diagnostics.front().reason;
   EXPECT_NE(reason.find("bounds intersect a periodic image"), std::string::npos)
       << reason;
+}
+
+TEST(IfcCurvedBrep, DoublyPeriodicSplineTorusPairsBacktrackingBands) {
+  PeriodicSplineBuilder step;
+  const auto brep = step.torusBacktrackingBands(false);
+  const auto source = fixture(step.definitions, brep);
+  exportCurvedFixture("periodic-spline-torus-backtracking-bands", source);
+  const auto model = LoadFromStep(source);
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  watertight(model);
+  EXPECT_NEAR(volume(model), 6 * pi * pi, .15);
+
+  // The style separates the two incident faces into different mesh ranges.
+  // Weld by exact positions and compare their independent boundary chains.
+  using Point = std::array<float, 3>;
+  using Edge = std::pair<Point, Point>;
+  ASSERT_EQ(model.meshRanges.size(), 2u);
+  std::array<std::set<Edge>, 2> boundaries;
+  for (size_t face = 0; face < boundaries.size(); ++face) {
+    const auto &range = model.meshRanges[face];
+    auto &chain = boundaries[face];
+    for (size_t i = range.firstIndex;
+         i + 2 < size_t(range.firstIndex) + range.indexCount; i += 3) {
+      std::array<Point, 3> points;
+      for (size_t j = 0; j < points.size(); ++j) {
+        const auto p = model.vertices.at(model.indices.at(i + j)).position;
+        points[j] = {p.x, p.y, p.z};
+      }
+      for (size_t j = 0; j < points.size(); ++j) {
+        const Edge edge =
+            std::minmax(points[j], points[(j + 1) % points.size()]);
+        if (!chain.insert(edge).second)
+          chain.erase(edge);
+      }
+    }
+  }
+  EXPECT_GT(boundaries[0].size(), 64u);
+  EXPECT_TRUE(boundaries[0] == boundaries[1]);
+  const float diagonal = static_cast<float>(3 * std::sqrt(.5));
+  for (float x : {-diagonal, diagonal}) {
+    const Point corner{x, diagonal, 1.f};
+    EXPECT_TRUE(std::ranges::any_of(boundaries[0], [&](const Edge &e) {
+      return e.first == corner || e.second == corner;
+    }));
+  }
+
+  double agreement = 1., radialError = 0.;
+  for (const auto &vertex : model.vertices) {
+    const glm::dvec3 p(vertex.position);
+    const auto center = 3. * glm::normalize(glm::dvec3(p.x, p.y, 0));
+    const auto outward = p - center;
+    radialError = std::max(radialError, std::abs(glm::length(outward) - 1.));
+    agreement = std::min(agreement, glm::dot(glm::normalize(outward),
+                                             glm::dvec3(vertex.normal)));
+  }
+  EXPECT_LT(radialError, 1e-5);
+  EXPECT_GT(agreement, .998);
+}
+
+TEST(IfcCurvedBrep, PeriodicSplineRejectsIntersectingBacktrackingBandImages) {
+  PeriodicSplineBuilder step;
+  const auto brep = step.torusBacktrackingBands(true);
+  const auto model = LoadFromStep(fixture(step.definitions, brep));
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+  EXPECT_TRUE(model.elements.empty());
+  EXPECT_TRUE(model.indices.empty());
+  EXPECT_TRUE(model.vertices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  const auto &reason = model.importReport.diagnostics.front().reason;
+  EXPECT_NE(reason.find("intersect"), std::string::npos) << reason;
+  EXPECT_NE(reason.find("periodic image"), std::string::npos) << reason;
 }
 
 TEST(IfcCurvedBrep, PeriodicSplineRejectsWrongAmbiguousAndMultipleLifts) {

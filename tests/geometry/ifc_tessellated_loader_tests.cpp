@@ -16,6 +16,8 @@
 #include <iostream>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <numbers>
 #include <string>
 #include <string_view>
 #include <unordered_set>
@@ -90,6 +92,89 @@ TEST(IfcTrimPlacement, RejectsAHoleThatCrossesAConcaveOuterBound) {
   // Every hole vertex lies inside a lobe, but the side edges cross the notch.
   EXPECT_THROW((void)placeIfcBrepPeriodicTrimLoops(loops, anchored, {10, 0}),
                std::runtime_error);
+}
+
+TEST(IfcTrimPlacement, MeshesBacktrackingBandsOnEitherSinglePeriodicAxis) {
+  using container::geometry::ifc::detail::CurvedFaceChartLoop;
+  using container::geometry::ifc::detail::meshIfcCurvedFace;
+  using container::geometry::ifc::detail::ParametricSurface;
+  constexpr double tau = 2 * std::numbers::pi, radius = .6, width = .4;
+  const std::array<glm::dvec2, 8> corners{{
+      {0, .1}, {.3, .1}, {.3, .2}, {.15, .2},
+      {.15, .3}, {.6, .3}, {.6, .1}, {1, .1},
+  }};
+  for (bool transpose : {false, true}) {
+    SCOPED_TRACE(transpose);
+    ParametricSurface surface;
+    surface.spline = true;
+    surface.periods[transpose ? 1 : 0] = 1;
+    surface.uDomain = surface.vDomain = {{0., 1.}};
+    surface.point = [=](double u, double v) {
+      const double angle = tau * (transpose ? v : u);
+      return glm::dvec3(radius * std::cos(angle), radius * std::sin(angle),
+                        transpose ? u : v);
+    };
+    surface.derivatives = [=](double u, double v) {
+      const double angle = tau * (transpose ? v : u);
+      const glm::dvec3 tangent(-tau * radius * std::sin(angle),
+                               tau * radius * std::cos(angle), 0);
+      const glm::dvec3 axial(0, 0, 1);
+      return transpose ? std::pair(axial, tangent) : std::pair(tangent, axial);
+    };
+    std::vector<glm::dvec2> forward;
+    for (size_t i = 1; i < corners.size(); ++i) {
+      const auto a = corners[i - 1], b = corners[i];
+      const auto count = std::max(1, static_cast<int>(std::ceil(96 * std::abs(b.x - a.x))));
+      for (int j = 0; j < count; ++j)
+        forward.push_back(a + (b - a) * (double(j) / count));
+    }
+    std::array<CurvedFaceChartLoop, 2> charts;
+    std::vector<std::vector<glm::vec3>> points(2);
+    const auto append = [&](size_t rail, glm::dvec2 uv) {
+      if (transpose)
+        std::swap(uv.x, uv.y);
+      charts[rail].vertices.push_back(uv);
+      points[rail].emplace_back(*surface.point(uv.x, uv.y));
+    };
+    for (const auto uv : forward)
+      append(0, uv);
+    append(1, forward.front() + glm::dvec2(0, width));
+    for (auto it = forward.rbegin(); it != forward.rend() - 1; ++it)
+      append(1, *it + glm::dvec2(-1, width));
+    charts[0].closure = charts[0].vertices.front() + surface.periods;
+    charts[1].closure = charts[1].vertices.front() - surface.periods;
+
+    std::string error;
+    const auto mesh = meshIfcCurvedFace(surface, points, false, !transpose, 1,
+                                        error, {}, charts);
+    ASSERT_TRUE(mesh) << error;
+    using Key = std::array<float, 3>;
+    const auto key = [](glm::vec3 p) { return Key{p.x, p.y, p.z}; };
+    std::map<std::pair<Key, Key>, std::pair<int, int>> edges;
+    double area = 0;
+    for (const auto &triangle : *mesh) {
+      const auto &p = triangle.positions;
+      area += glm::length(glm::cross(glm::dvec3(p[1]) - glm::dvec3(p[0]),
+                                     glm::dvec3(p[2]) - glm::dvec3(p[0]))) / 2;
+      for (size_t i = 0; i < p.size(); ++i) {
+        const auto a = key(p[i]), b = key(p[(i + 1) % p.size()]);
+        auto &use = edges[std::minmax(a, b)];
+        ++use.first;
+        use.second += a < b ? 1 : -1;
+      }
+    }
+    EXPECT_NEAR(area, tau * radius * width, .005);
+    for (const auto &rail : points)
+      for (size_t i = 0; i < rail.size(); ++i) {
+        const auto a = key(rail[i]), b = key(rail[(i + 1) % rail.size()]);
+        const auto use = edges.find(std::minmax(a, b));
+        ASSERT_NE(use, edges.end());
+        EXPECT_EQ(use->second, (std::pair(1, a < b ? 1 : -1)));
+        edges.erase(use);
+      }
+    for (const auto &[_, use] : edges)
+      EXPECT_EQ(use, (std::pair(2, 0)));
+  }
 }
 
 std::string polygonFixture(std::string_view points, std::string_view face,
