@@ -527,11 +527,13 @@ TextureResourceReferenceOwnerPtr selected(const std::shared_ptr<Access::Generati
   std::ranges::sort(selections,selectionLess);selections.erase(std::unique(selections.begin(),selections.end()),selections.end());
   budget.charge(sizeof(Access::OwnerState)+sizeof(TextureResourceReferenceOwner)+256);
   budget.charge(times(selections.size(),sizeof(SelectedRow)+sizeof(ResourceHandle)));
+  const bool retainPayload=kind==Pins::History;
   for(const auto chosen:selections) {
     const auto& rows=generation->tables[table(chosen.domain,chosen.kind)];
     if(chosen.row>=rows.size()) invalid("Texture dependency row is missing");
     if(rows[chosen.row].payload) {
-      budget.charge(rows[chosen.row].payload->bytes);incomplete|=rows[chosen.row].payload->opaque;
+      if(retainPayload) budget.charge(rows[chosen.row].payload->bytes);
+      incomplete|=rows[chosen.row].payload->opaque;
     }
   }
   auto result=std::make_shared<Access::OwnerState>();result->authorities.push_back(generation->authority);result->rows.reserve(selections.size());
@@ -541,7 +543,10 @@ TextureResourceReferenceOwnerPtr selected(const std::shared_ptr<Access::Generati
     if(chosen.row>=rows.size()) invalid("Texture dependency row is missing");
     const auto& row=rows[chosen.row];
     if(!row.active && (kind==Pins::Preparation || kind==Pins::LiveDependency)) invalid("Inactive texture dependency cannot be prepared");
-    result->rows.push_back({generation->authority,row});handles.push_back(row.handle);
+    // History can outlive the generation that owns the immutable source
+    // records. Reader and preparation pins only need the catalog identity.
+    result->rows.push_back({generation->authority,{row.handle,retainPayload?row.payload:nullptr,row.active}});
+    handles.push_back(row.handle);
   }
   if(!handles.empty()) {
     ResourcePin pin;
@@ -1368,7 +1373,9 @@ PreparedTextureResourceLifecycle prepareSelectedRetirement(const TextureResource
   }
   state->revision=authority.catalog->revision();next->revision=state->revision+1;
   next->bytes=plus(sizeof(Access::GenerationState)+128,generationBytes(next->tables));
-  budget.charge(next->bytes);budget.charge(authority.catalog->ownedBytes());
+  // Table storage was charged when copied. The resident payloads are shared
+  // with the current generation and still count toward its storage inventory.
+  budget.charge(authority.catalog->ownedBytes());
   state->next=Access::generation(std::move(next));state->bytes=budget.bytes;
   auto result=Access::prepared(std::move(state));prepareAutomaticLiveOwners(result);return result;
 }
@@ -1487,8 +1494,13 @@ TextureResourceReferenceOwnerPtr CombineTextureResourceReferences(std::span<cons
     }
     for(const auto& row:input.rows) {
       budget.visit(result->rows.size()+1);
-      if(std::ranges::none_of(result->rows,[&](const auto& old){return old.authority==row.authority && old.row.handle==row.row.handle;})) {
+      const auto existing=std::ranges::find_if(result->rows,[&](const auto& old){
+        return old.authority==row.authority && old.row.handle==row.row.handle;
+      });
+      if(existing==result->rows.end()) {
         budget.charge(sizeof(SelectedRow)+(row.row.payload?row.row.payload->bytes:0));result->rows.push_back(row);
+      } else if(!existing->row.payload && row.row.payload) {
+        budget.charge(row.row.payload->bytes);existing->row.payload=row.row.payload;
       }
     }
     for(const auto& pin:input.pins) {budget.visit(result->pins.size()+1);if(std::ranges::find(result->pins,pin)==result->pins.end()) {
