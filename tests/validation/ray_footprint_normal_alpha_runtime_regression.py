@@ -23,12 +23,6 @@ import sys
 import tempfile
 import traceback
 
-os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '1')
-import cv2
-import numpy as np
-
-from gltf_accessor_runtime_regression import Asset
-
 PROFILES=('normal-textured','normal-coarse','normal-base','normal-degenerate','alpha-textured','alpha-baked','empty')
 TECHNIQUES=('forward-raster','deferred-raster')
 FRAMES=tuple(range(14,30,2))
@@ -37,7 +31,8 @@ UV_SCALE=16
 BASE_NORMAL=(204,128,230,255)
 COARSE_NORMAL=(128,204,230,255)
 KTX_ID=b'\xabKTX 11\xbb\r\n\x1a\n'
-LIGHT=np.array([.95,0.,-math.sqrt(1-.95**2)])
+LIGHT=(.95,0.,-math.sqrt(1-.95**2))
+GPU_OPT_IN = 'CONTAINER_RUN_GPU_DDGI_FOOTPRINT'
 SOURCE=(.48,2.2,-1.2,1.2,.75)
 SPECULAR='KHR_materials_specular'
 THRESHOLDS=dict(normalNormalizedRmse=.035,normalRelativeMeanError=.025,
@@ -59,6 +54,8 @@ def write(path,value):
 
 
 def normal(rgb):
+    import numpy as np
+
     result=np.array(rgb[:3],dtype=float)/127.5-1
     result/=np.linalg.norm(result)
     # Source winding gives N=-Z, authored tangent +X, bitangent -Y.
@@ -66,6 +63,8 @@ def normal(rgb):
 
 
 def ktx(levels):
+    import numpy as np
+
     height,width,_=levels[0].shape
     header=struct.pack('<13I',0x04030201,0x1401,1,0x1908,0x8058,0x1908,
                        width,height,0,0,1,len(levels),0)
@@ -78,6 +77,8 @@ def ktx(levels):
 
 
 def decode_ktx(path):
+    import numpy as np
+
     data=Path(path).read_bytes()
     require(data[:12]==KTX_ID and len(data)>=64,'Invalid KTX identifier/header')
     header=struct.unpack_from('<13I',data,12)
@@ -118,6 +119,9 @@ def quad(asset,box,material,*,front=False,shading=None,uv=None):
 
 
 def generate(output):
+    import numpy as np
+    from gltf_accessor_runtime_regression import Asset
+
     output=Path(output).resolve();output.mkdir(parents=True,exist_ok=True)
     normals=[np.tile(BASE_NORMAL,(128,128,1)).astype(np.uint8),np.tile(COARSE_NORMAL,(64,64,1)).astype(np.uint8)]
     alpha=np.full((128,128,4),255,np.uint8)
@@ -164,6 +168,8 @@ def generate(output):
 
 
 def validate(output,models):
+    import numpy as np
+
     normal_levels=decode_ktx(output/'normal.ktx');alpha_levels=decode_ktx(output/'coverage.ktx')
     require([level.shape for level in normal_levels]==[(128,128,4),(64,64,4)],'Normal mip dimensions differ from independent LOD proof')
     require(np.all(normal_levels[0]==BASE_NORMAL) and np.all(normal_levels[1]==COARSE_NORMAL),'Authored normal mip roles changed')
@@ -240,12 +246,16 @@ def validate(output,models):
 
 
 def metrics(captures):
+    import numpy as np
+
     data=np.asarray(captures,dtype=float)
     require(data.shape==(len(FRAMES),63,55,3) and np.isfinite(data).all() and data.min()>=-1e-6,'Invalid receiver captures')
     return dict(mean=float(data.mean()),temporalRms=float(np.sqrt(np.var(data,axis=0).mean())))
 
 
 def comparisons(frames):
+    import numpy as np
+
     summary={name:metrics(values) for name,values in frames.items()}
     coarse=np.asarray(frames['normal-coarse']);scale=summary['normal-coarse']['mean']
     require(scale>THRESHOLDS['minimumFullMean'],'Receiver lacks a meaningful reflected-light signal')
@@ -278,6 +288,21 @@ def freeze(path,required=(),identity=None):
     return dict(path=str(path),sha256=sha(path),entryCount=len(files))
 
 
+def runtime_inputs(renderer, include_assets):
+    root = renderer.parent
+    files = [renderer, *root.glob('*.dll'), *(root / 'spv_shaders').glob('*.spv')]
+    if include_assets:
+        for directory in ('materials', 'hdr'):
+            files.extend(path for path in (root / directory).rglob('*') if path.is_file())
+    return set(path.resolve() for path in files)
+
+
+def prepare_output(path, managed):
+    output = path.resolve()
+    output.mkdir(parents=True, exist_ok=managed)
+    return Path(tempfile.mkdtemp(prefix='run-', dir=output)) if managed else output
+
+
 def layer_proof(log,library):
     paths=re.findall(r'Insert instance layer "VK_LAYER_KHRONOS_validation" \(([^\r\n]+)\)',log)
     require(any(Path(p).resolve()==library for p in paths),'Expected validation layer was not proven loaded')
@@ -297,7 +322,7 @@ def plan(output,models,renderer):
                 '--model',models[profile],'--import-scale','1','--render-technique',technique,
                 '--display-mode','lit','--exposure','1','--tone-map','reinhard',
                 '--environment-intensity','0','--sky','plain','--sky-horizon','0','0','0',
-                '--directional-intensity','8','--directional-direction',*map(str,-LIGHT),
+                '--directional-intensity','8','--directional-direction',*map(str,(-value for value in LIGHT)),
                 '--directional-color','1','1','1','--camera-position','0','0','4','--camera-target','0','0','0','--camera-fov','18',
                 '--ddgi','--no-ddgi-async','--ddgi-origin','-1.5','-1.5','-.2','--ddgi-counts','6','6','4',
                 '--ddgi-spacing','.6','.6','.4','--ddgi-rays','64','--ddgi-probes-per-frame','144','--ddgi-hysteresis','0',
@@ -309,6 +334,8 @@ def plan(output,models,renderer):
 
 
 def self_check():
+    import numpy as np
+
     scratch=Path(__file__).resolve().parents[2]/'build'/'codex-gltf-validation';scratch.mkdir(parents=True,exist_ok=True)
     with tempfile.TemporaryDirectory(prefix='normal-alpha-footprint-',dir=scratch) as temp:
         output=Path(temp);require(output.resolve().is_relative_to(scratch.resolve()),'Scratch escaped workspace')
@@ -351,27 +378,51 @@ def self_check():
 
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--renderer',type=Path);parser.add_argument('--manifest',type=Path)
+    parser.add_argument('--renderer',type=Path)
+    parser.add_argument('--manifest',type=Path,
+                        help='Verify a supplied freeze manifest instead of recording one from the runtime')
     parser.add_argument('--layer-manifest',type=Path);parser.add_argument('--output',type=Path)
+    parser.add_argument('--managed-output',action='store_true',help='Write into a new run directory under --output')
+    parser.add_argument('--require-opt-in',action='store_true',help=f'Skip unless {GPU_OPT_IN}=1')
     parser.add_argument('--self-check',action='store_true');parser.add_argument('--generate-only',action='store_true')
     parser.add_argument('--timeout',type=int,default=300)
     args=parser.parse_args()
+    if args.require_opt_in and os.environ.get(GPU_OPT_IN) != '1':
+        print(f'SKIP: set {GPU_OPT_IN}=1 to run the DDGI normal/alpha footprint comparison')
+        return 77
     if args.self_check:
         receipt=self_check()
-        if args.output:args.output.mkdir(parents=True,exist_ok=False);write(args.output/'self-check.json',receipt)
+        if args.output:
+            write(prepare_output(args.output, args.managed_output) / 'self-check.json', receipt)
         print(json.dumps(receipt,indent=2));return
-    require(args.output is not None,'--output is required');output=args.output.resolve();output.mkdir(parents=True,exist_ok=False)
+    require(args.output is not None,'--output is required')
+    output = prepare_output(args.output, args.managed_output)
+    print(f'Captures: {output}', flush=True)
     models=generate(output/'fixtures');proof=validate(output/'fixtures',models)
     inventory=plan(output,models,(args.renderer or Path('VulkanSceneRenderer.exe')).resolve())
     write(output/'fixtures.json',proof);write(output/'launch-plan.json',inventory);write(output/'thresholds.json',THRESHOLDS)
     if args.generate_only:print(json.dumps(dict(gpuUsed=False,processCount=14,captureCount=112)));return
-    require(args.renderer and args.manifest and args.layer_manifest,'Native execution requires renderer/freeze/layer manifests')
-    renderer=args.renderer.resolve();manifest=args.manifest.resolve();layer_manifest=args.layer_manifest.resolve()
+    require(args.renderer and args.layer_manifest,'Native execution requires a renderer and validation layer manifest')
+    os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '1')
+    import cv2
+    import numpy as np
+    from gltf_accessor_runtime_regression import Asset
+
+    renderer = args.renderer.resolve()
+    layer_manifest = args.layer_manifest.resolve()
+    automatic_manifest = args.manifest is None
     layer=json.loads(layer_manifest.read_text(encoding='utf-8'))['layer']
-    require(layer['name']=='VK_LAYER_KHRONOS_validation' and layer['api_version']=='1.4.363','Unexpected validation layer/version')
+    layer_version = layer['api_version']
+    require(layer['name'] == 'VK_LAYER_KHRONOS_validation' and
+            re.fullmatch(r'[1-9]\d*\.\d+\.\d+', layer_version) and
+            (automatic_manifest or layer_version == '1.4.363'), 'Unexpected validation layer/version')
     library=(layer_manifest.parent/layer['library_path']).resolve()
-    required=[renderer,*renderer.parent.glob('*.dll'),*(renderer.parent/'spv_shaders').glob('*.spv'),
-        Path(__file__).resolve(),Path(sys.modules[Asset.__module__].__file__).resolve(),layer_manifest,library]
+    runtime = runtime_inputs(renderer, include_assets=automatic_manifest)
+    helpers = (Path(__file__).resolve(), Path(sys.modules[Asset.__module__].__file__).resolve())
+    required = sorted(runtime.union(helpers, (layer_manifest, library)))
+    manifest = args.manifest.resolve() if args.manifest else output / 'frozen-inputs.json'
+    if automatic_manifest:
+        write(manifest, {'files': {str(path): sha(path) for path in required}})
     before=freeze(manifest,required)
     generated=[*map(Path,models.values()),output/'fixtures'/'normal.ktx',output/'fixtures'/'coverage.ktx',
                output/'launch-plan.json',output/'fixtures.json',output/'thresholds.json',*output.glob('*.sequence.json')]
@@ -381,11 +432,14 @@ def main():
         VK_LOADER_DEBUG='error,warn,info,layer,driver,debug')
     report=dict(passed=False,manifestBefore=before,rendererSha256=sha(renderer),generatedSha256=input_hashes,
         sourceDependencies={str(p):sha(p) for p in required if p.suffix=='.py'},fixtures=proof,thresholds=THRESHOLDS,runs=[],
+        manifestMode='automatic' if automatic_manifest else 'supplied', validationLayerApiVersion=layer_version,
         bandwidth='Hardware bandwidth counters unavailable; texture/ROI/owned allocation sizes and GPU dispatch timings are recorded, not hardware bandwidth.',
         approximation='Diffuse probe cones; closest-hit normal LOD is independent of conservative mip-zero candidate/shadow coverage. Not glossy reference filtering.')
     captured={technique:{} for technique in TECHNIQUES}
     comparison_camera=None
     def verify():
+        if automatic_manifest:
+            require(runtime_inputs(renderer, include_assets=True) == runtime, 'Runtime input inventory changed')
         freeze(manifest,required,identity=before['sha256'])
         require(all(sha(Path(p))==h for p,h in input_hashes.items()),'Generated inputs/settings changed')
     try:
@@ -436,4 +490,5 @@ def main():
     print('PASS 112 normal/alpha-footprint captures in 14 processes',flush=True)
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    raise SystemExit(main())
