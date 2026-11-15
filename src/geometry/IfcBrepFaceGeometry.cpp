@@ -2156,13 +2156,16 @@ bool meetsSphericalPole(const SphericalSurface &sphere,
 std::vector<CurvedFaceTriangle>
 meshSphericalEdgeLoops(const SphericalSurface &sphere,
                        const std::vector<std::vector<glm::vec3>> &boundaries,
-                       bool explicitOuter, bool sameSense, double units) {
+                       bool explicitOuter, bool sameSense, double units,
+                       std::optional<Point> sectorCenter = {}) {
   const auto &f = sphere.frame;
   const double radius = sphere.radius;
   const double tolerance = std::max(1e-7 / units, radius * 4e-7);
   const double sense = sameSense ? 1. : -1.;
   std::vector<std::vector<Point>> directions;
   std::vector<Point> centers{f.x, -f.x, f.y, -f.y, f.z, -f.z};
+  if (sectorCenter)
+    centers.push_back(*sectorCenter);
   size_t samples = 0;
   for (const auto &loop : boundaries) {
     if (loop.size() < 3 || (samples += loop.size()) > 8192)
@@ -2281,12 +2284,116 @@ meshSphericalEdgeLoops(const SphericalSurface &sphere,
 }
 
 using FaceLoops = std::vector<std::vector<glm::vec3>>;
+constexpr double polarTurn = 2 * std::numbers::pi;
+using AzimuthInterval = std::pair<double, double>;
 
-std::array<FaceLoops, 2> partitionPolarSeam(const FaceLoops &boundaries,
-                                            std::span<const glm::vec3> seam,
-                                            double direction, double units,
-                                            const auto &angleAt,
-                                            const auto &cutAt) {
+struct PolarAzimuth {
+  UV seamDirection;
+  double sense;
+
+  double angle(UV radial) const {
+    const double radians = std::atan2(sense * cross(seamDirection, radial),
+                                       glm::dot(seamDirection, radial));
+    return radians < 0 ? radians + polarTurn : radians;
+  }
+};
+
+struct PolarHoleAngles {
+  std::vector<AzimuthInterval> byHole, blocked;
+
+  bool clears(double angle) const {
+    const auto after = std::ranges::upper_bound(
+        blocked, angle, {}, &AzimuthInterval::first);
+    return after == blocked.begin() || (after - 1)->second < angle;
+  }
+
+  double oppositeCut() const {
+    const double opposite = std::numbers::pi;
+    if (clears(opposite))
+      return opposite;
+    double last = 0, best = 0;
+    const auto consider = [&](double end) {
+      if (end <= last)
+        return;
+      const double inset = std::min((end - last) / 4., opposite / 16.);
+      const double angle = std::clamp(opposite, last + inset, end - inset);
+      if (angle > last && angle < end &&
+          (!best || std::abs(angle - opposite) < std::abs(best - opposite)))
+        best = angle;
+    };
+    for (const auto &[begin, end] : blocked) {
+      consider(begin);
+      last = end;
+    }
+    consider(polarTurn);
+    if (!best)
+      throw std::runtime_error("No spherical meridian cut clears the holes");
+    return best;
+  }
+
+  void append(const FaceLoops &boundaries, double cut,
+              std::array<FaceLoops, 2> &pieces) const {
+    for (size_t i = 0; i < byHole.size(); ++i)
+      pieces[byHole[i].second < cut ? 0 : 1].push_back(boundaries[i + 1]);
+  }
+};
+
+PolarHoleAngles polarHoleAngles(const FaceLoops &boundaries,
+                               const auto &radialAt, PolarAzimuth azimuth,
+                               double clearance) {
+  PolarHoleAngles result;
+  for (const auto &hole : std::span(boundaries).subspan(1)) {
+    if (hole.size() < 3)
+      throw std::runtime_error("Invalid polar seam hole");
+    AzimuthInterval span{polarTurn, 0.};
+    auto a = radialAt(hole.back());
+    for (const auto &point : hole) {
+      const auto b = radialAt(point), delta = b - a;
+      const double squared = glm::dot(delta, delta);
+      const double t = squared > 0 ? std::clamp(-glm::dot(a, delta) / squared,
+                                                0., 1.) : 0.;
+      const auto nearest = a + t * delta;
+      if (!(glm::length(nearest) > clearance))
+        throw std::runtime_error("Polar seam hole is too close to its axis");
+
+      // The chord and its source error lie in the convex hull of the two
+      // endpoint disks. Their angles bound that capsule from the polar axis.
+      const double center = azimuth.angle(nearest);
+      for (const auto endpoint : {a, b}) {
+        const double angle = center + std::remainder(
+            azimuth.angle(endpoint) - center, polarTurn);
+        const double margin = std::asin(clearance / glm::length(endpoint));
+        span.first = std::min(span.first, angle - margin);
+        span.second = std::max(span.second, angle + margin);
+      }
+      if (!(span.first > 0 && span.second < polarTurn))
+        throw std::runtime_error("Authored polar seam meets a hole");
+      a = b;
+    }
+    result.byHole.push_back(span);
+  }
+  auto ordered = result.byHole;
+  std::ranges::sort(ordered);
+  for (const auto &span : ordered) {
+    if (result.blocked.empty() || result.blocked.back().second < span.first)
+      result.blocked.push_back(span);
+    else
+      result.blocked.back().second = std::max(result.blocked.back().second,
+                                               span.second);
+  }
+  return result;
+}
+
+struct PolarSeamParts {
+  std::array<FaceLoops, 2> pieces;
+  double cutAngle;
+};
+
+PolarSeamParts partitionPolarSeam(const FaceLoops &boundaries,
+                                  std::span<const glm::vec3> seam,
+                                  double direction, double units,
+                                  double tolerance, const auto &radialAt,
+                                  const auto &cutAt) {
   const auto &rim = boundaries.front();
   const auto seamEnd = std::ranges::find(rim, seam.back());
   if (rim.size() < 3 || seamEnd == rim.end())
@@ -2294,31 +2401,35 @@ std::array<FaceLoops, 2> partitionPolarSeam(const FaceLoops &boundaries,
   std::vector<glm::vec3> rimFromSeam(rim);
   std::rotate(rimFromSeam.begin(),
               rimFromSeam.begin() + (seamEnd - rim.begin()), rimFromSeam.end());
-  const double seamAngle = angleAt(seam.back());
-  constexpr double period = 2 * std::numbers::pi;
-  const auto azimuth = [&](glm::vec3 position) {
-    const double angle =
-        std::remainder(direction * (angleAt(position) - seamAngle), period);
-    return angle < 0 ? angle + period : angle;
-  };
+  const auto seamRadial = radialAt(seam.back());
+  if (!(glm::length(seamRadial) > tolerance))
+    throw std::runtime_error("Polar seam rim meets its axis");
+  const PolarAzimuth azimuth{glm::normalize(seamRadial), direction};
+  const auto holes = polarHoleAngles(boundaries, radialAt, azimuth,
+                                      .0005 / units + tolerance);
   size_t cutIndex = 0;
   double cutAngle = 0, previous = 0;
   // This cut requires a rim with one radial intersection per meridian.
   // Use an existing rim sample so the adjoining face keeps its exact boundary.
   for (size_t i = 1; i < rimFromSeam.size(); ++i) {
-    const double angle = azimuth(rimFromSeam[i]);
+    const auto radial = radialAt(rimFromSeam[i]);
+    if (!(glm::length(radial) > tolerance))
+      throw std::runtime_error("Polar seam rim meets its axis");
+    const double angle = azimuth.angle(radial);
     if (angle <= previous || angle - previous >= std::numbers::pi)
       throw std::runtime_error("Polar seam rim must wind once monotonically");
-    if (!cutIndex || std::abs(angle - std::numbers::pi) <
-                         std::abs(cutAngle - std::numbers::pi)) {
+    if (holes.clears(angle) &&
+        (!cutIndex || std::abs(angle - std::numbers::pi) <
+                          std::abs(cutAngle - std::numbers::pi))) {
       cutIndex = i;
       cutAngle = angle;
     }
     previous = angle;
   }
-  if (previous <= std::numbers::pi ||
-      std::abs(cutAngle - std::numbers::pi) > std::numbers::pi / 4.)
-    throw std::runtime_error("Cannot find an opposite polar rim cut");
+  if (previous <= std::numbers::pi)
+    throw std::runtime_error("Polar seam rim must wind once monotonically");
+  if (!cutIndex)
+    throw std::runtime_error("No polar meridian through a rim sample clears the holes");
   const auto meridian = cutAt(rimFromSeam[cutIndex]);
   const auto samples = sampleCurve(meridian, 0, 1, .0005 / units, 4097);
   if (samples.size() < 2)
@@ -2338,20 +2449,34 @@ std::array<FaceLoops, 2> partitionPolarSeam(const FaceLoops &boundaries,
   second.insert(second.end(), rimFromSeam.begin() + cutIndex + 1,
                 rimFromSeam.end());
   second.insert(second.end(), seam.rbegin(), seam.rend() - 1);
-  for (const auto &hole : std::span(boundaries).subspan(1)) {
-    if (hole.size() < 3)
-      throw std::runtime_error("Invalid polar seam hole");
-    const auto side = azimuth(hole.front()) < cutAngle ? 0 : 1;
-    if (!std::ranges::all_of(hole, [&](glm::vec3 position) {
-          const auto angle = azimuth(position);
-          return std::min(angle, period - angle) > 1e-8 &&
-                 std::abs(angle - cutAngle) > 1e-8 &&
-                 (angle < cutAngle ? 0 : 1) == side;
-        }))
-      throw std::runtime_error("Polar seam or its opposite cut meets a hole");
-    pieces[side].push_back(hole);
-  }
-  return pieces;
+  holes.append(boundaries, cutAngle, pieces);
+  return {std::move(pieces), cutAngle};
+}
+
+UV sphericalRadial(const CurveFrame &frame, glm::vec3 position) {
+  const auto p = Point(position) - frame.origin;
+  return {glm::dot(p, frame.x), glm::dot(p, frame.y)};
+}
+
+Point polarDirection(const CurveFrame &frame, PolarAzimuth azimuth, double angle) {
+  const auto radial = azimuth.seamDirection;
+  const double c = std::cos(angle), s = azimuth.sense * std::sin(angle);
+  return (c * radial.x - s * radial.y) * frame.x +
+         (s * radial.x + c * radial.y) * frame.y;
+}
+
+std::vector<CurvedFaceTriangle>
+meshSphericalSectors(const SphericalSurface &sphere, const PolarSeamParts &parts,
+                      PolarAzimuth azimuth, bool sameSense, double units) {
+  // The antipode of a sector's angular midpoint lies outside that sector,
+  // including when it is wider than a hemisphere.
+  const auto center = polarDirection(sphere.frame, azimuth, parts.cutAngle / 2.);
+  auto result = meshSphericalEdgeLoops(sphere, parts.pieces[0], true, sameSense,
+                                       units, center);
+  auto remainder = meshSphericalEdgeLoops(sphere, parts.pieces[1], true,
+                                          sameSense, units, -center);
+  result.insert(result.end(), remainder.begin(), remainder.end());
+  return result;
 }
 
 std::vector<CurvedFaceTriangle>
@@ -2363,12 +2488,8 @@ meshTrimmedSphericalSeam(const SphericalSurface &sphere,
   const double radius = sphere.radius;
   const auto polarAxis = sign * f.z;
   const double direction = (sameSense ? 1. : -1.) * sign;
-  const auto angleAt = [&](glm::vec3 position) {
-    const auto p = Point(position) - f.origin;
-    const double x = glm::dot(p, f.x), y = glm::dot(p, f.y);
-    if (std::hypot(x, y) <= tolerance)
-      throw std::runtime_error("Spherical seam rim or hole meets a pole");
-    return std::atan2(y, x);
+  const auto radialAt = [&](glm::vec3 position) {
+    return sphericalRadial(f, position);
   };
   const auto cutAt = [&](glm::vec3 position) {
     const auto direction = glm::normalize(Point(position) - f.origin);
@@ -2383,14 +2504,10 @@ meshTrimmedSphericalSeam(const SphericalSurface &sphere,
     };
     return meridian;
   };
-  const auto pieces =
-      partitionPolarSeam(boundaries, seam, direction, units, angleAt, cutAt);
-  auto result =
-      meshSphericalEdgeLoops(sphere, pieces[0], true, sameSense, units);
-  auto remainder =
-      meshSphericalEdgeLoops(sphere, pieces[1], true, sameSense, units);
-  result.insert(result.end(), remainder.begin(), remainder.end());
-  return result;
+  const auto parts = partitionPolarSeam(boundaries, seam, direction, units,
+                                         tolerance, radialAt, cutAt);
+  const PolarAzimuth azimuth{glm::normalize(radialAt(seam.back())), direction};
+  return meshSphericalSectors(sphere, parts, azimuth, sameSense, units);
 }
 
 std::vector<CurvedFaceTriangle>
@@ -2412,10 +2529,18 @@ meshSphericalSeam(const SphericalSurface &sphere,
       tolerance)
     return meshTrimmedSphericalSeam(sphere, boundaries, seam, sameSense, units,
                                     sign, tolerance);
+  const PolarAzimuth azimuth{{1., 0.}, sign * (sameSense ? 1. : -1.)};
+  const auto radialAt = [&](glm::vec3 position) {
+    return sphericalRadial(f, position);
+  };
+  const auto holes = polarHoleAngles(boundaries, radialAt, azimuth,
+                                      .0005 / units + tolerance);
+  const auto cut = holes.oppositeCut();
+  const auto radial = cut == std::numbers::pi ? -f.x : polarDirection(f, azimuth, cut);
   ParametricCurve meridian;
   meridian.domain = {{0, std::numbers::pi}};
   meridian.point = [=](double t) -> std::optional<Point> {
-    return f.origin - radius * (std::sin(t) * f.x + sign * std::cos(t) * f.z);
+    return f.origin + radius * (std::sin(t) * radial - sign * std::cos(t) * f.z);
   };
   const auto samples =
       sampleCurve(meridian, 0, std::numbers::pi, .0005 / units, 4097);
@@ -2425,30 +2550,11 @@ meshSphericalSeam(const SphericalSurface &sphere,
   std::vector<glm::vec3> ring(seam.begin(), seam.end());
   for (size_t i = 1; i + 1 < samples.size(); ++i)
     ring.emplace_back(samples[i].point);
-  std::array<std::vector<std::vector<glm::vec3>>, 2> pieces;
-  pieces[0].push_back(ring);
-  pieces[1].emplace_back(ring.rbegin(), ring.rend());
-  for (const auto &hole : std::span(boundaries).subspan(1)) {
-    if (hole.size() < 3)
-      throw std::runtime_error("Invalid spherical seam hole");
-    const auto side = [&](glm::vec3 p) {
-      return glm::dot(Point(p) - f.origin, f.y) *
-             (sign * (sameSense ? 1. : -1.));
-    };
-    const size_t piece = side(hole.front()) > 0 ? 0 : 1;
-    if (!std::ranges::all_of(hole, [&](glm::vec3 p) {
-          return side(p) * (piece == 0 ? 1. : -1.) > tolerance;
-        }))
-      throw std::runtime_error(
-          "Spherical seam or its opposite cut meets a hole");
-    pieces[piece].push_back(hole);
-  }
-  auto result =
-      meshSphericalEdgeLoops(sphere, pieces[0], true, sameSense, units);
-  auto remainder =
-      meshSphericalEdgeLoops(sphere, pieces[1], true, sameSense, units);
-  result.insert(result.end(), remainder.begin(), remainder.end());
-  return result;
+  PolarSeamParts parts{{}, cut};
+  parts.pieces[1].emplace_back(ring.rbegin(), ring.rend());
+  parts.pieces[0].push_back(std::move(ring));
+  holes.append(boundaries, cut, parts.pieces);
+  return meshSphericalSectors(sphere, parts, azimuth, sameSense, units);
 }
 
 std::vector<CurvedFaceTriangle>
@@ -2466,11 +2572,11 @@ meshRevolvedRadialGraph(const RevolvedRadialGraph &graph,
     if (seam.size() < 2 || seam.size() > 4097 ||
         glm::length(Point(seam.front()) - graph.frame.origin) > tolerance)
       throw std::runtime_error("Revolved seam must start at its smooth apex");
-    const auto angleAt = [&](glm::vec3 position) {
+    const auto radialAt = [&](glm::vec3 position) {
       const auto uv = graph.inverse(Point(position));
-      if (!uv || glm::length(*uv) <= tolerance)
-        throw std::runtime_error("Revolved seam rim or hole meets its apex");
-      return std::atan2(uv->y, uv->x);
+      if (!uv)
+        throw std::runtime_error("Revolved seam rim or hole leaves its surface");
+      return *uv;
     };
     const auto cutAt = [&](glm::vec3 position) {
       const auto uv = graph.inverse(Point(position));
@@ -2483,11 +2589,11 @@ meshRevolvedRadialGraph(const RevolvedRadialGraph &graph,
       };
       return meridian;
     };
-    const auto pieces = partitionPolarSeam(
-        boundaries, seam, sameSense ? 1. : -1., units, angleAt, cutAt);
-    auto result = Mesher(chart, units, extent).run(pieces[0], true, sameSense);
+    const auto parts = partitionPolarSeam(boundaries, seam, sameSense ? 1. : -1.,
+                                          units, tolerance, radialAt, cutAt);
+    auto result = Mesher(chart, units, extent).run(parts.pieces[0], true, sameSense);
     auto remainder =
-        Mesher(chart, units, extent).run(pieces[1], true, sameSense);
+        Mesher(chart, units, extent).run(parts.pieces[1], true, sameSense);
     result.insert(result.end(), remainder.begin(), remainder.end());
     return result;
   }

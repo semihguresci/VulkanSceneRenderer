@@ -1931,39 +1931,165 @@ TEST(IfcCurvedBrep, SphericalEdgeLoopKeepsTrimmedMeridianSeamAndRimWithDisk) {
   }
 }
 
-TEST(IfcCurvedBrep, SphericalFullMeridianSeamRetainsAnOffCutHoleAndDisk) {
+double sphericalCapVolume(double plane) {
+  constexpr double radius = 2.;
+  const double height = radius - plane;
+  return pi * height * height * (radius - height / 3.);
+}
+
+std::string sphericalSeamHoleAndDisk(CurvedBuilder &step, glm::dvec3 axis,
+                                     double plane) {
+  constexpr double radius = 2.;
+  const double ringRadius = std::sqrt(radius * radius - plane * plane);
+  const glm::dvec3 tangent =
+      axis.y == 0. ? glm::dvec3(0, 1, 0) : glm::dvec3(1, 0, 0);
+  const auto origin = plane * axis;
+  const auto placement = step.placement(origin, axis, tangent);
+  const auto circle =
+      step.add("IFCCIRCLE(" + placement + "," + number(ringRadius) + ")");
+  const auto start = step.point(origin + ringRadius * tangent);
+  const auto ring = step.edge(start, start, circle);
+  step.plane({{ring, true}}, origin, axis);
+  return step.bound({{ring, false}}, false);
+}
+
+void expectSphericalSeamHoleDisk(const Model &model, glm::dvec3 axis,
+                                 double plane) {
+  using Point = std::array<float, 3>;
+  using Edge = std::pair<Point, Point>;
+  std::map<Edge, std::array<int, 2>> edges;
+  for (const auto &vertex : model.vertices)
+    EXPECT_LE(glm::dot(glm::dvec3(vertex.position), axis), plane + 1e-6);
+  for (size_t i = 0; i < model.indices.size(); i += 3) {
+    std::array<Point, 3> points;
+    std::array<bool, 3> onPlane;
+    bool disk = true;
+    for (size_t j = 0; j < points.size(); ++j) {
+      const auto &vertex = model.vertices.at(model.indices.at(i + j));
+      const auto p = vertex.position;
+      points[j] = {p.x, p.y, p.z};
+      onPlane[j] = std::abs(glm::dot(glm::dvec3(p), axis) - plane) < 1e-6;
+      disk &= onPlane[j] && glm::dot(glm::dvec3(vertex.normal), axis) > .99999;
+    }
+    for (size_t j = 0; j < points.size(); ++j) {
+      const auto next = (j + 1) % points.size();
+      if (!onPlane[j] || !onPlane[next])
+        continue;
+      const auto &a = points[j], &b = points[next];
+      const Edge edge = std::minmax(a, b);
+      edges[edge][disk] += a < b ? 1 : -1;
+    }
+  }
+  size_t mated = 0;
+  for (const auto &[_, winding] : edges) {
+    if (winding[0] == 0 && winding[1] == 0)
+      continue;
+    EXPECT_EQ(std::abs(winding[1]), 1);
+    EXPECT_EQ(winding[0], -winding[1]);
+    ++mated;
+  }
+  EXPECT_GT(mated, 32u);
+}
+
+std::string sphericalFullSeamWithHole(glm::dvec3 axis, double plane) {
   CurvedBuilder step;
   const auto north = step.point({0, 0, 2}), south = step.point({0, 0, -2});
   const auto surface =
       step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
   const auto seam =
       sphericalMeridianSeam(step, surface, south, north, -90., 90.);
-  // Trim an off-seam cap at y=1.6. Its authored ring is shared by a disk.
-  constexpr double plane = 1.6, radius = 1.2;
-  const auto circle = step.add(
-      "IFCCIRCLE(" + step.placement({0, plane, 0}, {0, 1, 0}) + ",1.2)");
-  const auto start = step.point({radius, plane, 0});
-  const auto rim = step.edge(start, start, circle);
-  step.face({step.bound({{seam, true}, {seam, false}}),
-             step.bound({{rim, false}}, false)},
-            surface);
-  step.plane({{rim, true}}, {0, plane, 0}, {0, 1, 0});
+  const auto hole = sphericalSeamHoleAndDisk(step, axis, plane);
+  step.face({step.bound({{seam, true}, {seam, false}}), hole}, surface);
   const auto brep = step.finish();
-  const auto model = LoadFromStep(fixture(step.definitions + degrees(), brep));
-  complete(model);
-  ASSERT_FALSE(model.indices.empty());
+  return fixture(step.definitions + degrees(), brep);
+}
+
+TEST(IfcCurvedBrep, SphericalFullMeridianSeamRetainsAnOffCutHoleAndDisk) {
+  constexpr double plane = 1.6;
+  const glm::dvec3 axis(0, 1, 0);
+  const auto model = LoadFromStep(sphericalFullSeamWithHole(axis, plane));
+  ASSERT_NO_FATAL_FAILURE(complete(model));
   watertight(model);
-  constexpr double capHeight = 2. - plane;
-  EXPECT_NEAR(volume(model),
-              32 * pi / 3 - pi * capHeight * capHeight * (2. - capHeight / 3),
-              .06);
-  bool disk = false;
+  EXPECT_NEAR(volume(model), 32 * pi / 3 - sphericalCapVolume(plane), .06);
+  expectSphericalSeamHoleDisk(model, axis, plane);
+}
+
+TEST(IfcCurvedBrep, SphericalFullMeridianSeamMovesGeneratedCutAroundHole) {
+  constexpr double plane = 1.6;
+  const glm::dvec3 axis(-1, 0, 0);
+  const auto source = sphericalFullSeamWithHole(axis, plane);
+  exportCurvedFixture("sphere-explicit-seam-hole-across-generated-cut", source);
+  const auto model = LoadFromStep(source);
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  watertight(model);
+  EXPECT_NEAR(volume(model), 32 * pi / 3 - sphericalCapVolume(plane), .06);
+  expectSphericalSeamHoleDisk(model, axis, plane);
+
+  std::set<float> authoredHeights;
   for (const auto &vertex : model.vertices) {
-    EXPECT_LE(vertex.position.y, static_cast<float>(plane) + 1e-6f);
-    disk |= vertex.position.y == static_cast<float>(plane) &&
-            vertex.normal.y > .99999f;
+    const auto p = vertex.position;
+    if (p.x > 1.8f && p.y == 0.f)
+      authoredHeights.insert(p.z);
   }
-  EXPECT_TRUE(disk);
+  ASSERT_GE(authoredHeights.size(), 12u);
+  EXPECT_LT(*authoredHeights.begin(), -.25f);
+  EXPECT_GT(*authoredHeights.rbegin(), .25f);
+}
+
+TEST(IfcCurvedBrep, SphericalTrimmedMeridianSeamMovesGeneratedCutAroundHoles) {
+  CurvedBuilder step;
+  constexpr double radius = 2., rimHeight = 1., lowerPlane = 1.94;
+  const auto north = step.point({0, 0, radius});
+  const auto rim = step.circle(
+      std::sqrt(radius * radius - rimHeight * rimHeight), rimHeight);
+  const auto surface =
+      step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
+  const auto seam =
+      sphericalMeridianSeam(step, surface, rim.point, north, 30., 90.);
+  // Both cuts cross longitude 180 degrees in disjoint polar intervals and
+  // avoid the authored longitude zero, the pole, and the lower rim.
+  const glm::dvec3 lowerAxis(-.6, 0, .8);
+  const double polar = pi / 15, upperPlane = radius * std::cos(pi / 30);
+  const glm::dvec3 upperAxis(-std::sin(polar), 0, std::cos(polar));
+  const auto lowerHole = sphericalSeamHoleAndDisk(step, lowerAxis, lowerPlane);
+  const auto upperHole = sphericalSeamHoleAndDisk(step, upperAxis, upperPlane);
+  step.face({step.bound({{seam, false}, {rim.edge, true}, {seam, true}}),
+             lowerHole, upperHole},
+            surface);
+  step.plane({{rim.edge, false}}, {0, 0, rimHeight}, {0, 0, -1});
+  const auto brep = step.finish();
+  const auto source = fixture(step.definitions + degrees(), brep);
+  exportCurvedFixture("sphere-trimmed-seam-holes-across-generated-cut", source);
+  const auto model = LoadFromStep(source);
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  watertight(model);
+  EXPECT_NEAR(volume(model),
+              sphericalCapVolume(rimHeight) - sphericalCapVolume(lowerPlane) -
+                  sphericalCapVolume(upperPlane),
+              .015);
+  expectSphericalSeamHoleDisk(model, lowerAxis, lowerPlane);
+  expectSphericalSeamHoleDisk(model, upperAxis, upperPlane);
+  std::set<float> authoredHeights;
+  for (const auto &vertex : model.vertices) {
+    const auto p = vertex.position;
+    EXPECT_GE(p.z, static_cast<float>(rimHeight) - 1e-6f);
+    if (p.x > 0.f && p.y == 0.f && p.z > rimHeight && p.z < radius)
+      authoredHeights.insert(p.z);
+  }
+  EXPECT_GE(authoredHeights.size(), 16u);
+}
+
+TEST(IfcCurvedBrep, SphericalFullMeridianSeamRejectsAContactingHole) {
+  const auto source = sphericalFullSeamWithHole({1, 0, 0}, 1.6);
+  const auto model = LoadFromStep(source);
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+  EXPECT_TRUE(model.elements.empty());
+  EXPECT_TRUE(model.vertices.empty());
+  EXPECT_TRUE(model.indices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  const auto &reason = model.importReport.diagnostics.front().reason;
+  EXPECT_NE(reason.find("seam"), std::string::npos) << reason;
+  EXPECT_NE(reason.find("hole"), std::string::npos) << reason;
 }
 
 TEST(IfcCurvedBrep, SphericalEdgeLoopCapThroughPoleRetainsHoleAndDisk) {
@@ -2246,26 +2372,35 @@ TEST(IfcCurvedBrep, SmoothRevolutionApexIsInsertedInsideASharedSplineEdge) {
   }));
 }
 
+std::string paraboloidMeridianSeam(CurvedBuilder &step,
+                                    const std::string &surface,
+                                    const std::string &apex,
+                                    const std::string &rim,
+                                    double endLongitude = 360.) {
+  const auto meridian =
+      step.add("IFCBSPLINECURVEWITHKNOTS(2,(" +
+               step.refs({apex, step.point({1, 0, 0}), rim}) +
+               "),.UNSPECIFIED.,.F.,.F.,(3,3),(2.,5.),.UNSPECIFIED.)");
+  const auto pcurve = [&](double u) {
+    const auto a = Paraboloid::profilePoint(step, u, 2.);
+    const auto b = Paraboloid::profilePoint(step, u, 5.);
+    const auto uv = step.add("IFCPOLYLINE((" + a + "," + b + "))");
+    return step.add("IFCPCURVE(" + surface + "," + uv + ")");
+  };
+  const auto seam =
+      step.add("IFCSEAMCURVE(" + meridian + ",(" + pcurve(0) + "," +
+               pcurve(endLongitude) + "),.CURVE3D.)");
+  return step.edge(apex, rim, seam);
+}
+
 TEST(IfcCurvedBrep, SmoothRevolutionApexPreservesSharedMeridianSeam) {
   for (bool invalid : {false, true}) {
     SCOPED_TRACE(invalid);
     CurvedBuilder step;
     const auto surface = standardParaboloid.surface(step);
     const auto apex = step.point({0, 0, 0}), rim = step.point({2, 1, 0});
-    const auto meridian =
-        step.add("IFCBSPLINECURVEWITHKNOTS(2,(" +
-                 step.refs({apex, step.point({1, 0, 0}), rim}) +
-                 "),.UNSPECIFIED.,.F.,.F.,(3,3),(2.,5.),.UNSPECIFIED.)");
-    const auto pcurve = [&](double u) {
-      const auto a = Paraboloid::profilePoint(step, u, 2.);
-      const auto b = Paraboloid::profilePoint(step, u, 5.);
-      const auto uv = step.add("IFCPOLYLINE((" + a + "," + b + "))");
-      return step.add("IFCPCURVE(" + surface + "," + uv + ")");
-    };
-    const auto seam =
-        step.add("IFCSEAMCURVE(" + meridian + ",(" + pcurve(0) + "," +
-                 pcurve(invalid ? 180 : 360) + "),.CURVE3D.)");
-    const auto seamEdge = step.edge(apex, rim, seam);
+    const auto seamEdge = paraboloidMeridianSeam(step, surface, apex, rim,
+                                                 invalid ? 180. : 360.);
     const auto rimCircle =
         step.add("IFCCIRCLE(" + step.placement({0, 1, 0}, {0, 1, 0}) + ",2.)");
     const auto rimEdge = step.edge(rim, rim, rimCircle);
@@ -2358,64 +2493,78 @@ TEST(IfcCurvedBrep, SmoothRevolutionApexSupportsAnInwardParaboloidCavity) {
 }
 
 TEST(IfcCurvedBrep, SmoothRevolutionApexRetainsOffAxisHoleAndSharedBoundary) {
-  CurvedBuilder step;
-  const auto surface = standardParaboloid.surface(step);
-  const auto apex = step.point({0, 0, 0});
-  const auto outerA = step.point({2, 1, 0}), outerB = step.point({-2, 1, 0});
-  const auto a = standardParaboloid.meridian(step, apex, outerA, {1, 0, 0});
-  const auto b = standardParaboloid.meridian(step, apex, outerB, {-1, 0, 0});
-  const auto outerRing =
-      step.add("IFCCIRCLE(" + step.placement({0, 1, 0}, {0, 1, 0}) + ",2.)");
-  const auto upper = step.edge(outerA, outerB, outerRing),
-             lower = step.edge(outerB, outerA, outerRing);
-  // Contrasting faces share an off-axis patch boundary. One face trims this
-  // exact parametric box away; a second B-rep face supplies the same patch.
-  // The four authored edges are exact circles and quadratic meridians.
-  constexpr double r0 = .6, r1 = 1.3;
-  const double t0 = pi / 5, t1 = 2 * pi / 5;
-  const auto radial = [](double t) {
-    return glm::dvec3(std::cos(t), 0, std::sin(t));
-  };
-  const auto radialA = radial(t0), radialB = radial(t1);
-  const auto at = [](double radius, glm::dvec3 radial) {
-    return radius * radial + glm::dvec3(0, radius * radius / 4, 0);
-  };
-  const auto p0 = step.point(at(r0, radialA)), p1 = step.point(at(r1, radialA)),
-             p2 = step.point(at(r1, radialB)), p3 = step.point(at(r0, radialB));
-  const auto meridian = [&](const std::string &first, const std::string &last,
-                            glm::dvec3 direction) {
-    const double inner = r0 * r0 / 4 + r0 * (r1 - r0) / 4;
-    const auto middle =
-        step.point((r0 + r1) / 2 * direction + glm::dvec3(0, inner, 0));
-    const auto curve = step.add(
-        "IFCBSPLINECURVEWITHKNOTS(2,(" + step.refs({first, middle, last}) +
-        "),.UNSPECIFIED.,.F.,.F.,(3,3),(2.,5.),.UNSPECIFIED.)");
-    return step.edge(first, last, curve);
-  };
-  const auto latitude = [&](double radius, const std::string &first,
-                            const std::string &last) {
-    const auto circle = step.add(
-        "IFCCIRCLE(" + step.placement({0, radius * radius / 4, 0}, {0, 1, 0}) +
-        "," + number(radius) + ")");
-    return step.edge(first, last, circle);
-  };
-  const auto pa = meridian(p0, p1, radialA), pb = meridian(p3, p2, radialB),
-             ra = latitude(r0, p3, p0), rb = latitude(r1, p2, p1);
-  step.face({step.bound({{b, true}, {upper, false}, {a, false}})}, surface);
-  step.face(
-      {step.bound({{a, true}, {lower, false}, {b, false}}),
-       step.bound({{pa, false}, {ra, false}, {pb, true}, {rb, true}}, false)},
-      surface);
-  step.face({step.bound({{pa, true}, {rb, false}, {pb, false}, {ra, true}})},
-            surface);
-  step.plane({{upper, true}, {lower, true}}, {0, 1, 0}, {0, 1, 0});
-  const auto brep = step.finish();
-  const auto model = LoadFromStep(fixture(step.definitions, brep));
-  complete(model);
-  ASSERT_FALSE(model.indices.empty());
-  watertight(model);
-  EXPECT_NEAR(volume(model), 2 * pi, .025);
-  expectParaboloidNormals(model, standardParaboloid, true);
+  for (bool authoredSeam : {false, true}) {
+    SCOPED_TRACE(authoredSeam);
+    CurvedBuilder step;
+    const auto surface = standardParaboloid.surface(step);
+    const auto apex = step.point({0, 0, 0});
+    const auto outerA = step.point({2, 1, 0});
+    const auto outerRing =
+        step.add("IFCCIRCLE(" + step.placement({0, 1, 0}, {0, 1, 0}) + ",2.)");
+    // Contrasting faces share an off-axis patch boundary. One face trims this
+    // exact parametric box away; a second B-rep face supplies the same patch.
+    // The four authored edges are exact circles and quadratic meridians.
+    constexpr double r0 = .6, r1 = 1.3;
+    const double t0 = authoredSeam ? 4 * pi / 5 : pi / 5;
+    const double t1 = authoredSeam ? 6 * pi / 5 : 2 * pi / 5;
+    const auto radial = [](double t) {
+      return glm::dvec3(std::cos(t), 0, std::sin(t));
+    };
+    const auto radialA = radial(t0), radialB = radial(t1);
+    const auto at = [](double radius, glm::dvec3 radial) {
+      return radius * radial + glm::dvec3(0, radius * radius / 4, 0);
+    };
+    const auto p0 = step.point(at(r0, radialA)), p1 = step.point(at(r1, radialA)),
+               p2 = step.point(at(r1, radialB)), p3 = step.point(at(r0, radialB));
+    const auto meridian = [&](const std::string &first, const std::string &last,
+                              glm::dvec3 direction) {
+      const double inner = r0 * r0 / 4 + r0 * (r1 - r0) / 4;
+      const auto middle =
+          step.point((r0 + r1) / 2 * direction + glm::dvec3(0, inner, 0));
+      const auto curve = step.add(
+          "IFCBSPLINECURVEWITHKNOTS(2,(" + step.refs({first, middle, last}) +
+          "),.UNSPECIFIED.,.F.,.F.,(3,3),(2.,5.),.UNSPECIFIED.)");
+      return step.edge(first, last, curve);
+    };
+    const auto latitude = [&](double radius, const std::string &first,
+                              const std::string &last) {
+      const auto circle = step.add(
+          "IFCCIRCLE(" + step.placement({0, radius * radius / 4, 0}, {0, 1, 0}) +
+          "," + number(radius) + ")");
+      return step.edge(first, last, circle);
+    };
+    const auto pa = meridian(p0, p1, radialA), pb = meridian(p3, p2, radialB),
+               ra = latitude(r0, p3, p0), rb = latitude(r1, p2, p1);
+    const auto hole = step.bound({{pa, false}, {ra, false}, {pb, true}, {rb, true}},
+                                 false);
+    if (authoredSeam) {
+      // The off-axis patch straddles the old generated -X meridian.
+      const auto seam = paraboloidMeridianSeam(step, surface, apex, outerA);
+      const auto rim = step.edge(outerA, outerA, outerRing);
+      step.face({step.bound({{seam, true}, {rim, false}, {seam, false}}), hole},
+                surface);
+      step.plane({{rim, true}}, {0, 1, 0}, {0, 1, 0});
+    } else {
+      const auto outerB = step.point({-2, 1, 0});
+      const auto a = standardParaboloid.meridian(step, apex, outerA, {1, 0, 0});
+      const auto b = standardParaboloid.meridian(step, apex, outerB, {-1, 0, 0});
+      const auto upper = step.edge(outerA, outerB, outerRing),
+                 lower = step.edge(outerB, outerA, outerRing);
+      step.face({step.bound({{b, true}, {upper, false}, {a, false}})}, surface);
+      step.face({step.bound({{a, true}, {lower, false}, {b, false}}), hole},
+                surface);
+      step.plane({{upper, true}, {lower, true}}, {0, 1, 0}, {0, 1, 0});
+    }
+    step.face({step.bound({{pa, true}, {rb, false}, {pb, false}, {ra, true}})},
+              surface);
+    const auto brep = step.finish();
+    const auto model = LoadFromStep(fixture(step.definitions + degrees(), brep));
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    EXPECT_NEAR(volume(model), 2 * pi, .025);
+    expectParaboloidNormals(model, standardParaboloid, true);
+  }
 }
 
 TEST(IfcCurvedBrep, MalformedRevolutionApexAndAxisCrossingRejectAtomically) {

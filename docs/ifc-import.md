@@ -173,13 +173,15 @@ A full sphere can use two opposite uses of one pole-to-pole `IfcSeamCurve`.
 A trimmed cap can use a pole-to-rim seam with a single monotone rim. Both
 forms verify the two native meridian pcurves. The mesher partitions the face
 using the source seam and a second shared meridian. For a trimmed cap the
-second cut ends at an existing rim vertex. Holes must stay within one chart,
-clear of both cuts. Multiple seams and intersecting cuts
-remain diagnosed.
+second cut ends at an existing rim vertex. The importer changes the generated
+meridian when a hole obstructs the opposite cut. It checks projected hole
+edges with their chord tolerance and keeps each hole within one chart. Holes
+that meet the authored seam and faces with multiple seams remain diagnosed.
 
 Run `ifc_spherical_edge_loops_gpu_regression` with
-`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to check shared-edge hemispheres and
-a tilted cap in Forward and Deferred raster with TAA off and on.
+`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to check shared-edge hemispheres, a
+tilted cap and a disk that fills a spherical hole in Forward and Deferred
+raster with TAA off and on.
 
 An advanced face on a surface of revolution can use a Cartesian chart at a
 smooth axis endpoint. Clamped polynomial splines and single-span rational
@@ -193,7 +195,7 @@ loop becomes an exact interior vertex, including on faces with holes.
 
 A single polar seam can join the apex to a monotone rim with two opposite
 edge uses and two verified native pcurves. The same cut construction as for
-spherical caps retains holes clear of both cuts. Cusps, axis crossings,
+spherical caps selects an original rim vertex clear of the holes. Cusps, axis crossings,
 nonmonotone meridians, unsupported spline creases, composite axis-touching
 profiles and standalone polar tessellation remain outside this coverage.
 Run `ifc_revolution_axis_gpu_regression` with
@@ -851,8 +853,8 @@ in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
 implementation tasks and independent geometry/rendering acceptance criteria.
 
 Ambiguous tag transitions, guided or incompatible sharp joins, other singular
-charts and polar trims with multiple seams or holes meeting a
-seam cut remain outside native coverage. Swept surface limits include profiles
+charts and polar trims with multiple seams or holes meeting an authored
+seam remain outside native coverage. Swept surface limits include profiles
 with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.
 Periodic trims that need a cut through new boundary samples and layouts without
