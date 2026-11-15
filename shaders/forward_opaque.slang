@@ -585,11 +585,21 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         iridescence = 0.0;
         volumeThickness = 0.0;
     }
+    // Coat and base normals are evaluated independently in the same tangent frame.
+    float3 clearcoatNormal = surfaceNormal.geometricNormal;
     ExtendedPbrTerms extendedTerms = MakeExtendedPbrTerms(
         surfaceNormal.tangent, 0.0, 1.0.xxx, 0.0, transmissionFactor);
     if (pc.semanticColorMode == kBimSemanticColorModeOff &&
         (vertIn.flags & kPbrObjectFlagUnlit) == 0u)
     {
+        if (material.clearcoatFactor > 0.0 &&
+            material.clearcoatNormalTextureIndex != kInvalidMaterialTexture)
+        {
+            clearcoatNormal = EvaluateSurfaceNormal(
+                vertIn.worldNormal, vertIn.worldTangent, clearcoatNormalTexCoord,
+                material.clearcoatNormalTextureIndex,
+                material.clearcoatNormalTextureScale, faceSign).shadingNormal;
+        }
         extendedTerms = SampleExtendedPbrTerms(
             material, surfaceNormal, vertIn.worldTangent,
             vertIn.texCoord, vertIn.texCoord1, transmissionFactor);
@@ -692,10 +702,12 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             max(dot(vertIn.worldPos - uCamera.cameraWorldPosition.xyz,
                     cameraForward), 0.0);
         float NdotLForShadow = dot(surfaceNormal.geometricNormal, directionalL);
+        const bool coatReceivesDirectionalLight = clearcoat > 0.0 &&
+            dot(clearcoatNormal, V) > 0.0 && dot(clearcoatNormal, directionalL) > 0.0;
         float3 directionalShadowNormal = ExtendedPbrShadowBiasNormal(
             surfaceNormal.geometricNormal, directionalL, extendedTerms);
         if (!useRayVisibility && uLighting.shadowEnabled != 0u &&
-            (NdotLForShadow > 0.0 || thinSurface ||
+            (NdotLForShadow > 0.0 || coatReceivesDirectionalLight || thinSurface ||
              extendedTerms.diffuseTransmissionFactor > 0.0))
         {
             shadowFactor = ComputeShadowFactor(
@@ -729,7 +741,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         directLighting += EvaluateExtendedPbrLayeredDirectLight(
             baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal, V,
             directionalL, directionalRadiance * directShadowVisibility,
-            clearcoat, clearcoatRoughness, sheenColor, sheenRoughness, extendedTerms);
+            clearcoat, clearcoatRoughness, sheenColor, sheenRoughness,
+            extendedTerms, clearcoatNormal);
         directLighting += EvaluateDiffuseBounceLight(
             diffuseBaseColor, metallic, surfaceNormal.shadingNormal,
             surfaceNormal.geometricNormal, V, directionalL,
@@ -796,7 +809,7 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             directLighting += EvaluateExtendedPbrLayeredDirectLight(
                 baseColor, F0, metallic, roughness, surfaceNormal.shadingNormal,
                 V, L, radiance, clearcoat, clearcoatRoughness, sheenColor,
-                sheenRoughness, extendedTerms);
+                sheenRoughness, extendedTerms, clearcoatNormal);
             directLighting += EvaluateDiffuseBounceLight(
                 diffuseBaseColor, metallic, surfaceNormal.shadingNormal,
                 surfaceNormal.geometricNormal, V, L, unshadowedRadiance,
@@ -869,7 +882,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                 vertIn.worldPos, baseColor, F0, metallic, roughness,
                 surfaceNormal.shadingNormal, V, clearcoat, clearcoatRoughness,
                 sheenColor, sheenRoughness,
-                thinSurface || transmissionFactor > 0.0 || hasExtendedPbr, ltcTerms);
+                thinSurface || transmissionFactor > 0.0 || hasExtendedPbr,
+                ltcTerms, clearcoatNormal);
             bool correctDiffuseFresnel = useLtc && any(ltcTerms.diffuseCorrectionScale > 0.0.xxx);
             bool sampleDirectTerms = useLtc &&
                 (ltcTerms.stableWeight < 1.0 || ltcTerms.fresnelWeight < 1.0);
@@ -900,13 +914,14 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                         baseColor, F0, metallic, roughness,
                         surfaceNormal.shadingNormal, V, L, directRadiance,
                         clearcoat, clearcoatRoughness, sheenColor, sheenRoughness,
-                        extendedTerms);
+                        extendedTerms, clearcoatNormal);
                 else if (sampleDirectTerms)
                 {
                     AreaLightDirectTerms sample = EvaluateAreaLightSampledDirectTerms(
                         baseColor, F0, metallic, roughness,
                         surfaceNormal.shadingNormal, V, L, directRadiance,
-                        clearcoat, clearcoatRoughness, sheenColor, sheenRoughness);
+                        clearcoat, clearcoatRoughness, sheenColor, sheenRoughness,
+                        clearcoatNormal);
                     sampledTerms.stable += sample.stable;
                     sampledTerms.fresnel += sample.fresnel;
                 }
@@ -937,7 +952,8 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
                         EvaluateAreaLightSampledLayeredDirect(light,
                             frame, vertIn.worldPos, integrationSampleCount, baseColor,
                             F0, metallic, roughness, surfaceNormal.shadingNormal, V,
-                            clearcoat, clearcoatRoughness, sheenColor, sheenRoughness) *
+                            clearcoat, clearcoatRoughness, sheenColor, sheenRoughness,
+                            clearcoatNormal) *
                             areaShadowVisibility;
                 }
                 directLighting += max(Finite3Or(ltcContribution, 0.0.xxx), 0.0.xxx);
@@ -949,15 +965,6 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     {
         if (clearcoat > 0.0)
         {
-            float3 clearcoatNormal = surfaceNormal.shadingNormal;
-            if (material.clearcoatNormalTextureIndex != kInvalidMaterialTexture)
-            {
-                clearcoatNormal = EvaluateSurfaceNormal(
-                    vertIn.worldNormal, vertIn.worldTangent,
-                    clearcoatNormalTexCoord,
-                    material.clearcoatNormalTextureIndex,
-                    material.clearcoatNormalTextureScale, faceSign).shadingNormal;
-            }
             float clearcoatNdotV = max(dot(clearcoatNormal, V), 0.0);
             float3 clearcoatF0 = IorToF0(1.5).xxx;
             float3 clearcoatR = reflect(-V, clearcoatNormal);

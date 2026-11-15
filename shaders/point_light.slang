@@ -90,7 +90,8 @@ float4 fragMain(VSOutput input) : SV_Target0
         return 0.0.xxxx;
     }
 
-    float3 normal = SafeNormalize(gNormalTexture.Load(int3(pixelCoord, 0)).xyz * 2.0 - 1.0,
+    float4 normalSample = gNormalTexture.Load(int3(pixelCoord, 0));
+    float3 normal = SafeNormalize(normalSample.xyz * 2.0 - 1.0,
                                   float3(0.0, 1.0, 0.0));
     float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
     float4 specularSample = gSpecularTexture.Load(int3(pixelCoord, 0));
@@ -100,6 +101,15 @@ float4 fragMain(VSOutput input) : SV_Target0
         DecodeDeferredMaterialLayerTerms(materialData,
             gMaterialLayersTexture.Load(int3(pixelCoord, 0)),
             gMaterialSheenTexture.Load(int3(pixelCoord, 0)));
+    float3 coatNormal = normal;
+    [branch]
+    if (layerTerms.clearcoatFactor > 0.0)
+    {
+        float coatNormalZ = gEmissiveTexture.Load(int3(pixelCoord, 0)).a;
+        coatNormal = DecodeDeferredClearcoatNormal(
+            float3(normalSample.a, specularSample.a, coatNormalZ),
+            layerTerms.clearcoatFactor, normal);
+    }
     bool thinSurface = IsThinSurfaceGpuMaterial(materialData.flags);
     ExtendedPbrTerms extended = LoadDeferredExtendedPbrTerms(
         materialData, int2(pixelCoord), layerTerms.transmissionFactor);
@@ -177,7 +187,8 @@ float4 fragMain(VSOutput input) : SV_Target0
         EvaluateExtendedPbrLayeredDirectLight(
             albedo.rgb, F0, metallic, roughness, normal, V, L, radiance,
             layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
-            layerTerms.sheenColor, layerTerms.sheenRoughness, extended);
+            layerTerms.sheenColor, layerTerms.sheenRoughness, extended,
+            coatNormal);
     directLighting += EvaluateDiffuseBounceLight(
         albedo.rgb * ExtendedPbrDiffuseReflectionWeight(extended), metallic,
         normal, geometricNormal, V, L, unshadowedRadiance,

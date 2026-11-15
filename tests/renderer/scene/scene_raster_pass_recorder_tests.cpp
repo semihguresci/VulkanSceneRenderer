@@ -111,7 +111,7 @@ TEST(SceneRasterPassRecorderTests, GBufferClearValuesMatchContract) {
   EXPECT_FLOAT_EQ(clearValues.values[1].color.float32[0], 0.5f);
   EXPECT_FLOAT_EQ(clearValues.values[1].color.float32[1], 0.5f);
   EXPECT_FLOAT_EQ(clearValues.values[1].color.float32[2], 1.0f);
-  EXPECT_FLOAT_EQ(clearValues.values[1].color.float32[3], 1.0f);
+  EXPECT_FLOAT_EQ(clearValues.values[1].color.float32[3], 0.0f);
   EXPECT_FLOAT_EQ(clearValues.values[2].color.float32[0], 0.0f);
   EXPECT_FLOAT_EQ(clearValues.values[2].color.float32[1], 1.0f);
   EXPECT_FLOAT_EQ(clearValues.values[2].color.float32[2], 1.0f);

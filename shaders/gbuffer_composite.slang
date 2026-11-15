@@ -9,6 +9,7 @@
 [[vk::binding(4, 0)]] Texture2D<float4> gMaterialTexture;
 [[vk::binding(5, 0)]] Texture2D<float4> gEmissiveTexture;
 [[vk::binding(6, 0)]] Texture2D<float> gDepthTexture;
+[[vk::binding(17, 0)]] Texture2D<float4> gSpecularTexture;
 
 [[vk::push_constant]]
 ConstantBuffer<GBufferCompositePushConstants> pc;
@@ -109,7 +110,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     float4 emissiveSample = gEmissiveTexture.Load(int3(pixelCoord, 0));
     material.xyz = Finite3Or(material.xyz, float3(0.0, 1.0, 1.0));
     float3 emissive = Finite3Or(emissiveSample.rgb, 0.0.xxx);
-    float dielectricF0 = saturate(FiniteScalarOr(emissiveSample.a, 0.04));
+    float3 dielectricF0Color = gSpecularTexture.Load(int3(pixelCoord, 0)).rgb;
+    float dielectricF0 = saturate(MaxComponent3(Finite3Or(dielectricF0Color, 0.04.xxx)));
 
     float2 uv = (float2(pixelCoord) + 0.5.xx) / float2(max(width, 1u), max(height, 1u));
     float3 worldPosition = 0.0.xxx;

@@ -119,7 +119,8 @@ float3 SampleBackgroundSky(float2 uv, float environmentIntensity)
 float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                                  float3 albedo,
                                  float3 F0, float metallic, float roughness,
-                                 float3 geometricNormal, float3 normal, float3 V,
+                                 float3 geometricNormal, float3 normal,
+                                 float3 coatNormal, float3 V,
                                  float3 worldPosition,
                                  DeferredMaterialLayerTerms layerTerms,
                                  ExtendedPbrTerms extended,
@@ -180,7 +181,8 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
         worldPosition, albedo, F0, metallic, roughness, normal, V,
         layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
         layerTerms.sheenColor, layerTerms.sheenRoughness,
-        thinSurface || transmissionWeight > 0.0 || HasExtendedPbrEffect(extended), ltcTerms);
+        thinSurface || transmissionWeight > 0.0 || HasExtendedPbrEffect(extended),
+        ltcTerms, coatNormal);
     bool correctDiffuseFresnel = useLtc && any(ltcTerms.diffuseCorrectionScale > 0.0.xxx);
     bool sampleDirectTerms = useLtc &&
         (ltcTerms.stableWeight < 1.0 || ltcTerms.fresnelWeight < 1.0);
@@ -222,13 +224,14 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
             directLighting += EvaluateExtendedPbrLayeredDirectLight(
                 albedo, F0, metallic, roughness, normal, V, L, directRadiance,
                 layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
-                layerTerms.sheenColor, layerTerms.sheenRoughness, extended);
+                layerTerms.sheenColor, layerTerms.sheenRoughness, extended,
+                coatNormal);
         else if (sampleDirectTerms)
         {
             AreaLightDirectTerms sample = EvaluateAreaLightSampledDirectTerms(
                 albedo, F0, metallic, roughness, normal, V, L, directRadiance,
                 layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
-                layerTerms.sheenColor, layerTerms.sheenRoughness);
+                layerTerms.sheenColor, layerTerms.sheenRoughness, coatNormal);
             sampledTerms.stable += sample.stable;
             sampledTerms.fresnel += sample.fresnel;
         }
@@ -270,7 +273,7 @@ float3 EvaluateDeferredAreaLight(uint areaIndex, AreaLightData light,
                     frame, worldPosition, integrationSampleCount, albedo, F0,
                     metallic, roughness, normal, V, layerTerms.clearcoatFactor,
                     layerTerms.clearcoatRoughness, layerTerms.sheenColor,
-                    layerTerms.sheenRoughness) * areaShadowVisibility;
+                    layerTerms.sheenRoughness, coatNormal) * areaShadowVisibility;
         }
         directLighting += max(Finite3Or(ltcContribution, 0.0.xxx), 0.0.xxx);
     }
@@ -295,14 +298,13 @@ float4 fragMain(VSOutput input) : SV_Target0
         max(DeferredFiniteOr(uLighting.environmentIntensity, 0.0), 0.0);
     float bounceIntensity =
         max(DeferredFiniteOr(uLighting.bounceIntensity, 0.0), 0.0);
-    float3 emissiveTexel =
-        DeferredFinite3Or(gEmissiveTexture.Load(int3(pixelCoord, 0)).rgb,
-                          0.0.xxx);
+    float4 emissiveSample = gEmissiveTexture.Load(int3(pixelCoord, 0));
+    float3 emissive = DeferredFinite3Or(emissiveSample.rgb, 0.0.xxx);
 
     if (!DeferredValidSceneDepth(depth))
     {
         float3 skyColor = SampleBackgroundSky(uv, environmentIntensity);
-        return float4(skyColor + emissiveTexel, 1.0);
+        return float4(skyColor + emissive, 1.0);
     }
 
     float4 albedo = gAlbedoTexture.Load(int3(pixelCoord, 0));
@@ -313,18 +315,17 @@ float4 fragMain(VSOutput input) : SV_Target0
     if (albedo.a <= 0.0)
     {
         float3 skyColor = SampleBackgroundSky(uv, environmentIntensity);
-        return float4(skyColor + emissiveTexel, 1.0);
+        return float4(skyColor + emissive, 1.0);
     }
 
-    float3 normal = SafeNormalize(gNormalTexture.Load(int3(pixelCoord, 0)).xyz * 2.0 - 1.0,
+    float4 normalSample = gNormalTexture.Load(int3(pixelCoord, 0));
+    float3 normal = SafeNormalize(normalSample.xyz * 2.0 - 1.0,
                                   float3(0.0, 1.0, 0.0));
     float4 material = gMaterialTexture.Load(int3(pixelCoord, 0));
-    float4 emissiveSample = gEmissiveTexture.Load(int3(pixelCoord, 0));
     float4 specularSample = gSpecularTexture.Load(int3(pixelCoord, 0));
     material.xyz = DeferredFinite3Or(material.xyz, float3(0.0, 1.0, 1.0));
     material.w = DeferredFiniteOr(material.w, 0.0);
     specularSample.rgb = DeferredFinite3Or(specularSample.rgb, 0.04.xxx);
-    float3 emissive = DeferredFinite3Or(emissiveSample.rgb, emissiveTexel);
     uint materialIndex = DecodeGBufferMaterialIndex(material.w);
     GpuMaterial materialData = uMaterials[materialIndex];
     DeferredMaterialLayerTerms layerTerms =
@@ -335,6 +336,9 @@ float4 fragMain(VSOutput input) : SV_Target0
         saturate(DeferredFiniteOr(layerTerms.transmissionFactor, 0.0));
     layerTerms.clearcoatFactor =
         saturate(DeferredFiniteOr(layerTerms.clearcoatFactor, 0.0));
+    float3 coatNormal = DecodeDeferredClearcoatNormal(
+        float3(normalSample.a, specularSample.a, emissiveSample.a),
+        layerTerms.clearcoatFactor, normal);
     layerTerms.clearcoatRoughness =
         clamp(DeferredFiniteOr(layerTerms.clearcoatRoughness, 1.0),
               0.045, 1.0);
@@ -391,8 +395,10 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 shadowNormal = ExtendedPbrDeferredShadowNormal(
         geometricNormal, normal, L, extended);
     float NdotLForShadow = dot(shadowNormal, L);
+    bool coatFacesLight = layerTerms.clearcoatFactor > 0.0 &&
+        dot(coatNormal, V) > 0.0 && dot(coatNormal, L) > 0.0;
     if (!RayDirectionalSelected() && uLighting.shadowEnabled != 0u &&
-        (NdotLForShadow > 0.0 || thinSurface))
+        (NdotLForShadow > 0.0 || thinSurface || coatFacesLight))
     {
         shadowFactor = ComputeShadowFactor(
             worldPosition, shadowNormal, uLighting.directionalDirection.xyz,
@@ -421,7 +427,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     float3 directLighting = EvaluateExtendedPbrLayeredDirectLight(
         albedo.rgb, F0, metallic, roughness, normal, V, L, lightColor,
         layerTerms.clearcoatFactor, layerTerms.clearcoatRoughness,
-        layerTerms.sheenColor, layerTerms.sheenRoughness, extended) * directShadowVisibility;
+        layerTerms.sheenColor, layerTerms.sheenRoughness, extended,
+        coatNormal) * directShadowVisibility;
     directLighting += EvaluateDiffuseBounceLight(
         albedo.rgb * diffuseReflectionWeight, metallic,
         normal, geometricNormal, V, L, lightColor,
@@ -449,7 +456,8 @@ float4 fragMain(VSOutput input) : SV_Target0
     {
         directLighting += EvaluateDeferredAreaLight(
             areaIndex, uAreaLights[areaIndex], albedo.rgb, F0, metallic, roughness,
-            geometricNormal, normal, V, worldPosition, layerTerms, extended, thinSurface,
+            geometricNormal, normal, coatNormal, V, worldPosition,
+            layerTerms, extended, thinSurface,
             albedo.a, occlusion, bounceIntensity, input.pos);
     }
 
@@ -464,7 +472,6 @@ float4 fragMain(VSOutput input) : SV_Target0
     irradiance = lerp(irradiance, DdgiDiffuseIrradiance(ddgi), ddgiCoverage);
     float3 diffuseIBL = irradiance * albedo.rgb * diffuseReflectionWeight;
 
-    float3 R = reflect(-V, normal);
     float3 baseSpecularR = reflect(-V,
         ExtendedPbrIblNormal(normal, V, roughness, extended));
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
@@ -518,11 +525,13 @@ float4 fragMain(VSOutput input) : SV_Target0
     if (layerTerms.clearcoatFactor > 0.0)
     {
         float clearcoatRoughness = layerTerms.clearcoatRoughness;
+        float3 coatReflection = reflect(-V, coatNormal);
+        float coatNdotV = max(dot(coatNormal, V), 0.0);
         float3 clearcoatPrefiltered = DeferredFinite3Or(
-            gPrefilteredCubemap.SampleLevel(envSampler, RotateEnvironmentDirection(R, uLighting.environmentOrientation.xy),
+            gPrefilteredCubemap.SampleLevel(envSampler, RotateEnvironmentDirection(coatReflection, uLighting.environmentOrientation.xy),
                 clearcoatRoughness * maxMipLevel).rgb, 0.0.xxx) * environmentIntensity;
         float2 clearcoatBrdf = max(DeferredFinite2Or(
-            gBrdfLUT.Sample(brdfSampler, float2(NdotV, clearcoatRoughness)),
+            gBrdfLUT.Sample(brdfSampler, float2(coatNdotV, clearcoatRoughness)),
             0.0.xx), 0.0.xx);
         float3 clearcoatIbl = EvaluateSpecularIblMultipleScattering(
             clearcoatPrefiltered, IorToF0(1.5).xxx, clearcoatBrdf);
