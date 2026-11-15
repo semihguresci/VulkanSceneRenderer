@@ -66,14 +66,17 @@ The results record dispatch timing, texture sizes and owned allocations.
 The local Windows account lacks access to the NVIDIA hardware bandwidth
 counters. [NVIDIA counter permissions](https://developer.nvidia.com/nvidia-development-tools-solutions-err-nvgpuctrperm-nsight-graphics)
 
-To reproduce the checkerboard comparison, build the renderer, the CTest
+To reproduce the footprint comparisons, build the renderer, the CTest
 control shader and the path transport contracts. The GPU tests are opt-in.
+The normal and alpha test is registered on Windows when CMake finds a Vulkan
+validation-layer manifest. Its report records the exact loaded validator and
+hashes the runtime and fixture inputs before and after capture.
 
 ```powershell
 cmake --build out/build/windows-release --config Release --target VulkanSceneRenderer ddgi_footprint_control_shader path_transport_gpu_tests
 $env:CONTAINER_RUN_GPU_DDGI_FOOTPRINT = '1'
 $env:CONTAINER_RUN_GPU_PATH_TRANSPORT = '1'
-ctest --test-dir out/build/windows-release -C Release -R '^(ddgi_ray_footprint_gpu_regression|path_transport_gpu_tests)$' --output-on-failure
+ctest --test-dir out/build/windows-release -C Release -R '^(ddgi_ray_footprint(_normal_alpha)?_gpu_regression|path_transport_gpu_tests)$' --output-on-failure
 ```
 
 The checkerboard test stages a private copy of the renderer with a zero-width

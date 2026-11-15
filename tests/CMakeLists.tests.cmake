@@ -1205,6 +1205,16 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(ddgi_ray_footprint_gpu_regression PROPERTIES
         SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1200
         LABELS "ddgi;requires-vulkan;requires-display;visual-regression")
+    if(WIN32 AND VK_KHRONOS_VALIDATION_JSON)
+        add_test(NAME ddgi_ray_footprint_normal_alpha_gpu_regression
+            COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ray_footprint_normal_alpha_runtime_regression.py"
+                    --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+                    --layer-manifest "${VK_KHRONOS_VALIDATION_JSON}"
+                    --output "${TEST_RESULTS_DIR}/ddgi-ray-footprint-normal-alpha" --managed-output --require-opt-in)
+        set_tests_properties(ddgi_ray_footprint_normal_alpha_gpu_regression PROPERTIES
+            SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1800
+            LABELS "ddgi;requires-vulkan;requires-display;visual-regression")
+    endif()
 endif()
 
 add_test(NAME ifc_area_profiles_gpu_regression
