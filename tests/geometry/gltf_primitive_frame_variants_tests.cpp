@@ -1,4 +1,5 @@
 #include <Container/geometry/GltfPrimitiveFrameVariants.h>
+#include <Container/geometry/GltfModelLoader.h>
 
 #include <gtest/gtest.h>
 #include <glm/geometric.hpp>
@@ -61,6 +62,54 @@ void expectVerticesEqual(const std::vector<Vertex>& a, const std::vector<Vertex>
   }
 }
 } // namespace
+
+TEST(GltfPrimitiveFrameVariants, IndexedTangentSeamDuplicatesOnlyConflictingCornerFrames) {
+  using container::geometry::Mesh;
+  std::vector<Vertex> vertices(5);
+  const std::array<glm::vec3, 5> positions{{{0, 0, 0}, {1, 0, 0}, {1, 1, 0}, {0, 1, 0}, {2, 2, 0}}};
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    auto& vertex = vertices[i];
+    vertex.position = positions[i];
+    vertex.normal = {0, 0, 1};
+    vertex.tangent = {1, 0, 0, 1};
+    vertex.texCoord = glm::vec2(positions[i]);
+    vertex.texCoord1 = i == 3 ? glm::vec2(1, 0) : vertex.texCoord;
+    vertex.color = {.1f * float(i), .4f, .6f};
+    vertex.colorAlpha = .5f;
+  }
+  const std::vector<uint32_t> originalIndices{0, 1, 2, 0, 2, 3};
+  const Mesh source(vertices, originalIndices, 17, true);
+  const auto continuous = RegenerateGltfPrimitiveTangents(source, 0, true);
+  EXPECT_TRUE(continuous.sourceVertexMap.empty());
+  EXPECT_EQ(continuous.mesh.indices(), originalIndices);
+  EXPECT_EQ(continuous.mesh.vertices().size(), vertices.size());
+
+  const auto split = RegenerateGltfPrimitiveTangents(source, 1, true);
+  EXPECT_EQ(split.mesh.indices(), (std::vector<uint32_t>{0, 1, 2, 5, 6, 3}));
+  EXPECT_EQ(split.sourceVertexMap, (std::vector<uint32_t>{0, 1, 2, 3, 4, 0, 2}));
+  ASSERT_EQ(split.mesh.vertices().size(), split.sourceVertexMap.size());
+  EXPECT_EQ(split.mesh.materialIndex(), source.materialIndex());
+  EXPECT_EQ(split.mesh.disableBackfaceCulling(), source.disableBackfaceCulling());
+  for (size_t i = 0; i < split.sourceVertexMap.size(); ++i) {
+    const auto& vertex = split.mesh.vertices()[i];
+    const auto& original = vertices.at(split.sourceVertexMap[i]);
+    EXPECT_EQ(vertex.position, original.position);
+    EXPECT_EQ(vertex.normal, original.normal);
+    EXPECT_EQ(vertex.texCoord, original.texCoord);
+    EXPECT_EQ(vertex.texCoord1, original.texCoord1);
+    EXPECT_EQ(vertex.color, original.color);
+    EXPECT_FLOAT_EQ(vertex.colorAlpha, original.colorAlpha);
+  }
+  ASSERT_EQ(split.mesh.indices().size(), originalIndices.size());
+  for (size_t corner = 0; corner < originalIndices.size(); ++corner) {
+    const auto tangent = split.mesh.vertices().at(split.mesh.indices()[corner]).tangent;
+    const bool mirrored = corner >= 3;
+    expectVector(glm::vec3(tangent), mirrored ? glm::vec3(0, 1, 0) : glm::vec3(1, 0, 0));
+    EXPECT_FLOAT_EQ(tangent.w, mirrored ? -1.f : 1.f);
+  }
+  EXPECT_EQ(source.indices(), originalIndices);
+  expectVerticesEqual(source.vertices(), vertices);
+}
 
 TEST(GltfPrimitiveFrameVariants, OppositeUvsReplaceAuthoredTangentOnlyForTheRequestedBinding) {
   const auto primitive = triangle();

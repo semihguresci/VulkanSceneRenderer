@@ -1749,6 +1749,7 @@ SceneManager::canonicalPrimitiveFrameView(uint32_t runtime) const noexcept {
 PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
     uint32_t runtime, uint32_t texCoord, const PrimitiveNormalFrameLimits& limits) const {
   using namespace container::geometry::gltf;
+  using container::geometry::Vertex;
   const auto canonical = canonicalPrimitiveFrameView(runtime);
   if (!canonical || texCoord > 1)
     throw std::invalid_argument("Normal UV is absent or has no retained source frame");
@@ -1756,42 +1757,54 @@ PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
   const auto cornerCount = uint64_t(mesh.indices().size());
   const auto vertexCount = uint64_t(mesh.vertices().size());
   const bool changed = texCoord != canonical->metadata.bindNormalTexCoord();
+  const bool splitSeams = changed && !(canonical->definition && canonical->definition->hasMorphing());
   if (changed && !(canonical->metadata.availableTexCoordMask() & (1u << texCoord)))
     throw std::invalid_argument("Normal UV is absent from the retained primitive");
   // Limit the input to external MikkTSpace independently of the detached
   // storage limits. Its cost varies with welded vertex fans and UV seams.
-  constexpr uint64_t mikkCornerScratch = 512;
+  const uint64_t cornerWorkspace = 512 + (splitSeams ? 128 : 0);
+  const uint64_t vertexWorkspace = sizeof(Vertex) + (splitSeams ? sizeof(uint32_t) : 0) +
+      (splitSeams && canonical->definition && canonical->definition->hasSkinning()
+          ? sizeof(VertexSkinInfluences) : 0);
   if (!cornerCount || cornerCount % 3 || !vertexCount ||
-      cornerCount > limits.frames.maxTriangleCorners || vertexCount > limits.frames.maxInputVertices ||
+      cornerCount > std::min<uint64_t>(limits.frames.maxTriangleCorners, UINT32_MAX) ||
+      vertexCount > std::min<uint64_t>(limits.frames.maxInputVertices, UINT32_MAX) ||
+      vertexCount > limits.frames.maxWorkspaceBytes / vertexWorkspace ||
       (changed && (cornerCount > limits.maxGeneratedCorners ||
-                   cornerCount > limits.frames.maxWorkspaceBytes / mikkCornerScratch)) ||
-      vertexCount > limits.frames.maxWorkspaceBytes / sizeof(container::geometry::Vertex) ||
-      vertexCount > limits.frames.maxOutputBytes / sizeof(container::geometry::Vertex) ||
-      cornerCount > (limits.frames.maxOutputBytes - vertexCount * sizeof(container::geometry::Vertex)) / sizeof(uint32_t) ||
+                   cornerCount > (limits.frames.maxWorkspaceBytes - vertexCount * vertexWorkspace) / cornerWorkspace)) ||
       std::ranges::any_of(mesh.indices(), [vertexCount](uint32_t index) {return index >= vertexCount;}))
     throw std::length_error("Normal frame variant exceeds its work budget or has invalid triangles");
 
+  // Each corner can introduce at most one vertex and inherit one influence
+  // row. Budget the detached mesh, map and deformation together before Mikk.
+  const auto maxRenderVertices = vertexCount + (splitSeams ? cornerCount : 0);
+  auto frameLimits = limits.frames;
+  auto& bytes = frameLimits.maxOutputBytes;
+  const auto charge = [&](uint64_t count, uint64_t size) {
+    if (count > bytes / size)
+      throw std::length_error("Normal frame variant exceeds its storage budget");
+    bytes -= count * size;
+  };
+  charge(maxRenderVertices, sizeof(Vertex));
+  charge(cornerCount, sizeof(uint32_t));
+  if (splitSeams) charge(maxRenderVertices, sizeof(uint32_t));
   PrimitiveNormalFrameVariant result;
   if (canonical->definition && (canonical->definition->hasSkinning() ||
                                 canonical->definition->hasMorphing())) {
     const std::array requests{PrimitiveFrameBindingRequest{0,
         changed ? std::optional{texCoord} : std::nullopt}};
-    auto frameLimits = limits.frames;
-    auto& bytes = frameLimits.maxOutputBytes;
-    const auto charge = [&](uint64_t count, uint64_t size) {
-      if (count > bytes / size)
-        throw std::length_error("Normal frame variant exceeds its deformation storage budget");
-      bytes -= count * size;
-    };
-    charge(vertexCount, sizeof(container::geometry::Vertex));
-    charge(cornerCount, sizeof(uint32_t));
     const auto& definition = *canonical->definition;
     charge(1, sizeof(DeformationPrimitive));
-    charge(definition.bindVertices.size(), sizeof(container::geometry::Vertex));
+    charge(maxRenderVertices, sizeof(Vertex));
     charge(definition.meshDefaultWeights.size(), sizeof(float));
     charge(definition.influences.size(), sizeof(VertexSkinInfluences));
     for (const auto& vertex : definition.influences)
       charge(vertex.values.size(), sizeof(JointInfluence));
+    if (splitSeams && definition.hasSkinning()) {
+      charge(cornerCount, sizeof(VertexSkinInfluences));
+      for (const auto index : mesh.indices())
+        charge(definition.influences.at(index).values.size(), sizeof(JointInfluence));
+    }
     charge(definition.morphTargets.size(), sizeof(MorphTarget));
     for (const auto& target : definition.morphTargets) {
       charge(target.positions.size(), sizeof(glm::vec3));
@@ -1813,8 +1826,19 @@ PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
         std::vector<glm::vec3>{}.swap(target.tangents);
     }
   }
-  result.mesh = changed ? RegenerateGltfPrimitiveTangents(mesh, texCoord, !result.preparedFrames) : mesh;
-  if (result.definition) result.definition->bindVertices = result.mesh.vertices();
+  auto regenerated = changed ? RegenerateGltfPrimitiveTangents(mesh, texCoord, splitSeams)
+                             : GltfPrimitiveTangentVariant{mesh, {}};
+  result.mesh = std::move(regenerated.mesh);
+  if (result.definition) {
+    auto& definition = *result.definition;
+    definition.bindVertices = result.mesh.vertices();
+    const auto& sources = regenerated.sourceVertexMap;
+    if (definition.hasSkinning() && !sources.empty()) {
+      definition.influences.reserve(sources.size());
+      for (size_t vertex = vertexCount; vertex < sources.size(); ++vertex)
+        definition.influences.push_back(canonical->definition->influences.at(sources[vertex]));
+    }
+  }
   return result;
 }
 

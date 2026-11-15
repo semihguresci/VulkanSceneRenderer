@@ -17,6 +17,7 @@
 #include <optional>
 #include <span>
 #include <stop_token>
+#include <vector>
 
 namespace container::geometry {
 
@@ -89,10 +90,20 @@ Model RegenerateGltfBindTangents(
     const tinygltf::Model& source, const Model& originalBindGeometry,
     std::span<const uint32_t> normalTextureTexCoords);
 
-// A live normal-UV authoring edit requests a replacement indexed tangent
-// stream. Geometry consumers retain their original triangle/vertex addresses.
-[[nodiscard]] Mesh RegenerateGltfPrimitiveTangents(const Mesh&, uint32_t texCoord,
-                                                   bool requireConsistentCorners);
+struct GltfPrimitiveTangentVariant {
+  Mesh mesh;
+  // Empty for unchanged topology. Otherwise the original vertices keep their
+  // indices, and each appended vertex refers back to its original attributes.
+  std::vector<uint32_t> sourceVertexMap;
+};
+
+inline constexpr uint64_t kMaxLiveNormalFrameCorners = 8192;
+
+// Builds a detached render stream for a live normal-UV edit. When seam
+// splitting is enabled, distinct corner frames can share source attributes
+// but need separate tangent vertices. Triangle order and count stay intact.
+[[nodiscard]] GltfPrimitiveTangentVariant RegenerateGltfPrimitiveTangents(
+    const Mesh&, uint32_t texCoord, bool splitTangentSeams);
 [[nodiscard]] uint32_t GltfSourceNormalTexCoord(const tinygltf::Model&,
                                                 const tinygltf::Primitive&);
 

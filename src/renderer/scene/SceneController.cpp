@@ -1262,6 +1262,9 @@ SceneController::NormalFrameGeometry SceneController::configureNormalFrameGeomet
       container::scene::PrimitiveNormalFrameLimits variantLimits;
       variantLimits.frames.maxOutputBytes=std::min(variantLimits.frames.maxOutputBytes,limits.maxCpuBytes-budget.cpu);
       auto variant=sceneManager_.preparePrimitiveNormalFrameVariant(binding.primitive,binding.texCoord,variantLimits);
+      // The detached split stream also retains the original unreferenced vertices.
+      if(variant.mesh.vertices().size()>corners)
+        budget.bytes(variant.mesh.vertices().size()-corners,sizeof(Vertex)*8);
       meshes.push_back(std::move(variant.mesh));
       sources.push_back(binding.primitive);
       frames.push_back(std::move(variant.preparedFrames));

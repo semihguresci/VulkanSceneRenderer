@@ -37,6 +37,8 @@ extern "C" {
 #include <fstream>
 #include <iterator>
 #include <limits>
+#include <map>
+#include <numeric>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -391,8 +393,7 @@ struct MikkTangentContext {
   const std::vector<uint32_t>* indices{nullptr};
   std::vector<uint8_t>* tangentWritten{nullptr};
   uint32_t texCoord{0};
-  bool requireConsistentCorners{false};
-  bool conflictingCorners{false};
+  std::span<glm::vec4> cornerTangents;
 };
 
 uint32_t mikkVertexIndex(const SMikkTSpaceContext* context, int faceIndex,
@@ -476,10 +477,8 @@ void mikkSetTangent(const SMikkTSpaceContext* context, const float tangent[3],
   Vertex& vertex = (*data->vertices)[index];
   const auto frame = orthonormalizeTangent(
       vertex.normal, glm::vec4(tangent[0], tangent[1], tangent[2], sign));
-  if (data->requireConsistentCorners && (*data->tangentWritten)[index] &&
-      (frame.w != vertex.tangent.w ||
-       glm::dot(glm::vec3(frame), glm::vec3(vertex.tangent)) < 0.99999f))
-    data->conflictingCorners = true;
+  if (!data->cornerTangents.empty())
+    data->cornerTangents[size_t(faceIndex) * 3u + size_t(vertexIndex)] = frame;
   vertex.tangent = frame;
   (*data->tangentWritten)[index] = 1u;
 }
@@ -569,7 +568,7 @@ glm::vec4 makeGeneratedTangent(const Vertex& vertex,
 void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
                                   const std::vector<uint32_t>& indices,
                                   uint32_t texCoord, const std::stop_token& stop = {},
-                                  bool requireConsistentCorners = false) {
+                                  std::span<glm::vec4> cornerTangents = {}) {
   if (texCoord > 1)
     throw gltfError("normal texture", "tangent generation supports UV0 and UV1");
   std::vector<uint8_t> tangentWritten(vertices.size(), 0u);
@@ -578,7 +577,7 @@ void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
       &indices,
       &tangentWritten,
       texCoord,
-      requireConsistentCorners,
+      cornerTangents,
   };
   SMikkTSpaceInterface mikkInterface{};
   mikkInterface.m_getNumFaces = mikkGetNumFaces;
@@ -596,8 +595,7 @@ void generateTangentsFromGeometry(std::vector<Vertex>& vertices,
       !vertices.empty() && indices.size() >= 3u &&
       genTangSpaceDefault(&mikkContext) != 0;
   checkModelImportCancellation(stop);
-  if (tangentContext.conflictingCorners)
-    throw gltfError("normal texture", "the selected UV requires splitting shared vertices at tangent seams");
+  if (!generatedByMikk) std::ranges::fill(cornerTangents, glm::vec4(0));
 
   const auto bases = accumulateGeometryTangents(vertices, indices, texCoord, stop);
   for (size_t i = 0; i < vertices.size(); ++i) {
@@ -2118,12 +2116,60 @@ GltfLoadResult LoadModelWithSource(const std::string& path,
   }
 }
 
-Mesh RegenerateGltfPrimitiveTangents(const Mesh& source, uint32_t texCoord,
-                                    bool requireConsistentCorners) {
+GltfPrimitiveTangentVariant RegenerateGltfPrimitiveTangents(
+    const Mesh& source, uint32_t texCoord, bool splitTangentSeams) {
+  const auto vertexCount = source.vertices().size();
+  const auto cornerCount = source.indices().size();
+  // MikkTSpace packs a face and corner into a signed int.
+  constexpr auto maxMikkCorners = (uint64_t{std::numeric_limits<int>::max()} / 4) * 3;
+  constexpr auto maxVertexCount = std::numeric_limits<uint32_t>::max();
+  if (vertexCount > maxVertexCount || cornerCount > maxMikkCorners || cornerCount % 3 != 0 ||
+      std::ranges::any_of(source.indices(), [vertexCount](uint32_t index) { return index >= vertexCount; }))
+    throw gltfError("normal texture", "tangent generation requires complete in-range triangles");
   auto vertices = source.vertices();
-  generateTangentsFromGeometry(vertices, source.indices(), texCoord, {}, requireConsistentCorners);
-  return Mesh(std::move(vertices), source.indices(), source.materialIndex(),
-              source.disableBackfaceCulling());
+  auto indices = source.indices();
+  std::vector<glm::vec4> cornerTangents(splitTangentSeams ? cornerCount : 0, glm::vec4(0));
+  generateTangentsFromGeometry(vertices, indices, texCoord, {}, cornerTangents);
+  std::vector<uint32_t> sourceVertexMap;
+  if (splitTangentSeams) {
+    // Select the first frame for each original vertex. Remember each other
+    // distinct frame once, regardless of how many faces use it.
+    std::vector<uint32_t> firstCorner(vertexCount, UINT32_MAX);
+    std::map<std::pair<uint32_t, std::array<float, 4>>, uint32_t> splitVertices;
+    struct SplitVertex { uint32_t source; uint32_t corner; };
+    std::vector<SplitVertex> duplicates;
+    for (uint32_t corner = 0; corner < cornerCount; ++corner) {
+      const auto index = indices[corner];
+      auto& tangent = cornerTangents[corner];
+      tangent = tangent.w == 0.0f ? vertices[index].tangent
+          : orthonormalizeTangent(vertices[index].normal, tangent);
+      auto& first = firstCorner[index];
+      if (first == UINT32_MAX) first = corner;
+      if (tangent == cornerTangents[first]) continue;
+      const auto key = std::pair{index, std::array{tangent.x, tangent.y, tangent.z, tangent.w}};
+      if (duplicates.size() >= maxVertexCount - vertexCount)
+        throw gltfError("normal texture", "tangent seam split exceeds the index range");
+      const auto [entry, added] = splitVertices.try_emplace(key, uint32_t(vertexCount + duplicates.size()));
+      if (added) duplicates.push_back({index, corner});
+      indices[corner] = entry->second;
+    }
+    if (!duplicates.empty()) {
+      vertices.reserve(vertexCount + duplicates.size());
+      sourceVertexMap.reserve(vertexCount + duplicates.size());
+      sourceVertexMap.resize(vertexCount);
+      std::iota(sourceVertexMap.begin(), sourceVertexMap.end(), 0u);
+      for (size_t vertex = 0; vertex < vertexCount; ++vertex)
+        if (firstCorner[vertex] != UINT32_MAX) vertices[vertex].tangent = cornerTangents[firstCorner[vertex]];
+      for (const auto duplicate : duplicates) {
+        auto vertex = vertices[duplicate.source];
+        vertex.tangent = cornerTangents[duplicate.corner];
+        vertices.push_back(vertex);
+        sourceVertexMap.push_back(duplicate.source);
+      }
+    }
+  }
+  return {Mesh(std::move(vertices), std::move(indices), source.materialIndex(),
+               source.disableBackfaceCulling()), std::move(sourceVertexMap)};
 }
 
 uint32_t GltfSourceNormalTexCoord(const tinygltf::Model& source,
