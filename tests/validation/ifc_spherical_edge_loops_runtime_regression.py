@@ -1,6 +1,7 @@
 """Capture IFC spherical shells whose explicit edge curves pass through poles."""
 
 import argparse
+from itertools import pairwise
 import math
 import os
 from pathlib import Path
@@ -110,25 +111,33 @@ def opposite_hole(step, context):
     frame = placement(step, center, pole, reference)
     surface = step.add("IFCSPHERICALSURFACE", frame, HOLED_RADIUS)
     meridian = step.add("IFCCIRCLE", placement(step, center, (1., 0., 0.), reference), HOLED_RADIUS)
-    low, high = -math.pi / 2., math.pi / 2.
-    trim = step.add("IFCTRIMMEDCURVE", meridian, f"(IFCPARAMETERVALUE({low}))",
-                    f"(IFCPARAMETERVALUE({high}))", ".T.", ".PARAMETER.")
-    pcurves = []
-    for angle in (0., math.tau):
-        a, b = step.point(angle, low), step.point(angle, high)
-        line = step.add("IFCPOLYLINE", f"({a},{b})")
-        definition = step.add("IFCDEFINITIONALREPRESENTATION", context, "$", "'Curve2D'", f"({line})")
-        pcurves.append(step.add("IFCPCURVE", surface, definition))
-    curve = step.add("IFCSEAMCURVE", trim, f"({','.join(pcurves)})", ".CURVE3D.")
-    south = step.add("IFCVERTEXPOINT", step.point(0., -HOLED_RADIUS, 0.))
-    north = step.add("IFCVERTEXPOINT", step.point(0., HOLED_RADIUS, 0.))
-    seam = step.add("IFCEDGECURVE", south, north, curve, ".T.")
+    latitudes = (-math.pi / 2., -.41, .23, math.pi / 2.)
+    points = [(0., -HOLED_RADIUS, 0.)]
+    points.extend((0., HOLED_RADIUS * math.sin(lat), -HOLED_RADIUS * math.cos(lat)) for lat in latitudes[1:-1])
+    points.append((0., HOLED_RADIUS, 0.))
+    vertices = [step.add("IFCVERTEXPOINT", step.point(*point)) for point in points]
+    seam = []
+    for (low, high), (first, last) in zip(pairwise(latitudes), pairwise(vertices), strict=True):
+        trim = step.add("IFCTRIMMEDCURVE", meridian, f"(IFCPARAMETERVALUE({low}))",
+                        f"(IFCPARAMETERVALUE({high}))", ".T.", ".PARAMETER.")
+        pcurves = []
+        for angle in (0., math.tau):
+            a, b = step.point(angle, low), step.point(angle, high)
+            line = step.add("IFCPOLYLINE", f"({a},{b})")
+            definition = step.add("IFCDEFINITIONALREPRESENTATION", context, "$", "'Curve2D'", f"({line})")
+            pcurves.append(step.add("IFCPCURVE", surface, definition))
+        curve = step.add("IFCSEAMCURVE", trim, f"({','.join(pcurves)})", ".CURVE3D.")
+        seam.append(step.add("IFCEDGECURVE", first, last, curve, ".T."))
+    forward = tuple((edge, True) for edge in seam)
+    backward = tuple((edge, False) for edge in reversed(seam))
+    # Start at the first interior join so the ascending run wraps the edge loop.
+    seam_loop = forward[1:] + backward + forward[:1]
 
     disk_frame = placement(step, (0., 0., HOLE_HEIGHT), (0., 0., 1.), (1., 0., 0.))
     circle = step.add("IFCCIRCLE", disk_frame, HOLE_RADIUS)
     start = step.add("IFCVERTEXPOINT", step.point(HOLE_RADIUS, 0., HOLE_HEIGHT))
     rim = step.add("IFCEDGECURVE", start, start, circle, ".T.")
-    wall = advanced_face(step, surface, (((seam, True), (seam, False)), ((rim, False),)),
+    wall = advanced_face(step, surface, (seam_loop, ((rim, False),)),
                          "Spherical wall around the hole", PRODUCTS[2].color)
     disk = advanced_face(step, step.add("IFCPLANE", disk_frame), (((rim, True),),),
                          "Disk in the spherical hole", HOLE_DISK_COLOR)

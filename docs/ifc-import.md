@@ -169,19 +169,23 @@ source boundary positions and native angular pcurves. The importer tests up to
 six candidate charts and validates loop orientation, hole containment, chord
 error and closed-shell edge reuse before publishing geometry.
 
-A full sphere can use two opposite uses of one pole-to-pole `IfcSeamCurve`.
-A trimmed cap can use a pole-to-rim seam with a single monotone rim. Both
-forms verify the two native meridian pcurves. The mesher partitions the face
-using the source seam and a second shared meridian. For a trimmed cap the
+A full sphere can traverse a pole-to-pole meridian in both directions.
+A trimmed cap can use a pole-to-rim meridian with a single monotone rim. In
+both cases, the meridian may be split across several `IfcSeamCurve` edges.
+Each edge must appear twice in opposite directions within the same face bound,
+and the return path must use those edges in reverse order. The importer
+verifies both native pcurves on every segment and preserves the source join
+vertices. The mesher partitions the face using the source seam and a second
+shared meridian. For a trimmed cap the
 second cut ends at an existing rim vertex. The importer changes the generated
 meridian when a hole obstructs the opposite cut. It checks projected hole
 edges with their chord tolerance and keeps each hole within one chart. Holes
-that meet the authored seam and faces with multiple seams remain diagnosed.
+that meet the authored seam and faces with separate meridians remain diagnosed.
 
 Run `ifc_spherical_edge_loops_gpu_regression` with
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to check shared-edge hemispheres, a
-tilted cap and a disk that fills a spherical hole in Forward and Deferred
-raster with TAA off and on.
+tilted cap and a sphere with a split seam and a disk filling its hole in
+Forward and Deferred raster with TAA off and on.
 
 An advanced face on a surface of revolution can use a Cartesian chart at a
 smooth axis endpoint. Clamped polynomial splines and single-span rational
@@ -193,9 +197,10 @@ retains an apex inside a shared trim when it can verify its native parameter.
 Sector faces and rims preserve their source samples. An optional apex vertex
 loop becomes an exact interior vertex, including on faces with holes.
 
-A single polar seam can join the apex to a monotone rim with two opposite
-edge uses and two verified native pcurves. The same cut construction as for
-spherical caps selects an original rim vertex clear of the holes. Cusps, axis crossings,
+A polar seam can join the apex to a monotone rim, including a chain of
+segments with opposite uses and two verified native pcurves per segment.
+The same cut construction as for spherical caps selects an original rim
+vertex clear of the holes. Cusps, axis crossings,
 nonmonotone meridians, unsupported spline creases, composite axis-touching
 profiles and standalone polar tessellation remain outside this coverage.
 Run `ifc_revolution_axis_gpu_regression` with
@@ -853,7 +858,7 @@ in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
 implementation tasks and independent geometry/rendering acceptance criteria.
 
 Ambiguous tag transitions, guided or incompatible sharp joins, other singular
-charts and polar trims with multiple seams or holes meeting an authored
+charts and polar trims with separate meridians or holes meeting an authored
 seam remain outside native coverage. Swept surface limits include profiles
 with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.

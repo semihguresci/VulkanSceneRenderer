@@ -1150,12 +1150,12 @@ struct CurvedBuilder : StepBuilder {
                "," + direction(x) + ")");
   }
   std::string edge(const std::string &a, const std::string &b,
-                   const std::string &curve) {
+                   const std::string &curve, bool sameSense = true) {
     for (const auto &p : {a, b})
       if (!vertices.contains(p))
         vertices[p] = add("IFCVERTEXPOINT(" + p + ")");
     return add("IFCEDGECURVE(" + vertices[a] + "," + vertices[b] + "," + curve +
-               ",.T.)");
+               (sameSense ? ",.T.)" : ",.F.)"));
   }
   std::string line(const std::string &a, const std::string &b) {
     return edge(a, b, add("IFCPOLYLINE((" + a + "," + b + "))"));
@@ -1830,30 +1830,50 @@ TEST(IfcCurvedBrep, SphericalEdgeLoopInsertsInteriorPolesOnSharedMeridian) {
   }
 }
 
+struct MeridianSeamEncoding {
+  double otherLongitude = 360.;
+  double otherEndOffset = 0.;
+  bool sameSense = true;
+};
+
+std::string polarMeridianEdge(CurvedBuilder &step, const std::string &surface,
+                              const std::string &curve,
+                              const std::string &first, const std::string &last,
+                              double sourceFirst, double sourceLast,
+                              MeridianSeamEncoding encoding) {
+  const auto pcurve = [&](double u, double lastV) {
+    const auto uv = [&](double v) {
+      return step.add("IFCCARTESIANPOINT((" + number(u) + "," + number(v) +
+                      "))");
+    };
+    const auto a = uv(sourceFirst), b = uv(lastV);
+    const auto line = step.add("IFCPOLYLINE((" + a + "," + b + "))");
+    return step.add("IFCPCURVE(" + surface + "," + line + ")");
+  };
+  const auto left = pcurve(0., sourceLast);
+  const auto right =
+      pcurve(encoding.otherLongitude, sourceLast + encoding.otherEndOffset);
+  const auto seam = step.add("IFCSEAMCURVE(" + curve + ",(" + left + "," +
+                             right + "),.CURVE3D.)");
+  return step.edge(first, last, seam, encoding.sameSense);
+}
+
 std::string sphericalMeridianSeam(CurvedBuilder &step,
                                   const std::string &surface,
                                   const std::string &first,
                                   const std::string &last, double fromLatitude,
                                   double toLatitude,
-                                  std::string_view otherLongitude = "360.") {
+                                  MeridianSeamEncoding encoding = {}) {
   const auto frame = step.placement({0, 0, 0}, {0, -1, 0});
   const auto circle = step.add("IFCCIRCLE(" + frame + ",2.)");
-  const auto from = number(fromLatitude), to = number(toLatitude);
+  const double from = encoding.sameSense ? fromLatitude : toLatitude;
+  const double to = encoding.sameSense ? toLatitude : fromLatitude;
   const auto curve =
-      step.add("IFCTRIMMEDCURVE(" + circle + ",(IFCPARAMETERVALUE(" + from +
-               ")),(IFCPARAMETERVALUE(" + to + ")),.T.,.PARAMETER.)");
-  const auto pcurve = [&](std::string_view u) {
-    const auto a =
-        step.add("IFCCARTESIANPOINT((" + std::string(u) + "," + from + "))");
-    const auto b =
-        step.add("IFCCARTESIANPOINT((" + std::string(u) + "," + to + "))");
-    const auto line = step.add("IFCPOLYLINE((" + a + "," + b + "))");
-    return step.add("IFCPCURVE(" + surface + "," + line + ")");
-  };
-  const auto left = pcurve("0."), right = pcurve(otherLongitude);
-  const auto seam = step.add("IFCSEAMCURVE(" + curve + ",(" + left + "," +
-                             right + "),.CURVE3D.)");
-  return step.edge(first, last, seam);
+      step.add("IFCTRIMMEDCURVE(" + circle + ",(IFCPARAMETERVALUE(" +
+               number(from) + ")),(IFCPARAMETERVALUE(" + number(to) + "))," +
+               (to > from ? ".T.,.PARAMETER.)" : ".F.,.PARAMETER.)"));
+  return polarMeridianEdge(step, surface, curve, first, last, from, to,
+                           encoding);
 }
 
 TEST(IfcCurvedBrep, SphericalEdgeLoopAcceptsTheSameAuthoredMeridianSeamTwice) {
@@ -1895,8 +1915,9 @@ TEST(IfcCurvedBrep, SphericalEdgeLoopKeepsTrimmedMeridianSeamAndRimWithDisk) {
     const auto rim = step.circle(std::sqrt(radius * radius - z * z), z);
     const auto surface =
         step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
-    const auto seam = sphericalMeridianSeam(
-        step, surface, rim.point, north, 30., 90., invalid ? "180." : "360.");
+    const auto seam =
+        sphericalMeridianSeam(step, surface, rim.point, north, 30., 90.,
+                              {.otherLongitude = invalid ? 180. : 360.});
     step.face({step.bound({{seam, false}, {rim.edge, true}, {seam, true}}, true,
                           !reverseBound)},
               surface);
@@ -2090,6 +2111,135 @@ TEST(IfcCurvedBrep, SphericalFullMeridianSeamRejectsAContactingHole) {
   const auto &reason = model.importReport.diagnostics.front().reason;
   EXPECT_NE(reason.find("seam"), std::string::npos) << reason;
   EXPECT_NE(reason.find("hole"), std::string::npos) << reason;
+}
+
+void expectPolarMeridianJoin(const Model &model, glm::vec3 join,
+                             const auto &onMeridian, unsigned orderAxis) {
+  // The exact authored join must have a consecutive edge on each side.
+  // Each edge must be used twice and in opposite directions across the seam.
+  std::map<std::array<float, 3>, std::pair<unsigned, int>> neighbors;
+  for (size_t i = 0; i < model.indices.size(); i += 3) {
+    for (size_t j = 0; j < 3; ++j) {
+      const auto a = model.vertices.at(model.indices.at(i + j)).position;
+      const auto b =
+          model.vertices.at(model.indices.at(i + (j + 1) % 3)).position;
+      const bool outgoing = a == join && onMeridian(b);
+      const bool incoming = b == join && onMeridian(a);
+      if (outgoing == incoming)
+        continue;
+      const auto p = outgoing ? b : a;
+      auto &[uses, winding] = neighbors[{p.x, p.y, p.z}];
+      ++uses;
+      winding += outgoing ? 1 : -1;
+    }
+  }
+  ASSERT_EQ(neighbors.size(), 2u);
+  unsigned prior = 0;
+  for (const auto &[point, incidence] : neighbors) {
+    EXPECT_EQ(incidence, (std::pair{2u, 0}));
+    EXPECT_NE(point[orderAxis], join[orderAxis]);
+    prior += point[orderAxis] < join[orderAxis];
+  }
+  EXPECT_EQ(prior, 1u);
+}
+
+glm::dvec3 sphereMeridianPoint(double latitude) {
+  const double radians = latitude * pi / 180.;
+  return {2. * std::cos(radians), 0., 2. * std::sin(radians)};
+}
+
+enum class SplitMeridianError { None, WrongPcurve, InteriorRim };
+
+std::string splitSphericalMeridian(
+    bool trimmed, double splitLatitude, bool reversed,
+    SplitMeridianError defect = SplitMeridianError::None) {
+  CurvedBuilder step;
+  const auto north = step.point({0, 0, 2});
+  const auto rim = trimmed ? step.circle(std::sqrt(3.), 1.)
+                           : CurvedBuilder::Circle{step.point({0, 0, -2}), {}};
+  const auto split = step.point(sphereMeridianPoint(splitLatitude));
+  const auto sphere =
+      step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
+  const auto lower = sphericalMeridianSeam(step, sphere, rim.point, split,
+                                           trimmed ? 30. : -90., splitLatitude);
+  const auto upper = sphericalMeridianSeam(
+      step, sphere, split, north, splitLatitude, 90.,
+      {.otherEndOffset = defect == SplitMeridianError::WrongPcurve ? -.75 : 0.,
+       .sameSense = !reversed});
+  std::vector<CurvedBuilder::Use> uses;
+  if (trimmed) {
+    uses = {{upper, false},
+            {lower, false},
+            {rim.edge, true},
+            {lower, true},
+            {upper, true}};
+  } else
+    uses = {{lower, true}, {upper, true}, {upper, false}, {lower, false}};
+  if (defect == SplitMeridianError::InteriorRim) {
+    const auto point = sphereMeridianPoint(splitLatitude);
+    const auto frame = step.placement({0, 0, point.z});
+    const auto circle = step.add("IFCCIRCLE(" + frame + "," + number(point.x) + ")");
+    const auto extra = step.edge(split, split, circle);
+    uses.insert(uses.begin() + 1, {extra, true});
+    step.plane({{extra, false}}, {0, 0, point.z}, {0, 0, -1});
+  }
+  if (reversed)
+    std::rotate(uses.begin(), uses.begin() + 1, uses.end());
+  step.face({step.bound(std::move(uses), true, !reversed)}, sphere);
+  if (trimmed)
+    step.plane({{rim.edge, false}}, {0, 0, 1}, {0, 0, -1});
+  const auto brep = step.finish();
+  return fixture(step.definitions + degrees(), brep);
+}
+
+TEST(IfcCurvedBrep, SplitSphericalMeridianSeamsPreserveAuthoredJoin) {
+  for (const bool trimmed : {false, true}) {
+    const double latitude = trimmed ? 57. : 17.;
+    for (const bool reversed : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "trimmed=" << trimmed << " reversed=" << reversed);
+      const auto source = splitSphericalMeridian(trimmed, latitude, reversed);
+      if (!reversed)
+        exportCurvedFixture(trimmed ? "sphere-trimmed-split-seam"
+                                    : "sphere-full-split-seam",
+                            source);
+      const auto model = LoadFromStep(source);
+      EXPECT_NO_FATAL_FAILURE(complete(model));
+      if (model.indices.empty())
+        continue;
+      watertight(model);
+      EXPECT_NEAR(volume(model), trimmed ? 5 * pi / 3 : 32 * pi / 3,
+                  trimmed ? .015 : .06);
+      expectPolarMeridianJoin(
+          model, glm::vec3(sphereMeridianPoint(latitude)),
+          [](glm::vec3 p) { return p.x > 0.f && p.y == 0.f; }, 2);
+    }
+  }
+}
+
+TEST(IfcCurvedBrep, SplitSphericalMeridianRejectsAnIncorrectPcurveEndpoint) {
+  const auto model =
+      LoadFromStep(splitSphericalMeridian(false, 17., false,
+                                         SplitMeridianError::WrongPcurve));
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+  EXPECT_TRUE(model.elements.empty());
+  EXPECT_TRUE(model.vertices.empty());
+  EXPECT_TRUE(model.indices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  const auto &reason = model.importReport.diagnostics.front().reason;
+  EXPECT_NE(reason.find("seam"), std::string::npos) << reason;
+  EXPECT_NE(reason.find("pcurve"), std::string::npos) << reason;
+}
+
+TEST(IfcCurvedBrep, SplitSphericalMeridianRejectsARimAtAnInteriorJoin) {
+  const auto model = LoadFromStep(splitSphericalMeridian(
+      true, 57., false, SplitMeridianError::InteriorRim));
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+  EXPECT_TRUE(model.vertices.empty());
+  EXPECT_TRUE(model.indices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  const auto &reason = model.importReport.diagnostics.front().reason;
+  EXPECT_NE(reason.find("contiguous closed rim"), std::string::npos) << reason;
 }
 
 TEST(IfcCurvedBrep, SphericalEdgeLoopCapThroughPoleRetainsHoleAndDisk) {
@@ -2435,6 +2585,50 @@ TEST(IfcCurvedBrep, SmoothRevolutionApexPreservesSharedMeridianSeam) {
     EXPECT_GE(seamHeights.size(), 16u);
     exportCurvedFixture("revolution-apex-seam", source);
   }
+}
+
+TEST(IfcCurvedBrep, SmoothRevolutionApexPreservesSplitMeridianJoin) {
+  CurvedBuilder step;
+  constexpr double t = .39;
+  const glm::dvec3 joinPosition(2 * t, t * t, 0);
+  const auto surface = standardParaboloid.surface(step);
+  const auto apex = step.point({0, 0, 0}), join = step.point(joinPosition),
+             rim = step.point({2, 1, 0});
+  const auto segment = [&](const std::string &start, const std::string &end,
+                           double a, double b) {
+    // Restrict the authored meridian P(t)=(2t,t^2,0) to the span [a,b].
+    const auto middle = step.point({a + b, a * b, 0});
+    const double firstV = 2 + 3 * a, lastV = 2 + 3 * b;
+    const auto curve = step.add(
+        "IFCBSPLINECURVEWITHKNOTS(2,(" + step.refs({start, middle, end}) +
+        "),.UNSPECIFIED.,.F.,.F.,(3,3),(" + number(firstV) + "," +
+        number(lastV) + "),.UNSPECIFIED.)");
+    return polarMeridianEdge(step, surface, curve, start, end, firstV, lastV,
+                             {});
+  };
+  const auto inner = segment(apex, join, 0., t),
+             outer = segment(join, rim, t, 1.);
+  const auto rimCircle =
+      step.add("IFCCIRCLE(" + step.placement({0, 1, 0}, {0, 1, 0}) + ",2.)");
+  const auto rimEdge = step.edge(rim, rim, rimCircle);
+  step.face({step.bound({{inner, true},
+                         {outer, true},
+                         {rimEdge, false},
+                         {outer, false},
+                         {inner, false}})},
+            surface);
+  step.plane({{rimEdge, true}}, {0, 1, 0}, {0, 1, 0});
+  const auto brep = step.finish();
+  const auto source = fixture(step.definitions + degrees(), brep);
+  exportCurvedFixture("revolution-apex-split-seam", source);
+  const auto model = LoadFromStep(source);
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  watertight(model);
+  EXPECT_NEAR(volume(model), 2 * pi, .025);
+  expectParaboloidNormals(model, standardParaboloid, true);
+  expectPolarMeridianJoin(
+      model, glm::vec3(joinPosition),
+      [](glm::vec3 p) { return p.x > 0.f && p.z == 0.f; }, 0);
 }
 
 TEST(IfcCurvedBrep, SmoothRevolutionKeepsNativeAngleAndMeridianAtApex) {

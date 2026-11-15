@@ -3504,7 +3504,7 @@ private:
   struct BrepSeamUse {
     uint32_t edge, bound;
     bool forward, outer;
-    size_t firstSample, sampleCount, boundUseCount;
+    size_t firstSample, sampleCount;
   };
 
   struct BrepChartUse {
@@ -4199,13 +4199,20 @@ private:
     return true;
   }
 
+  double polarSeamTolerance(const detail::ParametricSurface &surface) const {
+    const double radius = surface.sphere ? surface.sphere->radius
+                                         : surface.radialGraph->maxRadius;
+    return std::max(1e-7 / unitScale_, radius * 4e-7);
+  }
+
   bool validateSphericalBrepSeam(const BrepEdge &edge, uint32_t surfaceRef,
                                  const detail::ParametricSurface &surface,
-                                 const Entity &seam, bool trimmed,
-                                 bool &poleAtStart, std::string &error) const {
+                                 const Entity &seam,
+                                 std::pair<double, double> &extent,
+                                 std::string &error) const {
     const auto &sphere = *surface.sphere;
     const auto &f = sphere.frame;
-    const double tolerance = std::max(1e-7 / unitScale_, sphere.radius * 4e-7);
+    const double tolerance = polarSeamTolerance(surface);
     const double halfPi = std::numbers::pi / 2;
     const double radians = surface.angularScale.x;
     const double angularTolerance = tolerance / sphere.radius;
@@ -4213,7 +4220,7 @@ private:
       error = "Spherical seam #" + std::to_string(seam.id) + ": " + reason;
       return false;
     };
-    if (!(radians > 0) || !std::isfinite(radians) || edge.points.size() < 3 ||
+    if (!(radians > 0) || !std::isfinite(radians) || edge.points.size() < 2 ||
         edge.start == edge.end)
       return fail("expected an open meridian edge");
     const auto meridianLatitude =
@@ -4230,15 +4237,6 @@ private:
                end = meridianLatitude(edge.points.back());
     if (!start || !end)
       return fail("edge endpoints do not lie on the placed meridian");
-    poleAtStart = std::abs(std::abs(*start) - halfPi) <= angularTolerance;
-    const bool poleAtEnd =
-        std::abs(std::abs(*end) - halfPi) <= angularTolerance;
-    if (trimmed ? poleAtStart == poleAtEnd
-                : !poleAtStart || !poleAtEnd ||
-                      std::abs(*start + *end) > angularTolerance)
-      return fail(
-          trimmed ? "trimmed seam requires one placed sphere pole"
-                  : "edge must have the two placed sphere poles as endpoints");
     if (std::abs(*end - *start) <= angularTolerance)
       return fail("edge has no meridian extent");
     const double direction = *end > *start ? 1 : -1;
@@ -4291,16 +4289,17 @@ private:
       }
       meridianSides[side] = true;
     }
+    extent = {*start, *end};
     return true;
   }
 
   bool validateRevolvedBrepSeam(const BrepEdge &edge, uint32_t surfaceRef,
                                 const detail::ParametricSurface &surface,
-                                const Entity &seam, bool &apexAtStart,
+                                const Entity &seam,
+                                std::pair<double, double> &extent,
                                 std::string &error) const {
     const auto &graph = *surface.radialGraph;
-    const double tolerance =
-        std::max(1e-7 / unitScale_, graph.maxRadius * 4e-7);
+    const double tolerance = polarSeamTolerance(surface);
     const double radians = surface.angularScale.x;
     const double uTolerance = 1e-7 / radians;
     const auto fail = [&](std::string reason) {
@@ -4309,23 +4308,25 @@ private:
     };
     if (!(radians > 0) || !std::isfinite(radians) || edge.points.size() < 2 ||
         edge.start == edge.end)
-      return fail("expected an open meridian from the smooth apex");
-    const auto pointAtApex = [&](glm::vec3 p) {
-      return glm::length(glm::dvec3(p) - graph.frame.origin) <= tolerance;
+      return fail("expected an open meridian edge");
+    const auto radiusAt = [&](glm::vec3 point) -> std::optional<double> {
+      const auto uv = graph.inverse(glm::dvec3(point));
+      if (!uv || std::abs(uv->y) > tolerance || uv->x < -tolerance)
+        return std::nullopt;
+      return uv->x;
     };
-    apexAtStart = pointAtApex(edge.points.front());
-    if (apexAtStart == pointAtApex(edge.points.back()))
-      return fail("exactly one seam endpoint must be the smooth apex");
-    const auto orientedIndex = [&](size_t i) {
-      return apexAtStart ? i : edge.points.size() - 1 - i;
-    };
-    double previousRadius = 0.;
-    for (size_t i = 0; i < edge.points.size(); ++i) {
-      const auto uv = graph.inverse(glm::dvec3(edge.points[orientedIndex(i)]));
-      if (!uv || std::abs(uv->y) > tolerance || uv->x < -tolerance ||
-          uv->x < previousRadius - tolerance)
+    const auto firstRadius = radiusAt(edge.points.front()),
+               lastRadius = radiusAt(edge.points.back());
+    if (!firstRadius || !lastRadius ||
+        std::abs(*lastRadius - *firstRadius) <= tolerance)
+      return fail("edge has no zero-angle meridian extent");
+    const double radialDirection = *lastRadius > *firstRadius ? 1. : -1.;
+    double previousRadius = *firstRadius;
+    for (const auto &point : edge.points) {
+      const auto radius = radiusAt(point);
+      if (!radius || radialDirection * (*radius - previousRadius) < -tolerance)
         return fail("the shared edge must follow the zero-angle meridian");
-      previousRadius = uv->x;
+      previousRadius = *radius;
     }
     const auto pcurves = refList(argAt(seam, 1));
     if (pcurves.size() != 2 ||
@@ -4367,6 +4368,148 @@ private:
         previous = uv.y;
       }
       sides[side] = true;
+    }
+    extent = {*firstRadius, *lastRadius};
+    return true;
+  }
+
+  bool buildBrepPolarSeam(std::span<const BrepSeamUse> uses,
+                          const BrepEdges &edgeCache, uint32_t surfaceRef,
+                          const detail::ParametricSurface &surface,
+                          std::vector<std::vector<glm::vec3>> &loops,
+                          std::vector<glm::vec3> &seam,
+                          std::string &error) const {
+    const auto fail = [&](std::string reason) {
+      error = std::move(reason);
+      return false;
+    };
+    std::unordered_map<uint32_t, const BrepSeamUse *> firstUses;
+    std::vector<const BrepSeamUse *> paired;
+    for (const auto &use : uses) {
+      const auto [it, first] = firstUses.emplace(use.edge, &use);
+      if (first)
+        continue;
+      const auto *other = it->second;
+      if (!other || use.forward == other->forward || use.bound != other->bound)
+        return fail("Polar seam requires two opposite uses in one outer bound");
+      paired.push_back(other);
+      paired.push_back(&use);
+      it->second = nullptr;
+    }
+    // A seam-typed edge used only once on this face can belong to an adjoining
+    // face. Only repeated edge identities form the two sides of this cut.
+    if (paired.empty())
+      return true;
+    const auto &first = *paired.front();
+    size_t seamSamples = 0;
+    for (const auto *use : paired) {
+      if (use->bound != first.bound || (!use->outer && loops.size() > 1))
+        return fail("Polar seam requires two opposite uses in one outer bound");
+      seamSamples += use->sampleCount;
+    }
+
+    const auto &outer = loops.front();
+    if (seamSamples > outer.size())
+      return fail("Polar seam samples exceed their outer bound");
+    const bool trimmed = seamSamples < outer.size();
+    if (!surface.sphere && !trimmed)
+      return fail("Revolved seam requires an apex and a closed rim");
+    std::ranges::sort(paired, {}, [](const auto *use) { return use->firstSample; });
+    const auto after = [&](const BrepSeamUse &use) {
+      return (use.firstSample + use.sampleCount) % outer.size();
+    };
+    std::optional<size_t> start;
+    for (size_t i = 0; i < paired.size(); ++i) {
+      const auto &before = *paired[(i + paired.size() - 1) % paired.size()];
+      const auto &current = *paired[i];
+      if (trimmed && after(before) != current.firstSample) {
+        if (start)
+          return fail("Trimmed polar seam requires one contiguous closed rim");
+        start = i;
+      } else if (!trimmed && before.edge == current.edge && !start) {
+        start = i;
+      }
+    }
+    if (!start)
+      return fail("Polar seam segments do not form two opposite runs");
+    std::rotate(paired.begin(), paired.begin() + *start, paired.end());
+    const size_t segments = paired.size() / 2;
+    for (size_t i = 0; i < segments; ++i)
+      if (paired[i]->edge != paired[paired.size() - 1 - i]->edge)
+        return fail("Polar seam segments must return in reverse edge order");
+
+    // The single gap of a trimmed face is its rim. The run after that gap
+    // reaches the pole, so the other run is already oriented pole to rim.
+    const auto chain = std::span(paired).subspan(trimmed ? segments : 0, segments);
+    const double tolerance = polarSeamTolerance(surface) /
+                             (surface.sphere ? surface.sphere->radius : 1.);
+    std::optional<double> firstParameter, previousParameter;
+    double direction = 0;
+    uint32_t previousVertex = 0;
+    std::unordered_set<uint32_t> vertices;
+    seam.reserve(seamSamples / 2 + 1);
+    for (const auto *use : chain) {
+      checkCancellation();
+      const auto &edge = edgeCache.at(use->edge);
+      const auto firstVertex = use->forward ? edge.start : edge.end;
+      const auto lastVertex = use->forward ? edge.end : edge.start;
+      if (!previousVertex)
+        vertices.insert(firstVertex);
+      if ((previousVertex && firstVertex != previousVertex) ||
+          !vertices.insert(lastVertex).second)
+        return fail("Polar seam segments must form a single open edge chain");
+      previousVertex = lastVertex;
+      std::pair<double, double> extent;
+      const auto &geometry = *entity(edge.geometry);
+      const bool valid = surface.sphere
+                             ? validateSphericalBrepSeam(edge, surfaceRef, surface,
+                                                         geometry, extent, error)
+                             : validateRevolvedBrepSeam(edge, surfaceRef, surface,
+                                                        geometry, extent, error);
+      if (!valid)
+        return false;
+      if (!use->forward)
+        std::swap(extent.first, extent.second);
+      if (!firstParameter) {
+        firstParameter = extent.first;
+        direction = extent.second > extent.first ? 1. : -1.;
+      }
+      if ((previousParameter &&
+           std::abs(extent.first - *previousParameter) > tolerance) ||
+          direction * (extent.second - extent.first) <= tolerance)
+        return fail("Polar seam segments must follow one meridian monotonically");
+      previousParameter = extent.second;
+      if (use->forward)
+        seam.insert(seam.end(), edge.points.begin(), edge.points.end() - 1);
+      else
+        seam.insert(seam.end(), edge.points.rbegin(), edge.points.rend() - 1);
+    }
+    const auto &lastEdge = edgeCache.at(chain.back()->edge);
+    seam.push_back(chain.back()->forward ? lastEdge.points.back()
+                                         : lastEdge.points.front());
+
+    if (surface.sphere) {
+      const auto atPole = [&](double angle) {
+        return std::abs(std::abs(angle) - std::numbers::pi / 2.) <= tolerance;
+      };
+      if (trimmed ? !atPole(*firstParameter) || atPole(*previousParameter)
+                  : !atPole(*firstParameter) || !atPole(*previousParameter) ||
+                        std::abs(*firstParameter + *previousParameter) > tolerance)
+        return fail(trimmed ? "Trimmed polar seam must connect a pole to a closed rim"
+                            : "Spherical seam must connect the two placed poles");
+    } else if (std::abs(*firstParameter) > tolerance || *previousParameter <= tolerance) {
+      return fail("Revolved seam must connect its apex to a closed rim");
+    }
+    if (trimmed) {
+      const size_t begin = after(*chain.back());
+      const size_t count = outer.size() - seamSamples;
+      if (count < 3)
+        return fail("Trimmed polar seam requires a closed rim");
+      std::vector<glm::vec3> rim;
+      rim.reserve(count);
+      for (size_t i = 0; i < count; ++i)
+        rim.push_back(outer[(begin + i) % outer.size()]);
+      loops.front() = std::move(rim);
     }
     return true;
   }
@@ -4532,8 +4675,7 @@ private:
               if (geometry && geometry->type == "IFCSEAMCURVE")
                 seamUses.push_back({*edgeRef, boundRef, sense == orientation,
                                     bound->type == "IFCFACEOUTERBOUND",
-                                    loop.size(), edge.points.size() - 1,
-                                    refs.size()});
+                                    loop.size(), edge.points.size() - 1});
             }
             const auto start = sense == "T" ? edge.start : edge.end;
             const auto end = sense == "T" ? edge.end : edge.start;
@@ -4671,72 +4813,11 @@ private:
                     "Face boundary samples match no chart on surface #" +
                     std::to_string(*surfaceRef) + " from profiles" + profiles);
             }
-            std::span<const glm::vec3> polarSeam;
-            std::vector<glm::vec3> orderedSeam;
-            std::optional<std::array<BrepSeamUse, 2>> sameFaceSeam;
-            std::unordered_map<uint32_t, const BrepSeamUse *> firstSeamUses;
-            const auto uses = (spherical || descriptor->radialGraph)
-                                  ? std::span(seamUses)
-                                  : std::span<BrepSeamUse>();
-            for (const auto &use : uses) {
-              const auto [it, first] = firstSeamUses.emplace(use.edge, &use);
-              if (!first) {
-                const auto &other = *it->second;
-                if (sameFaceSeam || use.forward == other.forward ||
-                    use.bound != other.bound ||
-                    (!use.outer && loops.size() > 1))
-                  return faceFail("Polar seam requires two opposite uses "
-                                  "in one outer bound");
-                sameFaceSeam = std::array{other, use};
-              }
-            }
-            if (sameFaceSeam) {
-              const auto &[first, second] = *sameFaceSeam;
-              const bool trimmed = first.boundUseCount > 2;
-              const auto &edge = edgeCache.at(first.edge);
-              bool poleAtStart = false;
-              if (!spherical && !trimmed)
-                return faceFail(
-                    "Revolved seam requires an apex and a closed rim");
-              const bool valid =
-                  spherical
-                      ? validateSphericalBrepSeam(
-                            edge, *surfaceRef, *descriptor,
-                            *entity(edge.geometry), trimmed, poleAtStart, error)
-                      : validateRevolvedBrepSeam(edge, *surfaceRef, *descriptor,
-                                                 *entity(edge.geometry),
-                                                 poleAtStart, error);
-              if (!valid)
-                return faceFail(error);
-              polarSeam = edge.points;
-              if (trimmed) {
-                // The oriented outer loop walks from the pole down its seam,
-                // around the physical rim, then returns up the same seam.
-                // Extract the rim samples by edge identity and oriented use.
-                const auto &down =
-                    first.forward == poleAtStart ? first : second;
-                const auto &up = first.forward == poleAtStart ? second : first;
-                const auto &outer = loops.front();
-                const size_t begin =
-                    (down.firstSample + down.sampleCount) % outer.size();
-                const size_t count =
-                    (up.firstSample + outer.size() - begin) % outer.size();
-                const size_t afterUp =
-                    (up.firstSample + up.sampleCount) % outer.size();
-                if (afterUp != down.firstSample || count < 3)
-                  return faceFail("Trimmed polar seam must connect one "
-                                  "pole to a closed rim");
-                std::vector<glm::vec3> rim;
-                rim.reserve(count);
-                for (size_t i = 0; i < count; ++i)
-                  rim.push_back(outer[(begin + i) % outer.size()]);
-                loops.front() = std::move(rim);
-                if (!poleAtStart) {
-                  orderedSeam.assign(edge.points.rbegin(), edge.points.rend());
-                  polarSeam = orderedSeam;
-                }
-              }
-            }
+            std::vector<glm::vec3> polarSeam;
+            if ((spherical || descriptor->radialGraph) &&
+                !buildBrepPolarSeam(seamUses, edgeCache, *surfaceRef,
+                                   *descriptor, loops, polarSeam, error))
+              return faceFail(error);
             std::vector<detail::CurvedFaceChartLoop> authoredChart;
             if (spline &&
                 !buildSplineBrepChart(*surfaceRef, *descriptor, edgeCache,
