@@ -221,7 +221,8 @@ bool supportedDeclaration(std::string_view name) {
     "KHR_materials_retroreflection","KHR_materials_scatter","KHR_materials_volume_scatter"});
 }
 
-Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,bool preserveOpaque=false) {
+Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,
+    bool preserveOpaque=false,GltfSourceResourcePhases phases={}) {
   const auto& lim=b.limits;
   for(const auto count:{model.buffers.size(),model.bufferViews.size(),model.accessors.size(),model.images.size(),
       model.samplers.size(),model.textures.size(),model.materials.size(),model.meshes.size(),model.nodes.size(),
@@ -309,10 +310,12 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,bool p
     (void)CheckedAccessor(model,int(i),"merge accessor",
         {AccessorUsage::Generic,HasRequiredExtension(model,"KHR_accessor_float64")},b.stop);
   }
-  for(const auto& image:model.images) {
+  for(size_t row=0;row<model.images.size();++row) {
+    const auto& image=model.images[row];
     property(image,model,b,"image",{kGltfXmpExtension});b.text(image.uri);b.text(image.mimeType);
     index(image.bufferView,model.bufferViews.size(),"image",true);b.refs(image.bufferView>=0);
-    if(image.bufferView<0 && image.image.empty()) fail("image","image payload is not resident");
+    if(phases.imageActive(row) && image.bufferView<0 && image.image.empty())
+      fail("image","image payload is not resident");
     charge(b.sum.payloadBytes,image.image.size(),lim.maxResidentBytes,"resident images");
   }
   for(const auto& sampler:model.samplers) property(sampler,model,b,"sampler");
@@ -679,8 +682,49 @@ void placement(const tinygltf::Model& incoming,const Audit& audit,size_t selecte
 
 bool GltfMergeSupportsExtension(std::string_view name) { return supportedDeclaration(name); }
 
+bool GltfImagePayloadIsResident(const tinygltf::Model& model,
+                               const tinygltf::Image& image) noexcept {
+  if (image.bufferView < 0) return !image.image.empty();
+  if (size_t(image.bufferView) >= model.bufferViews.size()) return false;
+  const auto& view = model.bufferViews[size_t(image.bufferView)];
+  if (view.buffer < 0 || size_t(view.buffer) >= model.buffers.size()) return false;
+  const auto size = model.buffers[size_t(view.buffer)].data.size();
+  return view.byteLength && view.byteOffset <= size &&
+      view.byteLength <= size - view.byteOffset;
+}
+
+void ValidateGltfSourceResourcePhases(const tinygltf::Model& model,
+                                     GltfSourceResourcePhases phases) {
+  const auto validMask=[](std::span<const uint8_t> mask,size_t count) {
+    return mask.empty() || (mask.size()==count &&
+        std::ranges::all_of(mask,[](uint8_t value) {return value<=1;}));
+  };
+  if(!validMask(phases.images,model.images.size()) ||
+      !validMask(phases.textures,model.textures.size()))
+    fail("source resource phases","mask must contain one boolean per source row");
+  if(phases.images.empty()) return;
+  for(size_t row=0;row<model.textures.size();++row) {
+    if(!phases.textures.empty() && !phases.textures[row]) continue;
+    const auto& texture=model.textures[row];
+    const auto checkImage=[&](int image) {
+      index(image,model.images.size(),"texture image",true);
+      if(image>=0 && !phases.imageActive(size_t(image)))
+        fail("source resource phases","active texture references a retired image");
+    };
+    checkImage(texture.source);
+    for(const auto* extension:{"KHR_texture_basisu","EXT_texture_webp",
+                               "MSFT_texture_dds","EXT_texture_avif"}) {
+      const auto found=texture.extensions.find(extension);
+      if(found!=texture.extensions.end())
+        checkImage(integer(field(found->second,"source",extension),
+                           model.images.size(),extension));
+    }
+  }
+}
+
 GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& incoming,
-    const GltfMergeOptions& options,const GltfMergeLimits& limits,const std::stop_token& stop) try {
+    const GltfMergeOptions& options,const GltfMergeLimits& limits,
+    const std::stop_token& stop,GltfSourceResourcePhases destinationPhases) try {
   checkModelImportCancellation(stop);
   Budget budget{limits,stop};
   if(!limits.maxTableEntries || !limits.maxMetadataBytes || !limits.maxMetadataDepth) fail("limits","zero budget");
@@ -696,7 +740,8 @@ GltfMergePlan PlanGltfMerge(const tinygltf::Model& base,const tinygltf::Model& i
     fail("combined nodes","node limit exceeded");
   if(add(std::max(size_t{1},base.scenes.size()),std::max(size_t{1},incoming.scenes.size()),"combined scenes")>limits.maxScenes)
     fail("combined scenes","scene limit exceeded");
-  const auto a=audit(base,budget,"destination",true);
+  ValidateGltfSourceResourcePhases(base,destinationPhases);
+  const auto a=audit(base,budget,"destination",true,destinationPhases);
   budget.opaqueDestinationExtensions.clear();
   const auto b=audit(incoming,budget,"incoming");
   const auto dest=options.destinationScene.value_or(a.catalog.defaultScene),selected=options.incomingScene.value_or(b.catalog.defaultScene);

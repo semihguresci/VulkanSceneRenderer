@@ -7,6 +7,7 @@
 #include <cstdint>
 #include <map>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -43,6 +44,24 @@ struct GltfMergeOptions {
   // Column-major glTF-native affine matrix. No geometry or inverse binds bake.
   std::optional<std::array<double,16>> placementMatrix;
 };
+
+// Empty masks mean all rows are active. Only an editor-owned destination may
+// supply explicit phases for stable source resource rows.
+struct GltfSourceResourcePhases {
+  std::span<const uint8_t> images;
+  std::span<const uint8_t> textures;
+  [[nodiscard]] bool imageActive(size_t row) const noexcept {
+    return images.empty() || images[row] != 0;
+  }
+};
+struct GltfSessionResourcePhases {
+  GltfSourceResourcePhases archive, evaluated;
+};
+
+void ValidateGltfSourceResourcePhases(const tinygltf::Model&,
+                                     GltfSourceResourcePhases);
+[[nodiscard]] bool GltfImagePayloadIsResident(const tinygltf::Model&,
+                                               const tinygltf::Image&) noexcept;
 
 struct GltfMergePrimitiveIndex { int32_t mesh{-1}; int32_t primitive{-1}; };
 
@@ -96,6 +115,7 @@ struct GltfMergePlan {
 [[nodiscard]] GltfMergePlan PlanGltfMerge(
     const tinygltf::Model& base, const tinygltf::Model& incoming,
     const GltfMergeOptions& options = {}, const GltfMergeLimits& limits = {},
-    const std::stop_token& stop = {});
+    const std::stop_token& stop = {},
+    GltfSourceResourcePhases destinationPhases = {});
 
 } // namespace container::geometry::gltf

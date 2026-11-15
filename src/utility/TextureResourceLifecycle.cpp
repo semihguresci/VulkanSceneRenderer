@@ -97,17 +97,17 @@ template<class T> bool sameMetadata(const T& a,const T& b,Check& check) noexcept
   }
   return true;
 }
-bool sameImage(const tinygltf::Image& a,const tinygltf::Image& b,Check& check) noexcept {
-  return a.width==b.width && a.height==b.height && a.component==b.component && a.bits==b.bits &&
-      a.pixel_type==b.pixel_type && a.bufferView==b.bufferView && a.as_is==b.as_is &&
-      sameMetadata(a,b,check) && sameString(a.mimeType,b.mimeType,check) && sameString(a.uri,b.uri,check) &&
-      a.image.size()==b.image.size() && check.take(a.image.size()) && a.image==b.image;
-}
-bool sameImageCore(const tinygltf::Image& a,const tinygltf::Image& b,Check& check) noexcept {
+bool sameImageCore(const tinygltf::Image& a,const tinygltf::Image& b,
+    std::span<const unsigned char> bytes,Check& check) noexcept {
   return a.width==b.width && a.height==b.height && a.component==b.component && a.bits==b.bits &&
       a.pixel_type==b.pixel_type && a.bufferView==b.bufferView && a.as_is==b.as_is &&
       sameString(a.mimeType,b.mimeType,check) && sameString(a.uri,b.uri,check) &&
-      a.image.size()==b.image.size() && check.take(a.image.size()) && a.image==b.image;
+      a.image.size()==bytes.size() && check.take(bytes.size()) &&
+      std::equal(a.image.begin(),a.image.end(),bytes.begin());
+}
+bool sameImage(const tinygltf::Image& a,const tinygltf::Image& b,
+    std::span<const unsigned char> bytes,Check& check) noexcept {
+  return sameMetadata(a,b,check) && sameImageCore(a,b,bytes,check);
 }
 bool sameTexture(const tinygltf::Texture& a,const tinygltf::Texture& b,Check& check) noexcept {
   return a.source==b.source && a.sampler==b.sampler && sameMetadata(a,b,check);
@@ -158,6 +158,7 @@ struct Payload {
   GltfTextureRawResourceReferences dependencies;
   uint64_t bytes{};
   bool opaque{};
+  bool imagePayloadCompacted{};
 };
 struct Row {ResourceHandle handle;std::shared_ptr<const Payload> payload;bool active{true};};
 using Tables=std::array<std::vector<Row>,tableCount>;
@@ -178,6 +179,9 @@ std::span<const uint8_t> sourceMask(const TextureResourceSourceTables& source,Ki
   if(kind==Kind::Sampler) return source.samplerActive;
   return {};
 }
+bool hasImageByteOverrides(const TextureResourceLifecycleView& view) noexcept {
+  return !view.archive.imageByteOverrides.empty() || !view.evaluated.imageByteOverrides.empty();
+}
 bool masksValid(const TextureResourceLifecycleView& view,Check& check) noexcept {
   for(const auto domain:{Domain::Archive,Domain::Evaluated}) for(const auto kind:{Kind::Image,Kind::Texture,Kind::Sampler}) {
     const auto mask=sourceMask(source(view,domain),kind);
@@ -185,12 +189,26 @@ bool masksValid(const TextureResourceLifecycleView& view,Check& check) noexcept 
     if(!check.take(mask.size())) return false;
     for(const auto active:mask) if(active>1) return false;
   }
+  for(const auto* tables:{&view.archive,&view.evaluated}) {
+    const auto overrides=tables->imageByteOverrides;
+    if(overrides.size()>tables->images.size() || !check.take(overrides.size())) return false;
+    for(size_t i=0;i<overrides.size();++i) {
+      if(overrides[i].row>=tables->images.size() || (i && overrides[i-1].row>=overrides[i].row)) return false;
+    }
+  }
   return true;
 }
 bool viewActive(const TextureResourceLifecycleView& view,Domain domain,Kind kind,size_t index) noexcept {
   if(domain==Domain::Runtime) return view.runtime.isTextureActive(uint32_t(index));
   const auto mask=sourceMask(source(view,domain),kind);
   return mask.empty() || (index<mask.size() && mask[index]!=0);
+}
+std::span<const unsigned char> imageBytes(const TextureResourceSourceTables& source,size_t index) noexcept {
+  const auto overrides=source.imageByteOverrides;
+  if(overrides.empty()) return source.images[index].image;
+  const auto found=std::ranges::lower_bound(overrides,index,{},&TextureResourceImageBytes::row);
+  if(found!=overrides.end() && found->row==index) return found->bytes;
+  return source.images[index].image;
 }
 std::span<const unsigned char> imageSlice(const TextureResourceSourceTables& source,const tinygltf::Image& image) {
   if(image.bufferView<0) return {};
@@ -201,22 +219,53 @@ std::span<const unsigned char> imageSlice(const TextureResourceSourceTables& sou
   if(view.byteOffset>data.size() || view.byteLength>data.size()-view.byteOffset) invalid("Image bufferView range is invalid");
   return std::span<const unsigned char>(data).subspan(view.byteOffset,view.byteLength);
 }
+std::shared_ptr<const Payload> makeImagePayload(const tinygltf::Image& image,
+    const tinygltf::BufferView* view,std::span<const unsigned char> bytes,
+    std::span<const unsigned char> slice,bool compacted,Budget& budget) {
+  const auto start=budget.bytes;
+  budget.charge(sizeof(Payload)+128);budget.visit();
+  metadataCost(image,budget);budget.string(image.mimeType);budget.string(image.uri);
+  budget.charge(bytes.size());budget.visit(bytes.size());
+  budget.charge(slice.size());budget.visit(slice.size());
+  if(view) metadataCost(*view,budget);
+  auto result=std::make_shared<Payload>();
+  auto& record=result->record.emplace<tinygltf::Image>();
+  // Copy the record header separately so a retired image never copies its old
+  // pixel allocation while staging a compact record.
+  record.name=image.name;
+  record.width=image.width;
+  record.height=image.height;
+  record.component=image.component;
+  record.bits=image.bits;
+  record.pixel_type=image.pixel_type;
+  record.bufferView=image.bufferView;
+  record.mimeType=image.mimeType;
+  record.uri=image.uri;
+  record.extras=image.extras;
+  record.extensions=image.extensions;
+  record.extras_json_string=image.extras_json_string;
+  record.extensions_json_string=image.extensions_json_string;
+  record.as_is=image.as_is;
+  if(!bytes.empty()) record.image.assign(bytes.begin(),bytes.end());
+  if(!slice.empty()) result->slice.assign(slice.begin(),slice.end());
+  if(view) result->bufferView=*view;
+  // Unknown normative extensions still carry an incomplete-reference blocker.
+  result->opaque=!image.extensions.empty() || (view && !view->extensions.empty());
+  result->imagePayloadCompacted=compacted;
+  result->bytes=budget.bytes-start;
+  return result;
+}
 std::shared_ptr<const Payload> makePayload(const TextureResourceLifecycleView& view,Domain domain,Kind kind,size_t index,Budget& budget) {
-  const auto start=budget.bytes;budget.charge(sizeof(Payload)+128);budget.visit();
   const auto& s=source(view,domain);
   if(kind==Kind::Image) {
-    const auto& image=s.images[index];metadataCost(image,budget);budget.string(image.mimeType);budget.string(image.uri);
-    budget.charge(image.image.size());budget.visit(image.image.size());const auto slice=imageSlice(s,image);
-    budget.charge(slice.size());budget.visit(slice.size());
-    if(image.bufferView>=0) metadataCost(s.bufferViews[size_t(image.bufferView)],budget);
-    auto result=std::make_shared<Payload>();result->record.emplace<tinygltf::Image>(image);
-    if(image.bufferView>=0) result->bufferView=s.bufferViews[size_t(image.bufferView)];
-    // No Image/Sampler/bufferView extension-reference schema is proved by the
-    // selected texture extractor. Preserve known payloads, but never advertise
-    // complete reference authority for those normative extension objects.
-    result->opaque=!image.extensions.empty() || (result->bufferView && !result->bufferView->extensions.empty());
-    result->slice.assign(slice.begin(),slice.end());result->bytes=budget.bytes-start;return result;
+    const auto& image=s.images[index];
+    const std::span<const unsigned char> bytes=image.image;
+    const auto slice=imageSlice(s,image);
+    const auto* backing=image.bufferView>=0?&s.bufferViews[size_t(image.bufferView)]:nullptr;
+    const bool compacted=!viewActive(view,domain,kind,index) && bytes.empty();
+    return makeImagePayload(image,backing,bytes,compacted?std::span<const unsigned char>{}:slice,compacted,budget);
   }
+  const auto start=budget.bytes;budget.charge(sizeof(Payload)+128);budget.visit();
   if(kind==Kind::Texture) {
     const auto& texture=s.textures[index];metadataCost(texture,budget);
     GltfTextureResourceReferenceLimits limits;limits.policy=GltfTextureResourceReferencePolicy::RecordIncomplete;
@@ -242,6 +291,19 @@ std::shared_ptr<const Payload> makePayload(const TextureResourceLifecycleView& v
   budget.charge(sizeof(*runtime));budget.string(runtime->name);budget.string(runtime->contentKey);
   auto result=std::make_shared<Payload>();result->record.emplace<container::material::TextureResource>(*runtime);result->bytes=budget.bytes-start;return result;
 }
+bool imageBackingMatches(const Payload& payload,const TextureResourceSourceTables& source,
+    const tinygltf::Image& image,Check& check,bool exactMetadata=true) noexcept {
+  if(image.bufferView<0) return !payload.bufferView && payload.slice.empty();
+  if(!payload.bufferView || size_t(image.bufferView)>=source.bufferViews.size()) return false;
+  const auto& view=source.bufferViews[size_t(image.bufferView)];
+  if(!(exactMetadata?sameView(*payload.bufferView,view,check):sameViewCore(*payload.bufferView,view)) ||
+      view.buffer<0 || size_t(view.buffer)>=source.buffers.size()) return false;
+  const auto& bytes=source.buffers[size_t(view.buffer)].data;
+  if(view.byteOffset>bytes.size() || view.byteLength>bytes.size()-view.byteOffset) return false;
+  // The retired row keeps the reference to the shared document buffer.
+  return payload.imagePayloadCompacted || (view.byteLength==payload.slice.size() &&
+      check.take(view.byteLength) && std::equal(payload.slice.begin(),payload.slice.end(),bytes.begin()+view.byteOffset));
+}
 bool payloadMatches(const Row& row,const TextureResourceLifecycleView& view,Domain domain,Kind kind,size_t index,Check& check) noexcept {
   if(!check.take()) return false;
   if(domain==Domain::Runtime) {
@@ -251,13 +313,9 @@ bool payloadMatches(const Row& row,const TextureResourceLifecycleView& view,Doma
   if(row.active!=viewActive(view,domain,kind,index) || !row.payload) return false;const auto& s=source(view,domain);
   if(kind==Kind::Texture) return sameTexture(std::get<tinygltf::Texture>(row.payload->record),s.textures[index],check);
   if(kind==Kind::Sampler) return sameSampler(std::get<tinygltf::Sampler>(row.payload->record),s.samplers[index],check);
-  const auto& image=s.images[index];if(!sameImage(std::get<tinygltf::Image>(row.payload->record),image,check)) return false;
-  if(image.bufferView<0) return !row.payload->bufferView && row.payload->slice.empty();
-  if(!row.payload->bufferView || size_t(image.bufferView)>=s.bufferViews.size()) return false;
-  const auto& v=s.bufferViews[size_t(image.bufferView)];if(!sameView(*row.payload->bufferView,v,check) || v.buffer<0 || size_t(v.buffer)>=s.buffers.size()) return false;
-  const auto& bytes=s.buffers[size_t(v.buffer)].data;
-  return v.byteOffset<=bytes.size() && v.byteLength<=bytes.size()-v.byteOffset && v.byteLength==row.payload->slice.size() &&
-      check.take(v.byteLength) && std::equal(row.payload->slice.begin(),row.payload->slice.end(),bytes.begin()+v.byteOffset);
+  const auto& image=s.images[index];
+  return sameImage(std::get<tinygltf::Image>(row.payload->record),image,imageBytes(s,index),check) &&
+      imageBackingMatches(*row.payload,s,image,check);
 }
 bool corePayloadMatches(const Row& row,const TextureResourceLifecycleView& view,Domain domain,Kind kind,size_t index,Check& check) noexcept {
   if(domain==Domain::Runtime || !row.active || !row.payload || !check.take()) return false;
@@ -270,14 +328,9 @@ bool corePayloadMatches(const Row& row,const TextureResourceLifecycleView& view,
     const auto& old=std::get<tinygltf::Sampler>(row.payload->record);const auto& current=s.samplers[index];
     return old.minFilter==current.minFilter && old.magFilter==current.magFilter && old.wrapS==current.wrapS && old.wrapT==current.wrapT;
   }
-  const auto& image=s.images[index];if(!sameImageCore(std::get<tinygltf::Image>(row.payload->record),image,check)) return false;
-  if(image.bufferView<0) return !row.payload->bufferView && row.payload->slice.empty();
-  if(!row.payload->bufferView || size_t(image.bufferView)>=s.bufferViews.size()) return false;
-  const auto& v=s.bufferViews[size_t(image.bufferView)];
-  if(!sameViewCore(*row.payload->bufferView,v) || v.buffer<0 || size_t(v.buffer)>=s.buffers.size()) return false;
-  const auto& bytes=s.buffers[size_t(v.buffer)].data;
-  return v.byteOffset<=bytes.size() && v.byteLength<=bytes.size()-v.byteOffset && v.byteLength==row.payload->slice.size() &&
-      check.take(v.byteLength) && std::equal(row.payload->slice.begin(),row.payload->slice.end(),bytes.begin()+v.byteOffset);
+  const auto& image=s.images[index];
+  return sameImageCore(std::get<tinygltf::Image>(row.payload->record),image,imageBytes(s,index),check) &&
+      imageBackingMatches(*row.payload,s,image,check,false);
 }
 bool tablesMatch(const Tables& tables,const TextureResourceLifecycleView& view,uint64_t maxWork) noexcept {
   Check check{maxWork};
@@ -367,10 +420,17 @@ struct RetirementTextureEndpoint {
   ResourceHandle sourceHandle;
   std::shared_ptr<const uint8_t> cookie;
 };
+struct RetirementRow {
+  ResourceHandle handle;
+  std::shared_ptr<const Payload> activePayload,retiredPayload;
+  const std::shared_ptr<const Payload>& payload(bool active) const noexcept {
+    return active?activePayload:retiredPayload;
+  }
+};
 struct TextureResourceRetirementCommand::State {
   std::shared_ptr<Authority> authority;
   std::vector<TextureResourceSelection> selections;
-  std::vector<Row> rows;
+  std::vector<RetirementRow> rows;
   std::vector<RetirementTextureEndpoint> textures;
   TextureResourceReferenceOwnerPtr references;
   ResourceRetirementCommand retirement;
@@ -673,7 +733,7 @@ bool retirementEndpointMatches(const Access::RetirementState& command,const Acce
   for(size_t i=0;i<command.selections.size();++i) {
     const auto selection=command.selections[i];const auto& rows=generation.tables[table(selection.domain,selection.kind)];
     if(selection.row>=rows.size() || rows[selection.row].handle!=command.rows[i].handle ||
-        rows[selection.row].payload!=command.rows[i].payload || rows[selection.row].active!=active) return false;
+        rows[selection.row].payload!=command.rows[i].payload(active) || rows[selection.row].active!=active) return false;
   }
   for(const auto& endpoint:command.textures) {
     const auto domain=endpoint.selection.domain;const auto row=endpoint.selection.row;const auto& roles=generation.roles[size_t(domain)];
@@ -700,6 +760,32 @@ bool retirementEndpointMatches(const Access::RetirementState& command,const Acce
             evaluated[size_t(endpoint.mapping)].handle!=endpoint.mappedHandle) return false;
       }
     }
+  }
+  return true;
+}
+bool currentRetirementImagePayloadsMatch(const Access::RetirementState& command,
+    const TextureResourceLifecycleView& view,bool retiring,uint64_t maxWork) noexcept {
+  Check check{maxWork};
+  for(const auto domain:{Domain::Archive,Domain::Evaluated}) {
+    for(const auto& entry:source(view,domain).imageByteOverrides) {
+      const TextureResourceSelection selection{domain,Kind::Image,entry.row};
+      const auto found=std::ranges::lower_bound(command.selections,selection,selectionLess);
+      if(found==command.selections.end() || *found!=selection) return false;
+      const auto& row=command.rows[size_t(found-command.selections.begin())];
+      if(row.activePayload==row.retiredPayload || (retiring && !entry.bytes.empty())) return false;
+    }
+  }
+  for(size_t i=0;i<command.selections.size();++i) {
+    const auto selection=command.selections[i];
+    const auto& row=command.rows[i];
+    if(selection.kind!=Kind::Image || row.activePayload==row.retiredPayload) continue;
+    const auto& s=source(view,selection.domain);
+    if(selection.row>=s.images.size()) return false;
+    // Check the document's current image independently of the staged bytes.
+    const auto& image=s.images[selection.row];
+    const auto& payload=*row.payload(retiring);
+    const auto& before=std::get<tinygltf::Image>(payload.record);
+    if(!sameImage(before,image,image.image,check) || !imageBackingMatches(payload,s,image,check)) return false;
   }
   return true;
 }
@@ -799,7 +885,8 @@ bool TextureResourceLifecycleGeneration::valid() const noexcept {
   return true;
 }
 bool TextureResourceLifecycleGeneration::matches(const TextureResourceLifecycleView& view) const noexcept {
-  return state_ && valid() && liveDependenciesValid() && roleViewMatches(*state_,view) && tablesMatch(state_->tables,view,state_->maxWork);
+  return state_ && !hasImageByteOverrides(view) && valid() && liveDependenciesValid() &&
+      roleViewMatches(*state_,view) && tablesMatch(state_->tables,view,state_->maxWork);
 }
 bool TextureResourceLifecycleGeneration::liveDependenciesValid() const noexcept {
   if(!state_ || !state_->published) return false;
@@ -830,6 +917,14 @@ uint64_t TextureResourceRetirementCommand::ownedBytes() const noexcept {return s
 TextureResourceReferenceOwnerPtr TextureResourceRetirementCommand::references() const noexcept {return state_?state_->references:TextureResourceReferenceOwnerPtr{};}
 std::span<const TextureResourceSelection> TextureResourceRetirementCommand::selections() const noexcept {
   return state_?std::span<const TextureResourceSelection>(state_->selections):std::span<const TextureResourceSelection>{};
+}
+std::optional<std::span<const unsigned char>> TextureResourceRetirementCommand::sourceImageBytes(
+    TextureResourceSelection selection) const noexcept {
+  if(!state_ || selection.kind!=Kind::Image) return std::nullopt;
+  const auto found=std::ranges::lower_bound(state_->selections,selection,selectionLess);
+  if(found==state_->selections.end() || *found!=selection) return std::nullopt;
+  const auto& payload=state_->rows[size_t(found-state_->selections.begin())].activePayload;
+  return std::span<const unsigned char>(std::get<tinygltf::Image>(payload->record).image);
 }
 PreparedTextureResourceLifecycle::PreparedTextureResourceLifecycle() noexcept=default;
 PreparedTextureResourceLifecycle::~PreparedTextureResourceLifecycle()=default;
@@ -1041,6 +1136,7 @@ void prepareAutomaticLiveOwners(PreparedTextureResourceLifecycle& preparation) {
 
 static PreparedTextureResourceLifecycle prepareTextureResourceLifecycle(const TextureResourceLifecycleGenerationPtr& before,
     const TextureResourceLifecycleView& view,const TextureResourceLifecycleLimits& limits,bool reconcile) {
+  if(hasImageByteOverrides(view)) invalid("Image byte overrides require a selected retirement or restore");
   Budget budget(limits);budget.charge(sizeof(Access::PreparedState)+sizeof(Access::GenerationState)+256);
   Check maskCheck{limits.maxWork};if(!masksValid(view,maskCheck)) invalid("Source resource phases require exact zero/one masks");
   budget.visit(limits.maxWork-maskCheck.remaining);
@@ -1199,6 +1295,7 @@ PreparedTextureResourceLifecycle ReconcileTextureResourceLifecycle(const Texture
 PreparedTextureResourceLifecycle PrepareTextureResourceLifecycleReplay(const TextureResourceLifecycleGenerationPtr& before,
     const TextureResourceLifecycleView& view,const TextureResourceLifecycleCommand& receipt,bool forward,
     const TextureResourceLifecycleLimits& limits) {
+  if(hasImageByteOverrides(view)) invalid("Image byte overrides require a selected retirement or restore");
   Budget budget(limits);budget.charge(sizeof(Access::PreparedState)+sizeof(Access::GenerationState)+256);
   if(!before || !before->valid() || !before->liveDependenciesValid() || !receipt) invalid("Texture resource replay requires a current generation and published command");
   const auto& command=*Access::get(receipt);checkPrefix(command,*Access::get(*before),!forward);
@@ -1255,7 +1352,7 @@ PreparedTextureResourceLifecycle prepareSelectedRetirement(const TextureResource
   if(initial) {
     if(!retiring || selections.empty() || selections.size()>limits.maxRows) invalid("Source retirement requires a finite nonempty selection");
     budget.charge(sizeof(Access::RetirementState)+128);
-    budget.charge(times(selections.size(),sizeof(TextureResourceSelection)+sizeof(Row)+sizeof(RetirementTextureEndpoint)+sizeof(ResourceHandle)));
+    budget.charge(times(selections.size(),sizeof(TextureResourceSelection)+sizeof(RetirementRow)+sizeof(RetirementTextureEndpoint)+sizeof(ResourceHandle)));
     budget.visit(times(selections.size(),plus(4,std::bit_width(selections.size()))));
     command=std::make_shared<Access::RetirementState>();
     command->authority=old->authority;command->selections.assign(selections.begin(),selections.end());
@@ -1288,13 +1385,26 @@ PreparedTextureResourceLifecycle prepareSelectedRetirement(const TextureResource
       }
       command->textures.push_back(std::move(endpoint));
     };
+    uint64_t compactedBytes{};
     for(const auto selection:command->selections) {
       budget.visit();
       if(!supported(selection.domain,selection.kind))
         invalid("Selected retirement accepts only source Image/Texture/Sampler or explicit RuntimeTexture rows");
       const auto& rows=old->tables[table(selection.domain,selection.kind)];
       if(selection.row>=rows.size() || !rows[selection.row].active) invalid("Selected retirement targets a missing or inactive source row");
-      command->rows.push_back(rows[selection.row]);
+      const auto& row=rows[selection.row];
+      auto retiredPayload=row.payload;
+      if(selection.kind==Kind::Image) {
+        const auto& input=source(view,selection.domain);
+        if(selection.row>=input.images.size()) invalid("Selected image retirement has no prospective source row");
+        if(imageBytes(input,selection.row).empty()) {
+          const auto& active=*row.payload;
+          retiredPayload=makeImagePayload(std::get<tinygltf::Image>(active.record),
+              active.bufferView?&*active.bufferView:nullptr,{},{},true,budget);
+          compactedBytes=plus(compactedBytes,retiredPayload->bytes);
+        }
+      }
+      command->rows.push_back({row.handle,row.payload,std::move(retiredPayload)});
       if(selection.kind==Kind::Texture) captureEndpoint(selection,true,true,true);
     }
     const auto scanRoles=[&](bool capture) {
@@ -1329,9 +1439,9 @@ PreparedTextureResourceLifecycle prepareSelectedRetirement(const TextureResource
     budget.visit(times(history.size(),plus(4,std::bit_width(history.size()))));std::ranges::sort(history,selectionLess);
     history.erase(std::unique(history.begin(),history.end()),history.end());
     command->references=selected(old,history,Pins::History,limits.maxOwnedBytes-budget.bytes,false);
-    command->bytes=plus(sizeof(Access::RetirementState)+128,plus(
-        times(command->selections.capacity(),sizeof(TextureResourceSelection)),plus(times(command->rows.capacity(),sizeof(Row)),
-        plus(times(command->textures.capacity(),sizeof(RetirementTextureEndpoint)),command->references->ownedBytes()))));
+    command->bytes=plus(sizeof(Access::RetirementState)+128,plus(compactedBytes,plus(
+        times(command->selections.capacity(),sizeof(TextureResourceSelection)),plus(times(command->rows.capacity(),sizeof(RetirementRow)),
+        plus(times(command->textures.capacity(),sizeof(RetirementTextureEndpoint)),command->references->ownedBytes())))));
     budget.charge(command->references->ownedBytes());
   } else {
     command=Access::get(receipt);
@@ -1355,10 +1465,14 @@ PreparedTextureResourceLifecycle prepareSelectedRetirement(const TextureResource
   budget.charge(times(command->selections.size(),sizeof(ResourceHandle)));std::vector<ResourceHandle> changed;changed.reserve(command->selections.size());
   for(size_t i=0;i<command->selections.size();++i) {
     const auto selection=command->selections[i];auto& row=next->tables[table(selection.domain,selection.kind)][selection.row];
-    if(row.handle!=command->rows[i].handle || row.payload!=command->rows[i].payload || row.active==!retiring)
+    if(row.handle!=command->rows[i].handle || row.payload!=command->rows[i].payload(retiring) || row.active==!retiring)
       invalid("Selected resource endpoint belongs to another phase or incarnation");
-    row.active=!retiring;changed.push_back(row.handle);
+    row.active=!retiring;
+    row.payload=command->rows[i].payload(row.active);
+    changed.push_back(row.handle);
   }
+  if(!currentRetirementImagePayloadsMatch(*command,view,retiring,limits.maxWork))
+    invalid("Selected image retirement or restore requires its exact current payload");
   if(!tablesMatch(next->tables,view,limits.maxWork)) invalid("Selected resource phase change modifies records or leaves an inactive dependency");
   captureRoles(*next,view,budget);
   uint64_t roleRows=next->archiveToEvaluated.size();for(const auto& roles:next->roles) roleRows=plus(roleRows,roles.color.size());
@@ -1395,6 +1509,7 @@ bool CanPrepareTextureResourceLifecycle(const PreparedTextureResourceLifecycle& 
     const TextureResourceLifecycleGenerationPtr& current,const TextureResourceLifecycleView& nextView) noexcept {
   const auto& pointer=Access::get(prepared);if(!pointer || pointer->consumed || pointer->failed || current!=pointer->before || !pointer->next) return false;
   const auto& state=*pointer;const auto& next=*Access::get(*state.next);const auto& authority=*next.authority;
+  if(!state.retirementCommand && hasImageByteOverrides(nextView)) return false;
   if(authority.catalog->revision()!=state.revision || authority.high!=state.expectedHigh || authority.liveVersion!=state.expectedLiveVersion ||
       (current && (!current->valid() || !current->liveDependenciesValid())) || !roleViewMatches(next,nextView) || !tablesMatch(next.tables,nextView,next.maxWork)) return false;
   for(const auto& owner:state.outgoing) {
@@ -1430,6 +1545,7 @@ bool CanPrepareTextureResourceLifecycle(const PreparedTextureResourceLifecycle& 
     if(!current || command.authority!=next.authority || command.version!=state.retirementVersion ||
         command.retired==state.retirementTarget || command.published==state.retirementInitial ||
         !retirementEndpointMatches(command,*Access::get(*current),!command.retired) ||
+        !currentRetirementImagePayloadsMatch(command,nextView,state.retirementTarget,state.limits.maxWork) ||
         !retirementRolesChangeOnlySelected(command,*Access::get(*current),next,!state.retirementTarget)) return false;
   }
   return true;

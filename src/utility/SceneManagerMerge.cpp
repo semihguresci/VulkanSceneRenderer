@@ -696,7 +696,9 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareMergeGeneration(
   sourceLimits.maxResidentBytes=std::min(sourceLimits.maxResidentBytes,limits.maxPreparedCpuBytes);
   sourceLimits.maxMetadataBytes=std::min(sourceLimits.maxMetadataBytes,limits.maxPreparedCpuBytes);
   result.sources_=std::make_unique<GltfSessionMergePlan>(
-      PlanGltfSessionSources(gltfModel_,exportSource_,incoming.gltfModel,options,sourceLimits));
+      PlanGltfSessionSources(gltfModel_,exportSource_,incoming.gltfModel,options,sourceLimits,
+          {{archiveResourcePhases_.images,archiveResourcePhases_.textures},
+           {gltfResourcePhases_.images,gltfResourcePhases_.textures}}));
   const auto& plan=result.sources_->merge;
   if(plan.destinationScene<0 || size_t(plan.destinationScene)!=selectedScene_)
     mergeFailure("merge destination must be the currently selected scene");
@@ -1158,7 +1160,9 @@ SceneManager::PreparedMergeGeneration SceneManager::prepareSubtreeCloneGeneratio
   sourceLimits.maxResidentBytes=std::min(sourceLimits.maxResidentBytes,remaining/2);
   sourceLimits.maxMetadataBytes=std::min(sourceLimits.maxMetadataBytes,remaining-remaining/2);
   result.cloneSources_=std::make_unique<GltfProjectedSubtreeClonePlan>(
-      PlanGltfProjectedSubtreeClone(gltfModel_,exportSource_,graph.sourceProjection,{},sourceLimits));
+      PlanGltfProjectedSubtreeClone(gltfModel_,exportSource_,graph.sourceProjection,{},sourceLimits,
+          {{archiveResourcePhases_.images,archiveResourcePhases_.textures},
+           {gltfResourcePhases_.images,gltfResourcePhases_.textures}}));
   const auto& projected=*result.cloneSources_;const auto& plan=projected.clone;
   if(plan.authoredSource.textures.size()!=exportSource_.textures.size() ||
       plan.evaluatedSource.textures.size()!=gltfModel_.textures.size())
