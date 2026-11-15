@@ -19,9 +19,70 @@ using UV = glm::dvec2;
 using Point = glm::dvec3;
 using Edge = std::pair<uint32_t, uint32_t>;
 using Triangle = std::array<uint32_t, 3>;
+using ParameterPolygon = std::vector<std::vector<std::array<double, 2>>>;
 Edge edge(uint32_t a, uint32_t b) { return std::minmax(a, b); }
 double cross(UV a, UV b) { return a.x * b.y - a.y * b.x; }
 double orient(UV a, UV b, UV c) { return cross(b - a, c - a); }
+
+std::vector<uint32_t>
+triangulateSplinePolygon(const ParameterPolygon &polygon) {
+  // Independent inverse solves on a straight trim can disagree by a few ULPs.
+  // Keep those samples out of Earcut's seed polygon to avoid spurious ears
+  // along the trim. The original UVs and 3D boundary samples are restored
+  // below, before refinement.
+  constexpr double roundoff = 1e-12;
+  ParameterPolygon corners;
+  std::vector<uint32_t> originalIndices;
+  uint32_t base = 0;
+  for (const auto &ring : polygon) {
+    auto &border = corners.emplace_back();
+    const auto point = [&](size_t i) { return UV(ring[i][0], ring[i][1]); };
+    std::vector<size_t> turns;
+    for (size_t i = 0; i < ring.size(); ++i) {
+      const UV a = point((i + ring.size() - 1) % ring.size()), b = point(i),
+               c = point((i + 1) % ring.size());
+      if (glm::dot(b - a, c - b) <= 0 ||
+          std::abs(orient(a, c, b)) > roundoff * glm::length(c - a))
+        turns.push_back(i);
+    }
+    const auto append = [&](size_t i) {
+      border.push_back(ring[i]);
+      originalIndices.push_back(base + static_cast<uint32_t>(i));
+    };
+    if (turns.size() < 3) {
+      for (size_t i = 0; i < ring.size(); ++i)
+        append(i);
+    } else {
+      for (size_t turn = 0; turn < turns.size(); ++turn) {
+        const size_t first = turns[turn],
+                     last = turns[(turn + 1) % turns.size()];
+        append(first);
+        const UV a = point(first), direction = point(last) - a;
+        const double length = glm::length(direction);
+        bool straight = length > 0;
+        double previous = 0;
+        for (size_t i = (first + 1) % ring.size(); straight && i != last;
+             i = (i + 1) % ring.size()) {
+          const UV offset = point(i) - a;
+          const double along = glm::dot(direction, offset) / length;
+          straight = along > previous && along < length &&
+                     std::abs(cross(direction, offset)) <= roundoff * length;
+          previous = along;
+        }
+        if (!straight)
+          for (size_t i = (first + 1) % ring.size(); i != last;
+               i = (i + 1) % ring.size())
+            append(i);
+      }
+    }
+    base += static_cast<uint32_t>(ring.size());
+  }
+  auto indices = mapbox::earcut<uint32_t>(corners);
+  for (auto &index : indices)
+    index = originalIndices[index];
+  return indices;
+}
+
 double segmentDistanceSquared(Point p, Point a, Point b) {
   const auto d = b - a;
   const double n = glm::dot(d, d);
@@ -663,7 +724,7 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
     const auto &knots = axis ? s_.meshV : s_.meshU;
     probeKnots_[axis] = s_.spline ? liftKnots(knots, axis) : knots;
   }
-  std::vector<std::vector<std::array<double, 2>>> polygon;
+  ParameterPolygon polygon;
   std::vector<UV> normalized;
   constexpr double epsilon = 1e-10;
   const auto onSegment = [](UV p, UV a, UV b) {
@@ -867,8 +928,12 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
         --b;
       }
     }
-  } else if (!bandGrid && !fanPoint_)
-    indices = mapbox::earcut<uint32_t>(polygon);
+  } else if (!bandGrid && !fanPoint_) {
+    if (s_.spline && s_.derivatives)
+      indices = triangulateSplinePolygon(polygon);
+    else
+      indices = mapbox::earcut<uint32_t>(polygon);
+  }
   std::vector<Triangle> initial;
   std::vector<bool> used(vertices_.size(), false);
   double triangulatedArea = 0;
@@ -1027,6 +1092,9 @@ void Mesher::restoreBoundaryChains(std::vector<Triangle> &triangles,
     for (uint32_t v = 0; v < normalized.size(); ++v) {
       if (++checks > 8000000)
         throw std::runtime_error("Curved face boundary chain budget exceeded");
+      if (std::ranges::find(triangles[use.triangle], v) !=
+          triangles[use.triangle].end())
+        continue;
       const auto offset = normalized[v] - a;
       const double t = glm::dot(offset, direction) / lengthSquared;
       if (t > endMargin && t < 1 - endMargin &&

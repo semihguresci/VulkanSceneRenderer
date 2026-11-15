@@ -119,7 +119,11 @@ curve can join authored pcurves when its cached samples have a consistent
 surface inverse and the authored endpoints anchor its lift. The importer
 checks intervening chord error and rejects half-period ties or inconsistent
 anchors. A shared 3D seam must have opposite uses whose inferred lifts differ
-by one certified period. Doubly periodic spline bands
+by one certified period. An explicit face can also place an entirely inferred
+outer bound or hole against its authored loops. The importer translates only
+inferred loops by whole periods and requires a unique placement with all holes
+strictly inside the outer bound and disjoint from one another. Doubly periodic
+spline bands
 can follow a primitive winding on both axes, such as two U turns and one V
 turn. Their trims must form opposite monotone loops with exactly one cover
 between periodic images. The companion of an authored winding loop can use
@@ -671,6 +675,8 @@ seam lifts. Independent volume, normal and exact-edge checks cover
 complementary winding bands on the torus. Conflicting lifts and periodic images
 reject without leaving mesh buffers. Sharp-knot cases check that matching and
 unequally sampled rings keep identical cut edges and one-sided normals.
+Detached trim cases check both periodic axes, a bare outer bound or hole, and
+the exact shared boundary and area of a separately styled patch.
 Use
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` with CTest's
 `ifc_periodic_spline_seams_gpu_regression` to verify depth, source colors and
@@ -845,8 +851,8 @@ with arbitrary `AREA` voids, standalone revolutions without a regular one-sided 
 multi-chart boundaries without enough 3D geometry to select their chart.
 Periodic spline charts with unclamped closure, nonmonotone winding bands or
 shared source edges missing a sample at a sharp knot require further work.
-Explicit charts mixing pcurves and 3D edges still need an authored anchor in
-each disconnected periodic trim loop. Each omitted
+Periodic trim layouts without a unique chart placement are diagnosed.
+Each omitted
 representation is reported. A full IFC backend remains an option if future
 assets need these capabilities.
 

@@ -2863,6 +2863,7 @@ enum class SplineLift {
   MixedSeam,
   MixedConflict
 };
+enum class DetachedSplineTrim { None, BareHole, BareOuter, HoleAtSeam };
 
 struct PeriodicSplineBuilder : CurvedBuilder {
   static constexpr SplineAxis torusU{2.75, 8.75, true};
@@ -2914,7 +2915,8 @@ struct PeriodicSplineBuilder : CurvedBuilder {
                std::string(master) + ")");
   }
 
-  std::string cylinder(bool swapped, SplineLift lift) {
+  std::string cylinder(bool swapped, SplineLift lift,
+                       DetachedSplineTrim detached = DetachedSplineTrim::None) {
     const SplineAxis angle{2.75, 8.75, true}, height{-2.125, 4.875, false};
     std::vector<std::vector<std::string>> grid(swapped ? height.controls()
                                                        : angle.controls());
@@ -2950,11 +2952,15 @@ struct PeriodicSplineBuilder : CurvedBuilder {
       return edge(controls.front(), controls.front(),
                   associated("IFCSURFACECURVE", curve, lifts));
     };
-    const bool bareBottom =
-        lift == SplineLift::MixedRings || lift == SplineLift::MixedConflict;
-    const bool bareSeam = lift == SplineLift::MixedSeam;
+    const bool outerBare = detached == DetachedSplineTrim::BareOuter;
+    const bool bareBottom = outerBare || lift == SplineLift::MixedRings ||
+                            lift == SplineLift::MixedConflict;
+    const bool bareSeam = outerBare || lift == SplineLift::MixedSeam;
     const double period = angle.high - angle.low;
-    const double seamShift = (bareBottom || bareSeam) && swapped ? period : 0.;
+    const bool hasHole = detached != DetachedSplineTrim::None;
+    const double seamShift = hasHole                               ? 2 * period
+                             : (bareBottom || bareSeam) && swapped ? period
+                                                                   : 0.;
     const auto bottom =
         ringEdge(lower, height.low, seamShift, false, bareBottom);
     const double topShift =
@@ -2963,7 +2969,7 @@ struct PeriodicSplineBuilder : CurvedBuilder {
                                                          : 0.);
     const auto top = ringEdge(upper, height.high, topShift,
                               lift == SplineLift::AmbiguousRing,
-                              lift == SplineLift::MixedRings);
+                              outerBare || lift == SplineLift::MixedRings);
     const double first = angle.low + seamShift;
     const double second =
         seamShift + (lift == SplineLift::DuplicateSeam ? angle.low
@@ -2978,9 +2984,67 @@ struct PeriodicSplineBuilder : CurvedBuilder {
                          {liftAt({first, height.low}, {first, height.high}),
                           liftAt({second, height.low}, {second, height.high})});
     const auto seam = edge(lower.front(), upper.front(), seamGeometry);
-    face({bound({{bottom, true}, {seam, true}, {top, false}, {seam, false}},
-                true, bareBottom || !swapped)},
-         sheet, !swapped);
+    std::vector bounds{
+        bound({{bottom, true}, {seam, true}, {top, false}, {seam, false}}, true,
+              bareBottom || !swapped)};
+    std::vector<Use> patch;
+    if (hasHole) {
+      // The patch spans one exact rational quadrant and half of the height.
+      // Give the wall and patch opposite uses of the same four native edges.
+      const unsigned start = detached == DetachedSplineTrim::HoleAtSeam ? 0 : 2;
+      const double u0 = angle.low + period * start / 8, u1 = u0 + period / 4;
+      const double v0 = std::lerp(height.low, height.high, .25),
+                   v1 = std::lerp(height.low, height.high, .75);
+      const auto controls = [&](double z) {
+        std::array<std::string, 3> refs;
+        for (unsigned j = 0; j < refs.size(); ++j) {
+          const auto p = circleControls[start + j];
+          refs[j] = point({2 * p.x, 2 * p.y, z});
+        }
+        return refs;
+      };
+      const auto low = controls(.75), high = controls(2.25);
+      const auto patchEdge = [&](const std::string &a, const std::string &b,
+                                 const std::string &curve, glm::dvec2 p,
+                                 glm::dvec2 q) {
+        p.x += seamShift;
+        q.x += seamShift;
+        return edge(a, b,
+                    outerBare
+                        ? associated("IFCSURFACECURVE", curve, {liftAt(p, q)})
+                        : curve);
+      };
+      const auto arc = [&](const auto &p, double v) {
+        const auto curve =
+            add("IFCRATIONALBSPLINECURVEWITHKNOTS(2,(" + p[0] + "," + p[1] +
+                "," + p[2] + "),.UNSPECIFIED.,.F.,.F.,(3,3),(" + number(u0) +
+                "," + number(u1) + "),.UNSPECIFIED.,(1.," +
+                number(angle.weight(1)) + ",1.))");
+        return patchEdge(p[0], p[2], curve, {u0, v}, {u1, v});
+      };
+      const auto side = [&](unsigned i, double u) {
+        const auto curve = add("IFCPOLYLINE((" + low[i] + "," + high[i] + "))");
+        return patchEdge(low[i], high[i], curve, {u, v0}, {u, v1});
+      };
+      patch = {{arc(low, v0), true},
+               {side(2, u1), true},
+               {arc(high, v1), false},
+               {side(0, u0), false}};
+      auto hole = patch;
+      std::ranges::reverse(hole);
+      for (auto &use : hole)
+        use.second = !use.second;
+      bounds.push_back(bound(std::move(hole), false));
+    }
+    face(bounds, sheet, !swapped);
+    if (hasHole) {
+      face({bound(std::move(patch))}, sheet, !swapped);
+      const auto color = add("IFCCOLOURRGB($,1.,0.,0.)");
+      const auto shading = add("IFCSURFACESTYLESHADING(" + color + ",0.)");
+      const auto style =
+          add("IFCSURFACESTYLE('Trim patch',.BOTH.,(" + shading + "))");
+      add("IFCSTYLEDITEM(" + faces.back() + ",(" + style + "),$)");
+    }
     plane({{bottom, false}}, {0, 0, 0}, {0, 0, -1});
     plane({{top, true}}, {0, 0, 3}, {0, 0, 1});
     return finish();
@@ -3227,6 +3291,73 @@ TEST(IfcCurvedBrep, MixedSplineProjectionRejectsASecondNativeRoot) {
         std::string_view::npos)
         << error.what();
   }
+}
+
+TEST(IfcCurvedBrep, DetachedSplineTrimInfersEitherLoopAndKeepsSharedPatch) {
+  for (const auto trim :
+       {DetachedSplineTrim::BareHole, DetachedSplineTrim::BareOuter})
+    for (const bool swapped : {false, true}) {
+      SCOPED_TRACE(swapped ? "periodic V" : "periodic U");
+      SCOPED_TRACE(trim == DetachedSplineTrim::BareHole ? "bare hole"
+                                                        : "bare outer");
+      PeriodicSplineBuilder step;
+      const auto brep = step.cylinder(swapped, SplineLift::Valid, trim);
+      const auto source = fixture(step.definitions, brep);
+      if (!swapped)
+        exportCurvedFixture(trim == DetachedSplineTrim::BareHole
+                                ? "detached-spline-bare-hole"
+                                : "detached-spline-bare-outer",
+                            source);
+      const auto model = LoadFromStep(source);
+      EXPECT_NO_FATAL_FAILURE(complete(model));
+      if (model.indices.empty())
+        continue;
+      expectPeriodicSplineCylinder(model);
+
+      const auto patch =
+          std::ranges::find_if(model.elements, [](const auto &element) {
+            return element.color == glm::vec4(1, 0, 0, 1);
+          });
+      ASSERT_NE(patch, model.elements.end());
+      const auto range =
+          std::ranges::find_if(model.meshRanges, [&](const auto &range) {
+            return range.meshId == patch->meshId;
+          });
+      ASSERT_NE(range, model.meshRanges.end());
+      double area = 0.;
+      const auto position = [&](size_t index) {
+        return glm::dvec3(model.vertices.at(model.indices.at(index)).position);
+      };
+      for (size_t i = range->firstIndex;
+           i + 2 < size_t(range->firstIndex) + range->indexCount; i += 3) {
+        const auto a = position(i), b = position(i + 1), c = position(i + 2);
+        for (const auto p : {a, b, c}) {
+          EXPECT_LE(p.x, 1e-6);
+          EXPECT_GE(p.y, -1e-6);
+          EXPECT_GE(p.z, .75 - 1e-6);
+          EXPECT_LE(p.z, 2.25 + 1e-6);
+        }
+        area += glm::length(glm::cross(b - a, c - a)) / 2.;
+      }
+      EXPECT_NEAR(area, 1.5 * pi, .02);
+    }
+}
+
+TEST(IfcCurvedBrep, DetachedSplineTrimRejectsAHoleTouchingTheAuthoredCut) {
+  PeriodicSplineBuilder step;
+  const auto brep =
+      step.cylinder(false, SplineLift::Valid, DetachedSplineTrim::HoleAtSeam);
+  const auto model = LoadFromStep(fixture(step.definitions, brep));
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+  EXPECT_TRUE(model.elements.empty());
+  EXPECT_TRUE(model.indices.empty());
+  EXPECT_TRUE(model.vertices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  const auto &reason = model.importReport.diagnostics.front().reason;
+  EXPECT_NE(reason.find("Face #"), std::string::npos) << reason;
+  EXPECT_NE(reason.find("No valid periodic spline trim placement"),
+            std::string::npos)
+      << reason;
 }
 
 TEST(IfcCurvedBrep, AuthoredSplineChartChecksTranslatedInteriorOverlap) {
