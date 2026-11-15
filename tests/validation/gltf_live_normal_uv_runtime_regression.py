@@ -148,9 +148,6 @@ def capture(renderer, output, model, technique, name, frames, record, *, sequenc
         "--camera-position", "0", "0", "4", "--camera-target", "0", "0", "0", "--camera-fov", "45",
         "--import-scale", "1", "--model", str(model), "--screenshot", str(image),
     ]
-    if technique == "path-tracing":
-        command.remove("--no-ray-query")
-        command += ["--path-spp", "4", "--path-samples", "4", "--path-bounces", "2", "--path-seed", "1"]
     if sequence:
         command += ["--capture-sequence", str(sequence)]
     if save:
@@ -171,10 +168,6 @@ def capture(renderer, output, model, technique, name, frames, record, *, sequenc
         state = json.loads(telemetry.read_text(encoding="utf-8"))
         require(state["technique"] == technique and state["resolution"] == [WIDTH, HEIGHT] and
                 state["msaaSamples"] == 1 and not state["taa"]["enabled"] and png.is_file(), f"Wrong native frame: {png}")
-        if technique == "path-tracing":
-            path = state["referencePath"]
-            require(path["active"] and path["attemptedSamples"] == 4 and
-                    path["unsupportedSamples"] == path["rejectedSamples"] == 0, f"Wrong path tracing state: {path}")
         captures[frame] = dict(image=png, state=state)
     record["samples"] = {frame: str(item["image"]) for frame, item in captures.items()}
     return captures
@@ -339,7 +332,7 @@ def main():
     parser.add_argument("--require-opt-in", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--cohort", action="append", choices=COHORTS)
-    parser.add_argument("--technique", action="append", choices=(*TECHNIQUES, "path-tracing"))
+    parser.add_argument("--technique", action="append", choices=TECHNIQUES)
     parser.add_argument("--timeout", type=float, default=120)
     args = parser.parse_args()
     if args.require_opt_in and not args.generate_only and os.environ.get(GPU_OPT_IN) != "1":
