@@ -5,6 +5,14 @@
 [[vk::binding(23, 0)]] Texture2D<float4> gAnisotropyTexture;
 [[vk::binding(24, 0)]] Texture2D<float4> gDiffuseTransmissionTexture;
 
+float3 DecodeDeferredClearcoatNormal(float3 weightedNormal,
+                                     float clearcoatFactor, float3 fallback)
+{
+    if (clearcoatFactor <= 0.0)
+        return fallback;
+    return SafeNormalize(weightedNormal / clearcoatFactor, fallback);
+}
+
 ExtendedPbrTerms LoadDeferredExtendedPbrTerms(
     GpuMaterial material, int2 pixel, float specularTransmission)
 {

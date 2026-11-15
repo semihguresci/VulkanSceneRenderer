@@ -485,20 +485,31 @@ float3 EvaluateDeferredSheenDirectLight(float3 sheenColor,
 float3 EvaluateDeferredLayeredDirectLight(
     float3 albedo, float3 F0, float metallic, float roughness, float3 N,
     float3 V, float3 L, float3 radiance, float clearcoatFactor,
-    float clearcoatRoughness, float3 sheenColor, float sheenRoughness)
+    float clearcoatRoughness, float3 sheenColor, float sheenRoughness,
+    float3 clearcoatNormal)
 {
     float3 lighting = EvaluatePbrDirectLight(
         albedo, F0, metallic, roughness, N, V, L, radiance);
 
     lighting *= DeferredClearcoatBaseEnergyScale(clearcoatFactor);
     lighting += EvaluateDeferredClearcoatDirectLight(
-        clearcoatFactor, clearcoatRoughness, N, V, L, radiance);
+        clearcoatFactor, clearcoatRoughness, clearcoatNormal, V, L, radiance);
 
     lighting *= DeferredSheenBaseEnergyScale(sheenColor);
     lighting += EvaluateDeferredSheenDirectLight(
         sheenColor, sheenRoughness, N, V, L, radiance);
 
     return lighting;
+}
+
+float3 EvaluateDeferredLayeredDirectLight(
+    float3 albedo, float3 F0, float metallic, float roughness, float3 N,
+    float3 V, float3 L, float3 radiance, float clearcoatFactor,
+    float clearcoatRoughness, float3 sheenColor, float sheenRoughness)
+{
+    return EvaluateDeferredLayeredDirectLight(albedo, F0, metallic, roughness,
+        N, V, L, radiance, clearcoatFactor, clearcoatRoughness,
+        sheenColor, sheenRoughness, N);
 }
 
 float3 EvaluateThinSurfaceTransmission(float3 albedo, float3 normal, float3 V,

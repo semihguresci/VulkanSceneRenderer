@@ -27,7 +27,7 @@ SceneRasterPassClearValues sceneRasterPassClearValues(
     break;
   case SceneRasterPassKind::GBuffer:
     clearValues.values[0].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
-    clearValues.values[1].color = {{0.5f, 0.5f, 1.0f, 1.0f}};
+    clearValues.values[1].color = {{0.5f, 0.5f, 1.0f, 0.0f}};
     clearValues.values[2].color = {{0.0f, 1.0f, 1.0f, 1.0f}};
     clearValues.values[3].color = {{0.0f, 0.0f, 0.0f, 0.0f}};
     clearValues.values[4].color = {{0.0f, 0.0f, 0.0f, 0.0f}};

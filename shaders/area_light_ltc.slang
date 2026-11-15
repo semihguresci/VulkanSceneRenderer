@@ -612,7 +612,8 @@ bool TryCombineAreaLightLtcTerms(AreaLightLtcTerms terms, float visibility,
 AreaLightDirectTerms EvaluateAreaLightSampledDirectTerms(
     float3 albedo, float3 F0, float metallic, float roughness, float3 N,
     float3 V, float3 L, float3 radiance, float clearcoatFactor,
-    float clearcoatRoughness, float3 sheenColor, float sheenRoughness)
+    float clearcoatRoughness, float3 sheenColor, float sheenRoughness,
+    float3 clearcoatNormal)
 {
     AreaLightDirectTerms terms;
     terms.stable = 0.0.xxx;
@@ -627,40 +628,46 @@ AreaLightDirectTerms EvaluateAreaLightSampledDirectTerms(
     L = SafeNormalize(L, float3(0.0, 1.0, 0.0));
     float NdotL = saturate(FiniteScalarOr(dot(N, L), 0.0));
     float NdotV = saturate(FiniteScalarOr(dot(N, V), 0.0));
-    if (NdotL <= 0.0 || NdotV <= 0.0) return terms;
-
+    bool baseFacesLight = NdotL > 0.0 && NdotV > 0.0;
     float3 H = SafeNormalize(V + L, N);
     float q = Pow5(1.0 - saturate(dot(H, V)));
-    float3 unitFSpecular = radiance * (NdotL *
-        DistributionGGX(N, H, roughness) * GeometrySmith(N, V, L, roughness) /
-        max(4.0 * NdotV * NdotL, 1.0e-4));
-    // Split Schlick F=F0+(1-F0)*q without evaluating GGX twice. The constant
-    // F0 lobe and cosine terms remain analytic when only the q fit is unsafe.
-    terms.stable = unitFSpecular * F0 +
-        albedo * (1.0 - metallic) * (1.0.xxx - F0) *
-        ((1.0 - q) * NdotL / PI) * radiance;
-    terms.fresnel = unitFSpecular * (1.0.xxx - F0) * q;
     float clearcoat = saturate(FiniteScalarOr(clearcoatFactor, 0.0));
-    float baseScale = DeferredClearcoatBaseEnergyScale(clearcoat);
-    terms.stable *= baseScale;
-    terms.fresnel *= baseScale;
+    if (baseFacesLight)
+    {
+        float3 unitFSpecular = radiance * (NdotL *
+            DistributionGGX(N, H, roughness) * GeometrySmith(N, V, L, roughness) /
+            max(4.0 * NdotV * NdotL, 1.0e-4));
+        // The constant-F0 and cosine terms can stay analytic when the Schlick q fit is unsafe.
+        float baseScale = DeferredClearcoatBaseEnergyScale(clearcoat);
+        terms.stable = (unitFSpecular * F0 +
+            albedo * (1.0 - metallic) * (1.0.xxx - F0) *
+            ((1.0 - q) * NdotL / PI) * radiance) * baseScale;
+        terms.fresnel = unitFSpecular * (1.0.xxx - F0) * q * baseScale;
+    }
     if (clearcoat > 0.0)
     {
-        float coatRoughness = clamp(FiniteScalarOr(clearcoatRoughness, 1.0),
-                                    0.045, 1.0);
-        float3 coatUnitFSpecular = radiance * (NdotL * clearcoat *
-            DistributionGGX(N, H, coatRoughness) *
-            GeometrySmith(N, V, L, coatRoughness) /
-            max(4.0 * NdotV * NdotL, 1.0e-4));
-        float coatF0 = IorToF0(1.5);
-        terms.stable += coatUnitFSpecular * coatF0;
-        terms.fresnel += coatUnitFSpecular * ((1.0 - coatF0) * q);
+        clearcoatNormal = SafeNormalize(clearcoatNormal, N);
+        float coatNdotL = saturate(dot(clearcoatNormal, L));
+        float coatNdotV = saturate(dot(clearcoatNormal, V));
+        if (coatNdotL > 0.0 && coatNdotV > 0.0)
+        {
+            float coatRoughness = clamp(FiniteScalarOr(clearcoatRoughness, 1.0),
+                                        0.045, 1.0);
+            float3 coatUnitFSpecular = radiance * (coatNdotL * clearcoat *
+                DistributionGGX(clearcoatNormal, H, coatRoughness) *
+                GeometrySmith(clearcoatNormal, V, L, coatRoughness) /
+                max(4.0 * coatNdotV * coatNdotL, 1.0e-4));
+            float coatF0 = IorToF0(1.5);
+            terms.stable += coatUnitFSpecular * coatF0;
+            terms.fresnel += coatUnitFSpecular * ((1.0 - coatF0) * q);
+        }
     }
     float sheenBaseScale = DeferredSheenBaseEnergyScale(sheenColor);
     terms.stable *= sheenBaseScale;
     terms.fresnel *= sheenBaseScale;
-    terms.stable += EvaluateDeferredSheenDirectLight(
-        sheenColor, sheenRoughness, N, V, L, radiance);
+    if (baseFacesLight)
+        terms.stable += EvaluateDeferredSheenDirectLight(
+            sheenColor, sheenRoughness, N, V, L, radiance);
     return terms;
 }
 
@@ -673,7 +680,8 @@ float3 EvaluateAreaLightSampledLayeredDirect(AreaLightData light,
                                             float3 V, float clearcoat,
                                             float clearcoatRoughness,
                                             float3 sheenColor,
-                                            float sheenRoughness)
+                                            float sheenRoughness,
+                                            float3 clearcoatNormal)
 {
     float3 directLighting = 0.0.xxx;
     [loop]
@@ -684,7 +692,7 @@ float3 EvaluateAreaLightSampledLayeredDirect(AreaLightData light,
             worldPosition, sampleIndex, sampleCount, L);
         directLighting += EvaluateDeferredLayeredDirectLight(albedo, F0,
             metallic, roughness, N, V, L, radiance, clearcoat,
-            clearcoatRoughness, sheenColor, sheenRoughness);
+            clearcoatRoughness, sheenColor, sheenRoughness, clearcoatNormal);
     }
     return directLighting;
 }
@@ -696,7 +704,7 @@ bool TryEvaluateAreaLightLtc(LightingBuffer lighting, AreaLightData light,
                              float clearcoatFactor, float clearcoatRoughness,
                              float3 sheenColor, float sheenRoughness,
                              bool unsupportedTransmission,
-                             out AreaLightLtcTerms terms)
+                             out AreaLightLtcTerms terms, float3 clearcoatNormal)
 {
     terms.lighting.stable = 0.0.xxx;
     terms.lighting.fresnel = 0.0.xxx;
@@ -710,8 +718,17 @@ bool TryEvaluateAreaLightLtc(LightingBuffer lighting, AreaLightData light,
         return false;
     float closestDistanceSq = AreaLightClosestDistanceSq(frame, worldPosition);
     if (closestDistanceSq <= AREA_LIGHT_MIN_DISTANCE_SQ) return false;
+    N = SafeNormalize(N, float3(0.0, 1.0, 0.0));
+    V = SafeNormalize(V, float3(0.0, 0.0, 1.0));
+    float clearcoat = saturate(FiniteScalarOr(clearcoatFactor, 0.0));
+    float coatNdotV = 0.0;
+    if (clearcoat > 0.0)
+    {
+        clearcoatNormal = SafeNormalize(clearcoatNormal, N);
+        coatNdotV = saturate(dot(clearcoatNormal, V));
+    }
     float minimumRoughness = clamp(FiniteScalarOr(roughness, 1.0), 0.045, 1.0);
-    if (saturate(FiniteScalarOr(clearcoatFactor, 0.0)) > 0.0)
+    if (coatNdotV > 0.0)
         minimumRoughness = min(minimumRoughness,
             clamp(FiniteScalarOr(clearcoatRoughness, 1.0), 0.045, 1.0));
     // The engine's NDF denominator floor flattens the low-roughness lobe
@@ -735,12 +752,17 @@ bool TryEvaluateAreaLightLtc(LightingBuffer lighting, AreaLightData light,
     if (angularConfidence <= 0.0) return false;
     terms.stableWeight = min(terms.stableWeight, angularConfidence);
 
-    N = SafeNormalize(N, float3(0.0, 1.0, 0.0));
-    V = SafeNormalize(V, float3(0.0, 0.0, 1.0));
     float NdotV = saturate(dot(N, V));
     // The grazing endpoint of the finite fit is intentionally conservative.
     if (NdotV <= 0.01) return false;
     terms.stableWeight = min(terms.stableWeight, smoothstep(0.01, 0.02, NdotV));
+    // An invisible coat still attenuates the base, but needs no LTC fit.
+    if (coatNdotV > 0.0)
+    {
+        if (coatNdotV <= 0.01) return false;
+        terms.stableWeight = min(terms.stableWeight,
+            smoothstep(0.01, 0.02, coatNdotV));
+    }
     terms.fresnelWeight = terms.stableWeight;
     albedo = max(Finite3Or(albedo, 0.0.xxx), 0.0.xxx);
     F0 = saturate(Finite3Or(F0, 0.04.xxx));
@@ -787,16 +809,17 @@ bool TryEvaluateAreaLightLtc(LightingBuffer lighting, AreaLightData light,
         float coatBaseScale = DeferredClearcoatBaseEnergyScale(clearcoatFactor);
         baseLighting.stable = (diffuse + specular.stable) * coatBaseScale;
         baseLighting.fresnel = specular.fresnel * coatBaseScale;
-        float clearcoat = saturate(FiniteScalarOr(clearcoatFactor, 0.0));
         float coatFresnelError = 0.0;
         float3 coatWholeFresnelError = 0.0.xxx;
-        if (clearcoat > 0.0)
+        if (coatNdotV > 0.0)
         {
             float unusedMoment;
             bool coatGeometrySafe;
+            float2 coatFresnelInterval = AreaLtcFresnelInterval(
+                frame, worldPosition, V, coatNdotV);
             AreaLightDirectTerms coatSpecular = AreaLtcSpecular(frame, worldPosition,
-                N, V, IorToF0(1.5).xxx, clearcoatRoughness, NdotV,
-                fresnelInterval, activeChannels, coatGeometrySafe, unusedMoment,
+                clearcoatNormal, V, IorToF0(1.5).xxx, clearcoatRoughness, coatNdotV,
+                coatFresnelInterval, activeChannels, coatGeometrySafe, unusedMoment,
                 coatFresnelError, coatWholeFresnelError);
             if (!coatGeometrySafe) return false;
             baseLighting.stable += clearcoat * coatSpecular.stable;

@@ -139,7 +139,7 @@ float3 EvaluateExtendedPbrLayeredDirectLight(
     float3 albedo, float3 F0, float metallic, float roughness, float3 N,
     float3 V, float3 L, float3 radiance, float clearcoatFactor,
     float clearcoatRoughness, float3 sheenColor, float sheenRoughness,
-    ExtendedPbrTerms terms)
+    ExtendedPbrTerms terms, float3 clearcoatNormal)
 {
     if (!HasExtendedPbrEffect(terms))
     {
@@ -147,16 +147,27 @@ float3 EvaluateExtendedPbrLayeredDirectLight(
         // specular-transmission behavior, while both new effects are disabled.
         return EvaluateDeferredLayeredDirectLight(albedo, F0, metallic, roughness,
             N, V, L, radiance, clearcoatFactor, clearcoatRoughness,
-            sheenColor, sheenRoughness);
+            sheenColor, sheenRoughness, clearcoatNormal);
     }
     float3 lighting = EvaluateExtendedPbrDirectLight(
         albedo, F0, metallic, roughness, N, V, L, radiance, terms);
     lighting *= DeferredClearcoatBaseEnergyScale(clearcoatFactor);
     // The clearcoat remains the existing isotropic lobe.
     lighting += EvaluateDeferredClearcoatDirectLight(
-        clearcoatFactor, clearcoatRoughness, N, V, L, radiance);
+        clearcoatFactor, clearcoatRoughness, clearcoatNormal, V, L, radiance);
     lighting *= DeferredSheenBaseEnergyScale(sheenColor);
     lighting += EvaluateDeferredSheenDirectLight(
         sheenColor, sheenRoughness, N, V, L, radiance);
     return lighting;
+}
+
+float3 EvaluateExtendedPbrLayeredDirectLight(
+    float3 albedo, float3 F0, float metallic, float roughness, float3 N,
+    float3 V, float3 L, float3 radiance, float clearcoatFactor,
+    float clearcoatRoughness, float3 sheenColor, float sheenRoughness,
+    ExtendedPbrTerms terms)
+{
+    return EvaluateExtendedPbrLayeredDirectLight(albedo, F0, metallic, roughness,
+        N, V, L, radiance, clearcoatFactor, clearcoatRoughness,
+        sheenColor, sheenRoughness, terms, N);
 }

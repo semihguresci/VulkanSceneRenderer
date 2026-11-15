@@ -1144,7 +1144,9 @@ TEST(RenderingConventionTests,
   const container::renderer::GBufferFormats formats =
       container::renderer::GBufferFormats::defaults();
   EXPECT_EQ(formats.material, VK_FORMAT_R32G32B32A32_SFLOAT);
+  EXPECT_EQ(formats.normal, VK_FORMAT_R16G16B16A16_SFLOAT);
   EXPECT_EQ(formats.specular, VK_FORMAT_R16G16B16A16_SFLOAT);
+  EXPECT_EQ(formats.emissive, VK_FORMAT_R16G16B16A16_SFLOAT);
 
   const std::string materialCommon =
       readRepoTextFile("shaders/material_data_common.slang");
@@ -1168,9 +1170,24 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(
       gbuffer, "EncodeGBufferMaterialMetadata(materialIndex, thinSurface)"));
   EXPECT_TRUE(contains(gbuffer, "specular : SV_Target4"));
-  EXPECT_TRUE(contains(
-      gbuffer, "output.specular = float4(dielectricF0Color, dielectricF0)"));
+  EXPECT_TRUE(
+      contains(gbuffer, "weightedCoatNormal = clearcoatNormal * clearcoat"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      gbuffer, "output.normal = float4(surfaceNormal.shadingNormal * 0.5 + 0.5,"
+               " weightedCoatNormal.x)"));
+  EXPECT_TRUE(contains(gbuffer, "output.specular = "
+                                "float4(dielectricF0Color, weightedCoatNormal.y)"));
+  EXPECT_TRUE(
+      contains(gbuffer, "output.emissive = float4(emissive, weightedCoatNormal.z)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      gbuffer, "unlitOutput.normal = "
+               "float4(surfaceNormal.shadingNormal * 0.5 + 0.5, 0.0)"));
+  EXPECT_TRUE(contains(gbuffer, "unlitOutput.specular = 0.0.xxxx"));
+  EXPECT_TRUE(contains(gbuffer, "unlitOutput.emissive = "
+                                "float4(baseColor + emissive, 0.0)"));
   EXPECT_TRUE(contains(deferred, "#include \"material_data_common.slang\""));
+  EXPECT_TRUE(contains(
+      deferred, "float3(normalSample.a, specularSample.a, emissiveSample.a)"));
   EXPECT_TRUE(contains(
       deferred, "[[vk::binding(17, 0)]] Texture2D<float4> gSpecularTexture"));
   EXPECT_TRUE(contains(
@@ -1260,7 +1277,7 @@ TEST(RenderingConventionTests, DeferredMaterialParityUsesSharedLayeredHelpers) {
       extendedLayered,
       "return EvaluateDeferredLayeredDirectLight(albedo, F0, metallic, roughness,"
       "N, V, L, radiance, clearcoatFactor, clearcoatRoughness,"
-      "sheenColor, sheenRoughness);"));
+      "sheenColor, sheenRoughness, clearcoatNormal);"));
   const size_t disabledGuard = extendedLayered.find("if (!HasExtendedPbrEffect(terms))");
   const size_t legacyFallback = extendedLayered.find("return EvaluateDeferredLayeredDirectLight(");
   const size_t extendedEvaluation = extendedLayered.find("float3 lighting = EvaluateExtendedPbrDirectLight(");

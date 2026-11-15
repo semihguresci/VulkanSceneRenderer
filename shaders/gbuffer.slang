@@ -214,8 +214,6 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         specularColorTexCoord, vertIn.specularTextureIndex, specularTexCoord);
     float3 dielectricF0Color = EvaluateDielectricF0Color(
         specularFactor, specularColor, material.ior);
-    float dielectricF0 = EvaluateDielectricF0(
-        specularFactor, specularColor, material.ior);
 
     float faceSign =
         ((vertIn.flags & kObjectFlagDoubleSided) != 0u && !isFrontFace)
@@ -284,7 +282,6 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         sampledRoughness = 0.74;
         emissive = 0.0.xxx;
         dielectricF0Color = 0.04.xxx;
-        dielectricF0 = 0.04;
         clearcoat = 0.0;
         sheenColor = 0.0.xxx;
         iridescence = 0.0;
@@ -295,7 +292,7 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         PSOutput unlitOutput;
         unlitOutput.albedo = float4(0.0, 0.0, 0.0, baseAlpha);
         unlitOutput.normal =
-            float4(surfaceNormal.shadingNormal * 0.5 + 0.5, 1.0);
+            float4(surfaceNormal.shadingNormal * 0.5 + 0.5, 0.0);
         unlitOutput.material = float4(0.0, 1.0, 1.0, materialMetadata);
         unlitOutput.emissive = float4(baseColor + emissive, 0.0);
         unlitOutput.specular = 0.0.xxxx;
@@ -306,13 +303,30 @@ PSOutput fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace)
         return unlitOutput;
     }
 
+    float3 clearcoatNormal = surfaceNormal.geometricNormal;
+    if (pc.semanticColorMode == kBimSemanticColorModeOff &&
+        material.clearcoatFactor > 0.0 &&
+        material.clearcoatNormalTextureIndex != 0xffffffff)
+    {
+        float2 clearcoatNormalTexCoord = ApplyGpuTextureTransform(
+            vertIn.texCoord, vertIn.texCoord1,
+            material.clearcoatNormalTextureTransform);
+        clearcoatNormal = EvaluateSurfaceNormal(
+            vertIn.worldNormal, vertIn.worldTangent, clearcoatNormalTexCoord,
+            material.clearcoatNormalTextureIndex,
+            material.clearcoatNormalTextureScale, faceSign).shadingNormal;
+    }
+    // Store a linear coat-weighted direction across the three float alpha
+    // channels. Average resolves then ignore samples without a coat.
+    float3 weightedCoatNormal = clearcoatNormal * clearcoat;
     PSOutput output;
     output.albedo = float4(baseColor, baseAlpha);
-    output.normal = float4(surfaceNormal.shadingNormal * 0.5 + 0.5, 1.0);
+    output.normal = float4(surfaceNormal.shadingNormal * 0.5 + 0.5,
+                           weightedCoatNormal.x);
     output.material = float4(sampledMetallic, sampledRoughness, occlusion,
                              materialMetadata);
-    output.emissive = float4(emissive, dielectricF0);
-    output.specular = float4(dielectricF0Color, dielectricF0);
+    output.emissive = float4(emissive, weightedCoatNormal.z);
+    output.specular = float4(dielectricF0Color, weightedCoatNormal.y);
     output.materialLayers = float4(clearcoat, clearcoatRoughness,
                                    iridescence, iridescenceThickness);
     output.materialSheen = float4(sheenColor, sheenRoughness);

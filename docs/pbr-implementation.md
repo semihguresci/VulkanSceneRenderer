@@ -54,9 +54,8 @@ The parts that need adjustment for this renderer:
   volume behavior comes from `KHR_materials_volume`, where thickness and
   attenuation are applied.
 - Opaque deferred shading stores compact per-pixel channels plus material
-  metadata. Directional, point, and tiled lighting read sampled clearcoat,
-  sheen, and iridescence values from the material-layer attachments and fetch
-  `GpuMaterial` for additional factors that do not fit in the G-buffer.
+  metadata. Lighting reads sampled material properties, including the clearcoat
+  normal, from the G-buffer and fetches `GpuMaterial` for additional factors.
 
 ## Current Renderer Shape
 
@@ -286,9 +285,10 @@ than reimplementing glTF texture channel rules.
 
 `brdf_common.slang` owns BRDF math, Fresnel, GGX distribution, geometry terms,
 F0 from IOR/specular, and world-position reconstruction.
-`area_light_common.slang` owns the shared rectangle/disk area-light frame and
-four-sample emitter integration used by opaque deferred and forward transparent
-lighting.
+`area_light_common.slang` owns the shared rectangle and disk area-light frame
+and sampled emitter integration. `area_light_ltc.slang` fits the base and
+clearcoat lobes in their respective normal frames and supplies the sampled
+fallback when the fit has insufficient confidence.
 
 ## PBR Evaluation
 
@@ -349,11 +349,11 @@ Current renderer support for the requested PBR stack:
 | Feature | Current support |
 |---|---|
 | Metallic-roughness | Core glTF factors and packed G/B metallic-roughness texture in deferred and forward paths |
-| Normal | Tangent-space normal map with scale, double-sided face correction, and clearcoat normal in forward transparent path |
+| Normal | Tangent-space normal map with scale and double-sided face correction |
 | Emissive | Emissive texture/factor plus `KHR_materials_emissive_strength` |
 | Occlusion | R-channel occlusion texture with `occlusionStrength`, combined with GTAO in deferred lighting |
 | Specular | `KHR_materials_specular` intensity/color import; forward keeps color F0, deferred stores per-pixel dielectric F0 color in a dedicated specular G-buffer attachment |
-| Clearcoat | Sampled factor/roughness with direct and environment specular lobes in deferred and forward paths; clearcoat normal map in forward IBL |
+| Clearcoat | Sampled factor and roughness with an independent normal for direct and environment specular in Deferred and Forward raster shading |
 | Sheen | Sampled color/roughness with grazing-angle cloth approximation in deferred and forward direct/environment lighting |
 | Transmission + volume | Thin-surface transmission, thickness texture/factor, attenuation color/distance, and Beer-Lambert absorption in forward transparent path |
 | Iridescence | Sampled factor/thickness with angle/thickness tint approximation on dielectric and metallic reflectance |
@@ -374,7 +374,6 @@ Normal:
 - Normal maps are sampled as data textures.
 - `normalTexture.scale` is applied in shader.
 - Double-sided materials flip tangent-space evaluation on back faces.
-- Clearcoat can use its own normal map in the forward transparent path.
 
 Emissive:
 
@@ -398,14 +397,19 @@ Specular:
 
 Clearcoat:
 
-- Factor, roughness, factor textures, roughness texture, and clearcoat normal
-  texture are imported.
-- Forward transparent shading evaluates a second specular lobe.
-- Opaque G-buffer shading preserves sampled clearcoat factor and roughness in
-  a separate material-layer attachment. Directional, point, tiled and area
-  lights evaluate the clearcoat direct lobe; deferred environment lighting
-  evaluates its second specular IBL lobe. Clearcoat normal textures are evaluated
-  in the forward environment path; deferred clearcoat uses the shading normal.
+- The importer preserves clearcoat factor, roughness, and their textures,
+  along with the clearcoat normal texture and its scale.
+- Raster shading samples the clearcoat normal with its selected UV set and
+  texture transform. The base and clearcoat maps use the same tangent frame.
+  When the clearcoat map is absent, the lobe uses the unperturbed,
+  face-oriented geometric normal.
+- Forward opaque, Forward OIT, and Deferred shading use the independent coat
+  normal for directional, point, and spot lights, sampled and LTC area lights,
+  and the specular environment lobe. LTC uses the sampled path when its fit
+  falls outside the supported roughness or lighting geometry.
+- Raster shading uses an isotropic coat lobe with IOR 1.5 and a constant
+  Fresnel term for base attenuation.
+- DDGI probe hit shading uses the base shading normal for its clearcoat lobe.
 
 Sheen:
 
@@ -453,10 +457,10 @@ Supported importer target:
 | Extension | Import data | Shader behavior |
 |---|---|---|
 | Core metallic-roughness | base color, metallic, roughness, normal, AO, emissive, alpha | Deferred and forward |
-| `KHR_texture_transform` | offset, rotation, scale, alternate `texCoord` | Supported for core glTF texture slots in G-buffer and forward transparent paths |
+| `KHR_texture_transform` | offset, rotation, scale, alternate `texCoord` | Applied to core and clearcoat texture slots during raster material sampling |
 | `KHR_materials_pbrSpecularGlossiness` | diffuse, specular, glossiness, textures | Converted to metallic-roughness approximation; glossiness alpha converted to roughness |
 | `KHR_materials_specular` | specular intensity and specular color | Modifies dielectric F0 |
-| `KHR_materials_clearcoat` | clearcoat, roughness, normal | Second direct and environment specular lobe; sampled factor/roughness in G-buffer; normal map in forward IBL |
+| `KHR_materials_clearcoat` | clearcoat, roughness, normal | Independent coat normal for the direct and environment specular lobe in both raster modes |
 | `KHR_materials_transmission` | transmission factor/texture | Thin-surface transmission term |
 | `KHR_materials_volume` | thickness, attenuation color/distance | Beer-Lambert absorption for transmitted color |
 | `KHR_materials_sheen` | sheen color and roughness | Grazing-angle cloth reflection approximation |
@@ -480,9 +484,8 @@ Opaque deferred path:
 - `gbuffer.slang` evaluates base material inputs and writes compact material
   channels.
 - Deferred lighting sees albedo, alpha, normal, metallic, roughness, AO,
-  emissive, and scalar dielectric F0. The F0 channel is evaluated from IOR,
-  `KHR_materials_specular` intensity, and the magnitude of specular color before
-  packing, so deferred lights are not locked to the default 0.04 dielectric F0.
+  emissive, and RGB dielectric F0. The G-buffer evaluates F0 from IOR and
+  `KHR_materials_specular` intensity and color before packing.
 - The material G-buffer metadata preserves the resolved material index.
   Directional, point, and tiled deferred lighting fetch `GpuMaterial` through
   the scene material SSBO when they need full material flags or factors that do
@@ -492,12 +495,17 @@ Opaque deferred path:
   material channels. All deferred direct-light passes use those values with
   shared layered BRDF helpers; the directional pass also evaluates clearcoat
   and sheen IBL. No material layer is baked into base colour or emission.
+- The G-buffer multiplies the signed world-space coat normal by the sampled
+  clearcoat factor and stores X, Y, and Z in the alpha channels of the normal,
+  specular, and emissive RGBA16F targets, respectively. Samples with zero coat
+  contribute a zero vector to the linear MSAA resolve. Deferred lighting divides
+  the resolved vector by the resolved clearcoat factor and normalizes it. A pixel
+  that covers multiple coated surfaces gets a single coat-weighted direction.
 
-Transparent forward path:
+Forward raster and OIT paths:
 
-- `forward_transparent.slang` has access to full object/material data.
-- It can evaluate clearcoat, sheen, iridescence, transmission, volume, IOR, and
-  dispersion more directly.
+- `forward_opaque.slang` and `forward_transparent.slang` read full per-object
+  material data. The shaders evaluate extension textures at the shaded fragment.
 - OIT stores the final transparent color and alpha.
 
 Implemented material-index bridge:
@@ -506,8 +514,8 @@ Implemented material-index bridge:
 - `deferred_directional.slang`, `point_light.slang`, and
   `tiled_lighting.slang` decode that index and fetch `GpuMaterial` from the
   scene descriptor set.
-- Per-pixel extension data comes from the two material-layer attachments;
-  the material-index bridge supplies flags and authored IOR/transmission data.
+- The G-buffer supplies per-pixel extension data. The material-index bridge
+  supplies flags and authored IOR and transmission data.
 
 ## Pipeline Strategy
 
