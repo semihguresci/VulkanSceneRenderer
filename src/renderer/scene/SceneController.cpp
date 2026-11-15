@@ -1261,10 +1261,11 @@ SceneController::NormalFrameGeometry SceneController::configureNormalFrameGeomet
       const auto corners=meshes[binding.primitive].indices().size();
       budget.bytes(corners,sizeof(Vertex)*8+sizeof(uint32_t)*8);
       // Bound each derived frame against the remaining aggregate preparation.
-      container::scene::PrimitiveNormalFrameLimits variantLimits;
-      variantLimits.frames.maxOutputBytes=std::min(variantLimits.frames.maxOutputBytes,limits.maxCpuBytes-budget.cpu);
+      PrimitiveFrameVariantLimits variantLimits;
+      variantLimits.maxOutputBytes=std::min(variantLimits.maxOutputBytes,limits.maxCpuBytes-budget.cpu);
       auto variant=sceneManager_.preparePrimitiveNormalFrameVariant(binding.primitive,binding.texCoord,
           variantLimits,tangentWorkRemaining);
+      budget.bytes(variant.preparedFrameBytes);
       // The detached split stream also retains the original unreferenced vertices.
       if(variant.mesh.vertices().size()>corners)
         budget.bytes(variant.mesh.vertices().size()-corners,sizeof(Vertex)*8);

@@ -65,6 +65,15 @@ tangents and tangent deltas to be ignored. Skinning follows frame generation.
 An authored base normal or tangent omitted by an individual target retains its
 base value in the ordinary authored-frame path.
 
+The scene shares a MikkTSpace work budget across poses evaluated in one update.
+Each evaluation also limits transient MikkTSpace allocations to the available
+pose storage budget, capped at 128 MiB. When generation reaches either limit,
+the scene computes tangents and handedness from each posed triangle and skins
+the complete frame normally. This can change normal-map shading where MikkTSpace
+would blend tangents across adjacent triangles. Capture telemetry reports the
+number of current instances using that fallback in
+`gltfDeformation.tangentFallbackInstanceCount`.
+
 ## Vulkan compute API
 
 `GltfDeformationPass` lives in

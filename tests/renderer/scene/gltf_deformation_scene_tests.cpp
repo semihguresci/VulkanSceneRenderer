@@ -546,6 +546,124 @@ TEST(GltfDeformationScene, MissingTangentsUseNormalTextureUvSetWithoutReplacingA
   EXPECT_EQ(fixture.scene.gpuPoses()[0].evaluatedVertices.size(), 6u);
 }
 
+TEST(GltfDeformationScene, TangentBudgetFallbackPublishesMorphedSkinnedFramesAndSubmittedHistory) {
+  Fixture fixture(true, true);
+  missingFrameQuad(fixture, false, false);
+  auto& primitive = fixture.data.primitives[0];
+  primitive.normalTextureTexCoord = 1;
+  primitive.influences.push_back(primitive.influences.front());
+  fixture.source.nodes[0].weights = {0};
+  fixture.configure();
+  const auto initial = fixture.update();
+  EXPECT_TRUE(initial.historyReset);
+  EXPECT_EQ(initial.tangentFallbackInstanceCount, 0u);
+  const auto* range = fixture.scene.drawRange(fixture.primitive);
+  ASSERT_NE(range, nullptr);
+  ASSERT_EQ(range->vertexCount, 6u);
+  const auto offset = range->vertexOffset;
+  fixture.scene.commitSubmitted();
+
+  const glm::vec3 translation{2, 3, 4};
+  const auto rotation = glm::rotate(glm::mat4(1), glm::radians(90.f), glm::vec3(0, 0, 1));
+  fixture.graph.setLocalTransform(2, glm::translate(glm::mat4(1), translation) *
+      glm::scale(rotation, glm::vec3(-1, 1, 1)));
+  fixture.graph.updateWorldTransforms();
+  const auto update = [&](float weight) {
+    fixture.source.nodes[0].weights = {weight};
+    return fixture.scene.update(fixture.graph, fixture.owners, &fixture.source, false, {}, 0);
+  };
+  const auto expectPose = [&](std::span<const Vertex> vertices, float weight, bool skinned) {
+    ASSERT_EQ(vertices.size(), 6u);
+    const std::array<glm::vec3, 4> positions{{{0, 0, 0}, {1, 0, 0}, {1, 1, weight}, {0, 1, 0}}};
+    constexpr std::array<uint32_t, 6> corners{0, 1, 2, 0, 2, 3};
+    const auto transform = [skinned](glm::vec3 value) {
+      return skinned ? glm::vec3(-value.y, -value.x, value.z) : value;
+    };
+    for (size_t corner = 0; corner < corners.size(); ++corner) {
+      SCOPED_TRACE(corner);
+      const bool firstTriangle = corner < 3;
+      const auto normal = firstTriangle ? glm::vec3(0, -weight, 1) : glm::vec3(-weight, 0, 1);
+      const auto tangent = firstTriangle ? glm::vec3(0, 1, weight) : glm::vec3(0, 1, 0);
+      const auto& vertex = vertices[corner];
+      expectPosition(vertex.position, transform(positions[corners[corner]]) +
+          (skinned ? translation : glm::vec3(0)));
+      expectPosition(vertex.normal, transform(glm::normalize(normal)));
+      expectPosition(glm::vec3(vertex.tangent), transform(glm::normalize(tangent)));
+      EXPECT_FLOAT_EQ(vertex.tangent.w, skinned ? 1.f : -1.f);
+    }
+  };
+  const auto expectHistory = [&](float currentWeight, float previousWeight, bool previousSkinned) {
+    ASSERT_EQ(fixture.scene.gpuPoses().size(), 1u);
+    ASSERT_EQ(fixture.scene.currentVertices().size(), offset + 6u);
+    ASSERT_EQ(fixture.scene.previousVertices().size(), offset + 6u);
+    const auto& pose = fixture.scene.gpuPoses().front();
+    EXPECT_FALSE(pose.resetHistory);
+    expectPose(fixture.scene.currentVertices().subspan(offset), currentWeight, true);
+    expectPose(pose.evaluatedVertices, currentWeight, true);
+    expectPose(fixture.scene.previousVertices().subspan(offset), previousWeight, previousSkinned);
+    expectPose(pose.previousEvaluatedVertices, previousWeight, previousSkinned);
+  };
+
+  const auto fallback = update(1);
+  EXPECT_TRUE(fallback.geometryChanged);
+  EXPECT_FALSE(fallback.topologyChanged);
+  EXPECT_FALSE(fallback.historyReset);
+  EXPECT_EQ(fallback.tangentFallbackInstanceCount, 1u);
+  expectHistory(1, 0, false);
+  range = fixture.scene.drawRange(fixture.primitive);
+  ASSERT_NE(range, nullptr);
+  EXPECT_TRUE(range->bounds.valid);
+  expectPosition(range->bounds.min, {1, 2, 4});
+  expectPosition(range->bounds.max, {2, 3, 5});
+  EXPECT_EQ(range->orientation, GltfDeformationOrientation::Reversed);
+
+  EXPECT_EQ(update(.5f).tangentFallbackInstanceCount, 1u);
+  expectHistory(.5f, 0, false);
+  fixture.scene.commitSubmitted();
+  EXPECT_EQ(update(.25f).tangentFallbackInstanceCount, 1u);
+  expectHistory(.25f, .5f, true);
+}
+
+TEST(GltfDeformationScene, ChangedPosesShareTangentWorkAndCachedFallbackRemainsVisible) {
+  Fixture fixture;
+  missingFrameQuad(fixture, false, false);
+  const auto prepared = gltf::PrepareDeformationFrames(fixture.data.primitives[0],
+      std::array{0u, 1u, 2u, 0u, 2u, 3u}, {false, false, 0});
+  uint64_t remaining = std::numeric_limits<uint64_t>::max();
+  gltf::DeformationTangentBudget budget{remaining, std::numeric_limits<size_t>::max()};
+  const auto complete = gltf::EvaluateDeformationFrames(prepared, std::array{1.f}, {}, &budget);
+  ASSERT_EQ(complete.size(), 6u);
+  const uint64_t onePoseWork = std::numeric_limits<uint64_t>::max() - remaining;
+  ASSERT_GT(onePoseWork, 0u);
+
+  const auto otherOwner = fixture.graph.createNode(glm::mat4(1), 0);
+  fixture.graph.getNode(otherOwner)->sourceNodeIndex = 1;
+  const auto otherPrimitive = fixture.graph.createNode(glm::mat4(1), 0, true, 0);
+  fixture.graph.setParent(otherPrimitive, otherOwner);
+  fixture.owners.resize(fixture.graph.nodeCount(), invalid);
+  fixture.owners[otherPrimitive] = otherOwner;
+  fixture.data.nodes.push_back(fixture.data.nodes.front());
+  fixture.source.nodes.push_back(fixture.source.nodes.front());
+  fixture.configure();
+  fixture.graph.updateWorldTransforms();
+
+  const auto first = fixture.scene.update(fixture.graph, fixture.owners, &fixture.source,
+                                          false, {}, onePoseWork);
+  ASSERT_EQ(fixture.scene.gpuPoses().size(), 2u);
+  EXPECT_TRUE(first.geometryChanged);
+  EXPECT_EQ(first.tangentFallbackInstanceCount, 1u);
+  fixture.scene.commitSubmitted();
+
+  const auto unchanged = fixture.update();
+  EXPECT_FALSE(unchanged.geometryChanged);
+  EXPECT_EQ(unchanged.tangentFallbackInstanceCount, 1u);
+  fixture.source.nodes[0].weights = {0};
+  fixture.source.nodes[1].weights = {0};
+  const auto recovered = fixture.update();
+  EXPECT_TRUE(recovered.geometryChanged);
+  EXPECT_EQ(recovered.tangentFallbackInstanceCount, 0u);
+}
+
 TEST(GltfDeformationScene, AuthoredFramesKeepGpuEvaluationAndOriginalVertexCount) {
   Fixture fixture;
   missingFrameQuad(fixture, true, true);

@@ -2,7 +2,7 @@
 
 #include <Container/geometry/Model.h>
 #include <Container/geometry/GltfCapabilities.h>
-#include <Container/geometry/GltfDeformation.h>
+#include <Container/geometry/GltfDeformationFrames.h>
 #include <Container/geometry/GltfCompression.h>
 #include <Container/geometry/GltfInstancing.h>
 #include <Container/geometry/GltfOpacityMicromaps.h>
@@ -96,10 +96,6 @@ struct GltfPrimitiveTangentVariant {
   // indices, and each appended vertex refers back to its original attributes.
   std::vector<uint32_t> sourceVertexMap;
 };
-
-inline constexpr uint64_t kDefaultGltfTangentWorkBudget = 64ull * 1024 * 1024;
-inline constexpr size_t kDefaultGltfTangentWorkspaceBytes = 128ull * 1024 * 1024;
-inline constexpr uint64_t kMaxLiveMorphedNormalFrameCorners = 8192;
 
 // Builds a detached render stream for a live normal-UV edit. When seam
 // splitting is enabled, distinct corner frames can share source attributes

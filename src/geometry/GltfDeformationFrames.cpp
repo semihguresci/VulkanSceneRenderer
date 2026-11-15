@@ -1,8 +1,8 @@
 #include <Container/geometry/GltfDeformationFrames.h>
 
-extern "C" {
-#include <mikktspace.h>
-}
+#include "GltfDeformationInternal.h"
+
+#include <mikktspace_bounded.h>
 
 #include <glm/geometric.hpp>
 
@@ -40,6 +40,10 @@ glm::vec3 tangentFor(glm::vec3 normal, glm::vec3 tangent) {
   return unitOr(glm::dvec3(tangent) - n * glm::dot(n, glm::dvec3(tangent)), fallback);
 }
 
+glm::vec2 normalTexCoord(const Vertex& vertex, uint32_t texCoord) {
+  return texCoord == 0 ? vertex.texCoord : vertex.texCoord1;
+}
+
 void validatePolicy(DeformationFramePolicy policy) {
   if (policy.normalTextureTexCoord > 1) fail("normal texture requires unsupported UV set");
 }
@@ -74,8 +78,7 @@ void mikkNormal(const SMikkTSpaceContext* context, float result[3], int face, in
 }
 
 void mikkTexCoord(const SMikkTSpaceContext* context, float result[2], int face, int corner) {
-  const auto& vertex = mikkVertex(context, face, corner);
-  const auto value = mikkData(context).texCoord == 0 ? vertex.texCoord : vertex.texCoord1;
+  const auto value = normalTexCoord(mikkVertex(context, face, corner), mikkData(context).texCoord);
   result[0] = value.x; result[1] = value.y;
 }
 
@@ -86,11 +89,39 @@ void mikkTangent(const SMikkTSpaceContext* context, const float tangent[3],
                             std::isfinite(sign) && sign < 0 ? -1.0f : 1.0f);
 }
 
-void generateTangents(std::vector<Vertex>& vertices, uint32_t texCoord) {
-  // A finite deterministic frame also covers degenerate positions/UVs for
-  // which MikkTSpace cannot define a tangent or does not write a corner.
-  for (auto& vertex : vertices)
-    vertex.tangent = glm::vec4(tangentFor(vertex.normal, glm::vec3(0)), 1);
+void generateTriangleTangents(std::vector<Vertex>& vertices, uint32_t texCoord) {
+  for (size_t i = 0; i < vertices.size(); i += 3) {
+    const glm::dvec3 e1 = glm::dvec3(vertices[i + 1].position) - glm::dvec3(vertices[i].position);
+    const glm::dvec3 e2 = glm::dvec3(vertices[i + 2].position) - glm::dvec3(vertices[i].position);
+    const glm::dvec2 uv(normalTexCoord(vertices[i], texCoord));
+    const glm::dvec2 duv1 = glm::dvec2(normalTexCoord(vertices[i + 1], texCoord)) - uv;
+    const glm::dvec2 duv2 = glm::dvec2(normalTexCoord(vertices[i + 2], texCoord)) - uv;
+    const double det = duv1.x * duv2.y - duv1.y * duv2.x;
+    const auto area = glm::cross(e1, e2);
+    const bool hasDerivatives = det != 0.0 && glm::dot(area, area) > 0.0;
+    const double uvSign = det < 0.0 ? -1.0 : 1.0;
+    // Only the directions of dP/du and dP/dv matter. Keeping just the sign
+    // of the denominator avoids amplifying the derivatives for tiny UVs.
+    const auto du = (e1 * duv2.y - e2 * duv1.y) * uvSign;
+    const auto dv = (e2 * duv1.x - e1 * duv2.x) * uvSign;
+    for (size_t corner = 0; corner < 3; ++corner) {
+      auto& vertex = vertices[i + corner];
+      if (hasDerivatives) {
+        const glm::dvec3 n(vertex.normal);
+        const auto t = unitOr(glm::cross(glm::cross(n, du), n), glm::vec3(0));
+        if (t != glm::vec3(0)) {
+          const double orientation = glm::dot(glm::cross(n, glm::dvec3(t)), dv);
+          vertex.tangent = glm::vec4(t, orientation < 0.0 ? -1.0f : 1.0f);
+          continue;
+        }
+      }
+      vertex.tangent = glm::vec4(tangentFor(vertex.normal, glm::vec3(0)), 1);
+    }
+  }
+}
+
+void generateTangents(std::vector<Vertex>& vertices, uint32_t texCoord,
+                      DeformationTangentBudget* budget) {
   MikkContext data{vertices, texCoord};
   SMikkTSpaceInterface callbacks{};
   callbacks.m_getNumFaces = mikkFaceCount;
@@ -100,7 +131,31 @@ void generateTangents(std::vector<Vertex>& vertices, uint32_t texCoord) {
   callbacks.m_getTexCoord = mikkTexCoord;
   callbacks.m_setTSpaceBasic = mikkTangent;
   SMikkTSpaceContext context{&callbacks, &data};
-  (void)genTangSpaceDefault(&context);
+  if (!budget) {
+    // Preserve the original evaluator's result when MikkTSpace fails.
+    for (auto& vertex : vertices)
+      vertex.tangent = glm::vec4(tangentFor(vertex.normal, glm::vec3(0)), 1);
+    (void)genTangSpaceDefault(&context);
+    return;
+  }
+
+  for (const auto& vertex : vertices)
+    if (!finite(normalTexCoord(vertex, texCoord))) fail("normal texture coordinate is non-finite");
+
+  const auto result = genTangSpaceDefaultBounded(&context, &budget->workRemaining,
+                                                 budget->maxMikkScratchBytes);
+  if (result == MIKKTS_BOUNDED_SUCCESS) return;
+  if (result == MIKKTS_BOUNDED_INVALID_INPUT) fail("invalid input to bounded MikkTSpace");
+  if (!budget->allowTriangleFallback) {
+    if (result == MIKKTS_BOUNDED_WORK_LIMIT) fail("MikkTSpace work budget exceeded");
+    if (result == MIKKTS_BOUNDED_MEMORY_LIMIT) fail("MikkTSpace scratch budget exceeded");
+    fail("cannot allocate MikkTSpace scratch");
+  }
+
+  // A bounded failure emits no tangents. Use the current posed geometry and
+  // the selected UVs, without a second attempt at welding or any scratch.
+  generateTriangleTangents(vertices, texCoord);
+  budget->usedTriangleFallback = true;
 }
 
 }  // namespace
@@ -141,7 +196,7 @@ PreparedDeformationFrames PrepareDeformationFrames(
     if (source >= count) fail("local triangle index exceeds bind vertex count");
     auto vertex = primitive.bindVertices[source];
     if (!finite(vertex.position)) fail("bind position is non-finite");
-    if (regenerateTangents && !finite(policy.normalTextureTexCoord == 0 ? vertex.texCoord : vertex.texCoord1))
+    if (regenerateTangents && !finite(normalTexCoord(vertex, policy.normalTextureTexCoord)))
       fail("normal texture coordinate is non-finite");
     if (!policy.authoredBaseNormal) vertex.normal = {0, 1, 0};
     if (regenerateTangents) vertex.tangent = {1, 0, 0, 1};
@@ -165,7 +220,8 @@ PreparedDeformationFrames PrepareDeformationFrames(
 std::vector<Vertex> EvaluateDeformationFrames(
     const PreparedDeformationFrames& prepared,
     std::span<const float> morphWeights,
-    std::span<const glm::mat4> skinPalette) {
+    std::span<const glm::mat4> skinPalette,
+    DeformationTangentBudget* tangentBudget) {
   validatePolicy(prepared.policy);
   const auto count = prepared.primitive.bindVertices.size();
   if (!count || count % 3 || prepared.indices.size() != count || prepared.sourceVertexMap.size() != count ||
@@ -176,20 +232,19 @@ std::vector<Vertex> EvaluateDeformationFrames(
   if (prepared.policy.authoredBaseNormal && prepared.policy.authoredBaseTangent)
     return EvaluatePrimitive(prepared.primitive, morphWeights, skinPalette);
 
-  DeformationPrimitive pose;
-  pose.bindVertices = EvaluatePrimitive(prepared.primitive, morphWeights);
-  pose.influences = prepared.primitive.influences;
+  auto vertices = EvaluatePrimitive(prepared.primitive, morphWeights);
   if (!prepared.policy.authoredBaseNormal) {
     for (size_t i = 0; i < count; i += 3) {
-      const glm::dvec3 a(pose.bindVertices[i].position);
-      const glm::dvec3 b(pose.bindVertices[i + 1].position);
-      const glm::dvec3 c(pose.bindVertices[i + 2].position);
+      const glm::dvec3 a(vertices[i].position);
+      const glm::dvec3 b(vertices[i + 1].position);
+      const glm::dvec3 c(vertices[i + 2].position);
       const auto normal = unitOr(glm::cross(b - a, c - a), glm::vec3(0, 1, 0));
-      for (size_t corner = 0; corner < 3; ++corner) pose.bindVertices[i + corner].normal = normal;
+      for (size_t corner = 0; corner < 3; ++corner) vertices[i + corner].normal = normal;
     }
   }
-  generateTangents(pose.bindVertices, prepared.policy.normalTextureTexCoord);
-  return EvaluatePrimitive(pose, {}, skinPalette);
+  generateTangents(vertices, prepared.policy.normalTextureTexCoord, tangentBudget);
+  detail::FinalizeDeformedFrames(vertices, prepared.primitive.influences, skinPalette);
+  return vertices;
 }
 
 }  // namespace container::geometry::gltf

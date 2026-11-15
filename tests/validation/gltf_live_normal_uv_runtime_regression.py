@@ -18,8 +18,14 @@ GRAPH_NODES = (1, 3)
 TECHNIQUES = ("forward-raster", "deferred-raster")
 DEFAULT_COHORTS = ("generated", "authored", "missing")
 SEAM_COHORTS = ("seam", "skin-seam")
-COHORTS = (*DEFAULT_COHORTS, "morphed", *SEAM_COHORTS, "large")
+LARGE_COHORTS = ("large", "large-morph")
+COHORTS = (*DEFAULT_COHORTS, "morphed", *SEAM_COHORTS, *LARGE_COHORTS)
 LARGE_GRID_CELLS = 40
+LARGE_MORPH_CLIP = "Animated grid shear"
+LARGE_MORPH_TIMES = (0, 1, 2)
+LARGE_MORPH_WEIGHTS = (0, 1, 0)
+LARGE_MORPH_EDITS = ((1, 0), (23, 1), (46, 2), (51, 1))
+LARGE_MORPH_RELOAD = ((14, 0), (20, 1))
 MORPH_DELTAS = ((0, 0.125, 0), (0, 0.125, 0), (0, 0.25, 0))
 SEAM_POSITIONS = ((-.95, 0, 0), (.95, 0, 0), (0, .86, 0), (0, -.86, 0))
 SEAM_INDICES = (0, 1, 2, 1, 0, 3)
@@ -43,6 +49,7 @@ STEPS = (
     (55, "assigned", (2, 1), (3, 0)),
     (61, "edited", (2, 0), (2, 1)),
 )
+LARGE_MORPH_STEPS = (*STEPS[:2], (21, "edited", (2, 0), (2, 0)), *STEPS[2:])
 
 
 def require(condition, message):
@@ -76,7 +83,28 @@ def large_geometry():
     return positions, uv0, uv1, indices
 
 
-def write_fixture(path, mode, *, reference=None, morphed_reference=False):
+def large_morph_deltas(positions):
+    # A planar shear changes the tangent without bending the +Z normals or
+    # creating a seam. The X shift stays within either instance's own half.
+    return [(0.125 * y, 0.125, 0) for _, y, _ in positions]
+
+
+def large_morph_tangent(uv, weight):
+    from math import hypot
+
+    slope = 0.125 * weight
+    length = hypot(slope, 1)
+    direction = -1 if uv == 1 else 1
+    return (direction * slope / length, direction / length, 0, -direction)
+
+
+def large_morph_positions(positions, weight):
+    import numpy as np
+
+    return np.asarray(positions, dtype=np.float32) + weight * np.asarray(large_morph_deltas(positions), dtype=np.float32)
+
+
+def write_fixture(path, mode, *, reference=None, morph_reference_weight=None):
     from gltf_accessor_runtime_regression import Asset
     from gltf_tangent_uv_runtime_regression import (
         INDICES, POSITIONS, TANGENT, UV0, UV1, WRONG_UV0_TANGENT, normal_png,
@@ -85,15 +113,18 @@ def write_fixture(path, mode, *, reference=None, morphed_reference=False):
     asset = Asset()
     seam = mode in SEAM_COHORTS
     skinned = mode == "skin-seam"
-    if mode == "large":
+    if mode in LARGE_COHORTS:
         positions, uv0, uv1, corners = large_geometry()
     elif seam:
         positions, uv0, uv1, corners = SEAM_POSITIONS, SEAM_UV0, SEAM_UV1, SEAM_INDICES
     else:
         positions, uv0, uv1, corners = POSITIONS, UV0, UV1, INDICES
-    if morphed_reference:
-        positions = [tuple(p + d for p, d in zip(position, delta, strict=True))
-                     for position, delta in zip(positions, MORPH_DELTAS, strict=True)]
+    morph_deltas = large_morph_deltas(positions) if mode == "large-morph" else MORPH_DELTAS
+    if mode == "large-morph" and reference is not None:
+        positions = large_morph_positions(positions, morph_reference_weight)
+    elif morph_reference_weight is not None:
+        positions = [tuple(p + morph_reference_weight * d for p, d in zip(position, delta, strict=True))
+                     for position, delta in zip(positions, morph_deltas, strict=True)]
 
     def mesh_attributes(vertex_ids):
         attributes = dict(POSITION=asset.accessor("VEC3", [positions[i] for i in vertex_ids]),
@@ -139,9 +170,9 @@ def write_fixture(path, mode, *, reference=None, morphed_reference=False):
         slot = len(asset.model["meshes"])
         primitive = dict(attributes=attributes, indices=mesh_indices, material=material)
         mesh = dict(primitives=[primitive])
-        if mode == "morphed":
-            primitive["targets"] = [dict(POSITION=asset.accessor("VEC3", MORPH_DELTAS))]
-            mesh["weights"] = [1]
+        if reference is None and mode in ("morphed", "large-morph"):
+            primitive["targets"] = [dict(POSITION=asset.accessor("VEC3", morph_deltas))]
+            mesh["weights"] = [1 if mode == "morphed" else 0]
         asset.model["meshes"].append(mesh)
         return slot
 
@@ -163,11 +194,21 @@ def write_fixture(path, mode, *, reference=None, morphed_reference=False):
             asset.model["extensions"] = {extension: dict(variants=variants)}
             asset.model["meshes"][shared]["primitives"][0]["extensions"] = {extension: dict(mappings=mappings)}
     else:
-        meshes = tuple(add_mesh(add_material(uv), [TANGENT if uv == 1 else WRONG_UV0_TANGENT] * len(positions),
+        def literal_tangent(uv):
+            if mode == "large-morph":
+                return large_morph_tangent(uv, morph_reference_weight)
+            return TANGENT if uv == 1 else WRONG_UV0_TANGENT
+
+        meshes = tuple(add_mesh(add_material(uv), [literal_tangent(uv)] * len(positions),
                                 split_seam=seam and uv == 1) for uv in reference)
     asset.model["nodes"] = [dict(name=name, mesh=mesh, translation=[x, 0, 0])
                             for name, mesh, x in zip(("Left", "Right"), meshes, PLACEMENTS, strict=True)]
     asset.model["scenes"][0]["nodes"] = [0, 1]
+    if mode == "large-morph" and reference is None:
+        sampler = dict(input=asset.accessor("SCALAR", LARGE_MORPH_TIMES),
+                       output=asset.accessor("SCALAR", LARGE_MORPH_WEIGHTS), interpolation="STEP")
+        channels = [dict(sampler=0, target=dict(node=node, path="weights")) for node in (0, 1)]
+        asset.model["animations"] = [dict(name=LARGE_MORPH_CLIP, samplers=[sampler], channels=channels)]
     if skinned:
         # Put the skeleton root after both mesh roots so their graph binding
         # IDs are unchanged. The two distinct inverse bind matrices cancel
@@ -184,7 +225,17 @@ def write_fixture(path, mode, *, reference=None, morphed_reference=False):
     return asset.model
 
 
-def write_sequence(path, *, missing=False, variant=0):
+def animation_events(seeks):
+    events = [dict(frame=frame, animationTime=time) for frame, time in seeks]
+    events[0].update(animationClip=0, animationPlaying=False)
+    return events
+
+
+def animation_time_at_frame(frame, seeks):
+    return next(time for event_frame, time in reversed(seeks) if event_frame <= frame)
+
+
+def write_sequence(path, *, missing=False, variant=0, animated=False):
     def edit(frame, source, operation, **payload):
         return dict(frame=frame, materialTextureEdit=dict(sourceMaterial=source, slot="normal", operation=operation, **payload))
 
@@ -207,6 +258,9 @@ def write_sequence(path, *, missing=False, variant=0):
             dict(frame=68, sceneHistory="undo"),
         ]
         frames = [step[0] for step in STEPS] + [67, 73]
+        if animated:
+            events = sorted(events + animation_events(LARGE_MORPH_EDITS), key=lambda event: event["frame"])
+            frames = [step[0] for step in LARGE_MORPH_STEPS] + [67, 73]
     path.write_text(json.dumps(dict(schemaVersion=1, frames=frames[-1], sampleFrames=frames, events=events), indent=2),
                     encoding="utf-8")
     return frames
@@ -342,7 +396,11 @@ def verify_oracles(controls):
     return results
 
 
-def verify_morph_pose(state, uvs):
+def large_morph_weight(time):
+    return LARGE_MORPH_WEIGHTS[LARGE_MORPH_TIMES.index(time)]
+
+
+def verify_morph_pose(state, uvs, *, time=None, default_weight=None):
     import numpy as np
     from gltf_tangent_uv_runtime_regression import POSITIONS, TANGENT, WRONG_UV0_TANGENT
 
@@ -351,11 +409,39 @@ def verify_morph_pose(state, uvs):
             "Morph cohort did not exercise live deformation")
     instances = sorted(deformation["instances"], key=lambda row: row["modelColumns"][3][0])
     require(len(instances) == 2, "Morph cohort did not publish both instances")
+    large_morph = time is not None or default_weight is not None
+    if large_morph:
+        require(deformation["tangentFallbackInstanceCount"] == 0,
+                "The regular animated grid exceeded the MikkTSpace pose budget")
+        weight = large_morph_weight(time) if time is not None else default_weight
+        positions, _, _, corners = large_geometry()
+        posed = large_morph_positions(positions, weight)
+        animation = state["gltfAnimation"]
+        if time is None:
+            require(animation.get("selectedClip", -1) == -1 and not animation.get("playing", False),
+                    "The portable default pose was sampled with an active clip")
+        else:
+            require(animation["selectedClip"] == 0 and animation["time"] == time and not animation["playing"]
+                    and animation["diagnostics"] == 0, "Material edit or history changed the animation seek")
+            targets = animation["targets"]
+            require(len(targets) == 2 and all(row["property"] == "weights" and row["value"] == [weight] for row in targets)
+                    and {row["sourceIndex"] for row in targets} == {sample["sourceNodeIndex"] for sample in instances},
+                    "Animation did not sample the exact weight for both deforming owners")
+    else:
+        weight = 1
+        posed = np.add(POSITIONS, MORPH_DELTAS)
     for sample, uv in zip(instances, uvs, strict=True):
         expected_tangent = TANGENT if uv == 1 else WRONG_UV0_TANGENT
+        if large_morph:
+            expected_tangent = large_morph_tangent(uv, weight)
+            require(sample["indexCount"] == sample["vertexCount"] == len(corners),
+                    "Animated frame stream did not preserve every triangle corner")
+            require(sample["boundsValid"], "Animated frame stream lost its bounds")
+            np.testing.assert_allclose(sample["boundsMin"], posed.min(axis=0), atol=2e-5, rtol=0)
+            np.testing.assert_allclose(sample["boundsMax"], posed.max(axis=0), atol=2e-5, rtol=0)
         np.testing.assert_allclose(sample["firstTangent"], expected_tangent, atol=2e-4, rtol=0)
-        np.testing.assert_allclose(sample["firstPosition"], np.add(POSITIONS[0], MORPH_DELTAS[0]), atol=2e-4, rtol=0)
-        require(sample["weights"] == [1], "Edit changed the active morph weights")
+        np.testing.assert_allclose(sample["firstPosition"], posed[0], atol=2e-4, rtol=0)
+        require(sample["weights"] == [weight], "Edit changed the active morph weights")
 
 
 def verify_skin_pose(state, split_bindings):
@@ -394,28 +480,52 @@ def verify_seam_frames():
             np.testing.assert_allclose(np.append(tangent, sign), frame, atol=1e-12, rtol=0)
 
 
-def verify_large_frames():
+def verify_large_frames(*, weight=None):
     import numpy as np
     from gltf_tangent_uv_runtime_regression import TANGENT, WRONG_UV0_TANGENT
 
     positions, uv0, uv1, indices = large_geometry()
     require(len(indices) > 8192, "The large grid must exceed the former corner limit")
+    frames = (WRONG_UV0_TANGENT, TANGENT)
+    tolerance = 1e-6
+    if weight is not None:
+        positions = large_morph_positions(positions, weight)
+        frames = (large_morph_tangent(0, weight), large_morph_tangent(1, weight))
+        # The posed grid sums two float32 attributes before deriving edges.
+        tolerance = 4e-6
     corners = np.asarray(indices).reshape(-1, 3)
     vertices = np.asarray(positions, dtype=np.float32)[corners]
     edges = vertices[:, 1:] - vertices[:, :1]
     normals = np.cross(edges[:, 0], edges[:, 1])
     require(np.all(normals[:, 2] > 0), "The large grid has incorrect winding")
-    for uv, frame in ((uv0, WRONG_UV0_TANGENT), (uv1, TANGENT)):
+    for uv, frame in zip((uv0, uv1), frames, strict=True):
         coordinates = np.asarray(uv, dtype=np.float32)[corners]
         jacobian = coordinates[:, 1:] - coordinates[:, :1]
         tangent, bitangent = np.linalg.solve(jacobian, edges).transpose(1, 0, 2)
         tangent /= np.linalg.norm(tangent, axis=1, keepdims=True)
         sign = np.sign(np.sum(np.cross(normals, tangent) * bitangent, axis=1))
         actual = np.column_stack((tangent, sign))
-        np.testing.assert_allclose(actual, np.broadcast_to(frame, actual.shape), atol=1e-6, rtol=0)
+        np.testing.assert_allclose(actual, np.broadcast_to(frame, actual.shape), atol=tolerance, rtol=0)
 
 
-def inspect_export(path, *, authored=False, morphed=False, seam=False, skinned=False, large=False):
+def verify_exported_morph_clip(path, model, nodes):
+    import numpy as np
+    from gltf_accessor_runtime_regression import decode_accessor
+
+    clip, = model["animations"]
+    require(clip["name"] == LARGE_MORPH_CLIP, "Export lost the animated morph clip name")
+    channels = clip["channels"]
+    require(len(channels) == len(nodes) and {channel["target"]["node"] for channel in channels} == set(nodes),
+            "Export detached a morph animation from its mesh binding")
+    for channel in channels:
+        require(channel["target"]["path"] == "weights", "Export changed the animation target property")
+        sampler = clip["samplers"][channel["sampler"]]
+        require(sampler["interpolation"] == "STEP", "Export changed the morph clip's interpolation")
+        np.testing.assert_array_equal(decode_accessor(path, sampler["input"]).ravel(), LARGE_MORPH_TIMES)
+        np.testing.assert_array_equal(decode_accessor(path, sampler["output"]).ravel(), LARGE_MORPH_WEIGHTS)
+
+
+def inspect_export(path, *, authored=False, morphed=False, seam=False, skinned=False, large=False, saved_weight=None):
     import numpy as np
     from gltf_accessor_runtime_regression import decode_accessor, load_asset
     from gltf_merge_runtime_regression import image_pixels
@@ -434,7 +544,7 @@ def inspect_export(path, *, authored=False, morphed=False, seam=False, skinned=F
         todo.extend((child, x) for child in node.get("children", ()))
         if "mesh" in node:
             primitive, = model["meshes"][node["mesh"]]["primitives"]
-            instances.append((x, primitive, node.get("skin")))
+            instances.append((x, primitive, node.get("skin"), index))
     instances.sort(key=lambda row: row[0])
     require(len(instances) == 2 and instances[0][1]["material"] != instances[1][1]["material"],
             "Export collapsed distinct bindings of the shared mesh")
@@ -449,7 +559,9 @@ def inspect_export(path, *, authored=False, morphed=False, seam=False, skinned=F
     if seam:
         require([variant["name"] for variant in model["extensions"][extension]["variants"]]
                 == ["Alternate", "Original UV"], "Export dropped dormant named materials")
-    for (x, primitive, skin), uv in zip(instances, CONTROLS["edited"], strict=True):
+    if large and morphed:
+        verify_exported_morph_clip(path, model, [index for _, _, _, index in instances])
+    for (x, primitive, skin, index), uv in zip(instances, CONTROLS["edited"], strict=True):
         attrs = primitive["attributes"]
         decoded_indices = decode_accessor(path, primitive["indices"]).ravel()
         indices = decoded_indices.astype(np.intp)
@@ -488,7 +600,12 @@ def inspect_export(path, *, authored=False, morphed=False, seam=False, skinned=F
                 np.testing.assert_array_equal(actual, expected)
         if morphed:
             target, = primitive["targets"]
-            np.testing.assert_array_equal(decode_accessor(path, target["POSITION"]), MORPH_DELTAS)
+            expected = large_morph_deltas(positions) if large else MORPH_DELTAS
+            np.testing.assert_array_equal(decode_accessor(path, target["POSITION"]), np.asarray(expected, dtype=np.float32))
+            if large:
+                mesh = model["meshes"][nodes[index]["mesh"]]
+                require(mesh["weights"] == [0], "Export changed the original mesh default weight")
+                require(nodes[index]["weights"] == [saved_weight], "Export did not preserve the saved node pose weight")
         if uv == 1:
             require("TANGENT" not in attrs, "Export retained an authored tangent for a changed UV basis")
         if (authored or seam) and uv == 0:
@@ -504,7 +621,7 @@ def inspect_export(path, *, authored=False, morphed=False, seam=False, skinned=F
         require(effective_uv(material) == uv, "Export lost the per-surface normal UV")
         tex = model["textures"][material["normalTexture"]["index"]]
         np.testing.assert_array_equal(image_pixels(path, model, buffers, tex["source"]), np.tile([217, 153, 217, 255], (2, 2, 1)))
-    return [primitive["material"] for _, primitive, _ in instances]
+    return [primitive["material"] for _, primitive, _, _ in instances]
 
 
 def main():
@@ -536,7 +653,7 @@ def main():
     sources = output / "sources"
     sources.mkdir(parents=True, exist_ok=False)
     source_models = {cohort: write_fixture(sources / f"{cohort}.gltf", cohort)
-                     for cohort in COHORTS if cohort != "large"}
+                     for cohort in COHORTS if cohort not in LARGE_COHORTS}
     if "large" in cohorts:
         verify_large_frames()
         write_fixture(sources / "large.gltf", "large")
@@ -547,7 +664,19 @@ def main():
     verify_source_order([source_models["generated"], *control_models])
     if "morphed" in cohorts:
         for case, uvs in CONTROLS.items():
-            write_fixture(sources / f"morph-literal-{case}.gltf", "literal", reference=uvs, morphed_reference=True)
+            write_fixture(sources / f"morph-literal-{case}.gltf", "literal", reference=uvs, morph_reference_weight=1)
+    if "large-morph" in cohorts:
+        write_fixture(sources / "large-morph.gltf", "large-morph")
+        for weight in sorted(set(LARGE_MORPH_WEIGHTS)):
+            verify_large_frames(weight=weight)
+            for case, uvs in CONTROLS.items():
+                write_fixture(sources / f"large-morph-{weight}-literal-{case}.gltf", "large-morph",
+                              reference=uvs, morph_reference_weight=weight)
+        large_morph_frames = write_sequence(sources / "large-morph-edits.json", animated=True)
+        large_morph_reload_frames = [13, 19, 25]
+        (sources / "large-morph-reload.json").write_text(json.dumps(dict(
+            schemaVersion=1, frames=large_morph_reload_frames[-1], sampleFrames=large_morph_reload_frames,
+            events=animation_events(LARGE_MORPH_RELOAD)), indent=2), encoding="utf-8")
     if any(cohort in SEAM_COHORTS for cohort in cohorts):
         verify_seam_frames()
         for case, uvs in CONTROLS.items():
@@ -572,11 +701,18 @@ def main():
         report["captures"].append(record)
         return capture(renderer, output, model, technique, name, frames, record, timeout=args.timeout, **options)
 
+    def run_controls(technique, prefix=""):
+        controls = {}
+        for case in CONTROLS:
+            name = f"{prefix}literal-{case}"
+            controls[case] = run(technique, sources / f"{name}.gltf", name)[13]
+        return controls
+
     try:
         for technique in args.technique or TECHNIQUES:
             controls = {}
-            if any(cohort not in ("morphed", "large", *SEAM_COHORTS) for cohort in cohorts):
-                controls = {case: run(technique, sources / f"literal-{case}.gltf", f"literal-{case}")[13] for case in CONTROLS}
+            if any(cohort in DEFAULT_COHORTS for cohort in cohorts):
+                controls = run_controls(technique)
                 report["checks"].append(dict(technique=technique, literalDifferentiation=verify_oracles(controls)))
             specialized_controls = {}
             for cohort in cohorts:
@@ -592,37 +728,51 @@ def main():
                     report["checks"].append(dict(technique=technique, cohort=cohort, rejection=error,
                                                  before=image_match(before, controls["initial"]), after=image_match(after, before)))
                     continue
-                morphed = cohort == "morphed"
+                large_morph = cohort == "large-morph"
+                morphed = cohort == "morphed" or large_morph
                 seam = cohort in SEAM_COHORTS
                 skinned = cohort == "skin-seam"
-                large = cohort == "large"
+                large = cohort in LARGE_COHORTS
                 authored = cohort in ("authored", "large")
                 index_count = len(SEAM_INDICES) if seam else 3
                 if large:
                     index_count = 6 * LARGE_GRID_CELLS ** 2
-                expected = controls
-                if morphed or seam or large:
+                expected = {None: controls}
+                if large_morph:
+                    poses = {weight: run_controls(technique, f"large-morph-{weight}-")
+                             for weight in sorted(set(LARGE_MORPH_WEIGHTS))}
+                    expected = {time: poses[weight] for time, weight in zip(LARGE_MORPH_TIMES, LARGE_MORPH_WEIGHTS, strict=True)}
+                    for weight, pose in poses.items():
+                        report["checks"].append(dict(technique=technique, cohort=cohort, weight=weight,
+                                                     literalDifferentiation=verify_oracles(pose)))
+                elif morphed or seam or large:
                     prefix = "seam" if seam else ("morph" if morphed else "large")
                     if prefix not in specialized_controls:
-                        specialized_controls[prefix] = {
-                            case: run(technique, sources / f"{prefix}-literal-{case}.gltf", f"{prefix}-literal-{case}")[13]
-                            for case in CONTROLS}
-                    expected = specialized_controls[prefix]
-                    report["checks"].append(dict(technique=technique, cohort=cohort, literalDifferentiation=verify_oracles(expected)))
+                        specialized_controls[prefix] = run_controls(technique, f"{prefix}-")
+                    expected[None] = specialized_controls[prefix]
+                    report["checks"].append(dict(technique=technique, cohort=cohort,
+                                                 literalDifferentiation=verify_oracles(expected[None])))
                 save = output / f"{technique}-{cohort}.glb"
-                sequence = sources / ("seam-edits.json" if seam else "edits.json")
-                frames = run(technique, sources / f"{cohort}.gltf", cohort,
-                             seam_frames if seam else edit_frames, sequence=sequence, save=save)
-                for frame, visual, bindings, history in STEPS:
+                sequence, samples = "edits.json", edit_frames
+                if seam:
+                    sequence, samples = "seam-edits.json", seam_frames
+                if large_morph:
+                    sequence, samples = "large-morph-edits.json", large_morph_frames
+                frames = run(technique, sources / f"{cohort}.gltf", cohort, samples, sequence=sources / sequence, save=save)
+                for frame, visual, bindings, history in LARGE_MORPH_STEPS if large_morph else STEPS:
                     current = frames[frame]
+                    time = animation_time_at_frame(frame, LARGE_MORPH_EDITS) if large_morph else None
                     verify_state(current["state"], CONTROLS[visual], sources=bindings, history=history,
                                  built_from_shared_mesh=True, index_count=index_count)
                     if morphed:
-                        verify_morph_pose(current["state"], CONTROLS[visual])
+                        verify_morph_pose(current["state"], CONTROLS[visual], time=time)
                     if skinned:
                         verify_skin_pose(current["state"], [uv == 1 for uv in CONTROLS[visual]])
-                    report["checks"].append(dict(technique=technique, cohort=cohort, frame=frame, reference=visual,
-                                                 pixels=image_match(current, expected[visual])))
+                    check = dict(technique=technique, cohort=cohort, frame=frame, reference=visual,
+                                 pixels=image_match(current, expected[time][visual]))
+                    if large_morph:
+                        check["animationTime"] = time
+                    report["checks"].append(check)
                 variant = (0, 0) if seam else (1, 1)
                 verify_state(frames[67]["state"], variant, sources=variant, history=(3, 0),
                              built_from_shared_mesh=True, index_count=index_count)
@@ -632,13 +782,24 @@ def main():
                     verify_skin_pose(frames[67]["state"], (False, False))
                     verify_skin_pose(frames[73]["state"], (True, False))
                 variant_visual = "initial" if authored or seam else "assigned"
+                variant_time = animation_time_at_frame(67, LARGE_MORPH_EDITS) if large_morph else None
+                saved_time = animation_time_at_frame(73, LARGE_MORPH_EDITS) if large_morph else None
+                saved_weight = large_morph_weight(saved_time) if large_morph else None
+                if large_morph:
+                    verify_morph_pose(frames[67]["state"], variant, time=variant_time)
+                    verify_morph_pose(frames[73]["state"], CONTROLS["edited"], time=saved_time)
                 report["checks"].append(dict(technique=technique, cohort=cohort,
-                                             namedVariant=image_match(frames[67], expected[variant_visual]),
-                                             namedVariantUndo=image_match(frames[73], expected["edited"])))
-                materials = inspect_export(save, authored=authored, morphed=morphed, seam=seam, skinned=skinned, large=large)
+                                             namedVariant=image_match(frames[67], expected[variant_time][variant_visual]),
+                                             namedVariantUndo=image_match(frames[73], expected[saved_time]["edited"])))
+                materials = inspect_export(save, authored=authored, morphed=morphed, seam=seam, skinned=skinned,
+                                           large=large, saved_weight=saved_weight)
                 portable, files = portable_copy(save, output / f"{technique}-{cohort}-portable")
-                reload_options = dict(sequence=sources / "seam-reload.json") if seam else {}
-                reloaded = run(technique, portable, f"{cohort}-reload", reload_frames if seam else (13,), **reload_options)
+                reload_sequence, reload_samples = None, (13,)
+                if seam:
+                    reload_sequence, reload_samples = sources / "seam-reload.json", reload_frames
+                if large_morph:
+                    reload_sequence, reload_samples = sources / "large-morph-reload.json", large_morph_reload_frames
+                reloaded = run(technique, portable, f"{cohort}-reload", reload_samples, sequence=reload_sequence)
                 reload = reloaded[13]
                 verify_state(reload["state"], CONTROLS["edited"], index_count=index_count)
                 if skinned:
@@ -650,11 +811,26 @@ def main():
                         if skinned:
                             verify_skin_pose(variant["state"], (True, False))
                         report["checks"].append(dict(technique=technique, cohort=cohort, portableVariantFrame=frame,
-                                                     pixels=image_match(variant, expected[case])))
-                if morphed:
-                    verify_morph_pose(reload["state"], CONTROLS["edited"])
+                                                     pixels=image_match(variant, expected[None][case])))
+                if large_morph:
+                    verify_morph_pose(reload["state"], CONTROLS["edited"], default_weight=saved_weight)
+                    reload_pixels = image_match(reload, expected[saved_time]["edited"])
+                    report["checks"].append(dict(technique=technique, cohort=cohort, portableMorphFrame=13,
+                        savedNodeWeight=saved_weight, pixels=reload_pixels, livePixels=image_match(reload, frames[73])))
+                    for frame, live_frame in ((19, 21), (25, 73)):
+                        current = reloaded[frame]
+                        time = animation_time_at_frame(frame, LARGE_MORPH_RELOAD)
+                        verify_state(current["state"], CONTROLS["edited"], index_count=index_count)
+                        verify_morph_pose(current["state"], CONTROLS["edited"], time=time)
+                        report["checks"].append(dict(technique=technique, cohort=cohort, portableMorphFrame=frame,
+                            animationTime=time, pixels=image_match(current, expected[time]["edited"]),
+                            livePixels=image_match(current, frames[live_frame])))
+                else:
+                    if morphed:
+                        verify_morph_pose(reload["state"], CONTROLS["edited"])
+                    reload_pixels = image_match(reload, expected[None]["edited"])
                 report["checks"].append(dict(technique=technique, cohort=cohort, exportMaterials=materials, portableFiles=files,
-                                             reloadPixels=image_match(reload, expected["edited"])))
+                                             reloadPixels=reload_pixels))
                 print(f"{technique} {cohort}: shared binding edit, history, and reload matched", flush=True)
         report["passed"] = True
     finally:
