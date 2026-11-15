@@ -1,5 +1,6 @@
 #include "IfcBrepFaceGeometry.h"
 
+#include "Container/utility/ModelImportCancellation.h"
 #include <algorithm>
 #include <cmath>
 #include <deque>
@@ -65,6 +66,8 @@ public:
   std::vector<CurvedFaceTriangle>
   run(const std::vector<std::vector<glm::vec3>> &boundaries, bool explicitOuter,
       bool sameSense, std::span<const CurvedFaceChartLoop> authoredChart = {});
+  std::vector<UV> projectEdge(std::span<const glm::vec3> sharedPoints,
+                              const std::stop_token &stop);
 
 private:
   Point evaluate(UV uv) {
@@ -123,9 +126,11 @@ private:
     }
     return {result[0], result[1]};
   }
-  UV inverse(Point point);
-  std::optional<UV> solve(Point point, UV seed);
-  void seedInverse();
+  UV inverse(Point point, const std::stop_token &stop = {},
+             bool requireNumericalInverse = false);
+  std::optional<UV> solve(Point point, UV seed, const std::stop_token &stop);
+  void seedInverse(const std::stop_token &stop);
+  UV snapProjectedKnots(UV uv, Point point);
   void joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
                       bool sameSense);
   double bandProgress(UV uv) const {
@@ -383,7 +388,7 @@ void Mesher::splitBandCuts(std::vector<Triangle> &triangles,
   }
 }
 
-void Mesher::seedInverse() {
+void Mesher::seedInverse(const std::stop_token &stop) {
   std::array<std::vector<double>, 2> parameters;
   for (unsigned axis = 0; axis < 2; ++axis) {
     const auto domain = axis ? s_.vDomain : s_.uDomain;
@@ -394,8 +399,9 @@ void Mesher::seedInverse() {
                  b = domain ? domain->second : s_.periods[axis];
     if (!std::isfinite(a) || !std::isfinite(b) || b <= a)
       throw std::runtime_error("Invalid curved face surface domain");
-    for (unsigned i = 0; i <= 8; ++i)
+    for (unsigned i = 0; i < 8; ++i)
       parameters[axis].push_back(a + (b - a) * i / 8);
+    parameters[axis].push_back(b);
     for (double t : axis ? s_.meshV : s_.meshU)
       if (t > a && t < b)
         parameters[axis].push_back(t);
@@ -406,12 +412,15 @@ void Mesher::seedInverse() {
   }
   if (parameters[0].size() * parameters[1].size() > 1024)
     throw std::runtime_error("Curved face inverse seed budget exceeded");
-  for (double u : parameters[0])
+  for (double u : parameters[0]) {
+    container::util::checkModelImportCancellation(stop);
     for (double v : parameters[1])
       seeds_.push_back({{u, v}, evaluate({u, v})});
+  }
 }
 
-std::optional<UV> Mesher::solve(Point point, UV uv) {
+std::optional<UV> Mesher::solve(Point point, UV uv,
+                                const std::stop_token &stop) {
   const auto clamp = [&](UV p) {
     for (unsigned axis = 0; axis < 2; ++axis) {
       const auto domain = axis ? s_.vDomain : s_.uDomain;
@@ -422,6 +431,7 @@ std::optional<UV> Mesher::solve(Point point, UV uv) {
     return p;
   };
   for (unsigned iteration = 0; iteration < 40; ++iteration) {
+    container::util::checkModelImportCancellation(stop);
     const auto residual = evaluate(uv) - point;
     const double distance = glm::dot(residual, residual);
     const auto [a, b] = derivatives(uv);
@@ -449,13 +459,14 @@ std::optional<UV> Mesher::solve(Point point, UV uv) {
                                                          : std::nullopt;
 }
 
-UV Mesher::inverse(Point point) {
+UV Mesher::inverse(Point point, const std::stop_token &stop,
+                   bool requireNumericalInverse) {
   std::optional<UV> result;
-  if (s_.inverse) {
+  if (s_.inverse && !requireNumericalInverse) {
     result = s_.inverse(point);
   } else {
     if (seeds_.empty())
-      seedInverse();
+      seedInverse(stop);
     std::vector<size_t> order(seeds_.size());
     for (size_t i = 0; i < order.size(); ++i)
       order[i] = i;
@@ -464,11 +475,11 @@ UV Mesher::inverse(Point point) {
       return glm::dot(x, x) < glm::dot(y, y);
     });
     if (previous_)
-      result = solve(point, *previous_);
+      result = solve(point, *previous_, stop);
     // Search multiple basins even with a good continuation seed. Distinct roots
     // mean the boundary needs a pcurve to identify its intended surface chart.
     for (size_t k = 0; k < std::min(size_t(12), order.size()); ++k) {
-      auto candidate = solve(point, seeds_[order[k]].first);
+      auto candidate = solve(point, seeds_[order[k]].first, stop);
       if (!candidate)
         continue;
       if (result) {
@@ -493,6 +504,77 @@ UV Mesher::inverse(Point point) {
         "Boundary does not lie on a regular part of its face surface");
   previous_ = result;
   return *result;
+}
+
+UV Mesher::snapProjectedKnots(UV uv, Point point) {
+  // Mesh boundaries need the exact crease parameter when an existing shared
+  // sample already lies on it. Keep a snap only if it witnesses that sample.
+  auto snapped = uv;
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    const auto [first, last] = *(axis ? s_.vDomain : s_.uDomain);
+    const auto &knots = axis ? s_.meshV : s_.meshU;
+    const double coordinate = uv[axis];
+    double distance =
+        (last - first) * 1e-7 +
+        std::abs(coordinate) * (8 * std::numeric_limits<double>::epsilon());
+    const auto consider = [&](double knot) {
+      const double delta = std::abs(coordinate - knot);
+      if (delta < distance) {
+        snapped[axis] = knot;
+        distance = delta;
+      }
+    };
+    consider(first);
+    consider(last);
+    for (const double knot : knots)
+      if (knot > first && knot < last)
+        consider(knot);
+  }
+  if (snapped != uv && glm::length(evaluate(snapped) - point) <= tolerance_)
+    return snapped;
+  return uv;
+}
+
+std::vector<UV> Mesher::projectEdge(std::span<const glm::vec3> sharedPoints,
+                                    const std::stop_token &stop) {
+  std::vector<UV> result;
+  result.reserve(sharedPoints.size());
+  const bool closed = sharedPoints.front() == sharedPoints.back();
+  for (size_t i = 0; i < sharedPoints.size(); ++i) {
+    container::util::checkModelImportCancellation(stop);
+    const Point point(sharedPoints[i]);
+    auto uv = closed && i + 1 == sharedPoints.size()
+                  ? result.front()
+                  : snapProjectedKnots(inverse(point, stop, true), point);
+    if (!result.empty()) {
+      const auto previous = result.back();
+      for (unsigned axis = 0; axis < 2; ++axis) {
+        const double period = s_.periods[axis];
+        if (period == 0)
+          continue;
+        const double turns = (uv[axis] - previous[axis]) / period;
+        const double shift = std::round(turns);
+        if (std::abs(std::abs(turns - shift) - .5) <= 1e-7)
+          throw std::runtime_error(
+              "Inferred spline edge has an ambiguous half-period step");
+        uv[axis] -= shift * period;
+      }
+      if (!std::isfinite(uv.x) || !std::isfinite(uv.y) || uv == previous)
+        throw std::runtime_error(
+            "Inferred spline edge has a repeated or invalid chart sample");
+      const Point prior(sharedPoints[i - 1]);
+      for (const double fraction : {.25, .5, .75}) {
+        const UV between(std::lerp(previous.x, uv.x, fraction),
+                         std::lerp(previous.y, uv.y, fraction));
+        if (segmentDistanceSquared(evaluate(between), prior, point) >
+            chord_ * chord_)
+          throw std::runtime_error(
+              "Inferred spline edge exceeds the shared edge chord budget");
+      }
+    }
+    result.push_back(uv);
+  }
+  return result;
 }
 
 void Mesher::validatePeriodicCover(std::span<const Triangle> triangles,
@@ -2068,6 +2150,42 @@ meshRevolvedRadialGraph(const RevolvedRadialGraph &graph,
   return Mesher(chart, units, extent, {}, apex).run(rings, true, sameSense);
 }
 } // namespace
+
+std::vector<glm::dvec2>
+projectIfcBrepSplineEdge(const ParametricSurface &surface,
+                         std::span<const glm::vec3> sharedPoints, double units,
+                         std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
+  const double chord = .001 / units;
+  if (!surface.spline || !surface.point || !std::isfinite(units) ||
+      units <= 0 || !std::isfinite(chord * chord) || chord * chord == 0 ||
+      sharedPoints.size() < 2 || sharedPoints.size() > 4097)
+    throw std::runtime_error("Invalid spline surface or shared edge samples");
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    const auto &domain = axis ? surface.vDomain : surface.uDomain;
+    const double span = domain ? domain->second - domain->first : 0.;
+    const double period = surface.periods[axis];
+    if (!std::isfinite(span) || span <= 0 || !std::isfinite(period) ||
+        period < 0 || (period > 0 && std::abs(period / span - 1.) > 1e-8))
+      throw std::runtime_error("Invalid native spline domain or period");
+  }
+
+  const auto origin = Point(sharedPoints.front());
+  const bool closed = sharedPoints.front() == sharedPoints.back();
+  const size_t uniqueCount = sharedPoints.size() - (closed ? 1 : 0);
+  if (closed && uniqueCount < 3)
+    throw std::runtime_error("Closed inferred spline edge has too few samples");
+  std::set<std::array<float, 3>> unique;
+  double extent = 0;
+  for (const auto p : sharedPoints.first(uniqueCount)) {
+    if (!std::isfinite(p.x) || !std::isfinite(p.y) || !std::isfinite(p.z))
+      throw std::runtime_error("Inferred spline edge has a nonfinite sample");
+    if (!unique.emplace(std::array{p.x, p.y, p.z}).second)
+      throw std::runtime_error("Inferred spline edge repeats a shared sample");
+    extent = std::max(extent, glm::length(Point(p) - origin));
+  }
+  return Mesher(surface, units, extent).projectEdge(sharedPoints, stop);
+}
 
 std::optional<std::vector<CurvedFaceTriangle>>
 meshIfcCurvedFace(const ParametricSurface &surface,

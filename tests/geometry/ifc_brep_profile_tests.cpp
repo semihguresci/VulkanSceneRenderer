@@ -2858,7 +2858,10 @@ enum class SplineLift {
   WrongRing,
   AmbiguousRing,
   DuplicateSeam,
-  TwiceSeam
+  TwiceSeam,
+  MixedRings,
+  MixedSeam,
+  MixedConflict
 };
 
 struct PeriodicSplineBuilder : CurvedBuilder {
@@ -2934,32 +2937,49 @@ struct PeriodicSplineBuilder : CurvedBuilder {
                     swapped ? glm::dvec2(b.y, b.x) : b);
     };
     const auto ringEdge = [&](const std::vector<std::string> &controls,
-                              double z, double shift, bool ambiguous) {
+                              double z, double shift, bool ambiguous,
+                              bool bare) {
+      const auto curve = ring(controls, angle);
+      if (bare)
+        return edge(controls.front(), controls.front(), curve);
       std::vector lifts{
           liftAt({angle.low + shift, z}, {angle.high + shift, z})};
       if (ambiguous)
         lifts.push_back(
             liftAt({angle.high, z}, {2 * angle.high - angle.low, z}));
       return edge(controls.front(), controls.front(),
-                  associated("IFCSURFACECURVE", ring(controls, angle), lifts));
+                  associated("IFCSURFACECURVE", curve, lifts));
     };
-    const auto bottom = ringEdge(lower, height.low, 0., false);
+    const bool bareBottom =
+        lift == SplineLift::MixedRings || lift == SplineLift::MixedConflict;
+    const bool bareSeam = lift == SplineLift::MixedSeam;
     const double period = angle.high - angle.low;
-    const auto top = ringEdge(upper, height.high,
-                              lift == SplineLift::WrongRing ? period / 2 : 0.,
-                              lift == SplineLift::AmbiguousRing);
-    const double second = lift == SplineLift::DuplicateSeam ? angle.low
-                          : lift == SplineLift::TwiceSeam ? angle.high + period
-                                                          : angle.high;
+    const double seamShift = (bareBottom || bareSeam) && swapped ? period : 0.;
+    const auto bottom =
+        ringEdge(lower, height.low, seamShift, false, bareBottom);
+    const double topShift =
+        seamShift + (lift == SplineLift::WrongRing       ? period / 2
+                     : lift == SplineLift::MixedConflict ? period
+                                                         : 0.);
+    const auto top = ringEdge(upper, height.high, topShift,
+                              lift == SplineLift::AmbiguousRing,
+                              lift == SplineLift::MixedRings);
+    const double first = angle.low + seamShift;
+    const double second =
+        seamShift + (lift == SplineLift::DuplicateSeam ? angle.low
+                     : lift == SplineLift::TwiceSeam   ? angle.high + period
+                                                       : angle.high);
     const auto seam3d =
         add("IFCPOLYLINE((" + lower.front() + "," + upper.front() + "))");
-    const auto seam = edge(
-        lower.front(), upper.front(),
-        associated("IFCSEAMCURVE", seam3d,
-                   {liftAt({angle.low, height.low}, {angle.low, height.high}),
-                    liftAt({second, height.low}, {second, height.high})}));
+    const auto seamGeometry =
+        bareSeam
+            ? seam3d
+            : associated("IFCSEAMCURVE", seam3d,
+                         {liftAt({first, height.low}, {first, height.high}),
+                          liftAt({second, height.low}, {second, height.high})});
+    const auto seam = edge(lower.front(), upper.front(), seamGeometry);
     face({bound({{bottom, true}, {seam, true}, {top, false}, {seam, false}},
-                true, !swapped)},
+                true, bareBottom || !swapped)},
          sheet, !swapped);
     plane({{bottom, false}}, {0, 0, 0}, {0, 0, -1});
     plane({{top, true}}, {0, 0, 3}, {0, 0, 1});
@@ -3094,6 +3114,28 @@ size_t countSeamEdges(const Model &model, OnSeam onSeam) {
   return edges.size();
 }
 
+void expectPeriodicSplineCylinder(const Model &model) {
+  watertight(model);
+  EXPECT_NEAR(volume(model), 12 * pi, .045);
+  expectProfileBounds(model, {-2, -2, 0}, {2, 2, 3});
+  const auto onSeam = [](glm::vec3 p) {
+    return std::abs(p.x - 2.) < 1e-6 && std::abs(p.y) < 1e-6;
+  };
+  EXPECT_GT(countSeamEdges(model, onSeam), 0u);
+  size_t seamNormals = 0;
+  double agreement = 1.;
+  for (const auto &vertex : model.vertices) {
+    if (std::abs(vertex.normal.z) > .9)
+      continue;
+    const glm::dvec2 xy(vertex.position);
+    agreement = std::min(
+        agreement, glm::dot(glm::normalize(xy), glm::dvec2(vertex.normal)));
+    seamNormals += onSeam(vertex.position);
+  }
+  EXPECT_GT(agreement, .998);
+  EXPECT_GE(seamNormals, 2u);
+}
+
 TEST(IfcCurvedBrep,
      PeriodicSplineCylinderAcceptsNativePcurveLiftsInEitherAxis) {
   for (bool swapped : {false, true}) {
@@ -3106,25 +3148,84 @@ TEST(IfcCurvedBrep,
                         source);
     const auto model = LoadFromStep(source);
     ASSERT_NO_FATAL_FAILURE(complete(model));
-    watertight(model);
-    EXPECT_NEAR(volume(model), 12 * pi, .045);
-    expectProfileBounds(model, {-2, -2, 0}, {2, 2, 3});
-    const auto onSeam = [](glm::vec3 p) {
-      return std::abs(p.x - 2.) < 1e-6 && std::abs(p.y) < 1e-6;
-    };
-    EXPECT_GT(countSeamEdges(model, onSeam), 0u);
-    size_t seamNormals = 0;
-    double agreement = 1.;
-    for (const auto &vertex : model.vertices) {
-      if (std::abs(vertex.normal.z) > .9)
-        continue;
-      const glm::dvec2 xy(vertex.position);
-      agreement = std::min(
-          agreement, glm::dot(glm::normalize(xy), glm::dvec2(vertex.normal)));
-      seamNormals += onSeam(vertex.position);
-    }
-    EXPECT_GT(agreement, .998);
-    EXPECT_GE(seamNormals, 2u);
+    expectPeriodicSplineCylinder(model);
+  }
+}
+
+TEST(IfcCurvedBrep, MixedSplineCylinderKeepsBareCapRimsAndAuthoredSeams) {
+  for (bool swapped : {false, true}) {
+    SCOPED_TRACE(swapped ? "periodic V" : "periodic U");
+    PeriodicSplineBuilder step;
+    const auto brep = step.cylinder(swapped, SplineLift::MixedRings);
+    const auto source = fixture(step.definitions, brep);
+    exportCurvedFixture(swapped ? "mixed-spline-cylinder-v"
+                                : "mixed-spline-cylinder-u",
+                        source);
+    const auto model = LoadFromStep(source);
+    EXPECT_NO_FATAL_FAILURE(complete(model));
+    if (!model.indices.empty())
+      expectPeriodicSplineCylinder(model);
+  }
+}
+
+TEST(IfcCurvedBrep, MixedSplineCylinderRejectsIncompatibleRawChartAnchors) {
+  for (bool swapped : {false, true}) {
+    SCOPED_TRACE(swapped ? "periodic V" : "periodic U");
+    PeriodicSplineBuilder step;
+    const auto brep = step.cylinder(swapped, SplineLift::MixedConflict);
+    const auto model = LoadFromStep(fixture(step.definitions, brep));
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(model.elements.empty());
+    EXPECT_TRUE(model.indices.empty());
+    EXPECT_TRUE(model.vertices.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    const auto &reason = model.importReport.diagnostics.front().reason;
+    EXPECT_NE(reason.find("Face #"), std::string::npos) << reason;
+    EXPECT_NE(reason.find("Pcurve lifts do not connect in the spline chart"),
+              std::string::npos)
+        << reason;
+  }
+}
+
+TEST(IfcCurvedBrep, MixedSplineCylinderInfersOppositeUsesOfOneBareSeam) {
+  for (bool swapped : {false, true}) {
+    SCOPED_TRACE(swapped ? "periodic V" : "periodic U");
+    PeriodicSplineBuilder step;
+    const auto brep = step.cylinder(swapped, SplineLift::MixedSeam);
+    const auto source = fixture(step.definitions, brep);
+    exportCurvedFixture(swapped ? "mixed-spline-bare-seam-v"
+                                : "mixed-spline-bare-seam-u",
+                        source);
+    const auto model = LoadFromStep(source);
+    EXPECT_NO_FATAL_FAILURE(complete(model));
+    if (!model.indices.empty())
+      expectPeriodicSplineCylinder(model);
+  }
+}
+
+TEST(IfcCurvedBrep, MixedSplineProjectionRejectsASecondNativeRoot) {
+  using namespace container::geometry::ifc::detail;
+  ParametricSurface surface;
+  surface.spline = true;
+  surface.uDomain = {{0., 2 * pi}};
+  surface.vDomain = {{0., 1.}};
+  surface.periods = {2 * pi, 0.};
+  surface.point = [](double u, double v) {
+    return glm::dvec3(std::cos(2 * u), std::sin(2 * u), v);
+  };
+  surface.derivatives = [](double u, double) {
+    return std::pair(glm::dvec3(-2 * std::sin(2 * u), 2 * std::cos(2 * u), 0),
+                     glm::dvec3(0, 0, 1));
+  };
+  const std::array<glm::vec3, 2> edge{{{1, 0, .25}, {1, 0, .75}}};
+  try {
+    (void)projectIfcBrepSplineEdge(surface, edge, 1.);
+    ADD_FAILURE() << "Projection selected one of two distinct native roots";
+  } catch (const std::runtime_error &error) {
+    EXPECT_NE(
+        std::string_view(error.what()).find("Ambiguous curved face inverse"),
+        std::string_view::npos)
+        << error.what();
   }
 }
 

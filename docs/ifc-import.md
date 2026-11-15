@@ -114,11 +114,17 @@ surface axis can carry the period, and reversed surface sense is retained.
 Explicit seam bounds require two distinct pcurves on the same surface and use
 the curve's master representation. An authored spline chart checks bounded
 pcurves against its exact shared edge samples. Both uses of a seam must follow
-the same edge and differ by a certified period. Doubly periodic spline bands
+the same edge and differ by a certified period. An edge carried only by a 3D
+curve can join authored pcurves when its cached samples have a consistent
+surface inverse and the authored endpoints anchor its lift. The importer
+checks intervening chord error and rejects half-period ties or inconsistent
+anchors. A shared 3D seam must have opposite uses whose inferred lifts differ
+by one certified period. Doubly periodic spline bands
 can follow a primitive winding on both axes, such as two U turns and one V
 turn. Their trims must form opposite monotone loops with exactly one cover
-between periodic images. A cut between existing samples preserves the original
-edge positions. Both copies of the artificial cut receive matching samples at
+between periodic images. The companion of an authored winding loop can use
+inferred coordinates throughout. A cut between existing samples preserves the
+original edge positions. Both copies of the artificial cut receive matching samples at
 sharp knot crossings. The importer also rejects overlapping translated interiors in
 explicit trims. Inconsistent lifts, intersecting periodic images and ambiguous
 endpoints produce face and edge diagnostics.
@@ -660,7 +666,8 @@ paired edges, smooth pole normals and inward spherical cavities. Non-pole,
 duplicate and malformed vertex loops reject atomically.
 Spline seam regressions check U-closed and V-closed rational cylinders and
 doubly periodic rational tori with non-unit knot domains, opposite face bounds
-and authored pcurves. Independent volume, normal and exact-edge checks cover
+and authored pcurves. The cylinders also exercise bare 3D rims between authored
+seam lifts. Independent volume, normal and exact-edge checks cover
 complementary winding bands on the torus. Conflicting lifts and periodic images
 reject without leaving mesh buffers. Sharp-knot cases check that matching and
 unequally sampled rings keep identical cut edges and one-sided normals.
@@ -836,9 +843,10 @@ charts and polar trims with multiple seams or holes meeting a
 seam cut remain outside native coverage. Swept surface limits include profiles
 with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.
-Periodic spline charts with unclamped closure, incomplete pcurve trims,
-nonmonotone winding bands or shared source edges missing a sample at a sharp
-knot require further work. Each omitted
+Periodic spline charts with unclamped closure, nonmonotone winding bands or
+shared source edges missing a sample at a sharp knot require further work.
+Explicit charts mixing pcurves and 3D edges still need an authored anchor in
+each disconnected periodic trim loop. Each omitted
 representation is reported. A full IFC backend remains an option if future
 assets need these capabilities.
 

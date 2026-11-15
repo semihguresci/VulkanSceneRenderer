@@ -3848,7 +3848,7 @@ private:
                             const detail::ParametricSurface &surface,
                             const BrepEdges &edgeCache,
                             const std::vector<BrepChartBound> &bounds,
-                            std::optional<double> angle,
+                            std::optional<double> angle, bool explicitOuter,
                             std::vector<std::vector<glm::vec3>> &loops,
                             std::vector<detail::CurvedFaceChartLoop> &charts,
                             std::string &error) const {
@@ -3857,6 +3857,8 @@ private:
       size_t bound = 0;
       bool forward = false;
       unsigned uses = 0;
+      bool inferred = false;
+      bool oppositeUsesInBound = true;
     };
     std::unordered_map<uint32_t, EdgeLifts> edges;
     bool authored = false;
@@ -3867,22 +3869,25 @@ private:
         auto &data = entry->second;
         if (inserted) {
           auto lifts = readBrepChartLifts(edgeCache.at(use.edge), surfaceRef,
-                                         surface, angle, error);
+                                          surface, angle, error);
           if (!lifts) {
             error = "Edge #" + std::to_string(use.edge) + ": " + error;
             return false;
           }
           authored |= !lifts->empty();
           data = {std::move(*lifts), i, use.forward, 0};
-        } else if (data.lifts.size() == 2 &&
-                   (data.bound != i || data.forward == use.forward)) {
-          error = "Spline seam requires opposite edge uses in the same bound";
-          return false;
+        } else {
+          data.oppositeUsesInBound &=
+              data.bound == i && data.forward != use.forward;
         }
         ++data.uses;
       }
     if (!authored)
       return true;
+    if (bounds.size() != loops.size()) {
+      error = "Authored spline chart requires edge-loop bounds";
+      return false;
+    }
 
     const glm::dvec2 periods = surface.periods;
     const glm::dvec2 spans{surface.uDomain->second - surface.uDomain->first,
@@ -3900,8 +3905,43 @@ private:
       }
       return true;
     };
-    for (const auto &[ref, data] : edges) {
-      if (data.lifts.empty() || data.lifts.size() != data.uses) {
+    const auto periodShift = [&](glm::dvec2 point, glm::dvec2 anchor) {
+      glm::dvec2 shift(0);
+      for (unsigned axis = 0; axis < 2; ++axis)
+        if (periods[axis] > 0)
+          shift[axis] =
+              std::round((anchor[axis] - point[axis]) / periods[axis]) *
+              periods[axis];
+      return shift;
+    };
+    const auto seamTranslation =
+        [&](glm::dvec2 delta) -> std::optional<glm::dvec2> {
+      for (unsigned axis = 0; axis < 2; ++axis) {
+        glm::dvec2 candidate(0);
+        candidate[axis] = std::copysign(periods[axis], delta[axis]);
+        if (periods[axis] > 0 && sameParameter(delta, candidate))
+          return candidate;
+      }
+      return std::nullopt;
+    };
+    for (auto &[ref, data] : edges) {
+      checkCancellation();
+      if (data.uses == 2 && data.lifts.size() != 1 &&
+          !data.oppositeUsesInBound) {
+        error = "Spline seam requires opposite edge uses in the same bound";
+        return false;
+      }
+      if (data.lifts.empty() && data.uses <= 2) {
+        try {
+          data.lifts.push_back(detail::projectIfcBrepSplineEdge(
+              surface, edgeCache.at(ref).points, unitScale_, stop_));
+          data.inferred = true;
+        } catch (const std::runtime_error &failure) {
+          error = "Edge #" + std::to_string(ref) + ": " + failure.what();
+          return false;
+        }
+      }
+      if (!data.inferred && data.lifts.size() != data.uses) {
         error = "Edge #" + std::to_string(ref) +
                 " requires one pcurve per edge use in the authored chart";
         return false;
@@ -3909,14 +3949,7 @@ private:
       if (data.lifts.size() != 2)
         continue;
       const auto &a = data.lifts[0], &b = data.lifts[1];
-      const auto delta = b.front() - a.front();
-      std::optional<glm::dvec2> translation;
-      for (unsigned axis = 0; axis < 2; ++axis) {
-        glm::dvec2 candidate(0);
-        candidate[axis] = std::copysign(periods[axis], delta[axis]);
-        if (periods[axis] > 0 && sameParameter(delta, candidate))
-          translation = candidate;
-      }
+      const auto translation = seamTranslation(b.front() - a.front());
       if (!translation) {
         error = "Seam pcurves must differ by exactly one certified period";
         return false;
@@ -3934,45 +3967,74 @@ private:
         error = "Authored spline chart requires edge-loop bounds";
         return false;
       }
+      // Start from an authored use even if the source loop begins on a
+      // 3D-only edge. Only inferred coordinates may be translated to meet it.
+      const auto anchor = std::ranges::find_if(
+          uses, [&](const auto &use) { return !edges.at(use.edge).inferred; });
+      if (anchor == uses.end() && explicitOuter && (periods.x || periods.y)) {
+        error = "Periodic spline trim loop needs an authored pcurve anchor";
+        return false;
+      }
+      const size_t start = anchor == uses.end() ? 0 : anchor - uses.begin();
+      size_t sampleOffset = 0;
+      for (const auto &use : std::span(uses).first(start))
+        sampleOffset += edgeCache.at(use.edge).points.size() - 1;
+      const auto &firstUse = uses[start];
       std::optional<detail::CurvedFaceChartLoop> selected;
-      const auto &initial = edges.at(uses.front().edge).lifts;
+      const auto &initial = edges.at(firstUse.edge).lifts;
       for (size_t first = 0; first < initial.size(); ++first) {
         detail::CurvedFaceChartLoop candidate;
         candidate.vertices.reserve(loops[i].size());
         std::unordered_map<uint32_t, size_t> usedLifts;
+        std::unordered_map<uint32_t, glm::dvec2> inferredSeams;
         const auto endpoint = [](const auto &lift, bool forward) {
           return forward ? lift.front() : lift.back();
         };
-        glm::dvec2 last = endpoint(initial[first], uses.front().forward);
-        for (const auto &use : uses) {
-          const auto &lifts = edges.at(use.edge).lifts;
+        glm::dvec2 last = endpoint(initial[first], firstUse.forward);
+        for (size_t offset = 0; offset < uses.size(); ++offset) {
+          const auto &use = uses[(start + offset) % uses.size()];
+          const auto &data = edges.at(use.edge);
+          const auto &lifts = data.lifts;
+          glm::dvec2 shift(0);
+          if (data.inferred)
+            shift = periodShift(endpoint(lifts.front(), use.forward), last);
           const auto match = std::ranges::find_if(lifts, [&](const auto &lift) {
-            return sameParameter(last, endpoint(lift, use.forward));
+            return sameParameter(last, endpoint(lift, use.forward) + shift);
           });
           if (match == lifts.end())
             break;
+          if (data.inferred && data.uses == 2) {
+            const auto [prior, inserted] =
+                inferredSeams.try_emplace(use.edge, shift);
+            if (!inserted && !seamTranslation(shift - prior->second))
+              break;
+          }
           if (lifts.size() == 2) {
             const auto liftIndex = static_cast<size_t>(match - lifts.begin());
-            const auto [prior, inserted] = usedLifts.try_emplace(use.edge, liftIndex);
+            const auto [prior, inserted] =
+                usedLifts.try_emplace(use.edge, liftIndex);
             if (!inserted && prior->second == liftIndex)
               break;
           }
-          if (use.forward)
+          if (data.inferred) {
+            candidate.vertices.push_back(last);
+            for (size_t sample = 1; sample + 1 < match->size(); ++sample) {
+              const auto index =
+                  use.forward ? sample : match->size() - 1 - sample;
+              candidate.vertices.push_back((*match)[index] + shift);
+            }
+          } else if (use.forward)
             candidate.vertices.insert(candidate.vertices.end(), match->begin(),
                                       match->end() - 1);
           else
             candidate.vertices.insert(candidate.vertices.end(), match->rbegin(),
                                       match->rend() - 1);
-          last = endpoint(*match, !use.forward);
+          last = endpoint(*match, !use.forward) + shift;
         }
         if (candidate.vertices.size() != loops[i].size())
           continue;
-        candidate.closure = candidate.vertices.front();
-        for (unsigned axis = 0; axis < 2; ++axis)
-          if (periods[axis] > 0)
-            candidate.closure[axis] +=
-                std::round((last[axis] - candidate.closure[axis]) / periods[axis]) *
-                periods[axis];
+        const auto begin = candidate.vertices.front();
+        candidate.closure = begin + periodShift(begin, last);
         if (!sameParameter(last, candidate.closure))
           continue;
         if (selected) {
@@ -3988,6 +4050,8 @@ private:
       charts.push_back(std::move(*selected));
       if (bounds[i].reversed)
         std::rotate(loops[i].begin(), loops[i].end() - 1, loops[i].end());
+      std::rotate(loops[i].begin(), loops[i].begin() + sampleOffset,
+                  loops[i].end());
     }
     return true;
   }
@@ -4532,9 +4596,10 @@ private:
               }
             }
             std::vector<detail::CurvedFaceChartLoop> authoredChart;
-            if (spline && !buildSplineBrepChart(*surfaceRef, *descriptor,
-                                                edgeCache, chartBounds, angle,
-                                                loops, authoredChart, error))
+            if (spline &&
+                !buildSplineBrepChart(*surfaceRef, *descriptor, edgeCache,
+                                      chartBounds, angle, hasOuterBound, loops,
+                                      authoredChart, error))
               return faceFail(error);
             const auto mesh = detail::meshIfcCurvedFace(
                 *descriptor, loops, hasOuterBound, sameSense == "T", unitScale_,
