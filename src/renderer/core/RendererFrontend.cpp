@@ -262,10 +262,11 @@ private:
 }
 
 [[nodiscard]] const std::vector<DrawCommand> &bimFloorPlanDrawCommands(
-    const BimManager &bim, container::ui::BimFloorPlanElevationMode elevation) {
+    const BimManager &bim, container::ui::BimFloorPlanElevationMode elevation,
+    std::string_view storey) {
   return elevation == container::ui::BimFloorPlanElevationMode::SourceElevation
-      ? bim.floorPlanSourceElevationDrawCommands()
-      : bim.floorPlanGroundDrawCommands();
+      ? bim.floorPlanSourceElevationDrawCommands(storey)
+      : bim.floorPlanGroundDrawCommands(storey);
 }
 
 [[nodiscard]] FrameBimFloorPlanOverlayState bimFloorPlanFrameStyle(
@@ -3350,6 +3351,8 @@ void RendererFrontend::applyTemporalCapture(
   }
   if (event.bimHiddenObject)
     captureBimHiddenObject_ = *event.bimHiddenObject;
+  if (event.bimStoreyFilter)
+    captureBimStoreyFilter_ = *event.bimStoreyFilter;
   if (event.bimLodBias)
     captureBimLodBias_ = *event.bimLodBias;
   if (!event.technique.empty()) {
@@ -3483,6 +3486,17 @@ RendererFrontend::effectiveBimFloorPlanSettings() const {
   return subs_.guiManager ? &subs_.guiManager->bimFloorPlanOverlayState() : nullptr;
 }
 
+std::string_view RendererFrontend::effectiveBimStoreyFilter() const {
+  if (captureBimStoreyFilter_)
+    return *captureBimStoreyFilter_;
+  if (subs_.guiManager) {
+    const auto &filter = subs_.guiManager->bimFilterState();
+    if (filter.storeyFilterEnabled)
+      return filter.storey;
+  }
+  return {};
+}
+
 void RendererFrontend::appendBimFloorPlanTelemetry(
     nlohmann::json &json, const FrameRecordParams *frame) const {
   using Elevation = container::ui::BimFloorPlanElevationMode;
@@ -3493,9 +3507,10 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
     return;
 
   const auto elevation = settings ? settings->elevationMode : Elevation::ProjectedGround;
+  const auto storey = effectiveBimStoreyFilter();
   const auto *draws = frame ? frame->bim.floorPlanDrawCommands : nullptr;
   if (draws == nullptr && hasScene)
-    draws = &bimFloorPlanDrawCommands(*bim, elevation);
+    draws = &bimFloorPlanDrawCommands(*bim, elevation, storey);
   const size_t drawCount = draws ? draws->size() : 0u;
   const bool requested = settings && settings->enabled;
   const auto style = frame && frame->bim.floorPlanDrawCommands
@@ -3545,6 +3560,7 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
                  {"floorPlan", {{"requested", requested},
                      {"enabled", style.enabled},
                      {"viewportRoute", viewportRoute},
+                     {"storeyFilter", storey},
                      {"elevation", elevation == Elevation::SourceElevation ? "source-elevation" : "projected-ground"},
                      {"depthTest", style.depthTest},
                      {"color", {style.color.r, style.color.g, style.color.b}},
@@ -3552,8 +3568,8 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
                      {"lineWidth", style.lineWidth},
                      {"rasterLineWidth", rasterBimLightingOverlayLineWidth(style.lineWidth, wideLines)},
                      {"drawCount", drawCount},
-                     {"projectedGroundDrawCount", hasScene ? bim->floorPlanGroundDrawCommands().size() : 0u},
-                     {"sourceElevationDrawCount", hasScene ? bim->floorPlanSourceElevationDrawCommands().size() : 0u},
+                     {"projectedGroundDrawCount", hasScene ? bim->floorPlanGroundDrawCommands(storey).size() : 0u},
+                     {"sourceElevationDrawCount", hasScene ? bim->floorPlanSourceElevationDrawCommands(storey).size() : 0u},
                      {"pipeline", pipeline.empty() ? nlohmann::json(nullptr) : nlohmann::json(pipeline)},
                      {"pipelineReady", pipelineReady}}}};
 }
@@ -7656,6 +7672,8 @@ bool RendererFrontend::depthVisibilityFrameMatchesCurrentState() const {
 
 BimDrawFilter RendererFrontend::currentBimDrawFilter() const {
   BimDrawFilter filter{};
+  filter.storey = effectiveBimStoreyFilter();
+  filter.storeyFilterEnabled = !filter.storey.empty();
   if (captureBimHiddenObject_) {
     filter.hideSelection = true;
     filter.selectedObjectIndex = *captureBimHiddenObject_;
@@ -7666,8 +7684,6 @@ BimDrawFilter RendererFrontend::currentBimDrawFilter() const {
   const auto &guiFilter = subs_.guiManager->bimFilterState();
   filter.typeFilterEnabled = guiFilter.typeFilterEnabled;
   filter.type = guiFilter.type;
-  filter.storeyFilterEnabled = guiFilter.storeyFilterEnabled;
-  filter.storey = guiFilter.storey;
   filter.materialFilterEnabled = guiFilter.materialFilterEnabled;
   filter.material = guiFilter.material;
   filter.disciplineFilterEnabled = guiFilter.disciplineFilterEnabled;
@@ -8980,6 +8996,7 @@ void RendererFrontend::presentSceneControls() {
     BimDrawingExportRequest svgRequest{};
     svgRequest.title = bimDrawingTitle(subs_.bimManager.get());
     const auto &floorPlan = subs_.guiManager->bimFloorPlanOverlayState();
+    const auto storey = effectiveBimStoreyFilter();
     svgRequest.paperWidthMm = drawingExportRequest->paperWidthMm;
     svgRequest.paperHeightMm = drawingExportRequest->paperHeightMm;
     svgRequest.modelUnitsPerPaperMm =
@@ -8989,11 +9006,11 @@ void RendererFrontend::presentSceneControls() {
         container::ui::BimFloorPlanElevationMode::SourceElevation;
     if (subs_.bimManager) {
       svgRequest.lines = subs_.bimManager->floorPlanDrawingExportLines(
-          sourceElevation, floorPlan.color, 0.18f);
+          sourceElevation, floorPlan.color, 0.18f, storey);
       if (svgRequest.lines.empty() && sourceElevation) {
         sourceElevation = false;
         svgRequest.lines = subs_.bimManager->floorPlanDrawingExportLines(
-            false, floorPlan.color, 0.18f);
+            false, floorPlan.color, 0.18f, storey);
       }
     }
     svgRequest.viewName = bimFloorPlanDrawingViewName(sourceElevation);
@@ -9812,7 +9829,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         &selectedBimNativeCurveStrokeDrawCommands_;
     if (const auto *floorPlan = effectiveBimFloorPlanSettings()) {
       p.bim.floorPlanDrawCommands =
-          &bimFloorPlanDrawCommands(*subs_.bimManager, floorPlan->elevationMode);
+          &bimFloorPlanDrawCommands(*subs_.bimManager, floorPlan->elevationMode,
+                                   bimFilter.storey);
       p.bim.floorPlan = bimFloorPlanFrameStyle(*floorPlan, !p.bim.floorPlanDrawCommands->empty());
     }
 

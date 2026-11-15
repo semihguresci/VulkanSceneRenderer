@@ -719,6 +719,82 @@ TEST_F(BimPreparationTests, BuildsGroundAndStoreyFloorPlansInOrder) {
   EXPECT_NEAR(storeys.boundsRadius * storeys.boundsRadius, 47.5f, 0.00001f);
 }
 
+TEST_F(BimPreparationTests, RetainsStoreyMembershipForSharedFloorPlanEdges) {
+  std::ofstream file(fixturePath(), std::ios::binary);
+  file << R"json({
+    "schema_version": "1.1.0",
+    "meshes": [{"mesh_id": 1, "indices": [0,1,2],
+      "coordinates": [0,0,0, 2,0,0, 0,0,6]}],
+    "elements": [
+      {"mesh_id": 1, "guid": "crosses-upper", "type": "IfcWall",
+       "storeyName": "Lower", "vector": {"z": 1}},
+      {"mesh_id": 1, "guid": "upper-east", "type": "IfcWall",
+       "storeyId": "Upper", "vector": {"x": 6, "z": 4}},
+      {"mesh_id": 1, "guid": "lower-east", "type": "IfcWall",
+       "storeyName": "Lower", "vector": {"x": 10, "z": 2}},
+      {"mesh_id": 1, "guid": "upper-shared", "type": "IfcWall",
+       "storeyName": "Upper", "storeyId": "Lower", "vector": {"z": 4}},
+      {"mesh_id": 1, "guid": "unassigned", "type": "IfcWall",
+       "vector": {"x": 14, "z": 7}},
+      {"mesh_id": 1, "guid": "lower-duplicate", "type": "IfcWall",
+       "storeyId": "Lower", "vector": {"z": 2}}
+    ]
+  })json";
+  file.close();
+  ASSERT_TRUE(file);
+
+  const auto scene = container::renderer::BimManager::prepareScene(
+      container::util::pathToUtf8(fixturePath()), 1.0f);
+  const auto &ground = scene.floorPlanGround;
+  const auto &elevated = scene.floorPlanSourceElevation;
+  const auto verify = [&](size_t firstIndex, size_t indexCount,
+                          const auto &positions) {
+    ASSERT_EQ(indexCount, positions.size());
+    ASSERT_LE(firstIndex + indexCount, scene.uploadIndices.size());
+    for (size_t i = 0; i < indexCount; ++i) {
+      const size_t vertex = scene.uploadIndices[firstIndex + i];
+      ASSERT_GE(vertex, scene.model.vertices.size());
+      ASSERT_LT(vertex, scene.uploadVertices.size());
+      EXPECT_EQ(scene.uploadVertices[vertex].position, positions[i]);
+    }
+  };
+  verify(ground.firstIndex, ground.indexCount, std::array{
+      glm::vec3{0, 0, 0}, glm::vec3{2, 0, 0}, glm::vec3{6, 0, 0},
+      glm::vec3{8, 0, 0}, glm::vec3{10, 0, 0}, glm::vec3{12, 0, 0},
+      glm::vec3{14, 0, 0}, glm::vec3{16, 0, 0}});
+  verify(elevated.firstIndex, elevated.indexCount, std::array{
+      glm::vec3{0, 1, 0}, glm::vec3{2, 1, 0}, glm::vec3{6, 4, 0},
+      glm::vec3{8, 4, 0}, glm::vec3{10, 1, 0}, glm::vec3{12, 1, 0},
+      glm::vec3{0, 4, 0}, glm::vec3{2, 4, 0},
+      glm::vec3{14, 7, 0}, glm::vec3{16, 7, 0}});
+  const auto verifyStorey = [&](const auto &overlay, std::string_view storey,
+                                const auto &positions, bool reusesRange) {
+    const auto &commands = overlay.commands(storey);
+    ASSERT_EQ(commands.size(), 1u);
+    const auto &command = commands.front();
+    if (reusesRange) {
+      EXPECT_EQ(command.firstIndex, ground.firstIndex);
+    } else {
+      EXPECT_GE(command.firstIndex, elevated.firstIndex + elevated.indexCount);
+    }
+    verify(command.firstIndex, command.indexCount, positions);
+  };
+  verifyStorey(ground, "Lower", std::array{
+      glm::vec3{0, 0, 0}, glm::vec3{2, 0, 0}, glm::vec3{10, 0, 0}, glm::vec3{12, 0, 0}}, false);
+  verifyStorey(ground, "Upper", std::array{
+      glm::vec3{0, 0, 0}, glm::vec3{2, 0, 0}, glm::vec3{6, 0, 0}, glm::vec3{8, 0, 0}}, true);
+  verifyStorey(elevated, "Lower", std::array{
+      glm::vec3{0, 1, 0}, glm::vec3{2, 1, 0}, glm::vec3{10, 1, 0}, glm::vec3{12, 1, 0}}, false);
+  verifyStorey(elevated, "Upper", std::array{
+      glm::vec3{6, 4, 0}, glm::vec3{8, 4, 0}, glm::vec3{0, 4, 0}, glm::vec3{2, 4, 0}}, false);
+  for (const auto *overlay : {&ground, &elevated}) {
+    EXPECT_TRUE(overlay->commands("Missing").empty());
+    EXPECT_EQ(&overlay->commands({}), &overlay->drawCommands);
+  }
+  EXPECT_EQ(scene.uploadVertices.size(), scene.model.vertices.size() + 18u);
+  EXPECT_EQ(scene.uploadIndices.size(), scene.model.indices.size() + 30u);
+}
+
 TEST_F(BimPreparationTests, DiscardsFloorPlanWithNoDistinctLines) {
   std::ofstream file(fixturePath(), std::ios::binary);
   file << R"json({

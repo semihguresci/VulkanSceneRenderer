@@ -333,6 +333,7 @@ private:
   [[nodiscard]] nlohmann::json captureTelemetry() const;
   [[nodiscard]] const container::ui::BimFloorPlanOverlayState *
   effectiveBimFloorPlanSettings() const;
+  [[nodiscard]] std::string_view effectiveBimStoreyFilter() const;
   void appendBimFloorPlanTelemetry(
       nlohmann::json &json, const FrameRecordParams *frame = nullptr) const;
   [[nodiscard]] container::gpu::ExposureSettings effectiveExposureSettings() const;
@@ -515,6 +516,7 @@ private:
   uint64_t materialVariantGraphIdentity_{};
   std::optional<int> captureMaterialVariant_{};
   std::shared_ptr<const container::ui::BimFloorPlanOverlayState> captureBimFloorPlan_;
+  std::optional<std::string> captureBimStoreyFilter_;
   std::shared_ptr<const container::temporal::CaptureBimAnnotations> captureBimAnnotations_;
   std::string captureSceneHistory_{};
   uint64_t gltfSceneGraphIdentity_{};

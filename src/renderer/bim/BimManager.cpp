@@ -38,6 +38,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <map>
 #include <optional>
 #include <span>
 #include <stdexcept>
@@ -1254,13 +1255,17 @@ constexpr double kFloorPlanQuantizationScale = 1000.0;
 }
 
 struct FloorPlanGeometry {
+  using LineMembership = std::unordered_set<size_t>;
+
   std::vector<glm::vec3> positions;
   std::vector<FloorPlanEdgeKey> lines;
+  std::map<std::string_view, LineMembership, std::less<>> storeyLines;
 };
 
 class FloorPlanGeometryBuilder {
  public:
-  void addSegment(const FloorPlanPointKey &a, const FloorPlanPointKey &b) {
+  void addSegment(const FloorPlanPointKey &a, const FloorPlanPointKey &b,
+                  FloorPlanGeometry::LineMembership *storeyLines) {
     uint32_t ia = addPoint(a);
     uint32_t ib = addPoint(b);
     if (ia == ib) {
@@ -1270,8 +1275,12 @@ class FloorPlanGeometryBuilder {
       std::swap(ia, ib);
     }
     const FloorPlanEdgeKey edge{ia, ib};
-    if (edges_.insert(edge).second) {
+    const auto [line, inserted] = edges_.try_emplace(edge, geometry.lines.size());
+    if (inserted) {
       geometry.lines.push_back(edge);
+    }
+    if (storeyLines) {
+      storeyLines->insert(line->second);
     }
   }
 
@@ -1279,9 +1288,11 @@ class FloorPlanGeometryBuilder {
 
  private:
   uint32_t addPoint(const FloorPlanPointKey &key) {
+    if (geometry.positions.size() >= std::numeric_limits<uint32_t>::max()) {
+      throw std::length_error("BIM floor-plan vertices exceed 32-bit indexing");
+    }
     const auto [point, inserted] = pointIndices_.try_emplace(
-        key, static_cast<uint32_t>(std::min<size_t>(
-                 geometry.positions.size(), std::numeric_limits<uint32_t>::max())));
+        key, static_cast<uint32_t>(geometry.positions.size()));
     if (inserted) {
       geometry.positions.emplace_back(
           static_cast<float>(static_cast<double>(key.x) / kFloorPlanQuantizationScale),
@@ -1293,7 +1304,7 @@ class FloorPlanGeometryBuilder {
 
   std::unordered_map<FloorPlanPointKey, uint32_t, FloorPlanPointKeyHash>
       pointIndices_;
-  std::unordered_set<FloorPlanEdgeKey, FloorPlanEdgeKeyHash> edges_;
+  std::unordered_map<FloorPlanEdgeKey, size_t, FloorPlanEdgeKeyHash> edges_;
 };
 
 [[nodiscard]] std::pair<FloorPlanGeometry, FloorPlanGeometry>
@@ -1343,6 +1354,7 @@ buildFloorPlanOverlays(const container::geometry::dotbim::Model &model,
     const MeshRange *range;
     size_t endIndex;
     float baseElevation;
+    std::string_view storeyLabel;
     const float *storeyBaseElevation;
   };
   std::vector<FloorPlanElement> elements;
@@ -1377,7 +1389,7 @@ buildFloorPlanOverlays(const container::geometry::dotbim::Model &model,
       storeyBaseElevation = &storey->second;
     }
     if (begin + 2u < end) {
-      elements.push_back({&element, &range, end, *baseElevation,
+      elements.push_back({&element, &range, end, *baseElevation, storeyLabel,
                           storeyBaseElevation});
     }
   }
@@ -1394,6 +1406,10 @@ buildFloorPlanOverlays(const container::geometry::dotbim::Model &model,
                                        : projection.baseElevation);
     const float edgeVerticalTolerance =
         std::max(0.03f, range.boundsRadius * 0.0025f);
+    auto *groundStorey = projection.storeyLabel.empty()
+        ? nullptr : &ground.geometry.storeyLines[projection.storeyLabel];
+    auto *elevatedStorey = projection.storeyLabel.empty()
+        ? nullptr : &elevated.geometry.storeyLines[projection.storeyLabel];
     const auto addHorizontalEdge = [&](const glm::vec3 &a, const glm::vec3 &b) {
       if (std::abs(a.y - b.y) > edgeVerticalTolerance) {
         return;
@@ -1406,10 +1422,10 @@ buildFloorPlanOverlays(const container::geometry::dotbim::Model &model,
                                quantizeFloorPlanCoordinate(a.z)};
       FloorPlanPointKey pointB{quantizeFloorPlanCoordinate(b.x), 0,
                                quantizeFloorPlanCoordinate(b.z)};
-      ground.addSegment(pointA, pointB);
+      ground.addSegment(pointA, pointB, groundStorey);
       pointA.y = elevation;
       pointB.y = elevation;
-      elevated.addSegment(pointA, pointB);
+      elevated.addSegment(pointA, pointB, elevatedStorey);
     };
     for (size_t index = begin; index + 2u < projection.endIndex; index += 3u) {
       const bool checkpoint = (index - begin) % 3072u == 0u;
@@ -1463,49 +1479,42 @@ void appendFloorPlanOverlays(
   container::util::checkModelImportCancellation(stop);
 
   // Keep ground and source-elevation geometry contiguous in the upload buffers.
+  const auto checkedSize = [](size_t size, size_t count, size_t width) {
+    constexpr size_t limit = std::numeric_limits<uint32_t>::max();
+    if (size > limit || count > (limit - size) / width) {
+      throw std::length_error("BIM floor-plan geometry exceeds 32-bit indexing");
+    }
+    return size + count * width;
+  };
   const auto pointCount = [](const FloorPlanGeometry &geometry) {
     return geometry.lines.empty() ? size_t{0} : geometry.positions.size();
   };
-  vertices.reserve(vertices.size() + pointCount(ground) + pointCount(elevated));
-  indices.reserve(indices.size() + 2u * (ground.lines.size() + elevated.lines.size()));
+  vertices.reserve(checkedSize(checkedSize(vertices.size(), pointCount(ground), 1u),
+                               pointCount(elevated), 1u));
+  indices.reserve(checkedSize(checkedSize(indices.size(), ground.lines.size(), 2u),
+                              elevated.lines.size(), 2u));
 
   const auto append = [&](const FloorPlanGeometry &geometry,
                           BimFloorPlanOverlayData &overlay) {
-    constexpr size_t kMaxIndex = std::numeric_limits<uint32_t>::max();
     const size_t firstVertex = vertices.size();
     const size_t firstIndex = indices.size();
-    overlay.firstIndex = static_cast<uint32_t>(std::min(firstIndex, kMaxIndex));
+    overlay.firstIndex = static_cast<uint32_t>(firstIndex);
     overlay.indexCount = 0u;
     overlay.boundsCenter = glm::vec3(0.0f);
     overlay.boundsRadius = 0.0f;
-    if (geometry.lines.empty() || firstVertex >= kMaxIndex) {
+    if (geometry.lines.empty()) {
       return;
     }
 
-    const size_t maxLocalIndex = kMaxIndex - firstVertex;
-    std::optional<std::unordered_set<uint32_t>> edgesToLastIndex;
-    if (geometry.positions.size() - 1u > maxLocalIndex) {
-      edgesToLastIndex.emplace();
-    }
     for (size_t i = 0; i < geometry.lines.size(); ++i) {
       if (i % 4096u == 0u) {
         container::util::checkModelImportCancellation(stop);
       }
       const auto &line = geometry.lines[i];
-      // Preserve the original deduplication when global vertex indices saturate.
-      if (edgesToLastIndex && line.b >= maxLocalIndex &&
-          (line.a >= maxLocalIndex || !edgesToLastIndex->insert(line.a).second)) {
-        continue;
-      }
       indices.push_back(static_cast<uint32_t>(firstVertex + line.a));
-      indices.push_back(static_cast<uint32_t>(
-          firstVertex + std::min<size_t>(line.b, maxLocalIndex)));
+      indices.push_back(static_cast<uint32_t>(firstVertex + line.b));
     }
-    if (indices.size() == firstIndex) {
-      return;
-    }
-    overlay.indexCount = static_cast<uint32_t>(
-        std::min(indices.size() - firstIndex, kMaxIndex));
+    overlay.indexCount = static_cast<uint32_t>(indices.size() - firstIndex);
 
     glm::vec3 boundsMin(std::numeric_limits<float>::max());
     glm::vec3 boundsMax(std::numeric_limits<float>::lowest());
@@ -1527,6 +1536,41 @@ void appendFloorPlanOverlays(
   };
   append(ground, groundOverlay);
   append(elevated, elevatedOverlay);
+
+  const auto appendStoreys = [&](const FloorPlanGeometry &geometry,
+                                BimFloorPlanOverlayData &overlay) {
+    for (const auto &[storey, membership] : geometry.storeyLines) {
+      container::util::checkModelImportCancellation(stop);
+      if (membership.empty()) {
+        continue;
+      }
+      const auto [first, last] = std::minmax_element(membership.begin(), membership.end());
+      size_t firstIndex = overlay.firstIndex + 2u * *first;
+      // A contiguous selection can address the aggregate indices directly.
+      // Disjoint selections only copy indices and preserve aggregate order.
+      if (*last - *first + 1u != membership.size()) {
+        firstIndex = indices.size();
+        (void)checkedSize(firstIndex, membership.size(), 2u);
+        std::vector<size_t> lines(membership.begin(), membership.end());
+        std::ranges::sort(lines);
+        for (size_t i = 0; i < lines.size(); ++i) {
+          if (i % 4096u == 0u) {
+            container::util::checkModelImportCancellation(stop);
+          }
+          const size_t source = overlay.firstIndex + 2u * lines[i];
+          const uint32_t a = indices[source];
+          const uint32_t b = indices[source + 1u];
+          indices.push_back(a);
+          indices.push_back(b);
+        }
+      }
+      overlay.storeyDrawCommands[std::string(storey)].push_back(
+          {.firstIndex = static_cast<uint32_t>(firstIndex),
+           .indexCount = static_cast<uint32_t>(2u * membership.size())});
+    }
+  };
+  appendStoreys(ground, groundOverlay);
+  appendStoreys(elevated, elevatedOverlay);
 }
 
 } // namespace
@@ -2463,16 +2507,18 @@ BimManager::modelGeoreferenceMetadata() const {
 }
 
 std::vector<BimDrawingExportLine> BimManager::floorPlanDrawingExportLines(
-    bool sourceElevation, glm::vec3 color, float lineWidthMm) const {
-  const BimFloorPlanOverlayData &overlay =
-      sourceElevation ? floorPlanSourceElevation_ : floorPlanGround_;
-  if (!overlay.valid() || overlay.firstIndex >= indices_.size()) {
+    bool sourceElevation, glm::vec3 color, float lineWidthMm,
+    std::string_view storey) const {
+  const auto &commands = sourceElevation ? floorPlanSourceElevationDrawCommands(storey)
+                                         : floorPlanGroundDrawCommands(storey);
+  if (commands.empty() || commands.front().firstIndex >= indices_.size()) {
     return {};
   }
 
-  const size_t firstIndex = overlay.firstIndex;
+  const auto &draw = commands.front();
+  const size_t firstIndex = draw.firstIndex;
   const size_t endIndex = std::min(
-      indices_.size(), firstIndex + static_cast<size_t>(overlay.indexCount));
+      indices_.size(), firstIndex + static_cast<size_t>(draw.indexCount));
   std::vector<BimDrawingExportLine> lines;
   lines.reserve((endIndex - firstIndex) / 2u);
 
@@ -3857,6 +3903,11 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
         objectDrawCommands_.push_back(floorPlanDrawCommand);
         objectDrawCommandCounts_.push_back(1u);
         overlay.drawCommands.push_back(floorPlanDrawCommand);
+        for (auto &[storey, commands] : overlay.storeyDrawCommands) {
+          for (auto &command : commands) {
+            command.objectIndex = overlay.objectIndex;
+          }
+        }
       };
   appendFloorPlanOverlay(floorPlanGround_);
   appendFloorPlanOverlay(floorPlanSourceElevation_);

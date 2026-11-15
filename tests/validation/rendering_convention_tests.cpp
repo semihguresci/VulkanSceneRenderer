@@ -3004,6 +3004,8 @@ TEST(RenderingConventionTests, BimFloorPlanOverlayCanBeEnabledInViewer) {
       readRepoTextFile("src/renderer/core/FrameRecorder.cpp");
   const std::string lightingPassRecorder = readRepoTextFile(
       "src/renderer/deferred/DeferredRasterLightingPassRecorder.cpp");
+  const std::string forwardLightingPassRecorder = readRepoTextFile(
+      "src/renderer/forward/ForwardRasterLightingPassRecorder.cpp");
   const std::string bimLightingOverlayHeader = readRepoTextFile(
       "include/Container/renderer/bim/BimLightingOverlayPlanner.h");
   const std::string bimLightingOverlayPlanner =
@@ -3026,9 +3028,10 @@ TEST(RenderingConventionTests, BimFloorPlanOverlayCanBeEnabledInViewer) {
   EXPECT_TRUE(contains(guiManager, "Floor plan depth test"));
 
   EXPECT_TRUE(contains(bimManagerHeader, "floorPlanDrawCommands()"));
-  EXPECT_TRUE(contains(bimManagerHeader, "floorPlanGroundDrawCommands()"));
-  EXPECT_TRUE(
-      contains(bimManagerHeader, "floorPlanSourceElevationDrawCommands()"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManagerHeader, "floorPlanGroundDrawCommands(std::string_view storey = {})"));
+  EXPECT_TRUE(containsIgnoringWhitespace(
+      bimManagerHeader, "floorPlanSourceElevationDrawCommands(std::string_view storey = {})"));
   EXPECT_TRUE(contains(bimManagerHeader, "hasFloorPlanOverlay()"));
   EXPECT_TRUE(containsIgnoringWhitespace(
       bimManager, "floorPlanGround_ = prepared->floorPlanGround;"));
@@ -3061,19 +3064,20 @@ TEST(RenderingConventionTests, BimFloorPlanOverlayCanBeEnabledInViewer) {
   EXPECT_TRUE(contains(rendererFrontend, "floorPlan.elevationMode"));
   EXPECT_TRUE(
       contains(rendererFrontend, "BimFloorPlanElevationMode::SourceElevation"));
-  EXPECT_TRUE(contains(rendererFrontend, "floorPlanGroundDrawCommands()"));
+  EXPECT_TRUE(contains(rendererFrontend, "floorPlanGroundDrawCommands(storey)"));
   EXPECT_TRUE(
-      contains(rendererFrontend, "floorPlanSourceElevationDrawCommands()"));
-  EXPECT_TRUE(contains(rendererFrontend, "p.bim.floorPlan.enabled"));
+      contains(rendererFrontend, "floorPlanSourceElevationDrawCommands(storey)"));
+  EXPECT_TRUE(containsIgnoringWhitespace(rendererFrontend,
+      "bimFloorPlanDrawCommands(*subs_.bimManager, floorPlan->elevationMode, bimFilter.storey)"));
   EXPECT_FALSE(contains(frameRecorder, "buildBimLightingOverlayPlan"));
-  EXPECT_TRUE(
-      contains(lightingPassRecorder, "recordBimLightingOverlayFrameCommands"));
+  EXPECT_TRUE(contains(lightingPassRecorder, "recordBimRasterOverlays"));
+  EXPECT_TRUE(contains(forwardLightingPassRecorder, "recordBimRasterOverlays"));
   EXPECT_TRUE(contains(bimLightingOverlayRecorder, "plan.floorPlan"));
   EXPECT_TRUE(contains(lightingPassRecorder,
                        "DeferredRasterPipelineId::BimFloorPlanDepth"));
   EXPECT_TRUE(contains(lightingPassRecorder,
                        "DeferredRasterPipelineId::BimFloorPlanNoDepth"));
-  EXPECT_TRUE(contains(lightingPassRecorder, "p.bim.floorPlan.opacity"));
+  EXPECT_TRUE(contains(bimLightingOverlayRecorder, ".opacity = floorPlan.opacity"));
   EXPECT_TRUE(
       contains(bimLightingOverlayHeader, "BimLightingFloorPlanOverlayInputs"));
   EXPECT_TRUE(

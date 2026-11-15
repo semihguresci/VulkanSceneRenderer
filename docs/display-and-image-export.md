@@ -36,8 +36,11 @@ when floor-plan settings change. [BIM floor-plan overlay](reference-path-tracing
 For captures of BIM models, the capture sidecar and CLI telemetry identify
 the model format, renderer revision and rendering engine in `bim`.
 `bim.floorPlan` records the overlay toggle, selected elevation, depth test,
-style and available draw counts for each elevation. `enabled` means the
-overlay was requested and the selected elevation has draw commands.
+style and available draw counts for each elevation under `storeyFilter`.
+The filter is empty when viewing all storeys. `enabled` means the overlay
+was requested and the selected elevation has draw commands under that filter.
+Capture sequences can set `bimStoreyFilter` to an exact storey label or clear
+it with an empty string.
 `pipelineReady` indicates whether the selected pipeline is available.
 `viewportRoute` identifies where the active view can show linework. Depth and
 other buffer-only views report `excluded-by-display-mode`. Overview can show

@@ -17,6 +17,27 @@ POSITION, TARGET = [0, 3, 8], [0, 1, 0]
 FOV = 45
 FRAMES = {"off": 4, "ground": 5, "source": 6, "dim": 7, "narrow": 8, "depth": 9, "off-again": 10}
 COMPARISONS = ("path-tracing", "forward-raster")
+SOURCE = "source-elevation"
+GROUND = "projected-ground"
+STOREY_PANELS = (
+    ("Ground", (-3., .4, -1.85, 1.05), {"storeyName": "Ground", "storeyId": "ground-id"}),
+    ("", (-.55, 2.25, .55, 2.95), {}),
+    ("upper-id", (1.85, 1.7, 3., 2.5), {"storeyId": "upper-id"}),
+)
+# Capture each change after one submitted frame. The Forward switch leaves the
+# selected storey and line style in place, so it exercises retained state.
+STOREY_CASES = (
+    (4, "all-source", "deferred-raster", "", SOURCE, True),
+    (8, "ground", "deferred-raster", "Ground", SOURCE, True),
+    (12, "live-forward-ground", "forward-raster", "Ground", SOURCE, True),
+    (16, "upper-id", "forward-raster", "upper-id", SOURCE, True),
+    (20, "missing-storey", "forward-raster", "Missing storey", SOURCE, True),
+    (24, "upper-projected", "forward-raster", "upper-id", GROUND, True),
+    (28, "overlay-off", "forward-raster", "upper-id", GROUND, False),
+    (32, "overlay-on", "forward-raster", "upper-id", GROUND, True),
+    (36, "clear", "forward-raster", "", GROUND, True),
+    (40, "back-to-deferred", "deferred-raster", "", SOURCE, True),
+)
 
 
 def require(condition, message):
@@ -24,14 +45,15 @@ def require(condition, message):
         raise RuntimeError(message)
 
 
-def fixture(path):
-    def panel(mesh_id, bounds, z):
-        left, bottom, right, top = bounds
-        # Dotbim Z-up axes map (x, y, z) to (x, z, -y) in renderer space.
-        points = [[x, -z, y] for x, y in ((left, bottom), (right, bottom), (right, top), (left, top))]
-        return {"mesh_id": mesh_id, "coordinates": [value for point in points for value in point],
-                "indices": [0, 1, 2, 0, 2, 3]}
+def panel(mesh_id, bounds, z):
+    left, bottom, right, top = bounds
+    # Dotbim Z-up axes map (x, y, z) to (x, z, -y) in renderer space.
+    points = [[x, -z, y] for x, y in ((left, bottom), (right, bottom), (right, top), (left, top))]
+    return {"mesh_id": mesh_id, "coordinates": [value for point in points for value in point],
+            "indices": [0, 1, 2, 0, 2, 3]}
 
+
+def fixture(path):
     model = {
         "schema_version": "1.1.0",
         "meshes": [panel(1, (-2, 1.2, 2, 2.1), 0), panel(2, (-2.2, .2, -.25, .8), 1.2)],
@@ -46,12 +68,36 @@ def fixture(path):
     path.write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
 
 
-def settings(*, enabled=True, elevation="projected-ground", depth=False, color=(1, 0, 0), opacity=1, width=5):
+def storey_fixture(path):
+    model = {"schema_version": "1.1.0", "meshes": [], "elements": []}
+    for index, (_, bounds, metadata) in enumerate(STOREY_PANELS, start=1):
+        model["meshes"].append(panel(index, bounds, 0))
+        model["elements"].append({"mesh_id": index, "guid": f"panel-{index}", "type": "IfcWall",
+                                  "color": {"r": 164, "g": 164, "b": 164, "a": 255}, **metadata})
+    path.write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
+
+
+def settings(*, enabled=True, elevation=GROUND, depth=False, color=(1, 0, 0), opacity=1, width=5):
     return {"enabled": enabled, "elevation": elevation, "depthTest": depth,
             "color": list(color), "opacity": opacity, "lineWidth": width}
 
 
 def sequence_plan(mode, comparison):
+    if mode == "storey-filter":
+        events = []
+        technique, storey, style = "deferred-raster", None, None
+        for frame, _, next_technique, next_storey, elevation, enabled in STOREY_CASES:
+            next_style = settings(elevation=elevation, enabled=enabled, color=(0, 0, 1))
+            event = {"frame": frame - 1}
+            if next_technique != technique:
+                event["technique"] = next_technique
+            if next_storey != storey:
+                event["bimStoreyFilter"] = next_storey
+            if next_style != style:
+                event["bimFloorPlan"] = next_style
+            events.append(event)
+            technique, storey, style = next_technique, next_storey, next_style
+        return [case[0] for case in STOREY_CASES], events
     if mode == "styled":
         events = [
             (4, settings(enabled=False)),
@@ -114,7 +160,7 @@ def read_capture(image, frame, technique):
             "metadata": metadata, "decodedSha256": hashlib.sha256(pixels.tobytes()).hexdigest()}
 
 
-def check_floor_plan_telemetry(sample, style):
+def check_floor_plan_telemetry(sample, style, *, storey=None, has_lines=True):
     state, metadata = sample["state"], sample["metadata"]
     bim = state["bim"]
     require(metadata["bim"] == bim, "Image sidecar and CLI BIM telemetry disagree")
@@ -132,7 +178,10 @@ def check_floor_plan_telemetry(sample, style):
     require(metadata["bimFloorPlanImageRoute"] == image_route, metadata)
     if style is None:
         style = settings(enabled=False, color=(.02, .02, .02), opacity=.85, width=1)
-    require(overlay["requested"] == overlay["enabled"] == style["enabled"], overlay)
+    require(overlay["requested"] == style["enabled"] and overlay["enabled"] == (style["enabled"] and has_lines),
+            overlay)
+    if storey is not None:
+        require(overlay["storeyFilter"] == storey, overlay)
     for key in ("elevation", "depthTest", "lineWidth"):
         require(overlay[key] == style[key], overlay)
     require(math.isclose(overlay["opacity"], style["opacity"], abs_tol=1e-6)
@@ -141,7 +190,7 @@ def check_floor_plan_telemetry(sample, style):
     width = style["lineWidth"] if state["wideLinesSupported"] else 1
     require(overlay["rasterLineWidth"] == width, overlay)
     projected, source = overlay["projectedGroundDrawCount"], overlay["sourceElevationDrawCount"]
-    require(projected > 0 and source > 0, overlay)
+    require((projected > 0 and source > 0) if has_lines else projected == source == 0, overlay)
     require(overlay["drawCount"] == (source if style["elevation"] == "source-elevation" else projected), overlay)
     pipeline = "bim-floor-plan-display" if state["technique"] == "path-tracing" else "bim-floor-plan"
     require(overlay["pipelineReady"] and overlay["pipeline"] ==
@@ -183,8 +232,8 @@ def record(renderer, model, output, technique, mode, report, *, comparison, gene
     samples = []
     for frame in frames:
         image = screenshot if frame == frames[-1] else output / f"{name}.frame-{frame:04}.{extension}"
-        switched = (mode == "switch" and frame == 8) or (mode == "depth-view" and frame >= 12)
-        active_technique = comparison if switched else technique
+        active_technique = next((event["technique"] for event in reversed(events)
+                                 if event["frame"] <= frame and "technique" in event), technique)
         sample = read_capture(image, frame, active_technique)
         state = sample["state"]
         require(Path(state["scene"]["auxiliary"]).resolve() == model, "The authored BIM fixture was not loaded")
@@ -227,6 +276,36 @@ def fixed_camera(samples):
     first = samples[0]["state"]["camera"]["unjitteredViewProjColumns"]
     require(all(s["state"]["camera"]["unjitteredViewProjColumns"] == first for s in samples),
             "The fixed camera changed while exercising floor-plan settings")
+
+
+def check_storey_filter(samples):
+    import numpy as np
+
+    fixed_camera(samples)
+    counts = {}
+    masks = {}
+    for sample, (frame, label, technique, storey, elevation, enabled) in zip(samples, STOREY_CASES, strict=True):
+        has_lines = not storey or any(storey == key for key, _, _ in STOREY_PANELS)
+        check_floor_plan_telemetry(sample, settings(elevation=elevation, enabled=enabled, color=(0, 0, 1)),
+                                   storey=storey, has_lines=has_lines)
+        require(sample["frame"] == frame and sample["state"]["technique"] == technique, label)
+        mask = line_mask(sample["pixels"], channel=2)
+        masks[label] = mask
+        counts[label] = {}
+        for lane, (key, bounds, _) in zip(np.array_split(mask, 3, axis=1), STOREY_PANELS, strict=True):
+            visible = enabled and (not storey or storey == key)
+            rows, _ = np.where(lane)
+            if visible:
+                height = bounds[1] if elevation == SOURCE else 0
+                require(len(rows) > 20 and abs(float(np.median(rows)) - analytic_line_row(height)) <= 2,
+                        f"{label}: expected {key or 'unassigned'} linework at height {height}, observed {len(rows)} pixels")
+            else:
+                require(not len(rows), f"{label}: {key or 'unassigned'} leaked {len(rows)} pixels")
+            counts[label][key or "unassigned"] = len(rows)
+    for before, after in (("ground", "live-forward-ground"), ("upper-projected", "overlay-on"),
+                          ("all-source", "back-to-deferred")):
+        np.testing.assert_array_equal(masks[before], masks[after], err_msg=f"{before} vs. {after}")
+    return counts
 
 
 def check_styled(samples, *, missing=False):
@@ -302,6 +381,8 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--comparison", choices=COMPARISONS, default="path-tracing",
                         help="compare this technique with Deferred raster")
+    parser.add_argument("--storey-filter-only", action="store_true",
+                        help="check storey selection and clearing in one live Deferred/Forward sequence")
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true", help="write to a new run directory under --output")
     baseline = parser.add_mutually_exclusive_group()
@@ -314,6 +395,8 @@ def main():
             (args.expect_missing_forward_overlay and args.comparison != "forward-raster")):
         parser.error("The baseline option must match --comparison")
     expect_missing = args.expect_missing_path_overlay or args.expect_missing_forward_overlay
+    if args.storey_filter_only and expect_missing:
+        parser.error("The storey-filter check requires working raster overlays")
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_BIM_FLOOR_PLAN") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1 to run GPU captures")
         return 77
@@ -327,14 +410,24 @@ def main():
         output.mkdir(parents=True)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     model = output / "floor-plan.bim"
-    fixture(model)
-    report = {"fixture": str(model), "comparison": args.comparison,
+    (storey_fixture if args.storey_filter_only else fixture)(model)
+    comparison = "forward-raster" if args.storey_filter_only else args.comparison
+    report = {"fixture": str(model), "comparison": comparison,
               "expectedMissingPathOverlay": args.expect_missing_path_overlay,
               "expectedMissingForwardOverlay": args.expect_missing_forward_overlay,
               "passed": False, "runs": [], "checks": {}}
     if not args.generate_only:
         report["executableSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     try:
+        if args.storey_filter_only:
+            samples = record(renderer, model, output, "deferred-raster", "storey-filter", report,
+                             comparison=comparison, generate_only=args.generate_only, check_telemetry=False)
+            if not args.generate_only:
+                report["checks"]["storeyFilter"] = check_storey_filter(samples)
+                require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["executableSha256"],
+                        "Renderer executable changed during capture")
+                report["passed"] = True
+            return 0
         for technique in ("deferred-raster", args.comparison):
             styled, linear, controls = (record(renderer, model, output, technique, mode, report,
                                                comparison=args.comparison, generate_only=args.generate_only,

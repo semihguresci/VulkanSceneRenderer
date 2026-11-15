@@ -127,6 +127,29 @@ TEST(TemporalCapture, BimFloorPlanReplacesOverlayStateOnItsNamedFrames) {
   EXPECT_FALSE(sequence.sample(5).event.bimFloorPlan);
 }
 
+TEST(TemporalCapture, BimStoreyFilterPreservesTheExactLabelAndExplicitClear) {
+  auto input = json::parse(R"({"schemaVersion":1,"frames":5,"events":[
+    {"frame":2,"bimStoreyFilter":" Level 02 "},
+    {"frame":4,"technique":"forward-raster","bimStoreyFilter":""}
+  ]})");
+  const CaptureSequence sequence(input);
+  EXPECT_FALSE(sequence.sample(1).event.bimStoreyFilter);
+  const auto label = sequence.sample(2).event.bimStoreyFilter;
+  ASSERT_TRUE(label);
+  EXPECT_EQ(*label, " Level 02 ");
+  EXPECT_FALSE(sequence.sample(3).event.bimStoreyFilter);
+  const auto clear = sequence.sample(4).event.bimStoreyFilter;
+  ASSERT_TRUE(clear);
+  EXPECT_TRUE(clear->empty());
+  EXPECT_FALSE(sequence.sample(5).event.bimStoreyFilter);
+
+  for (const auto &invalid : {json(2), json(nullptr), json::array({"Level 02"}),
+                              json(std::string(4097, 'L'))}) {
+    input["events"][0]["bimStoreyFilter"] = invalid;
+    EXPECT_THROW((void)CaptureSequence(input), std::invalid_argument);
+  }
+}
+
 TEST(TemporalCapture, RejectsInvalidBimFloorPlanFieldsAndBounds) {
   auto input = json::parse(R"({"schemaVersion":1,"frames":1,"events":[
     {"frame":1,"bimFloorPlan":{"enabled":true,"elevation":"source-elevation",
