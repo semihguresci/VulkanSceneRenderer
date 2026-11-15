@@ -72,6 +72,7 @@ add_library(VulkanSceneRenderer_geometry
     GltfAnimatedMaterial.cpp
     GltfDeformation.cpp
     GltfDeformationFrames.cpp
+    ../third_party/mikktspace_bounded/mikktspace_bounded.c
     IfcxLoader.cpp
     IfcTessellatedLoader.cpp
     IfcAreaProfileGeometry.cpp
@@ -96,11 +97,12 @@ add_library(VulkanSceneRenderer_geometry
     tinygltf_impl.cpp
     vma_impl.cpp)
 
-target_compile_features(VulkanSceneRenderer_geometry PUBLIC cxx_std_23)
+target_compile_features(VulkanSceneRenderer_geometry PUBLIC cxx_std_23 PRIVATE c_std_11)
 
 
 target_include_directories(VulkanSceneRenderer_geometry PUBLIC
   ${CMAKE_CURRENT_SOURCE_DIR}/../../include/
+  PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/../third_party/mikktspace_bounded
 )
 
 target_link_libraries(VulkanSceneRenderer_geometry PUBLIC

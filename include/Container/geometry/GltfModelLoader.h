@@ -97,13 +97,18 @@ struct GltfPrimitiveTangentVariant {
   std::vector<uint32_t> sourceVertexMap;
 };
 
-inline constexpr uint64_t kMaxLiveNormalFrameCorners = 8192;
+inline constexpr uint64_t kDefaultGltfTangentWorkBudget = 64ull * 1024 * 1024;
+inline constexpr size_t kDefaultGltfTangentWorkspaceBytes = 128ull * 1024 * 1024;
+inline constexpr uint64_t kMaxLiveMorphedNormalFrameCorners = 8192;
 
 // Builds a detached render stream for a live normal-UV edit. When seam
 // splitting is enabled, distinct corner frames can share source attributes
 // but need separate tangent vertices. Triangle order and count stay intact.
+// Share workRemaining across the primitives in one edit or export.
 [[nodiscard]] GltfPrimitiveTangentVariant RegenerateGltfPrimitiveTangents(
-    const Mesh&, uint32_t texCoord, bool splitTangentSeams);
+    const Mesh&, uint32_t texCoord, bool splitTangentSeams,
+    uint64_t* workRemaining = nullptr,
+    size_t maxMikkScratchBytes = kDefaultGltfTangentWorkspaceBytes);
 [[nodiscard]] uint32_t GltfSourceNormalTexCoord(const tinygltf::Model&,
                                                 const tinygltf::Primitive&);
 

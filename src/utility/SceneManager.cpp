@@ -1747,7 +1747,8 @@ SceneManager::canonicalPrimitiveFrameView(uint32_t runtime) const noexcept {
 }
 
 PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
-    uint32_t runtime, uint32_t texCoord, const PrimitiveNormalFrameLimits& limits) const {
+    uint32_t runtime, uint32_t texCoord, const PrimitiveNormalFrameLimits& limits,
+    uint64_t* tangentWorkRemaining) const {
   using namespace container::geometry::gltf;
   using container::geometry::Vertex;
   const auto canonical = canonicalPrimitiveFrameView(runtime);
@@ -1757,23 +1758,28 @@ PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
   const auto cornerCount = uint64_t(mesh.indices().size());
   const auto vertexCount = uint64_t(mesh.vertices().size());
   const bool changed = texCoord != canonical->metadata.bindNormalTexCoord();
-  const bool splitSeams = changed && !(canonical->definition && canonical->definition->hasMorphing());
+  const bool hasMorphing = canonical->definition && canonical->definition->hasMorphing();
+  const bool splitSeams = changed && !hasMorphing;
   if (changed && !(canonical->metadata.availableTexCoordMask() & (1u << texCoord)))
     throw std::invalid_argument("Normal UV is absent from the retained primitive");
-  // Limit the input to external MikkTSpace independently of the detached
-  // storage limits. Its cost varies with welded vertex fans and UV seams.
-  const uint64_t cornerWorkspace = 512 + (splitSeams ? 128 : 0);
-  const uint64_t vertexWorkspace = sizeof(Vertex) + (splitSeams ? sizeof(uint32_t) : 0) +
+  // Reserve C++ working storage independently of the metered C generator.
+  // Morphs also regenerate after pose changes, so keep their admitted size.
+  const uint64_t cornerWorkspace = sizeof(uint32_t) + (splitSeams ? 128 : 0);
+  const uint64_t vertexWorkspace = sizeof(Vertex) + 2 * sizeof(glm::vec3) + sizeof(uint8_t) +
+      (splitSeams ? sizeof(uint32_t) : 0) +
       (splitSeams && canonical->definition && canonical->definition->hasSkinning()
           ? sizeof(VertexSkinInfluences) : 0);
   if (!cornerCount || cornerCount % 3 || !vertexCount ||
       cornerCount > std::min<uint64_t>(limits.frames.maxTriangleCorners, UINT32_MAX) ||
       vertexCount > std::min<uint64_t>(limits.frames.maxInputVertices, UINT32_MAX) ||
       vertexCount > limits.frames.maxWorkspaceBytes / vertexWorkspace ||
-      (changed && (cornerCount > limits.maxGeneratedCorners ||
-                   cornerCount > (limits.frames.maxWorkspaceBytes - vertexCount * vertexWorkspace) / cornerWorkspace)) ||
+      (changed && hasMorphing && cornerCount > limits.maxMorphedGeneratedCorners) ||
+      cornerCount > (limits.frames.maxWorkspaceBytes - vertexCount * vertexWorkspace) / cornerWorkspace ||
       std::ranges::any_of(mesh.indices(), [vertexCount](uint32_t index) {return index >= vertexCount;}))
     throw std::length_error("Normal frame variant exceeds its work budget or has invalid triangles");
+  const auto scratchBytes = size_t(std::min<uint64_t>(
+      limits.frames.maxWorkspaceBytes - vertexCount * vertexWorkspace - cornerCount * cornerWorkspace,
+      std::numeric_limits<size_t>::max()));
 
   // Each corner can introduce at most one vertex and inherit one influence
   // row. Budget the detached mesh, map and deformation together before Mikk.
@@ -1791,8 +1797,6 @@ PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
   PrimitiveNormalFrameVariant result;
   if (canonical->definition && (canonical->definition->hasSkinning() ||
                                 canonical->definition->hasMorphing())) {
-    const std::array requests{PrimitiveFrameBindingRequest{0,
-        changed ? std::optional{texCoord} : std::nullopt}};
     const auto& definition = *canonical->definition;
     charge(1, sizeof(DeformationPrimitive));
     charge(maxRenderVertices, sizeof(Vertex));
@@ -1811,22 +1815,24 @@ PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
       charge(target.normals.size(), sizeof(glm::vec3));
       charge(target.tangents.size(), sizeof(glm::vec3));
     }
-    // The shared posed frames may coexist with the single-use CPU plan.
-    if (changed && definition.hasMorphing()) bytes /= 2;
-    const auto plan = PreparePrimitiveFrameVariants(canonical->metadata, *canonical->definition,
-                                                   mesh.indices(), requests, frameLimits);
+    if (changed && hasMorphing) {
+      // The shared posed frames may coexist with the single-use CPU plan.
+      bytes /= 2;
+      const std::array requests{PrimitiveFrameBindingRequest{0, texCoord}};
+      const auto plan = PreparePrimitiveFrameVariants(canonical->metadata, definition,
+                                                     mesh.indices(), requests, frameLimits);
+      result.preparedFrames = std::make_shared<const PreparedDeformationFrames>(plan.templates().front().frames());
+    }
     result.definition = *canonical->definition;
     if (changed) {
-      const auto& frames = plan.templates().front().frames();
-      if (result.definition->hasMorphing())
-        result.preparedFrames = std::make_shared<const PreparedDeformationFrames>(frames);
       result.definition->authoredBaseTangent = false;
       result.definition->normalTextureTexCoord = texCoord;
       for (auto& target : result.definition->morphTargets)
         std::vector<glm::vec3>{}.swap(target.tangents);
     }
   }
-  auto regenerated = changed ? RegenerateGltfPrimitiveTangents(mesh, texCoord, splitSeams)
+  auto regenerated = changed ? RegenerateGltfPrimitiveTangents(mesh, texCoord, splitSeams,
+                                                                 tangentWorkRemaining, scratchBytes)
                              : GltfPrimitiveTangentVariant{mesh, {}};
   result.mesh = std::move(regenerated.mesh);
   if (result.definition) {

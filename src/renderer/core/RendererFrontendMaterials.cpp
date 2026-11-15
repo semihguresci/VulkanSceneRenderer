@@ -76,7 +76,8 @@ void validateBindingNormalUv(const container::scene::SceneManager& manager,
     throw std::invalid_argument("The selected surface is missing TEXCOORD_"+std::to_string(*uv)+" for its normal texture");
 }
 void validateTextureNormalUv(const container::scene::SceneManager& manager,
-    const container::scene::SceneGraph& graph,uint32_t runtime,const tinygltf::Material& material) {
+    const container::scene::SceneGraph& graph,uint32_t runtime,const tinygltf::Material& material,
+    uint64_t& tangentWorkRemaining) {
   const auto normal=ReadGltfMaterialTextureBinding(material,GltfMaterialTextureSlot::Normal);
   if(normal.index<0) return;
   // Replacing pixels or editing another slot does not change the normal UV
@@ -133,7 +134,7 @@ void validateTextureNormalUv(const container::scene::SceneManager& manager,
       // Check an edited mapping even when this primitive does not currently
       // display its material. The named variant can activate it later.
       if(normal.texCoord!=frame->metadata.bindNormalTexCoord() && importedUv!=normal.texCoord)
-        (void)manager.preparePrimitiveNormalFrameVariant(retained.primitiveIndex,normal.texCoord);
+        (void)manager.preparePrimitiveNormalFrameVariant(retained.primitiveIndex,normal.texCoord,{},&tangentWorkRemaining);
     }
     ++flat;
   }
@@ -329,6 +330,7 @@ struct RendererFrontend::MaterialPublication {
   std::optional<container::scene::PreparedMaterialBindingChange> bindings;
   std::optional<container::scene::SceneManager::PreparedSourceResourceRetirement> resources;
   int32_t editedSource{-1};
+  uint64_t tangentWorkRemaining{kDefaultGltfTangentWorkBudget};
 };
 struct RendererFrontend::MaterialBindingHistory {
   ~MaterialBindingHistory() {if(budget) budget->reserved-=reservation;}
@@ -541,7 +543,7 @@ bool RendererFrontend::authorMaterialTexture(const container::material::GltfMate
   MaterialPublication publication;publication.editedSource=request.sourceMaterial;
   if(resources) publication.material.emplace(manager.prepareMaterialGeneration(plan,gltfAnimation_.get(),std::move(*resources),limits));
   else publication.material.emplace(manager.prepareMaterialGeneration(plan,gltfAnimation_.get(),limits));
-  validateTextureNormalUv(manager,sceneGraph_,runtime,publication.material->evaluatedMaterial());
+  validateTextureNormalUv(manager,sceneGraph_,runtime,publication.material->evaluatedMaterial(),publication.tangentWorkRemaining);
   if(!publishMaterialTransaction(publication)) return false;
   // Keep a preceding gesture and redo cursor intact until every resource and
   // renderer stage has succeeded. The command and captures already exist.
@@ -567,7 +569,8 @@ bool RendererFrontend::replayMaterialTexture(const MaterialTextureHistory& state
   MaterialPublication publication;publication.editedSource=plan.destinationMaterial;
   if(resources) publication.material.emplace(manager.prepareMaterialGeneration(plan,gltfAnimation_.get(),std::move(*resources)));
   else publication.material.emplace(manager.prepareMaterialGeneration(plan,gltfAnimation_.get()));
-  validateTextureNormalUv(manager,sceneGraph_,publication.material->runtimeMaterial(),publication.material->evaluatedMaterial());
+  validateTextureNormalUv(manager,sceneGraph_,publication.material->runtimeMaterial(),
+      publication.material->evaluatedMaterial(),publication.tangentWorkRemaining);
   return publishMaterialTransaction(publication);
 }
 
@@ -721,8 +724,10 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
     lastEditedSourceMaterial_=-1;++materialPublications_;return true;
   }
   std::optional<SceneController::PreparedMaterialRouting> routing;
-  if(bindings) routing=controller.prepareMaterialRouting(facts,*bindings,imageCount,showDiagCube,epoch);
-  else if(material && material->routingChanged()) routing=controller.prepareMaterialRouting(facts,imageCount,showDiagCube,epoch);
+  if(bindings) routing=controller.prepareMaterialRouting(facts,*bindings,imageCount,showDiagCube,epoch,
+      {},&publication.tangentWorkRemaining);
+  else if(material && material->routingChanged()) routing=controller.prepareMaterialRouting(facts,imageCount,showDiagCube,
+      epoch,{},&publication.tangentWorkRemaining);
   const bool geometryChanged=routing && routing->geometryChanged();
   const auto futureGeometry=geometryChanged?routing->geometryRevision():geometry;
   const auto vertices=geometryChanged?routing->geometryVertices():controller.geometryVertices();
