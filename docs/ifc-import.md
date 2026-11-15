@@ -90,11 +90,12 @@ self-intersections.
 Curved advanced faces reuse the pcurve surface evaluators. Elementary surfaces
 have analytic coordinate inverses; bounded spline/revolution charts use a
 multistart Newton projection with domain clamps and residual checks. Detected
-ambiguous roots and singular parameters are diagnosed. Clamped polynomial and
-rational splines with `UClosed` or `VClosed` can wrap on that axis when the
-corresponding boundary control traces agree. The native knot span defines its
-period. Rational trace weights may differ by a common scale. Interior knots and
-periodic joins use one-sided normals where the surface tangent traces differ.
+ambiguous roots and singular parameters are diagnosed. Clamped and unclamped
+polynomial or rational splines can wrap on either axis when its evaluated
+boundary control traces agree. The native knot span defines the period.
+`UClosed` and `VClosed` are informational. Rational trace weights may differ by
+a common scale. Interior knots and periodic joins use one-sided normals where
+the surface tangent traces differ.
 Face bounds unwrap angular seams before constrained UV triangulation. Collinear
 boundary samples are restored, and interior edge splits update both incident
 triangles. Local edge flips improve triangle quality without moving source
@@ -849,8 +850,8 @@ charts and polar trims with multiple seams or holes meeting a
 seam cut remain outside native coverage. Swept surface limits include profiles
 with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.
-Periodic spline charts with unclamped closure, nonmonotone winding bands or
-shared source edges missing a sample at a sharp knot require further work.
+Nonmonotone periodic winding bands and shared source edges missing a sample at
+a sharp spline knot require further work.
 Periodic trim layouts without a unique chart placement are diagnosed.
 Each omitted
 representation is reported. A full IFC backend remains an option if future

@@ -24,8 +24,8 @@ AXIS_KNOTS = (-2.4, .8)
 RADIUS, HALF_HEIGHT = 1.03, 1.47
 TORUS_MAJOR, TORUS_TUBE = 1.20, .42
 PRODUCTS = (
-    Profile("U-closed rational cylinder", (-3.61, -.06), (.12, .63, .90)),
-    Profile("V-closed rational cylinder", (3.61, -.06), (.92, .40, .13)),
+    Profile("U-closed unclamped rational cylinder", (-3.61, -.06), (.12, .63, .90)),
+    Profile("V-closed unclamped rational cylinder", (3.61, -.06), (.92, .40, .13)),
     Profile("Doubly closed rational torus", (0., 1.77), (.20, .84, .36)),
     Profile("Mixed winding rational torus", (0., -1.77), (.90, .24, .67)),
 )
@@ -117,7 +117,9 @@ def cylinder(step, context, product, *, periodic_u, rim_pcurves):
     rings = [[step.point(RADIUS * s, y, RADIUS * c) for c, s in CIRCLE]
              for y in (-HALF_HEIGHT, HALF_HEIGHT)]
     bottom, top = [step.add("IFCVERTEXPOINT", ring[0]) for ring in rings]
-    circular_axis = (2, MULTIPLICITIES, ANGULAR_KNOTS)
+    # The first and last exterior knots do not enter the active basis, so the
+    # unclamped surface still agrees exactly with the clamped 3D rim curves.
+    circular_axis = (2, (1, 2, 2, 2, 2, 2, 1), (1.25, *ANGULAR_KNOTS, 10.25))
     straight_axis = (1, (2, 2), AXIS_KNOTS)
     weights = [WEIGHTS, WEIGHTS]
     if periodic_u:
