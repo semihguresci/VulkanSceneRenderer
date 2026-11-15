@@ -116,6 +116,25 @@ struct InteriorPoint {
   bool required;
 };
 
+struct CreaseProbe {
+  CurveSample source;
+  UV uv;
+};
+
+UV unwrapSplineProjection(UV uv, UV reference, UV periods) {
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    if (periods[axis] == 0)
+      continue;
+    const double turns = (uv[axis] - reference[axis]) / periods[axis];
+    const double shift = std::round(turns);
+    if (std::abs(std::abs(turns - shift) - .5) <= 1e-7)
+      throw std::runtime_error(
+          "Inferred spline edge has an ambiguous half-period step");
+    uv[axis] -= shift * periods[axis];
+  }
+  return uv;
+}
+
 class Mesher {
 public:
   Mesher(const ParametricSurface &surface, double units, double extent,
@@ -129,6 +148,10 @@ public:
       bool sameSense, std::span<const CurvedFaceChartLoop> authoredChart = {});
   std::vector<UV> projectEdge(std::span<const glm::vec3> sharedPoints,
                               const std::stop_token &stop);
+  std::vector<CurveSample>
+  sampleEdgeCreases(const ParametricCurve &source,
+                    std::span<const CurveSample> samples,
+                    const std::stop_token &stop);
 
 private:
   Point evaluate(UV uv) {
@@ -192,6 +215,15 @@ private:
   std::optional<UV> solve(Point point, UV seed, const std::stop_token &stop);
   void seedInverse(const std::stop_token &stop);
   UV snapProjectedKnots(UV uv, Point point);
+  CreaseProbe projectCreaseProbe(const ParametricCurve &source, double t,
+                                 std::optional<UV> reference,
+                                 const std::stop_token &stop,
+                                 std::optional<UV> localSeed = {});
+  std::optional<UV> solveNearCreaseProbe(Point point, UV predicted,
+                                         const std::stop_token &stop);
+  CurveSample refineEdgeCrease(const ParametricCurve &source, CreaseProbe a,
+                               CreaseProbe b, unsigned axis, double knot,
+                               double epsilon, const std::stop_token &stop);
   void joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
                       bool sameSense);
   double bandProgress(UV uv) const {
@@ -572,7 +604,10 @@ UV Mesher::snapProjectedKnots(UV uv, Point point) {
   // sample already lies on it. Keep a snap only if it witnesses that sample.
   auto snapped = uv;
   for (unsigned axis = 0; axis < 2; ++axis) {
-    const auto [first, last] = *(axis ? s_.vDomain : s_.uDomain);
+    const auto domain = axis ? s_.vDomain : s_.uDomain;
+    if (!domain)
+      continue;
+    const auto [first, last] = *domain;
     const auto &knots = axis ? s_.meshV : s_.meshU;
     const double coordinate = uv[axis];
     double distance =
@@ -609,17 +644,7 @@ std::vector<UV> Mesher::projectEdge(std::span<const glm::vec3> sharedPoints,
                   : snapProjectedKnots(inverse(point, stop, true), point);
     if (!result.empty()) {
       const auto previous = result.back();
-      for (unsigned axis = 0; axis < 2; ++axis) {
-        const double period = s_.periods[axis];
-        if (period == 0)
-          continue;
-        const double turns = (uv[axis] - previous[axis]) / period;
-        const double shift = std::round(turns);
-        if (std::abs(std::abs(turns - shift) - .5) <= 1e-7)
-          throw std::runtime_error(
-              "Inferred spline edge has an ambiguous half-period step");
-        uv[axis] -= shift * period;
-      }
+      uv = unwrapSplineProjection(uv, previous, s_.periods);
       if (!std::isfinite(uv.x) || !std::isfinite(uv.y) || uv == previous)
         throw std::runtime_error(
             "Inferred spline edge has a repeated or invalid chart sample");
@@ -636,6 +661,193 @@ std::vector<UV> Mesher::projectEdge(std::span<const glm::vec3> sharedPoints,
     result.push_back(uv);
   }
   return result;
+}
+
+CreaseProbe Mesher::projectCreaseProbe(const ParametricCurve &source, double t,
+                                       std::optional<UV> reference,
+                                       const std::stop_token &stop,
+                                       std::optional<UV> localSeed) {
+  container::util::checkModelImportCancellation(stop);
+  const auto point = source.point(t);
+  if (!point || !std::isfinite(point->x) || !std::isfinite(point->y) ||
+      !std::isfinite(point->z))
+    throw std::runtime_error(
+        "Undefined native edge during spline crease search");
+  const auto local =
+      localSeed ? solveNearCreaseProbe(*point, *localSeed, stop) : std::nullopt;
+  auto uv = local ? *local : inverse(*point, stop, true);
+  if (reference)
+    uv = unwrapSplineProjection(uv, *reference, s_.periods);
+  if (!std::isfinite(uv.x) || !std::isfinite(uv.y))
+    throw std::runtime_error("Invalid inferred spline crease parameter");
+  return {{t, *point}, uv};
+}
+
+std::optional<UV> Mesher::solveNearCreaseProbe(Point point, UV predicted,
+                                               const std::stop_token &stop) {
+  UV seed = predicted;
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    const auto [first, last] = *(axis ? s_.vDomain : s_.uDomain);
+    const double period = s_.periods[axis];
+    if (period && (seed[axis] < first || seed[axis] > last)) {
+      double phase = std::fmod(seed[axis] - first, period);
+      if (!std::isfinite(phase))
+        return std::nullopt;
+      if (phase < 0)
+        phase += period;
+      seed[axis] = first + phase;
+    }
+    seed[axis] = std::clamp(seed[axis], first, last);
+  }
+  auto uv = solve(point, seed, stop);
+  if (!uv)
+    return std::nullopt;
+  // An interior continuation must stay near the prediction. A distant root
+  // or a wrap too large for the local bracket needs the full basin search.
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    const auto [first, last] = *(axis ? s_.vDomain : s_.uDomain);
+    const double period = s_.periods[axis];
+    const double delta = (*uv)[axis] - predicted[axis];
+    const double separation = period ? std::remainder(delta, period) : delta;
+    if (!(std::abs(separation) <= (last - first) * .25))
+      return std::nullopt;
+  }
+  return uv;
+}
+
+CurveSample Mesher::refineEdgeCrease(const ParametricCurve &source,
+                                     CreaseProbe a, CreaseProbe b,
+                                     unsigned axis, double knot, double epsilon,
+                                     const std::stop_token &stop) {
+  const auto distance = [axis, knot](const CreaseProbe &probe) {
+    return std::abs(probe.uv[axis] - knot);
+  };
+  auto best = distance(a) < distance(b) ? a : b;
+  const bool firstBelow = a.uv[axis] < knot;
+  for (unsigned iteration = 0; iteration < 53; ++iteration) {
+    const double t = std::midpoint(a.source.parameter, b.source.parameter);
+    if (t == a.source.parameter || t == b.source.parameter)
+      break;
+    const UV reference(std::midpoint(a.uv.x, b.uv.x),
+                       std::midpoint(a.uv.y, b.uv.y));
+    const auto probe =
+        projectCreaseProbe(source, t, reference, stop, reference);
+    if (distance(probe) < distance(best))
+      best = probe;
+    if (distance(probe) <= epsilon * .125)
+      break;
+    if ((probe.uv[axis] < knot) == firstBelow)
+      a = probe;
+    else
+      b = probe;
+  }
+  // Public boundary samples still need the same multiple-root check as the
+  // original endpoints. Refine in one basin, then independently verify it.
+  best = projectCreaseProbe(source, best.source.parameter, best.uv, stop);
+  if (distance(best) > epsilon)
+    throw std::runtime_error(
+        "Could not isolate the native spline crease crossing");
+  best.uv[axis] = knot;
+  if (glm::length(evaluate(best.uv) - best.source.point) > tolerance_)
+    throw std::runtime_error(
+        "Inferred spline crease does not meet the native edge");
+  return best.source;
+}
+
+std::vector<CurveSample>
+Mesher::sampleEdgeCreases(const ParametricCurve &source,
+                          std::span<const CurveSample> samples,
+                          const std::stop_token &stop) {
+  constexpr size_t probesPerInterval = 5;
+  std::array<CreaseProbe, probesPerInterval> probes;
+  probes.front() =
+      projectCreaseProbe(source, samples.front().parameter, {}, stop);
+  std::vector<CurveSample> additions;
+  size_t checks = 0;
+  for (size_t i = 1; i < samples.size(); ++i) {
+    const double first = samples[i - 1].parameter, last = samples[i].parameter;
+    // Each original endpoint receives the full inverse check. Predict only
+    // the intermediate probes from the nearest lifted copies of these roots.
+    probes.back() = projectCreaseProbe(source, last, {}, stop);
+    const auto continuation = previous_;
+    for (size_t j = 1; j + 1 < probes.size(); ++j) {
+      const double t = std::lerp(first, last, double(j) / (probes.size() - 1));
+      const UV previous = probes[j - 1].uv;
+      UV end = probes.back().uv;
+      for (unsigned axis = 0; axis < 2; ++axis)
+        if (s_.periods[axis])
+          end[axis] =
+              previous[axis] +
+              std::remainder(end[axis] - previous[axis], s_.periods[axis]);
+      const double step = 1. / (probes.size() - j);
+      const UV predicted(std::lerp(previous.x, end.x, step),
+                         std::lerp(previous.y, end.y, step));
+      probes[j] = projectCreaseProbe(source, t, previous, stop, predicted);
+    }
+    probes.back().uv = unwrapSplineProjection(
+        probes.back().uv, probes[probes.size() - 2].uv, s_.periods);
+    for (unsigned axis = 0; axis < 2; ++axis) {
+      const auto &creases = axis ? s_.creaseV : s_.creaseU;
+      if (creases.empty())
+        continue;
+      const auto domain = *(axis ? s_.vDomain : s_.uDomain);
+      const auto [lo, hi] = std::ranges::minmax(
+          probes, {}, [axis](const auto &p) { return p.uv[axis]; });
+      const double low = lo.uv[axis], high = hi.uv[axis];
+      const double epsilon = (high - low) * 1e-10 +
+                             std::max({std::abs(low), std::abs(high),
+                                       domain.second - domain.first}) *
+                                 (32 * std::numeric_limits<double>::epsilon());
+      const double period = s_.periods[axis];
+      for (double knot : creases) {
+        if (++checks > 1'000'000)
+          throw std::runtime_error(
+              "Inferred spline crease search exceeds its work budget");
+        if (period)
+          knot += std::ceil((low - epsilon - knot) / period) * period;
+        for (size_t copies = 0; knot <= high + epsilon; ++copies) {
+          if (copies >= 16)
+            throw std::runtime_error(
+                "Inferred spline crease search exceeds its period budget");
+          if (knot >= low - epsilon) {
+            // Skip samples already on the crease. Opposite nonzero signs on
+            // either side still identify a crossing when a probe hits it.
+            std::optional<size_t> prior;
+            for (size_t j = 0; j < probes.size(); ++j) {
+              const double offset = probes[j].uv[axis] - knot;
+              if (std::abs(offset) <= epsilon)
+                continue;
+              if (prior && (probes[*prior].uv[axis] < knot) != (offset < 0)) {
+                const auto root =
+                    refineEdgeCrease(source, probes[*prior], probes[j], axis,
+                                     knot, epsilon, stop);
+                if (root.parameter != first && root.parameter != last) {
+                  if (additions.size() >= 4097)
+                    throw std::runtime_error("Inferred spline crease search "
+                                             "exceeds its sample budget");
+                  additions.push_back(root);
+                }
+              }
+              prior = j;
+            }
+          }
+          if (!period)
+            break;
+          knot += period;
+        }
+      }
+    }
+    previous_ = continuation;
+    probes.front() = probes.back();
+  }
+  const bool forward = samples.back().parameter > samples.front().parameter;
+  std::ranges::sort(additions, [forward](const auto &a, const auto &b) {
+    return forward ? a.parameter < b.parameter : a.parameter > b.parameter;
+  });
+  const auto duplicates =
+      std::ranges::unique(additions, {}, &CurveSample::parameter);
+  additions.erase(duplicates.begin(), duplicates.end());
+  return additions;
 }
 
 void Mesher::validatePeriodicCover(std::span<const Triangle> triangles,
@@ -1530,6 +1742,8 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
     for (size_t i = 0; i < loop.size(); ++i) {
       const auto p = loop[i];
       auto uv = authored ? authored->vertices[i] : inverse(Point(p));
+      if (!authored && s_.spline)
+        uv = snapProjectedKnots(uv, Point(p));
       if (authored && glm::length(evaluate(uv) - Point(p)) > tolerance_)
         throw std::runtime_error(
             "Authored pcurve sample leaves its shared edge");
@@ -2217,17 +2431,12 @@ meshRevolvedRadialGraph(const RevolvedRadialGraph &graph,
         "Revolved apex face with holes requires an outer bound");
   return Mesher(chart, units, extent, {}, apex).run(rings, true, sameSense);
 }
-} // namespace
-
-std::vector<glm::dvec2>
-projectIfcBrepSplineEdge(const ParametricSurface &surface,
-                         std::span<const glm::vec3> sharedPoints, double units,
-                         std::stop_token stop) {
-  container::util::checkModelImportCancellation(stop);
+void requireSplineEdgeProjection(const ParametricSurface &surface,
+                                 size_t samples, double units) {
   const double chord = .001 / units;
   if (!surface.spline || !surface.point || !std::isfinite(units) ||
       units <= 0 || !std::isfinite(chord * chord) || chord * chord == 0 ||
-      sharedPoints.size() < 2 || sharedPoints.size() > 4097)
+      samples < 2 || samples > 4097)
     throw std::runtime_error("Invalid spline surface or shared edge samples");
   for (unsigned axis = 0; axis < 2; ++axis) {
     const auto &domain = axis ? surface.vDomain : surface.uDomain;
@@ -2237,6 +2446,15 @@ projectIfcBrepSplineEdge(const ParametricSurface &surface,
         period < 0 || (period > 0 && std::abs(period / span - 1.) > 1e-8))
       throw std::runtime_error("Invalid native spline domain or period");
   }
+}
+} // namespace
+
+std::vector<glm::dvec2>
+projectIfcBrepSplineEdge(const ParametricSurface &surface,
+                         std::span<const glm::vec3> sharedPoints, double units,
+                         std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
+  requireSplineEdgeProjection(surface, sharedPoints.size(), units);
 
   const auto origin = Point(sharedPoints.front());
   const bool closed = sharedPoints.front() == sharedPoints.back();
@@ -2253,6 +2471,40 @@ projectIfcBrepSplineEdge(const ParametricSurface &surface,
     extent = std::max(extent, glm::length(Point(p) - origin));
   }
   return Mesher(surface, units, extent).projectEdge(sharedPoints, stop);
+}
+
+std::vector<CurveSample> sampleIfcBrepSplineEdgeCreases(
+    const ParametricSurface &surface, const ParametricCurve &source,
+    std::span<const CurveSample> samples, double units, std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
+  if (surface.creaseU.empty() && surface.creaseV.empty())
+    return {};
+  requireSplineEdgeProjection(surface, samples.size(), units);
+  if (!source.point || source.dimension != 3)
+    throw std::runtime_error(
+        "Expected a three-dimensional native spline edge witness");
+  const auto finiteKnot = [](double knot) { return std::isfinite(knot); };
+  if (!std::ranges::all_of(surface.creaseU, finiteKnot) ||
+      !std::ranges::all_of(surface.creaseV, finiteKnot))
+    throw std::runtime_error("Nonfinite spline surface crease parameter");
+  const auto origin = samples.front().point;
+  const bool forward = samples.front().parameter < samples.back().parameter;
+  double extent = 0;
+  for (size_t i = 0; i < samples.size(); ++i) {
+    const auto &sample = samples[i];
+    const auto p = sample.point - origin;
+    if (!std::isfinite(sample.parameter) || !std::isfinite(p.x) ||
+        !std::isfinite(p.y) || !std::isfinite(p.z) ||
+        (i > 0 && !(forward ? sample.parameter > samples[i - 1].parameter
+                            : sample.parameter < samples[i - 1].parameter)))
+      throw std::runtime_error(
+          "Invalid or unordered native spline edge witness samples");
+    extent = std::max(extent, glm::length(p));
+  }
+  if (!std::isfinite(extent) || extent <= 0)
+    throw std::runtime_error("Collapsed native spline edge witness");
+  return Mesher(surface, units, extent)
+      .sampleEdgeCreases(source, samples, stop);
 }
 
 std::optional<std::vector<CurvedFaceTriangle>>

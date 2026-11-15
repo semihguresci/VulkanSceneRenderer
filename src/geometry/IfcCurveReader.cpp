@@ -3379,7 +3379,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
 }
 
 std::map<double, glm::dvec2> pcurveCreases(const ParametricCurve &uv,
-                                           const Surface &surface) {
+                                          const Surface &surface,
+                                          const std::stop_token &stop) {
   std::map<double, glm::dvec2> crossings;
   if (!uv.domain || (surface.creaseU.empty() && surface.creaseV.empty()))
     return crossings;
@@ -3391,6 +3392,7 @@ std::map<double, glm::dvec2> pcurveCreases(const ParametricCurve &uv,
   for (unsigned axis = 0; axis < 2; ++axis) {
     const double period = surface.periods[axis];
     for (size_t i = 1; i < samples.size(); ++i) {
+      container::util::checkModelImportCancellation(stop);
       const auto &a = samples[i - 1], &b = samples[i];
       const auto [lo, hi] = std::minmax(a.point[axis], b.point[axis]);
       for (double knot : axis ? surface.creaseV : surface.creaseU) {
@@ -3441,12 +3443,13 @@ std::map<double, glm::dvec2> pcurveCreases(const ParametricCurve &uv,
 }
 
 ParametricCurve onSurfaceCurve(const ParametricCurve &uv,
-                               const Surface &evaluate) {
+                               const Surface &evaluate,
+                               const std::stop_token &stop) {
   ParametricCurve c;
   c.dimension = 3;
   c.domain = uv.domain;
   c.breaks = uv.breaks;
-  auto crossings = pcurveCreases(uv, evaluate);
+  auto crossings = pcurveCreases(uv, evaluate, stop);
   for (const auto &[parameter, point] : crossings)
     c.breaks.push_back(parameter);
   c.period = uv.period;
@@ -3487,7 +3490,7 @@ ParametricCurve Reader::pcurve(const Entity &e, CurveWitness witness) {
   auto charts = surfaceCharts(basis);
   const auto uv = parameterCurve(e.id, basis);
   if (charts.size() == 1)
-    return onSurfaceCurve(uv, charts.front());
+    return onSurfaceCurve(uv, charts.front(), stop_);
   const auto description = " pcurve #" + std::to_string(e.id) +
                            " on surface #" + std::to_string(basis) +
                            " with profiles" + chartProfiles(charts);
@@ -3557,7 +3560,7 @@ ParametricCurve Reader::pcurve(const Entity &e, CurveWitness witness) {
   std::optional<ParametricCurve> match;
   for (const auto &chart : charts) {
     container::util::checkModelImportCancellation(stop_);
-    auto curve = onSurfaceCurve(uv, chart);
+    auto curve = onSurfaceCurve(uv, chart, stop_);
     const auto samples = sample(curve);
     size_t hint = 1;
     if (witness.endpoints &&
@@ -4279,6 +4282,21 @@ ParametricCurve Reader::readImpl(uint32_t id, double spiralLength,
 }
 
 } // namespace
+
+std::vector<glm::dvec3>
+sampleIfcPcurveCreasePoints(const ParametricCurve &uv,
+                           const ParametricSurface &surface,
+                           std::stop_token stop) {
+  std::vector<glm::dvec3> result;
+  for (const auto &crossing : pcurveCreases(uv, surface, stop)) {
+    const auto at = crossing.second;
+    const auto point = surface.point(at.x, at.y);
+    if (!point || !finite(*point))
+      throw std::runtime_error("Pcurve crease is outside its surface");
+    result.push_back(*point);
+  }
+  return result;
+}
 
 bool isCurveEntity(std::string_view type) {
   constexpr std::array types{"IFCPOLYLINE",

@@ -114,7 +114,11 @@ edges refine in pairs with identical float positions on both sides. Either
 surface axis can carry the period, and reversed surface sense is retained.
 Explicit seam bounds require two distinct pcurves on the same surface and use
 the curve's master representation. An authored spline chart checks bounded
-pcurves against its exact shared edge samples. Both uses of a seam must follow
+pcurves against its exact shared edge samples. Trim crossings at sharp spline
+knots add samples on the source edge before either incident face is meshed.
+The importer locates these crossings with the authored pcurve or the lifted
+surface inverse and gives all uses of the edge the same rounded 3D positions.
+Both uses of a seam must follow
 the same edge and differ by a certified period. An edge carried only by a 3D
 curve can join authored pcurves when its cached samples have a consistent
 surface inverse and the authored endpoints anchor its lift. The importer
@@ -850,8 +854,7 @@ charts and polar trims with multiple seams or holes meeting a
 seam cut remain outside native coverage. Swept surface limits include profiles
 with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.
-Nonmonotone periodic winding bands and shared source edges missing a sample at
-a sharp spline knot require further work.
+Nonmonotone periodic winding bands require further work.
 Periodic trim layouts without a unique chart placement are diagnosed.
 Each omitted
 representation is reported. A full IFC backend remains an option if future

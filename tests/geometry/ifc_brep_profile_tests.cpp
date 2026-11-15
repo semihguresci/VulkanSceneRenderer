@@ -10,6 +10,7 @@
 #include <glm/geometric.hpp>
 #include <gtest/gtest.h>
 #include <iomanip>
+#include <initializer_list>
 #include <limits>
 #include <map>
 #include <numbers>
@@ -2897,12 +2898,16 @@ struct PeriodicSplineBuilder : CurvedBuilder {
   }
 
   std::string pcurve(const std::string &basis, glm::dvec2 a, glm::dvec2 b) {
-    const auto uv = [&](glm::dvec2 p) {
-      return add("IFCCARTESIANPOINT((" + number(p.x) + "," + number(p.y) +
-                 "))");
-    };
-    const auto start = uv(a), end = uv(b);
-    const auto line = add("IFCPOLYLINE((" + start + "," + end + "))");
+    return pcurve(basis, {a, b});
+  }
+
+  std::string pcurve(const std::string &basis,
+                     std::initializer_list<glm::dvec2> points) {
+    std::vector<std::string> controls;
+    for (const auto p : points)
+      controls.push_back(
+          add("IFCCARTESIANPOINT((" + number(p.x) + "," + number(p.y) + "))"));
+    const auto line = add("IFCPOLYLINE((" + refs(controls) + "))");
     const auto definition =
         add("IFCDEFINITIONALREPRESENTATION($,$,'Curve2D',(" + line + "))");
     return add("IFCPCURVE(" + basis + "," + definition + ")");
@@ -3161,6 +3166,127 @@ struct PeriodicSplineBuilder : CurvedBuilder {
     return finish();
   }
 };
+
+TEST(IfcCurvedBrep, SharpSplineKnotSubdividesStraightSharedEdge) {
+  constexpr double crease = .73, slope = .3, height = 2.;
+  constexpr float sharedZ = static_cast<float>(crease);
+  enum class Trims { Authored, Mixed, Inferred };
+  for (const auto trims : {Trims::Authored, Trims::Mixed, Trims::Inferred}) {
+    for (bool planarFirst : {false, true}) {
+      SCOPED_TRACE(::testing::Message() << "trims=" << static_cast<int>(trims)
+                                        << " planarFirst=" << planarFirst);
+      PeriodicSplineBuilder step;
+      const auto a = step.point({0, 1, 0}), A = step.point({0, 1, height});
+      const auto b = step.point({1, 1 + slope * crease, 0}),
+                 B = step.point({1, 1 + slope * (height - crease), height}),
+                 bend = step.point({1, 1, crease});
+      const auto c = step.point({1, 0, 0}), C = step.point({1, 0, height}),
+                 d = step.point({0, 0, 0}), D = step.point({0, 0, height});
+
+      // S(u,v) = (1-u, 1 + slope*(1-u)*abs(v-crease), v).
+      // The u=1 edge is physically straight and has no authored knot sample.
+      const auto sheet = step.add(
+          "IFCBSPLINESURFACEWITHKNOTS(1,1,((" + step.refs({b, bend, B}) +
+          "),(" + step.refs({a, step.point({0, 1, crease}), A}) +
+          ")),.UNSPECIFIED.,.F.,.F.,.F.,(2,2),(2,1,2),(0.,1.),(0.," +
+          number(crease) + ",2.),.UNSPECIFIED.)");
+      const auto sheetEdge = [&](const std::string &start,
+                                 const std::string &end,
+                                 std::initializer_list<glm::dvec2> uv) {
+        const auto curve =
+            step.add("IFCPOLYLINE((" + step.refs({start, end}) + "))");
+        if (trims == Trims::Inferred)
+          return step.edge(start, end, curve);
+        return step.edge(start, end,
+                         step.associated("IFCSURFACECURVE", curve,
+                                         {step.pcurve(sheet, uv)}));
+      };
+      const auto bottom = sheetEdge(b, a, {{0, 0}, {1, 0}}),
+                 top = sheetEdge(A, B, {{1, height}, {0, height}});
+      const auto straight = trims == Trims::Authored
+                                ? sheetEdge(a, A, {{1, 0}, {1, height}})
+                                : step.line(a, A);
+      const auto bentCurve =
+          step.add("IFCPOLYLINE((" + step.refs({b, bend, B}) + "))");
+      const auto bent = step.edge(
+          b, B,
+          trims == Trims::Inferred
+              ? bentCurve
+              : step.associated(
+                    "IFCSURFACECURVE", bentCurve,
+                    {step.pcurve(sheet, {{0, 0}, {0, crease}, {0, height}})}));
+      step.face(
+          {step.bound(
+              {{bottom, true}, {straight, true}, {top, true}, {bent, false}})},
+          sheet);
+
+      const auto bc = step.line(b, c), cd = step.line(c, d),
+                 da = step.line(d, a), BC = step.line(B, C),
+                 CD = step.line(C, D), DA = step.line(D, A),
+                 cC = step.line(c, C), dD = step.line(d, D);
+      step.plane({{bottom, false}, {bc, true}, {cd, true}, {da, true}},
+                 {0, 0, 0}, {0, 0, -1});
+      step.plane({{DA, false}, {CD, false}, {BC, false}, {top, false}},
+                 {0, 0, height}, {0, 0, 1});
+      step.plane({{straight, false}, {da, false}, {dD, true}, {DA, true}},
+                 {0, 0, 0}, {-1, 0, 0});
+      step.plane({{bent, true}, {BC, true}, {cC, false}, {bc, false}},
+                 {1, 0, 0}, {1, 0, 0});
+      step.plane({{cd, false}, {cC, true}, {CD, true}, {dD, false}}, {0, 0, 0},
+                 {0, -1, 0});
+      if (planarFirst)
+        std::ranges::reverse(step.faces);
+      const auto brep = step.finish();
+      const auto model = LoadFromStep(fixture(step.definitions, brep));
+      ASSERT_NO_FATAL_FAILURE(complete(model));
+      watertight(model);
+      EXPECT_NEAR(volume(model), 2.160935, .002);
+
+      const auto onStraight = [](glm::vec3 p) { return p.x == 0 && p.y == 1; };
+      std::array<unsigned, 2> incoming{}, outgoing{};
+      for (size_t i = 0; i < model.indices.size(); i += 3) {
+        const auto &a = model.vertices.at(model.indices.at(i));
+        const auto &b = model.vertices.at(model.indices.at(i + 1));
+        const auto &c = model.vertices.at(model.indices.at(i + 2));
+        const auto [lo, hi] =
+            std::minmax({a.position.z, b.position.z, c.position.z});
+        const bool onSheet =
+            a.normal.y > .8 && b.normal.y > .8 && c.normal.y > .8;
+        if (onSheet)
+          EXPECT_FALSE(lo < sharedZ && hi > sharedZ);
+        const std::array points{a.position, b.position, c.position};
+        for (size_t j = 0; j < points.size(); ++j) {
+          const auto p = points[j], q = points[(j + 1) % points.size()];
+          if (!onStraight(p) || !onStraight(q))
+            continue;
+          const auto [first, last] = std::minmax(p.z, q.z);
+          EXPECT_FALSE(first < sharedZ && last > sharedZ);
+          if (!onSheet)
+            EXPECT_TRUE(a.normal.x < -.999 && b.normal.x < -.999 &&
+                        c.normal.x < -.999);
+          incoming[onSheet] += first < sharedZ && last == sharedZ;
+          outgoing[onSheet] += first == sharedZ && last > sharedZ;
+        }
+      }
+      EXPECT_EQ(incoming, (std::array{1u, 1u}));
+      EXPECT_EQ(outgoing, (std::array{1u, 1u}));
+
+      std::array<bool, 2> creaseNormals{};
+      for (const auto &vertex : model.vertices) {
+        if (vertex.position != glm::vec3(1, 1, sharedZ))
+          continue;
+        for (size_t i = 0; i < creaseNormals.size(); ++i) {
+          const auto expected =
+              glm::normalize(glm::dvec3(0, 1, i ? slope : -slope));
+          creaseNormals[i] |=
+              glm::dot(glm::dvec3(vertex.normal), expected) > .999;
+        }
+      }
+      EXPECT_TRUE(creaseNormals[0]);
+      EXPECT_TRUE(creaseNormals[1]);
+    }
+  }
+}
 
 template <typename OnSeam>
 size_t countSeamEdges(const Model &model, OnSeam onSeam) {

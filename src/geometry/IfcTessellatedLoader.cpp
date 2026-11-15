@@ -3519,28 +3519,49 @@ private:
   using BrepEdges = std::unordered_map<uint32_t, BrepEdge>;
   using BrepChartLifts = std::vector<std::vector<glm::dvec2>>;
 
-  using BrepEdgePoles = std::unordered_map<uint32_t, std::vector<glm::dvec3>>;
+  struct BrepEdgeFeatures {
+    std::vector<glm::dvec3> poles;
+    std::vector<uint32_t> splineSurfaces;
+  };
+  using BrepEdgeFeatureMap = std::unordered_map<uint32_t, BrepEdgeFeatures>;
+  using BrepSurfaceCharts =
+      std::unordered_map<uint32_t, std::vector<detail::ParametricSurface>>;
 
-  std::optional<double> findBrepEdgePole(const ParametricCurve &curve,
-                                         glm::dvec3 pole,
-                                         std::span<const CurveSample> samples,
-                                         double tolerance, double chord,
-                                         bool &searchExceeded) const {
+  static bool isBrepSpline(const Entity &surface) {
+    return surface.type == "IFCBSPLINESURFACEWITHKNOTS" ||
+           surface.type == "IFCRATIONALBSPLINESURFACEWITHKNOTS";
+  }
+
+  static double parameterInBrepTrim(double parameter, double first,
+                                     double direction, double period) {
+    if (period > 0) {
+      double offset = std::fmod(direction * (parameter - first), period);
+      if (offset < 0)
+        offset += period;
+      return first + direction * offset;
+    }
+    return parameter;
+  }
+
+  std::optional<double> findBrepEdgeParameter(
+      const ParametricCurve &curve, glm::dvec3 target,
+      std::span<const CurveSample> samples, double tolerance, double chord,
+      bool &searchExceeded) const {
     if (curve.inverse)
-      return curveParameterAtPoint(curve, pole, tolerance);
+      return curveParameterAtPoint(curve, target, tolerance);
     size_t candidates = 0;
     for (size_t i = 1; i < samples.size(); ++i) {
       const auto &a = samples[i - 1], &b = samples[i];
-      if (glm::length(pole - a.point) <= tolerance)
+      if (glm::length(target - a.point) <= tolerance)
         return a.parameter;
       const auto delta = b.point - a.point;
       const double squaredLength = glm::dot(delta, delta);
       const double fraction =
           squaredLength > 0
-              ? std::clamp(glm::dot(pole - a.point, delta) / squaredLength, 0.,
+              ? std::clamp(glm::dot(target - a.point, delta) / squaredLength, 0.,
                            1.)
               : 0.;
-      if (glm::length(pole - (a.point + fraction * delta)) > chord + tolerance)
+      if (glm::length(target - (a.point + fraction * delta)) > chord + tolerance)
         continue;
       if (++candidates > 16) {
         searchExceeded = true;
@@ -3550,16 +3571,91 @@ private:
       auto local = curve;
       local.period = 0;
       local.domain = std::minmax({a.parameter, b.parameter});
-      if (const auto root = curveParameterAtPoint(local, pole, tolerance))
+      if (const auto root = curveParameterAtPoint(local, target, tolerance))
         return root;
     }
     return std::nullopt;
   }
 
+  void refineBrepSplineEdge(const BrepEdge &edge, const ParametricCurve &curve,
+                            std::span<const uint32_t> surfaces,
+                            const BrepSurfaceCharts &charts,
+                            std::optional<double> angle,
+                            std::vector<CurveSample> &samples) const {
+    const double first = samples.front().parameter;
+    const double last = samples.back().parameter;
+    const double direction = edge.sameSense ? 1 : -1;
+    double extent = 0;
+    for (const auto &sample : samples)
+      extent = std::max(extent, glm::length(sample.point - samples.front().point));
+    const double tolerance = std::max(1e-7 / unitScale_, extent * 2e-7);
+    const auto chord = .0005 / unitScale_;
+    std::vector<CurveSample> additions;
+    for (uint32_t surfaceRef : surfaces) {
+      checkCancellation();
+      const auto &surface = charts.at(surfaceRef).front();
+      const auto references = brepPcurveReferences(edge.geometry, surfaceRef);
+      if (references.empty()) {
+        auto roots = detail::sampleIfcBrepSplineEdgeCreases(
+            surface, curve, samples, unitScale_, stop_);
+        additions.insert(additions.end(), roots.begin(), roots.end());
+        continue;
+      }
+      const auto *geometry = entity(edge.geometry);
+      if (references.size() != (geometry->type == "IFCSEAMCURVE" ? 2u : 1u))
+        throw std::runtime_error("Unexpected number of pcurves on the spline face basis");
+      for (uint32_t ref : references) {
+        const auto uv = readBrepPcurve(ref, surfaceRef, angle);
+        if (!uv)
+          throw std::runtime_error("Expected a bounded 2D curve for pcurve #" +
+                                   std::to_string(ref));
+        const auto targets =
+            detail::sampleIfcPcurveCreasePoints(*uv, surface, stop_);
+        for (const auto &target : targets) {
+          checkCancellation();
+          bool searchExceeded = false;
+          const auto root = findBrepEdgeParameter(
+              curve, target, samples, tolerance, chord, searchExceeded);
+          if (searchExceeded)
+            throw std::runtime_error(
+                "Spline edge crease search exceeds its candidate budget");
+          if (!root)
+            continue;
+          const double parameter =
+              parameterInBrepTrim(*root, first, direction, curve.period);
+          if (direction * (parameter - first) <= 0 ||
+              direction * (last - parameter) <= 0)
+            continue;
+          const auto point = curve.point(parameter);
+          if (point && glm::length(*point - target) <= tolerance)
+            additions.push_back({parameter, *point});
+        }
+      }
+    }
+    for (const auto &sample : additions) {
+      checkCancellation();
+      const auto after = std::ranges::lower_bound(
+          samples, direction * sample.parameter, {},
+          [direction](const CurveSample &s) { return direction * s.parameter; });
+      const auto coincides = [&](const CurveSample &existing) {
+        return existing.parameter == sample.parameter ||
+               glm::vec3(existing.point) == glm::vec3(sample.point);
+      };
+      if ((after != samples.end() && coincides(*after)) ||
+          (after != samples.begin() && coincides(*(after - 1))))
+        continue;
+      if (samples.size() >= 4097)
+        throw std::runtime_error(
+            "Spline crease insertion exceeds the shared edge sample budget");
+      samples.insert(after, sample);
+    }
+  }
+
   std::optional<BrepEdge> readBrepEdge(uint32_t ref,
-                                       std::span<const glm::dvec3> poles,
-                                       std::optional<double> angle,
-                                       std::string &error) const {
+                                      const BrepEdgeFeatures &features,
+                                      const BrepSurfaceCharts &charts,
+                                      std::optional<double> angle,
+                                      std::string &error) const {
     const auto *edge = entity(ref);
     if (!edge || edge->type != "IFCEDGECURVE") {
       error = "Expected IfcEdgeCurve #" + std::to_string(ref);
@@ -3639,27 +3735,21 @@ private:
     // All faces using the edge read the same cache entry, including any
     // additional pole whose native parameter was witnessed inside this trim.
     const double direction = sense == "T" ? 1 : -1;
-    for (const auto &pole : poles) {
+    for (const auto &pole : features.poles) {
       if (glm::length(pole - *a) <= tolerance ||
           glm::length(pole - *b) <= tolerance)
         continue;
       bool searchExceeded = false;
-      const auto root = findBrepEdgePole(*curve, pole, samples, tolerance,
-                                         chord, searchExceeded);
+      const auto root = findBrepEdgeParameter(*curve, pole, samples, tolerance,
+                                              chord, searchExceeded);
       if (searchExceeded) {
         error = "Spherical edge pole search exceeds its candidate budget";
         return std::nullopt;
       }
       if (!root)
         continue;
-      double parameter = *root;
-      if (curve->period > 0) {
-        double offset =
-            std::fmod(direction * (parameter - first), curve->period);
-        if (offset < 0)
-          offset += curve->period;
-        parameter = first + direction * offset;
-      }
+      const double parameter =
+          parameterInBrepTrim(*root, first, direction, curve->period);
       if (direction * (parameter - first) <= 0 ||
           direction * (last - parameter) <= 0)
         continue;
@@ -3684,6 +3774,15 @@ private:
       }
     }
     BrepEdge result{*start, *end, *geometry, sense == "T", {}};
+    if (!features.splineSurfaces.empty()) {
+      try {
+        refineBrepSplineEdge(result, *curve, features.splineSurfaces, charts,
+                             angle, samples);
+      } catch (const std::runtime_error &failure) {
+        error = failure.what();
+        return std::nullopt;
+      }
+    }
     for (const auto &sample : samples)
       result.points.emplace_back(sample.point);
     // Adjacent edges and faces use exactly the authored vertex positions.
@@ -3692,35 +3791,37 @@ private:
     return result;
   }
 
-  using BrepPolarCharts =
-      std::unordered_map<uint32_t, std::vector<detail::ParametricSurface>>;
-
-  bool collectBrepEdgePoles(std::span<const uint32_t> faces,
-                            BrepEdgePoles &edgePoles,
-                            BrepPolarCharts &polarCharts,
-                            std::optional<double> angle,
-                            std::string &error) const {
+  bool collectBrepEdgeFeatures(std::span<const uint32_t> faces,
+                               BrepEdgeFeatureMap &edgeFeatures,
+                               BrepSurfaceCharts &surfaceCharts,
+                               std::optional<double> angle,
+                               std::string &error) const {
     size_t uses = 0;
     for (uint32_t faceRef : faces) {
       checkCancellation();
       const auto *face = entity(faceRef);
       const auto surfaceRef = face ? firstRef(*face, 1) : std::nullopt;
       const auto *surface = surfaceRef ? entity(*surfaceRef) : nullptr;
-      if (!face || face->type != "IFCADVANCEDFACE" || !surface ||
-          (surface->type != "IFCSPHERICALSURFACE" &&
-           surface->type != "IFCSURFACEOFREVOLUTION"))
+      if (!face || face->type != "IFCADVANCEDFACE" || !surface)
         continue;
-      if (!polarCharts.contains(*surfaceRef)) {
+      const bool spline = isBrepSpline(*surface);
+      if (!spline && surface->type != "IFCSPHERICALSURFACE" &&
+          surface->type != "IFCSURFACEOFREVOLUTION")
+        continue;
+      if (!surfaceCharts.contains(*surfaceRef)) {
         std::vector<detail::ParametricSurface> charts;
         if (!detail::readIfcSurfaceCharts(entities_, *surfaceRef, unitScale_,
                                           angle, charts, error, stop_)) {
           error = "Face #" + std::to_string(faceRef) + ": " + error;
           return false;
         }
-        polarCharts.emplace(*surfaceRef, std::move(charts));
+        surfaceCharts.emplace(*surfaceRef, std::move(charts));
       }
       std::vector<glm::dvec3> poles;
-      for (const auto &chart : polarCharts.at(*surfaceRef)) {
+      bool hasCreases = false;
+      for (const auto &chart : surfaceCharts.at(*surfaceRef)) {
+        hasCreases |=
+            spline && (!chart.creaseU.empty() || !chart.creaseV.empty());
         if (chart.sphere) {
           const auto &sphere = *chart.sphere;
           const auto &f = sphere.frame;
@@ -3730,7 +3831,7 @@ private:
         if (chart.radialGraph)
           poles.push_back(chart.radialGraph->frame.origin);
       }
-      if (poles.empty())
+      if (poles.empty() && !hasCreases)
         continue;
       const auto bounds = asList(argAt(*face, 0));
       if (bounds.size() > 4096)
@@ -3747,7 +3848,7 @@ private:
           continue;
         for (const auto &useValue : oriented) {
           if (++uses > 1'000'000) {
-            error = "B-rep polar edge use budget exceeded";
+            error = "B-rep edge feature use budget exceeded";
             return false;
           }
           if (uses % 1024 == 0)
@@ -3759,7 +3860,8 @@ private:
                                    : std::nullopt;
           if (!edgeRef)
             continue;
-          auto &candidates = edgePoles[*edgeRef];
+          auto &features = edgeFeatures[*edgeRef];
+          auto &candidates = features.poles;
           for (const auto &pole : poles)
             if (std::ranges::find(candidates, pole) == candidates.end()) {
               if (candidates.size() >= 4) {
@@ -3769,6 +3871,16 @@ private:
               }
               candidates.push_back(pole);
             }
+          if (hasCreases &&
+              std::ranges::find(features.splineSurfaces, *surfaceRef) ==
+                  features.splineSurfaces.end()) {
+            if (features.splineSurfaces.size() == 2) {
+              error = "Edge #" + std::to_string(*edgeRef) +
+                      " has too many incident spline surfaces";
+              return false;
+            }
+            features.splineSurfaces.push_back(*surfaceRef);
+          }
         }
       }
     }
@@ -3800,15 +3912,11 @@ private:
                                                            : std::nullopt;
   }
 
-  std::optional<BrepChartLifts>
-  readBrepChartLifts(const BrepEdge &edge, uint32_t surfaceRef,
-                     const detail::ParametricSurface &surface,
-                     std::optional<double> angle, std::string &error) const {
-    const auto *geometry = entity(edge.geometry);
-    if (!geometry) {
-      error = "Missing edge geometry";
-      return std::nullopt;
-    }
+  std::vector<uint32_t> brepPcurveReferences(uint32_t geometryRef,
+                                            uint32_t surfaceRef) const {
+    const auto *geometry = entity(geometryRef);
+    if (!geometry)
+      return {};
     auto references = std::vector<uint32_t>{};
     if (geometry->type == "IFCPCURVE")
       references.push_back(geometry->id);
@@ -3820,6 +3928,19 @@ private:
       const auto *pc = entity(ref);
       return !pc || pc->type != "IFCPCURVE" || firstRef(*pc, 0) != surfaceRef;
     });
+    return references;
+  }
+
+  std::optional<BrepChartLifts>
+  readBrepChartLifts(const BrepEdge &edge, uint32_t surfaceRef,
+                     const detail::ParametricSurface &surface,
+                     std::optional<double> angle, std::string &error) const {
+    const auto *geometry = entity(edge.geometry);
+    if (!geometry) {
+      error = "Missing edge geometry";
+      return std::nullopt;
+    }
+    const auto references = brepPcurveReferences(edge.geometry, surfaceRef);
     const size_t required = geometry->type == "IFCSEAMCURVE" ? 2 : 1;
     if (!references.empty() && references.size() != required) {
       error = required == 2 ? "Seam curve requires two pcurves on its face basis"
@@ -4278,8 +4399,7 @@ private:
       std::vector<TriangleVertices> triangles;
     };
     std::map<uint32_t, FaceGroup> groups;
-    BrepEdges edgeCache;
-    BrepPolarCharts polarCharts;
+    BrepSurfaceCharts surfaceCharts;
     std::unordered_set<uint32_t> shellIds, faceIds;
     std::vector<manifold::Manifold> solids;
     const auto angle = advanced ? projectPlaneAngleScale() : std::nullopt;
@@ -4296,12 +4416,14 @@ private:
           faces.size() != asList(argAt(*shell, 0)).size())
         return fail("Invalid or excessive faces in shell #" +
                     std::to_string(shellRef));
-      BrepEdgePoles edgePoles;
+      BrepEdgeFeatureMap edgeFeatures;
       if (advanced) {
         std::string error;
-        if (!collectBrepEdgePoles(faces, edgePoles, polarCharts, angle, error))
+        if (!collectBrepEdgeFeatures(faces, edgeFeatures, surfaceCharts, angle,
+                                     error))
           return fail(error);
       }
+      BrepEdges edgeCache;
       std::vector<TriangleVertices> shellTriangles;
       std::map<uint32_t, std::pair<unsigned, int>> edgeUses;
       for (uint32_t faceRef : faces) {
@@ -4316,9 +4438,7 @@ private:
         const auto *basis = basisRef ? entity(*basisRef) : nullptr;
         const bool spherical = basis && basis->type == "IFCSPHERICALSURFACE";
         const bool revolved = basis && basis->type == "IFCSURFACEOFREVOLUTION";
-        const bool spline = basis &&
-                            (basis->type == "IFCBSPLINESURFACEWITHKNOTS" ||
-                             basis->type == "IFCRATIONALBSPLINESURFACEWITHKNOTS");
+        const bool spline = basis && isBrepSpline(*basis);
         std::vector<std::vector<glm::vec3>> loops;
         std::vector<BrepSeamUse> seamUses;
         std::vector<BrepChartBound> chartBounds;
@@ -4390,12 +4510,12 @@ private:
                               std::to_string(entry));
             if (!edgeCache.contains(*edgeRef)) {
               std::string error;
-              const auto poles = edgePoles.find(*edgeRef);
+              const auto features = edgeFeatures.find(*edgeRef);
+              const BrepEdgeFeatures empty;
               const auto candidates =
-                  poles != edgePoles.end()
-                      ? std::span<const glm::dvec3>(poles->second)
-                      : std::span<const glm::dvec3>();
-              auto edge = readBrepEdge(*edgeRef, candidates, angle, error);
+                  features != edgeFeatures.end() ? &features->second : &empty;
+              auto edge = readBrepEdge(*edgeRef, *candidates, surfaceCharts,
+                                       angle, error);
               if (!edge)
                 return faceFail("Edge #" + std::to_string(*edgeRef) + ": " +
                                 error);
@@ -4500,8 +4620,8 @@ private:
                               surface->type);
             std::string error;
             std::vector<detail::ParametricSurface> localCharts;
-            const auto cached = polarCharts.find(*surfaceRef);
-            if (cached == polarCharts.end()) {
+            const auto cached = surfaceCharts.find(*surfaceRef);
+            if (cached == surfaceCharts.end()) {
               const bool readCharts = detail::readIfcSurfaceCharts(
                   entities_, *surfaceRef, unitScale_, angle, localCharts, error,
                   stop_);
@@ -4510,7 +4630,7 @@ private:
                 return faceFail(error);
             }
             const auto &charts =
-                cached != polarCharts.end() ? cached->second : localCharts;
+                cached != surfaceCharts.end() ? cached->second : localCharts;
             const detail::ParametricSurface *descriptor = &charts.front();
             if (charts.size() > 1) {
               descriptor = nullptr;

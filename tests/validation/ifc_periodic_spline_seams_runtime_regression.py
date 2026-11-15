@@ -22,6 +22,10 @@ ANGULAR_KNOTS = (2.75, 4.25, 5.75, 7.25, 8.75)
 TUBE_KNOTS = (-4.125, -3.375, -2.625, -1.875, -1.125)
 AXIS_KNOTS = (-2.4, .8)
 RADIUS, HALF_HEIGHT = 1.03, 1.47
+CREASE_FRACTION = .37
+CREASE_PARAMETER = AXIS_KNOTS[0] + (AXIS_KNOTS[1] - AXIS_KNOTS[0]) * CREASE_FRACTION
+CREASE_HEIGHT = HALF_HEIGHT * (2. * CREASE_FRACTION - 1.)
+CYLINDER_RINGS = ((-HALF_HEIGHT, RADIUS), (CREASE_HEIGHT, RADIUS - .27), (HALF_HEIGHT, RADIUS))
 TORUS_MAJOR, TORUS_TUBE = 1.20, .42
 PRODUCTS = (
     Profile("U-closed unclamped rational cylinder", (-3.61, -.06), (.12, .63, .90)),
@@ -35,7 +39,11 @@ X_AXIS, Y_AXIS, Z_AXIS = (1., 0., 0.), (0., 1., 0.), (0., 0., 1.)
 
 
 def cylinder_point(x, y):
-    return x, y, math.sqrt(RADIUS ** 2 - x ** 2)
+    lower, upper = CYLINDER_RINGS[:2] if y <= CREASE_HEIGHT else CYLINDER_RINGS[1:]
+    y0, r0 = lower
+    y1, r1 = upper
+    radius = r0 + (r1 - r0) * (y - y0) / (y1 - y0)
+    return x, y, RADIUS - radius + math.sqrt(radius ** 2 - x ** 2)
 
 
 def torus_point(r, angle):
@@ -43,24 +51,30 @@ def torus_point(r, angle):
             math.sqrt(TORUS_TUBE ** 2 - (r - TORUS_MAJOR) ** 2))
 
 
-def probe(index, name, point):
+def probe(index, name, point, *, positive=True):
     x, y, z = point
     cx, cy = PRODUCTS[index].center
     scale = (DISTANCE - DEPTH) / (DISTANCE - z)
-    return index, name, ((cx + x) * scale - cx, (cy + y) * scale - cy), True
+    return index, name, ((cx + x) * scale - cx, (cy + y) * scale - cy), positive
 
 
 FIXTURE = Fixture(PRODUCTS, (
     probe(0, "near-side U seam", cylinder_point(0., .83)),
     probe(0, "left of U seam", cylinder_point(-.66, -.55)),
     probe(0, "right of U seam", cylinder_point(.58, .14)),
+    probe(0, "below the U wall crease", cylinder_point(-.65, CREASE_HEIGHT - .08)),
+    probe(0, "above the U wall crease", cylinder_point(-.65, CREASE_HEIGHT + .08)),
+    probe(0, "outside the contracted U ring", (-.90, CREASE_HEIGHT, .27), positive=False),
     probe(0, "near top U ring", cylinder_point(-.28, 1.29)),
     probe(0, "where the U seam approaches the bare lower ring", cylinder_point(.02, -1.38)),
     (0, "outside side silhouette", (-1.43, -.36), False),
     (0, "above upper end", (.0, 1.80), False),
     probe(1, "near-side V seam", cylinder_point(0., -.86)),
     probe(1, "left of V seam", cylinder_point(-.64, .56)),
-    probe(1, "right of V seam", cylinder_point(.68, -.44)),
+    probe(1, "right of V seam", cylinder_point(.62, .18)),
+    probe(1, "below the V wall crease", cylinder_point(.65, CREASE_HEIGHT - .08)),
+    probe(1, "above the V wall crease", cylinder_point(.65, CREASE_HEIGHT + .08)),
+    probe(1, "outside the contracted V ring", (.90, CREASE_HEIGHT, .27), positive=False),
     probe(1, "near bottom V ring", cylinder_point(.31, -1.29)),
     probe(1, "where the V seam approaches the bare lower ring", cylinder_point(-.02, -1.38)),
     (1, "outside side silhouette", (1.40, .33), False),
@@ -114,14 +128,15 @@ def associated(step, context, kind, curve3d, segments, preferred=".CURVE3D."):
 
 
 def cylinder(step, context, product, *, periodic_u, rim_pcurves):
-    rings = [[step.point(RADIUS * s, y, RADIUS * c) for c, s in CIRCLE]
-             for y in (-HALF_HEIGHT, HALF_HEIGHT)]
-    bottom, top = [step.add("IFCVERTEXPOINT", ring[0]) for ring in rings]
+    rings = [[step.point(radius * s, y, RADIUS - radius + radius * c) for c, s in CIRCLE]
+             for y, radius in CYLINDER_RINGS]
+    rim_rings = (rings[0], rings[-1])
+    bottom, top = [step.add("IFCVERTEXPOINT", ring[0]) for ring in rim_rings]
     # The first and last exterior knots do not enter the active basis, so the
     # unclamped surface still agrees exactly with the clamped 3D rim curves.
     circular_axis = (2, (1, 2, 2, 2, 2, 2, 1), (1.25, *ANGULAR_KNOTS, 10.25))
-    straight_axis = (1, (2, 2), AXIS_KNOTS)
-    weights = [WEIGHTS, WEIGHTS]
+    straight_axis = (1, (2, 1, 2), (AXIS_KNOTS[0], CREASE_PARAMETER, AXIS_KNOTS[1]))
+    weights = [WEIGHTS] * len(rings)
     if periodic_u:
         points = list(zip(*rings, strict=True))
         weights = list(zip(*weights, strict=True))
@@ -134,15 +149,17 @@ def cylinder(step, context, product, *, periodic_u, rim_pcurves):
 
     u0, u1 = ANGULAR_KNOTS[0], ANGULAR_KNOTS[-1]
     rims = []
-    for v, ring, linear, has_pcurve in zip((bottom, top), rings, AXIS_KNOTS, rim_pcurves, strict=True):
+    for v, ring, linear, has_pcurve in zip((bottom, top), rim_rings, AXIS_KNOTS, rim_pcurves, strict=True):
         curve = rational_circle(step, ring, ANGULAR_KNOTS)
         if has_pcurve:
             curve = associated(step, context, "IFCSURFACECURVE", curve,
                                ((surface, uv(u0, linear), uv(u1, linear)),))
         rims.append(edge(step, v, v, curve))
     native = [(surface, uv(angular, AXIS_KNOTS[0]), uv(angular, AXIS_KNOTS[1])) for angular in (u0, u1)]
+    # The ring centers shift with radius so the seam stays a straight 3D edge.
+    # Its two chart sides cross the crease between the shared curve samples.
     seam_curve = associated(step, context, "IFCSEAMCURVE",
-                            polyline(step, (rings[0][0], rings[1][0])), native)
+                            polyline(step, (rim_rings[0][0], rim_rings[1][0])), native)
     cut = edge(step, bottom, top, seam_curve)
     low, high = rims
     wall = advanced_face(step, surface, (((low, True), (cut, True), (high, False), (cut, False)),),
@@ -278,14 +295,27 @@ def write_fixture(path):
 
 
 def cylinder_hit(camera, ray):
-    a = ray[0] ** 2 + ray[2] ** 2
-    b = camera[0] * ray[0] + camera[2] * ray[2]
-    c = camera[0] ** 2 + camera[2] ** 2 - RADIUS ** 2
-    discriminant = b * b - a * c
-    if discriminant < 0.:
-        return None
-    t = (-b - math.sqrt(discriminant)) / a
-    return t if abs(camera[1] + t * ray[1]) < HALF_HEIGHT else None
+    hits = []
+    for (y0, r0), (y1, r1) in zip(CYLINDER_RINGS, CYLINDER_RINGS[1:]):
+        slope = (r1 - r0) / (y1 - y0)
+        radius = r0 + slope * (camera[1] - y0)
+        radius_delta = slope * ray[1]
+        # Substitute the ray into x² + (z - R + r(y))² = r(y)².
+        z = camera[2] - RADIUS + radius
+        z_delta = ray[2] + radius_delta
+        a = ray[0] ** 2 + z_delta ** 2 - radius_delta ** 2
+        b = camera[0] * ray[0] + z * z_delta - radius * radius_delta
+        c = camera[0] ** 2 + z ** 2 - radius ** 2
+        discriminant = b * b - a * c
+        if abs(a) < 1e-12:
+            roots = (-c / (2. * b),) if abs(b) > 1e-12 else ()
+        elif discriminant >= 0.:
+            root = math.sqrt(discriminant)
+            roots = ((-b - root) / a, (-b + root) / a)
+        else:
+            continue
+        hits.extend(t for t in roots if t > 0. and y0 <= camera[1] + t * ray[1] <= y1)
+    return min(hits, default=None)
 
 
 def torus_hit(camera, ray):
