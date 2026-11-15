@@ -1,5 +1,6 @@
 #pragma once
 
+#include <Container/geometry/GltfDeformationFrames.h>
 #include <Container/geometry/Model.h>
 #include <Container/renderer/scene/GltfDeformationPass.h>
 #include <Container/utility/SceneGraph.h>
@@ -7,10 +8,6 @@
 #include <cstdint>
 #include <memory>
 #include <span>
-
-namespace container::geometry::gltf {
-struct PreparedDeformationFrames;
-}
 
 namespace container::renderer {
 
@@ -50,6 +47,7 @@ struct GltfDeformationSceneUpdate {
   bool topologyChanged{false};
   bool geometryChanged{false};
   bool historyReset{false};
+  uint32_t tangentFallbackInstanceCount{0};
 };
 
 // CPU reconciliation shared by the raster job builder, bounds, picking and
@@ -89,12 +87,15 @@ class GltfDeformationScene {
   // the instance identities/order and source geometry remain compatible.
   // renderPrimitivesByGraphNode selects physical slots by graph node. An empty
   // table or kInvalidNode entry uses the node's canonical primitive.
+  // Newly evaluated poses share maxTangentWork. Per-triangle tangents keep
+  // poses renderable when the shared MikkTSpace budget is exhausted.
   GltfDeformationSceneUpdate update(
       const scene::SceneGraph& graph,
       std::span<const uint32_t> meshOwnerGraphNodes,
       const tinygltf::Model* evaluatedSource = nullptr,
       bool resetHistory = false,
-      std::span<const uint32_t> renderPrimitivesByGraphNode = {});
+      std::span<const uint32_t> renderPrimitivesByGraphNode = {},
+      uint64_t maxTangentWork = geometry::gltf::kDefaultGltfTangentWorkBudget);
 
   // Call only after successful queue submission. Repeated update() calls,
   // failed/abandoned frames and history resets never advance submitted pose.
@@ -108,6 +109,7 @@ class GltfDeformationScene {
   [[nodiscard]] std::span<const GltfDeformationDrawRange> drawRanges() const;
   [[nodiscard]] std::span<const GltfDeformationInstance> gpuInstances() const;
   [[nodiscard]] std::span<const GltfDeformationPose> gpuPoses() const;
+  [[nodiscard]] uint32_t tangentFallbackInstanceCount() const;
   [[nodiscard]] uint64_t geometryRevision() const;
   [[nodiscard]] uint64_t topologyRevision() const;
 

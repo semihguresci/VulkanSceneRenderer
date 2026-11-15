@@ -1,5 +1,4 @@
 #include <Container/renderer/scene/GltfDeformationScene.h>
-#include <Container/geometry/GltfDeformationFrames.h>
 #include <Container/utility/SourcePrimitiveMapping.h>
 
 #include <glm/geometric.hpp>
@@ -173,6 +172,7 @@ struct GltfDeformationScene::Impl {
     std::vector<geometry::Vertex> submittedVertices;
     GltfDeformationBounds bounds;
     GltfDeformationOrientation orientation{GltfDeformationOrientation::Preserved};
+    bool usedTangentFallback{false};
     bool hasCurrent{false}, submitted{false};
   };
 
@@ -196,6 +196,7 @@ struct GltfDeformationScene::Impl {
   std::vector<uint32_t> nodeRanges;
   std::vector<GltfDeformationInstance> gpuInstances;
   std::vector<GltfDeformationPose> gpuPoses;
+  uint32_t tangentFallbackInstanceCount{0};
   uint64_t geometryRevision{0}, topologyRevision{0};
   bool configured{false};
   bool sourceGeometryChanged{false}, sourceTopologyChanged{false};
@@ -367,6 +368,7 @@ void GltfDeformationScene::configure(gltf::DeformationData data,
   state.preparedFrames = std::move(preparedFrames);
   state.sourceVertices = vertices;
   state.maxPoseBytes = maxPoseBytes;
+  state.tangentFallbackInstanceCount = 0;
   state.sourceIndices = indices;
   state.sourceRanges = ranges;
   state.sourceVertexOffsets = std::move(offsets);
@@ -389,7 +391,8 @@ void GltfDeformationScene::configure(gltf::DeformationData data,
 
 GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph& graph,
     std::span<const uint32_t> meshOwnerGraphNodes, const tinygltf::Model* evaluatedSource,
-    bool resetHistory, std::span<const uint32_t> renderPrimitivesByGraphNode) {
+    bool resetHistory, std::span<const uint32_t> renderPrimitivesByGraphNode,
+    uint64_t maxTangentWork) {
   auto& state = *impl_;
   if (!state.configured) fail("configure must precede update");
   if (!meshOwnerGraphNodes.empty() && meshOwnerGraphNodes.size() != graph.nodeCount()) {
@@ -506,6 +509,8 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
     if(instance.skin>=0)
       chargePose(state.data.skins.at(size_t(instance.skin)).joints.size(),sizeof(glm::mat4)*6);
   }
+  const auto tangentScratchBytes = static_cast<size_t>(
+      std::min<uint64_t>(poseBytes, gltf::kDefaultGltfTangentWorkspaceBytes));
   // Stage replacement storage and poses before publishing any new state, so a
   // missing owner/joint or invalid animation value leaves the prior frame valid.
   std::vector<geometry::Vertex> replacementBind;
@@ -528,6 +533,7 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
     previousInstances.emplace(std::pair{state.instances[i].owner,state.instances[i].primitive}, i);
   bool poseChanged = false;
   bool anyReset = false;
+  uint32_t tangentFallbackInstanceCount = 0;
   std::vector<glm::mat4> sourceWorlds(state.data.nodes.size(), glm::mat4(1));
   for (size_t i = 0; i < sourceGraphNodes.size(); ++i) {
     if (sourceGraphNodes[i].size() == 1) sourceWorlds[i] = graph.getNode(sourceGraphNodes[i][0])->worldTransform;
@@ -558,9 +564,11 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
     }
     const bool changed = !instance.hasCurrent || instance.weights != weights || instance.palette != palette;
     if (changed) {
+      gltf::DeformationTangentBudget tangentBudget{maxTangentWork, tangentScratchBytes, true};
       instance.current = state.preparedFrames[instance.definition]
-          ? gltf::EvaluateDeformationFrames(*state.preparedFrames[instance.definition], weights, palette)
+          ? gltf::EvaluateDeformationFrames(*state.preparedFrames[instance.definition], weights, palette, &tangentBudget)
           : gltf::EvaluatePrimitive(primitive, weights, palette);
+      instance.usedTangentFallback = tangentBudget.usedTriangleFallback;
       instance.bounds = bounds(instance.current, state.definitionIndices(instance.definition));
       instance.orientation = orientation(primitive, instance.current,
           state.definitionIndices(instance.definition), palette);
@@ -569,6 +577,7 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
       instance.hasCurrent = true;
       poseChanged = true;
     }
+    tangentFallbackInstanceCount += instance.usedTangentFallback;
     anyReset |= resetPending || !instance.submitted;
   }
   for (auto& range : candidateRanges) {
@@ -583,6 +592,7 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
     state.expandedIndices = std::move(replacementIndices);
   }
   state.instances = std::move(candidates);
+  state.tangentFallbackInstanceCount = tangentFallbackInstanceCount;
   state.ranges = std::move(candidateRanges);
   state.resetPending = resetPending;
   state.nodeRanges.assign(graph.nodeCount(), invalid);
@@ -593,7 +603,7 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
   if (topologyChanged) ++state.topologyRevision;
   state.sourceGeometryChanged = false;
   state.sourceTopologyChanged = false;
-  return {topologyChanged, geometryChanged, anyReset};
+  return {topologyChanged, geometryChanged, anyReset, tangentFallbackInstanceCount};
 }
 
 void GltfDeformationScene::commitSubmitted() {
@@ -632,6 +642,9 @@ const GltfDeformationDrawRange* GltfDeformationScene::drawRange(uint32_t graphNo
 std::span<const GltfDeformationDrawRange> GltfDeformationScene::drawRanges() const { return impl_->ranges; }
 std::span<const GltfDeformationInstance> GltfDeformationScene::gpuInstances() const { return impl_->gpuInstances; }
 std::span<const GltfDeformationPose> GltfDeformationScene::gpuPoses() const { return impl_->gpuPoses; }
+uint32_t GltfDeformationScene::tangentFallbackInstanceCount() const {
+  return impl_->tangentFallbackInstanceCount;
+}
 uint64_t GltfDeformationScene::geometryRevision() const { return impl_->geometryRevision; }
 uint64_t GltfDeformationScene::topologyRevision() const { return impl_->topologyRevision; }
 

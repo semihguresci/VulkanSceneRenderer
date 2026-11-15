@@ -127,15 +127,11 @@ struct CanonicalPrimitiveFrameView {
   uint32_t retainedNormalTexCoord{};
 };
 
-struct PrimitiveNormalFrameLimits {
-  container::geometry::gltf::PrimitiveFrameVariantLimits frames;
-  uint64_t maxMorphedGeneratedCorners{container::geometry::gltf::kMaxLiveMorphedNormalFrameCorners};
-};
-
 struct PrimitiveNormalFrameVariant {
   container::geometry::Mesh mesh;
   std::optional<container::geometry::gltf::DeformationPrimitive> definition;
   std::shared_ptr<const container::geometry::gltf::PreparedDeformationFrames> preparedFrames;
+  uint64_t preparedFrameBytes{};
 };
 
 struct SceneMergeGenerationLimits {
@@ -799,7 +795,8 @@ class SceneManager {
       uint32_t runtimePrimitive) const noexcept;
   [[nodiscard]] PrimitiveNormalFrameVariant preparePrimitiveNormalFrameVariant(
       uint32_t runtimePrimitive, uint32_t texCoord,
-      const PrimitiveNormalFrameLimits& limits = {}, uint64_t* tangentWorkRemaining = nullptr) const;
+      const container::geometry::gltf::PrimitiveFrameVariantLimits& limits = {},
+      uint64_t* tangentWorkRemaining = nullptr) const;
 
   glm::vec4 resolveMaterialColor(uint32_t materialIndex) const;
   glm::vec4 resolveMaterialEmissive(uint32_t materialIndex) const;

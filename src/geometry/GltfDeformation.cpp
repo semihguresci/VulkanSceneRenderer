@@ -1,4 +1,4 @@
-#include <Container/geometry/GltfDeformation.h>
+#include "GltfDeformationInternal.h"
 #include <Container/geometry/GltfAccessor.h>
 #include <Container/utility/ModelImportCancellation.h>
 
@@ -129,6 +129,67 @@ glm::vec3 frameTangent(const glm::vec3& tangent, const glm::vec3& normal) {
                                                    : glm::vec3(0, 1, 0);
   const glm::vec3 fallback = glm::normalize(axis - normal * glm::dot(normal, axis));
   return unitOr(tangent - normal * glm::dot(normal, tangent), fallback);
+}
+
+void requireInfluenceCount(size_t vertexCount, std::span<const VertexSkinInfluences> influences) {
+  if (!influences.empty() && influences.size() != vertexCount)
+    fail("evaluate", "influence count differs from vertex count");
+}
+
+void requireFiniteBindFrame(const Vertex& vertex) {
+  if (!finite(vertex.position) || !finite(vertex.normal) ||
+      !finite(glm::vec3(vertex.tangent)) || !std::isfinite(vertex.tangent.w)) {
+    fail("evaluate", "bind vertex contains a non-finite attribute");
+  }
+}
+
+void finalizeVertex(Vertex& vertex, glm::vec3 normal, glm::vec3 tangent,
+                    const VertexSkinInfluences* influences,
+                    std::span<const glm::mat4> skinPalette) {
+  float handedness = vertex.tangent.w < 0.0f ? -1.0f : 1.0f;
+  if (influences) {
+    glm::mat4 blended(0.0f);
+    double sum = 0.0;
+    for (const auto& influence : influences->values) {
+      if (influence.joint >= skinPalette.size() ||
+          !std::isfinite(influence.weight) || influence.weight < 0.0f) {
+        fail("evaluate", "invalid joint index or influence weight");
+      }
+      blended += skinPalette[influence.joint] * influence.weight;
+      sum += influence.weight;
+    }
+    if (!(sum > 0.0) || !std::isfinite(sum)) fail("evaluate", "vertex has no positive joint weight");
+    // Public structs may also be authored directly by tests or tools.
+    blended /= static_cast<float>(sum);
+    vertex.position = glm::vec3(blended * glm::vec4(vertex.position, 1.0f));
+    const glm::mat3 linear(blended);
+    float linearMagnitude = 0.0f;
+    for (int c = 0; c < 3; ++c) {
+      for (int r = 0; r < 3; ++r) linearMagnitude = std::max(linearMagnitude, std::abs(linear[c][r]));
+    }
+    const glm::mat3 scaled = linearMagnitude > 0.0f ? linear / linearMagnitude : glm::mat3(0.0f);
+    const float determinant = glm::determinant(scaled);
+    if (determinant != 0.0f) {
+      // Cofactors are inverse-transpose times determinant. Normalization
+      // removes its magnitude; keeping the sign preserves mirrored normals.
+      // Scaling first avoids a determinant threshold tied to world units.
+      const glm::mat3 cofactors(glm::cross(scaled[1], scaled[2]),
+                                glm::cross(scaled[2], scaled[0]),
+                                glm::cross(scaled[0], scaled[1]));
+      normal = cofactors * normal * (determinant < 0.0f ? -1.0f : 1.0f);
+    } else {
+      // Linear blend skinning can legitimately collapse opposing rotations.
+      // Retain a finite deterministic frame when an inverse does not exist.
+      normal = scaled * normal;
+    }
+    tangent = scaled * tangent;
+    handedness *= determinant < 0.0f ? -1.0f : 1.0f;
+  }
+  if (!finite(vertex.position) || !finite(normal) || !finite(tangent)) {
+    fail("evaluate", "deformation produced a non-finite attribute");
+  }
+  vertex.normal = unitOr(normal, unitOr(vertex.normal, glm::vec3(0, 1, 0)));
+  vertex.tangent = glm::vec4(frameTangent(tangent, vertex.normal), handedness);
 }
 
 size_t setIndex(std::string_view semantic, std::string_view prefix) {
@@ -438,9 +499,7 @@ std::vector<Vertex> EvaluatePrimitive(const DeformationPrimitive& primitive,
     if (!std::isfinite(weight)) fail("evaluate", "non-finite morph weight");
   }
   const size_t count = primitive.bindVertices.size();
-  if (!primitive.influences.empty() && primitive.influences.size() != count) {
-    fail("evaluate", "influence count differs from vertex count");
-  }
+  requireInfluenceCount(count, primitive.influences);
   for (const auto& target : primitive.morphTargets) {
     for (const auto* deltas : {&target.positions, &target.normals, &target.tangents}) {
       if (!deltas->empty() && deltas->size() != count) {
@@ -452,13 +511,11 @@ std::vector<Vertex> EvaluatePrimitive(const DeformationPrimitive& primitive,
     }
   }
   for (const auto& matrix : skinPalette) requireAffine(matrix, "palette");
+  const bool skin = !skinPalette.empty() && primitive.hasSkinning();
   std::vector<Vertex> result = primitive.bindVertices;
   for (size_t i = 0; i < count; ++i) {
     auto& vertex = result[i];
-    if (!finite(vertex.position) || !finite(vertex.normal) ||
-        !finite(glm::vec3(vertex.tangent)) || !std::isfinite(vertex.tangent.w)) {
-      fail("evaluate", "bind vertex contains a non-finite attribute");
-    }
+    requireFiniteBindFrame(vertex);
     glm::vec3 normal = vertex.normal;
     glm::vec3 tangent(vertex.tangent);
     for (size_t targetIndex = 0; targetIndex < primitive.morphTargets.size(); ++targetIndex) {
@@ -468,52 +525,23 @@ std::vector<Vertex> EvaluatePrimitive(const DeformationPrimitive& primitive,
       if (!target.normals.empty()) normal += weight * target.normals[i];
       if (!target.tangents.empty()) tangent += weight * target.tangents[i];
     }
-    float handedness = vertex.tangent.w < 0.0f ? -1.0f : 1.0f;
-    if (!skinPalette.empty() && primitive.hasSkinning()) {
-      glm::mat4 blended(0.0f);
-      double sum = 0.0;
-      for (const auto& influence : primitive.influences[i].values) {
-        if (influence.joint >= skinPalette.size() ||
-            !std::isfinite(influence.weight) || influence.weight < 0.0f) {
-          fail("evaluate", "invalid joint index or influence weight");
-        }
-        blended += skinPalette[influence.joint] * influence.weight;
-        sum += influence.weight;
-      }
-      if (!(sum > 0.0) || !std::isfinite(sum)) fail("evaluate", "vertex has no positive joint weight");
-      // Public structs may also be authored directly by tests or tools.
-      blended /= static_cast<float>(sum);
-      vertex.position = glm::vec3(blended * glm::vec4(vertex.position, 1.0f));
-      const glm::mat3 linear(blended);
-      float linearMagnitude = 0.0f;
-      for (int c = 0; c < 3; ++c) {
-        for (int r = 0; r < 3; ++r) linearMagnitude = std::max(linearMagnitude, std::abs(linear[c][r]));
-      }
-      const glm::mat3 scaled = linearMagnitude > 0.0f ? linear / linearMagnitude : glm::mat3(0.0f);
-      const float determinant = glm::determinant(scaled);
-      if (determinant != 0.0f) {
-        // Cofactors are inverse-transpose times determinant. Normalization
-        // removes its magnitude; keeping the sign preserves mirrored normals.
-        // Scaling first avoids a determinant threshold tied to world units.
-        const glm::mat3 cofactors(glm::cross(scaled[1], scaled[2]),
-                                  glm::cross(scaled[2], scaled[0]),
-                                  glm::cross(scaled[0], scaled[1]));
-        normal = cofactors * normal * (determinant < 0.0f ? -1.0f : 1.0f);
-      } else {
-        // Linear blend skinning can legitimately collapse opposing rotations.
-        // Retain a finite deterministic frame when an inverse does not exist.
-        normal = scaled * normal;
-      }
-      tangent = scaled * tangent;
-      handedness *= determinant < 0.0f ? -1.0f : 1.0f;
-    }
-    if (!finite(vertex.position) || !finite(normal) || !finite(tangent)) {
-      fail("evaluate", "deformation produced a non-finite attribute");
-    }
-    vertex.normal = unitOr(normal, unitOr(primitive.bindVertices[i].normal, glm::vec3(0, 1, 0)));
-    vertex.tangent = glm::vec4(frameTangent(tangent, vertex.normal), handedness);
+    finalizeVertex(vertex, normal, tangent, skin ? &primitive.influences[i] : nullptr, skinPalette);
   }
   return result;
+}
+
+void detail::FinalizeDeformedFrames(std::span<Vertex> vertices,
+                                    std::span<const VertexSkinInfluences> influences,
+                                    std::span<const glm::mat4> skinPalette) {
+  requireInfluenceCount(vertices.size(), influences);
+  for (const auto& matrix : skinPalette) requireAffine(matrix, "palette");
+  const bool skin = !skinPalette.empty() && !influences.empty();
+  for (size_t i = 0; i < vertices.size(); ++i) {
+    auto& vertex = vertices[i];
+    requireFiniteBindFrame(vertex);
+    finalizeVertex(vertex, vertex.normal, glm::vec3(vertex.tangent),
+                   skin ? &influences[i] : nullptr, skinPalette);
+  }
 }
 
 }  // namespace container::geometry::gltf

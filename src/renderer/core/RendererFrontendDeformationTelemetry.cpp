@@ -97,6 +97,7 @@ void RendererFrontend::appendGltfDeformationTelemetry(nlohmann::json& json) cons
       {"active", scene && !scene->gpuInstances().empty()},
       {"gpuReady", pass && pass->isReady()},
       {"instanceCount", scene ? scene->gpuInstances().size() : 0},
+      {"tangentFallbackInstanceCount", scene ? scene->tangentFallbackInstanceCount() : 0},
       {"sourceVertexCount", subs_.sceneManager ? subs_.sceneManager->model().vertices().size() : 0},
       {"expandedVertexCount", scene ? scene->currentVertices().size() : 0},
       {"expandedIndexCount", scene ? scene->indices().size() : 0},

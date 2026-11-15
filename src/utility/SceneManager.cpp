@@ -1747,7 +1747,7 @@ SceneManager::canonicalPrimitiveFrameView(uint32_t runtime) const noexcept {
 }
 
 PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
-    uint32_t runtime, uint32_t texCoord, const PrimitiveNormalFrameLimits& limits,
+    uint32_t runtime, uint32_t texCoord, const container::geometry::gltf::PrimitiveFrameVariantLimits& limits,
     uint64_t* tangentWorkRemaining) const {
   using namespace container::geometry::gltf;
   using container::geometry::Vertex;
@@ -1763,28 +1763,26 @@ PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
   if (changed && !(canonical->metadata.availableTexCoordMask() & (1u << texCoord)))
     throw std::invalid_argument("Normal UV is absent from the retained primitive");
   // Reserve C++ working storage independently of the metered C generator.
-  // Morphs also regenerate after pose changes, so keep their admitted size.
   const uint64_t cornerWorkspace = sizeof(uint32_t) + (splitSeams ? 128 : 0);
   const uint64_t vertexWorkspace = sizeof(Vertex) + 2 * sizeof(glm::vec3) + sizeof(uint8_t) +
       (splitSeams ? sizeof(uint32_t) : 0) +
       (splitSeams && canonical->definition && canonical->definition->hasSkinning()
           ? sizeof(VertexSkinInfluences) : 0);
   if (!cornerCount || cornerCount % 3 || !vertexCount ||
-      cornerCount > std::min<uint64_t>(limits.frames.maxTriangleCorners, UINT32_MAX) ||
-      vertexCount > std::min<uint64_t>(limits.frames.maxInputVertices, UINT32_MAX) ||
-      vertexCount > limits.frames.maxWorkspaceBytes / vertexWorkspace ||
-      (changed && hasMorphing && cornerCount > limits.maxMorphedGeneratedCorners) ||
-      cornerCount > (limits.frames.maxWorkspaceBytes - vertexCount * vertexWorkspace) / cornerWorkspace ||
+      cornerCount > std::min<uint64_t>(limits.maxTriangleCorners, UINT32_MAX) ||
+      vertexCount > std::min<uint64_t>(limits.maxInputVertices, UINT32_MAX) ||
+      vertexCount > limits.maxWorkspaceBytes / vertexWorkspace ||
+      cornerCount > (limits.maxWorkspaceBytes - vertexCount * vertexWorkspace) / cornerWorkspace ||
       std::ranges::any_of(mesh.indices(), [vertexCount](uint32_t index) {return index >= vertexCount;}))
     throw std::length_error("Normal frame variant exceeds its work budget or has invalid triangles");
   const auto scratchBytes = size_t(std::min<uint64_t>(
-      limits.frames.maxWorkspaceBytes - vertexCount * vertexWorkspace - cornerCount * cornerWorkspace,
+      limits.maxWorkspaceBytes - vertexCount * vertexWorkspace - cornerCount * cornerWorkspace,
       std::numeric_limits<size_t>::max()));
 
   // Each corner can introduce at most one vertex and inherit one influence
   // row. Budget the detached mesh, map and deformation together before Mikk.
   const auto maxRenderVertices = vertexCount + (splitSeams ? cornerCount : 0);
-  auto frameLimits = limits.frames;
+  auto frameLimits = limits;
   auto& bytes = frameLimits.maxOutputBytes;
   const auto charge = [&](uint64_t count, uint64_t size) {
     if (count > bytes / size)
@@ -1822,6 +1820,7 @@ PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
       const auto plan = PreparePrimitiveFrameVariants(canonical->metadata, definition,
                                                      mesh.indices(), requests, frameLimits);
       result.preparedFrames = std::make_shared<const PreparedDeformationFrames>(plan.templates().front().frames());
+      result.preparedFrameBytes = plan.outputBytes();
     }
     result.definition = *canonical->definition;
     if (changed) {
