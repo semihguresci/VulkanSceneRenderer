@@ -1453,6 +1453,159 @@ TEST(IfcCurvedBrep, OffsetBandsSupportEitherPeriodicAxisAndSurfaceSense) {
     }
 }
 
+TEST(IfcCurvedBrep, PeriodicBandCutPreservesAKnotWithOneSidedNormals) {
+  using container::geometry::ifc::detail::CurvedFaceChartLoop;
+  using container::geometry::ifc::detail::meshIfcCurvedFace;
+  using container::geometry::ifc::detail::ParametricSurface;
+  constexpr double crease = .73, height = 2., slope = .3, period = 2 * pi;
+  const auto radius = [=](double v) {
+    return 1 + slope * std::abs(v - crease);
+  };
+  const auto point = [=](double u, double v) {
+    return glm::dvec3(radius(v) * std::cos(u), radius(v) * std::sin(u), v);
+  };
+  ParametricSurface surface;
+  surface.periods.x = period;
+  surface.uDomain = {{0., period}};
+  surface.vDomain = {{0., height}};
+  surface.meshV = {crease};
+  surface.creaseV = {crease};
+  surface.spline = true;
+  surface.point = point;
+  surface.derivatives = [=](double u, double v) {
+    const double c = std::cos(u), s = std::sin(u);
+    const double dr = v < crease ? -slope : slope;
+    return std::pair(glm::dvec3(-radius(v) * s, radius(v) * c, 0.),
+                     glm::dvec3(dr * c, dr * s, 1.));
+  };
+
+  for (bool zipper : {false, true}) {
+    SCOPED_TRACE(zipper ? "unequal offset rings" : "matching rings");
+    constexpr double bottomStart = .173;
+    const double topStart = zipper ? -.271 : bottomStart;
+    std::vector<std::vector<glm::vec3>> loops;
+    std::vector<CurvedFaceChartLoop> charts;
+    const auto addRing = [&](unsigned count, double start, double z,
+                             double direction) {
+      auto &samples = loops.emplace_back();
+      auto &chart = charts.emplace_back();
+      chart.closure = {start + direction * period, z};
+      for (unsigned i = 0; i < count; ++i) {
+        const double u = start + direction * period * i / count;
+        samples.emplace_back(point(u, z));
+        chart.vertices.emplace_back(u, z);
+      }
+    };
+    addRing(128, bottomStart, 0., 1.);
+    addRing(zipper ? 160 : 128, topStart, height, -1.);
+
+    std::string error;
+    const auto mesh =
+        meshIfcCurvedFace(surface, loops, false, true, 1., error, {}, charts);
+    if (!mesh) {
+      ADD_FAILURE() << error;
+      continue;
+    }
+    ASSERT_FALSE(mesh->empty());
+
+    // The cut connects the bottom start to the closest angular sample of the
+    // upper ring. Its two virtual copies must produce identical float edges.
+    const auto angularDifference = [=](glm::dvec2 uv) {
+      return std::remainder(uv.x - bottomStart, period);
+    };
+    const auto topAnchor =
+        std::ranges::min_element(charts[1].vertices, {}, [&](glm::dvec2 uv) {
+          return std::abs(angularDifference(uv));
+        });
+    const auto onCut = [&](glm::vec3 p) {
+      const double u =
+          bottomStart + angularDifference(*topAnchor) * p.z / height;
+      return glm::length(glm::dvec3(p) - point(u, p.z)) < 1e-6;
+    };
+    using Key = std::array<float, 3>;
+    using Edge = std::pair<Key, Key>;
+    const auto key = [](glm::vec3 p) { return Key{p.x, p.y, p.z}; };
+    std::map<Edge, std::pair<unsigned, int>> uses;
+    std::set<Edge> cutEdges;
+    std::set<Key> cutAtCrease;
+    bool cutNormalBelow = false, cutNormalAbove = false;
+    double area = 0;
+    const float knot = static_cast<float>(crease);
+    for (const auto &triangle : *mesh) {
+      const auto &p = triangle.positions;
+      const auto [lo, hi] = std::ranges::minmax_element(p, {}, &glm::vec3::z);
+      EXPECT_FALSE(lo->z < knot && hi->z > knot);
+      area += glm::length(glm::cross(glm::dvec3(p[1]) - glm::dvec3(p[0]),
+                                     glm::dvec3(p[2]) - glm::dvec3(p[0]))) /
+              2.;
+      for (size_t i = 0; i < p.size(); ++i) {
+        const auto next = p[(i + 1) % p.size()];
+        const auto a = key(p[i]), b = key(next);
+        ASSERT_NE(a, b);
+        const Edge edge = std::minmax(a, b);
+        auto &use = uses[edge];
+        ++use.first;
+        use.second += a < b ? 1 : -1;
+        if (onCut(p[i]) && onCut(next))
+          cutEdges.emplace(edge);
+        if (p[i].z != knot)
+          continue;
+        const bool below = lo->z < knot;
+        const auto normal =
+            glm::normalize(glm::dvec3(p[i].x, p[i].y, below ? slope : -slope));
+        EXPECT_GT(glm::dot(glm::dvec3(triangle.normals[i]), normal), .99999);
+        if (onCut(p[i])) {
+          cutAtCrease.insert(a);
+          cutNormalBelow |= below;
+          cutNormalAbove |= !below;
+        }
+      }
+    }
+    EXPECT_EQ(cutAtCrease.size(), 1u);
+    EXPECT_TRUE(cutNormalBelow);
+    EXPECT_TRUE(cutNormalAbove);
+    EXPECT_GE(cutEdges.size(), 2u);
+    for (const auto &edge : cutEdges) {
+      EXPECT_EQ(uses[edge].first, 2u);
+      EXPECT_EQ(uses[edge].second, 0);
+    }
+    for (const auto &loop : loops)
+      for (size_t i = 0; i < loop.size(); ++i) {
+        const auto a = key(loop[i]), b = key(loop[(i + 1) % loop.size()]);
+        const auto found = uses.find(std::minmax(a, b));
+        ASSERT_NE(found, uses.end());
+        EXPECT_EQ(found->second.first, 1u);
+        EXPECT_EQ(found->second.second, a < b ? 1 : -1);
+      }
+    for (const auto &[_, use] : uses) {
+      EXPECT_LE(use.first, 2u);
+      if (use.first == 2)
+        EXPECT_EQ(use.second, 0);
+    }
+    const auto singleUse = [](const auto &entry) {
+      return entry.second.first == 1;
+    };
+    EXPECT_EQ(std::ranges::count_if(uses, singleUse),
+              loops[0].size() + loops[1].size());
+    const double integratedRadius =
+        height +
+        slope * (crease * crease + (height - crease) * (height - crease)) / 2.;
+    EXPECT_NEAR(area, period * integratedRadius * std::hypot(1., slope), .02);
+  }
+
+  // A real shared side is immutable even when it crosses the same knot.
+  const CurvedFaceChartLoop patch{
+      {{.2, 0.}, {.24, 0.}, {.24, height}, {.2, height}}, {.2, 0.}};
+  std::vector<glm::vec3> boundary;
+  for (const auto &uv : patch.vertices)
+    boundary.emplace_back(point(uv.x, uv.y));
+  std::string error;
+  EXPECT_FALSE(meshIfcCurvedFace(surface, {boundary}, true, true, 1., error, {},
+                                 std::span(&patch, 1)));
+  EXPECT_NE(error.find("Shared edge must have a sample"), std::string::npos)
+      << error;
+}
+
 TEST(IfcCurvedBrep, SphericalVertexLoopsMeshClosedSpheresWithSmoothPoles) {
   for (int pole : {-1, 1})
     for (bool millimetres : {false, true}) {

@@ -144,6 +144,10 @@ private:
                          std::span<const UV> normalized, UV uv, bool sameSense);
   std::vector<double> liftKnots(std::span<const double> knots,
                                 unsigned axis) const;
+  std::vector<double> bandCutCreases(const std::array<Edge, 2> &cuts) const;
+  void splitBandCuts(std::vector<Triangle> &triangles,
+                     const std::array<Edge, 2> &cuts,
+                     std::span<const double> fractions);
   void constrainCreases(std::vector<Triangle> &triangles);
   bool onCrease(double parameter, unsigned axis) const {
     const double epsilon = scale_[axis] * 1e-10;
@@ -259,12 +263,6 @@ void Mesher::constrainCreases(std::vector<Triangle> &triangles) {
   for (unsigned axis = 0; axis < 2; ++axis) {
     const double first = low_[axis], last = first + scale_[axis];
     const double epsilon = scale_[axis] * 1e-10;
-    creases_[axis] = liftKnots(axis ? s_.creaseV : s_.creaseU, axis);
-    if (s_.spline) {
-      probeKnots_[axis] = liftKnots(axis ? s_.meshV : s_.meshU, axis);
-    } else {
-      probeKnots_[axis] = axis ? s_.meshV : s_.meshU;
-    }
     for (double knot : creases_[axis]) {
       if (knot <= first + epsilon || knot >= last - epsilon)
         continue;
@@ -314,6 +312,73 @@ void Mesher::constrainCreases(std::vector<Triangle> &triangles) {
         }
       }
       triangles = std::move(pieces);
+    }
+  }
+}
+
+std::vector<double>
+Mesher::bandCutCreases(const std::array<Edge, 2> &cuts) const {
+  std::vector<double> fractions;
+  for (const auto &[first, last] : cuts) {
+    const auto a = vertices_[first].uv, b = vertices_[last].uv;
+    for (unsigned axis = 0; axis < 2; ++axis) {
+      const double epsilon = scale_[axis] * 1e-10;
+      const double low = std::min(a[axis], b[axis]) + epsilon;
+      const double high = std::max(a[axis], b[axis]) - epsilon;
+      for (double knot : creases_[axis])
+        if (knot > low && knot < high)
+          fractions.push_back((knot - a[axis]) / (b[axis] - a[axis]));
+    }
+  }
+  std::ranges::sort(fractions);
+  // These cuts span at most the chart extent on each axis. Roots this close
+  // lie on all of the corresponding crease lines at the side-test tolerance.
+  fractions.erase(
+      std::unique(fractions.begin(), fractions.end(),
+                  [](double a, double b) { return b - a <= 1e-12; }),
+      fractions.end());
+  return fractions;
+}
+
+void Mesher::splitBandCuts(std::vector<Triangle> &triangles,
+                           const std::array<Edge, 2> &cuts,
+                           std::span<const double> fractions) {
+  if (fractions.empty())
+    return;
+  std::array<std::vector<uint32_t>, 2> chains;
+  for (unsigned i = 0; i < cuts.size(); ++i)
+    chains[i].push_back(cuts[i].first);
+  for (double fraction : fractions) {
+    for (unsigned i = 0; i < cuts.size(); ++i) {
+      const auto a = vertices_[cuts[i].first].uv,
+                 b = vertices_[cuts[i].second].uv;
+      chains[i].push_back(insert(
+          {std::lerp(a.x, b.x, fraction), std::lerp(a.y, b.y, fraction)}));
+    }
+    vertices_[chains[1].back()].point = vertices_[chains[0].back()].point;
+  }
+  for (unsigned i = 0; i < cuts.size(); ++i) {
+    const auto &cut = cuts[i];
+    auto &chain = chains[i];
+    chain.push_back(cut.second);
+    const auto triangle = std::ranges::find_if(triangles, [&](const auto &t) {
+      return std::ranges::find(t, cut.first) != t.end() &&
+             std::ranges::find(t, cut.second) != t.end();
+    });
+    if (triangle == triangles.end())
+      throw std::runtime_error("Periodic band lost its cut edge");
+    const auto old = *triangle;
+    const size_t first = std::ranges::find(old, cut.first) - old.begin();
+    if (old[(first + 1) % 3] != cut.second)
+      std::ranges::reverse(chain);
+    const auto opposite = *std::ranges::find_if(
+        old, [&](uint32_t v) { return v != cut.first && v != cut.second; });
+    boundary_.erase(cut);
+    *triangle = {chain[0], chain[1], opposite};
+    boundary_.insert(edge(chain[0], chain[1]));
+    for (size_t j = 2; j < chain.size(); ++j) {
+      triangles.push_back({chain[j - 1], chain[j], opposite});
+      boundary_.insert(edge(chain[j - 1], chain[j]));
     }
   }
 }
@@ -511,6 +576,11 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
   if (!std::isfinite(scale_.x) || !std::isfinite(scale_.y) || scale_.x <= 0 ||
       scale_.y <= 0)
     throw std::runtime_error("Degenerate curved face parameter region");
+  for (unsigned axis = 0; axis < 2; ++axis) {
+    creases_[axis] = liftKnots(axis ? s_.creaseV : s_.creaseU, axis);
+    const auto &knots = axis ? s_.meshV : s_.meshU;
+    probeKnots_[axis] = s_.spline ? liftKnots(knots, axis) : knots;
+  }
   std::vector<std::vector<std::array<double, 2>>> polygon;
   std::vector<UV> normalized;
   constexpr double epsilon = 1e-10;
@@ -592,6 +662,12 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
   }
   std::vector<uint32_t> indices;
   bool bandGrid = false;
+  std::array<Edge, 2> bandCuts{};
+  if (bandFirstSize_) {
+    const auto count = static_cast<uint32_t>(bandFirstSize_);
+    bandCuts = {Edge{0, static_cast<uint32_t>(vertices_.size() - 1)},
+                Edge{count - 1, count}};
+  }
   const double progressTolerance =
       glm::dot(glm::abs(bandProgress_), scale_) * 1e-10;
   if (fanPoint_) {
@@ -632,6 +708,16 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
         for (const auto &p : samples)
           fractions.insert(p.parameter);
       }
+      const auto cutCreases = bandCutCreases(bandCuts);
+      for (double crease : cutCreases) {
+        // Keep the knot row when adaptive sampling chose a nearby row.
+        constexpr double epsilon = 1e-10;
+        const auto low = std::max(std::nextafter(0., 1.), crease - epsilon);
+        const auto high = std::min(std::nextafter(1., 0.), crease + epsilon);
+        fractions.erase(fractions.lower_bound(low),
+                        fractions.upper_bound(high));
+      }
+      fractions.insert(cutCreases.begin(), cutCreases.end());
       if (fractions.size() * count > 131072)
         throw std::runtime_error(
             "Periodic band exceeds its grid vertex budget");
@@ -775,6 +861,8 @@ void Mesher::triangulate(const std::vector<std::vector<Vertex>> &rings,
     else if (interiorPoint_->required)
       throw std::runtime_error("Curved face apex must lie inside its trim");
   }
+  if (bandFirstSize_ && !bandGrid)
+    splitBandCuts(initial, bandCuts, bandCutCreases(bandCuts));
   constrainCreases(initial);
   for (const auto &t : initial)
     add(t);

@@ -118,7 +118,8 @@ the same edge and differ by a certified period. Doubly periodic spline bands
 can follow a primitive winding on both axes, such as two U turns and one V
 turn. Their trims must form opposite monotone loops with exactly one cover
 between periodic images. A cut between existing samples preserves the original
-edge positions. The importer also rejects overlapping translated interiors in
+edge positions. Both copies of the artificial cut receive matching samples at
+sharp knot crossings. The importer also rejects overlapping translated interiors in
 explicit trims. Inconsistent lifts, intersecting periodic images and ambiguous
 endpoints produce face and edge diagnostics.
 Per-chart budgets allow 131,072 vertices,
@@ -661,7 +662,9 @@ Spline seam regressions check U-closed and V-closed rational cylinders and
 doubly periodic rational tori with non-unit knot domains, opposite face bounds
 and authored pcurves. Independent volume, normal and exact-edge checks cover
 complementary winding bands on the torus. Conflicting lifts and periodic images
-reject without leaving mesh buffers. Use
+reject without leaving mesh buffers. Sharp-knot cases check that matching and
+unequally sampled rings keep identical cut edges and one-sided normals.
+Use
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` with CTest's
 `ifc_periodic_spline_seams_gpu_regression` to verify depth, source colors and
 the torus bore in forward/deferred with TAA off/on.
@@ -834,8 +837,8 @@ seam cut remain outside native coverage. Swept surface limits include profiles
 with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
 multi-chart boundaries without enough 3D geometry to select their chart.
 Periodic spline charts with unclamped closure, incomplete pcurve trims,
-nonmonotone winding bands or cuts across unsampled sharp knots require further
-work. Each omitted
+nonmonotone winding bands or shared source edges missing a sample at a sharp
+knot require further work. Each omitted
 representation is reported. A full IFC backend remains an option if future
 assets need these capabilities.
 
