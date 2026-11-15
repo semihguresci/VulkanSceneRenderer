@@ -1,5 +1,6 @@
 #include "IfcCurveReader.h"
 #include "Container/utility/ModelImportCancellation.h"
+#include "IfcAreaProfileGeometry.h"
 #include "IfcSectionedGuide.h"
 #include "IfcSectionedMeshValidation.h"
 #include "IfcSectionedMiter.h"
@@ -587,6 +588,8 @@ public:
   Surface surface(uint32_t id);
   std::vector<Surface> surfaceCharts(uint32_t id);
   ProfileTransform2D profileTransform(uint32_t id);
+  ParametricCurve centerLineCurve(uint32_t id,
+                                  std::vector<IfcCenterLineSegment> &segments);
 
 private:
   const Entity &get(uint32_t id) const {
@@ -619,12 +622,14 @@ private:
   CurveFrame placement(uint32_t id, unsigned &dimension);
   std::pair<double, glm::dvec3>
   distanceExpression(const Entity &, const ParametricCurve &, uint32_t basisId);
-  ParametricCurve polyline(const Entity &);
+  ParametricCurve polyline(const Entity &,
+                          std::vector<IfcCenterLineSegment> *centerLine = nullptr);
   ParametricCurve spline(const Entity &);
   ParametricCurve trimmed(const Entity &);
   ParametricCurve segment(const Entity &, bool polynomialProfile = false);
   ParametricCurve composite(const Entity &,
-                            std::optional<uint32_t> uvBasis = {});
+                            std::optional<uint32_t> uvBasis = {},
+                            std::vector<IfcCenterLineSegment> *centerLine = nullptr);
   ParametricCurve alignment(const Entity &);
   ParametricCurve spiral(const Entity &, double length);
   ParametricCurve offset(const Entity &);
@@ -739,7 +744,22 @@ ParametricCurve Reader::spline(const Entity &e) {
   return *c;
 }
 
-ParametricCurve Reader::polyline(const Entity &e) {
+void appendCenterLinePiece(std::vector<IfcCenterLineSegment> &segments,
+                           IfcCenterLineSegment piece) {
+  if (segments.size() >= kMaxIfcCenterLinePoints - 1)
+    throw std::runtime_error("Centerline exceeds its source segment budget");
+  segments.push_back(piece);
+}
+
+double signedCenterLineCurvature(const IfcCenterLineSegment &piece) {
+  if (piece.sweepRadians == 0)
+    return 0;
+  return std::copysign(1. / glm::length(piece.start - piece.center),
+                       piece.sweepRadians);
+}
+
+ParametricCurve Reader::polyline(
+    const Entity &e, std::vector<IfcCenterLineSegment> *centerLine) {
   std::vector<glm::dvec3> points;
   unsigned dimension = 0;
   if (e.type == "IFCPOLYLINE") {
@@ -766,6 +786,8 @@ ParametricCurve Reader::polyline(const Entity &e) {
       points.emplace_back(p[0], p[1], dimension == 3 ? p[2] : 0);
     }
   }
+  if (centerLine && dimension != 2)
+    throw std::runtime_error("Centerline curve must be two dimensional");
   std::vector<ParametricCurve> pieces;
   const auto line = [&](size_t a, size_t b) {
     if (a >= points.size() || b >= points.size() ||
@@ -775,6 +797,8 @@ ParametricCurve Reader::polyline(const Entity &e) {
     c.domain = {{0, 1}};
     c.dimension = dimension;
     const auto p = points[a], q = points[b], d = q - p;
+    if (centerLine)
+      appendCenterLinePiece(*centerLine, {glm::dvec2(p), glm::dvec2(q)});
     // Keep authored endpoints exact. A pcurve endpoint may sit on the
     // inclusive boundary of its spline surface's native knot domain.
     const auto interpolate = [p, q](double t) {
@@ -795,7 +819,7 @@ ParametricCurve Reader::polyline(const Entity &e) {
   };
   if (e.type == "IFCPOLYLINE" || omitted(arg(e, 1))) {
     for (size_t i = 1; i < points.size(); ++i)
-      if (points[i] != points[i - 1])
+      if (centerLine || points[i] != points[i - 1])
         line(i - 1, i);
   } else {
     size_t previous = std::numeric_limits<size_t>::max();
@@ -826,6 +850,8 @@ ParametricCurve Reader::polyline(const Entity &e) {
                  n = glm::cross(ab, ac);
       const double n2 = glm::dot(n, n);
       if (n2 <= 1e-24 * glm::dot(ab, ab) * glm::dot(ac, ac)) {
+        if (centerLine)
+          throw std::runtime_error("Centerline ArcIndex has collinear or coincident points");
         line(index[0], index[1]);
         line(index[1], index[2]);
         continue;
@@ -843,6 +869,10 @@ ParametricCurve Reader::polyline(const Entity &e) {
       };
       const double middle = angle(b), end = angle(c);
       const double sweep = middle < end ? end : end - 2 * pi;
+      if (centerLine)
+        appendCenterLinePiece(*centerLine,
+                              {glm::dvec2(a), glm::dvec2(c), glm::dvec2(center),
+                               sweep * normal.z});
       ParametricCurve curve;
       curve.dimension = dimension;
       curve.domain = {{0, 1}};
@@ -978,6 +1008,56 @@ ParametricCurve Reader::trimmed(const Entity &e) {
       throw std::runtime_error("Trim order conflicts with curve sense");
   }
   return remap(std::move(basis), first, last, std::abs(last - first));
+}
+
+ParametricCurve Reader::centerLineCurve(
+    uint32_t id, std::vector<IfcCenterLineSegment> &segments) {
+  container::util::checkModelImportCancellation(stop_);
+  if (++nodes_ > 4096 || visiting_.size() >= 64 || !visiting_.insert(id).second)
+    throw std::runtime_error("Cyclic or excessive centerline curve graph at #" +
+                             std::to_string(id));
+  const VisitEntity visit{visiting_, id};
+  const auto &e = get(id);
+  try {
+    if (e.type == "IFCPOLYLINE" || e.type == "IFCINDEXEDPOLYCURVE") {
+      const auto *selfIntersect = arg(e, 2);
+      if (e.type == "IFCINDEXEDPOLYCURVE" && selfIntersect &&
+          selfIntersect->text == "T")
+        throw std::runtime_error("Centerline is marked self-intersecting");
+      return polyline(e, &segments);
+    }
+    if (e.type == "IFCCOMPOSITECURVE") {
+      const auto *selfIntersect = arg(e, 1);
+      if (selfIntersect && selfIntersect->text == "T")
+        throw std::runtime_error("Centerline is marked self-intersecting");
+      return composite(e, {}, &segments);
+    }
+    if (e.type != "IFCTRIMMEDCURVE")
+      throw std::runtime_error("Centerline requires bounded lines and circular arcs");
+    const auto &basis = referenced(e, 0);
+    if (basis.type != "IFCLINE" && basis.type != "IFCCIRCLE")
+      throw std::runtime_error("Centerline trim must use a line or a circle");
+    auto curve = trimmed(e);
+    if (curve.dimension != 2 || !curve.domain)
+      throw std::runtime_error("Centerline curve must be bounded and two dimensional");
+    const auto [first, last] = *curve.domain;
+    const auto a = curve.point(first), b = curve.point(last);
+    if (!a || !b)
+      throw std::runtime_error("Undefined centerline trim endpoint");
+    IfcCenterLineSegment piece{glm::dvec2(*a), glm::dvec2(*b)};
+    if (basis.type == "IFCCIRCLE") {
+      unsigned dimension = 0;
+      const auto frame = placement(reference(arg(basis, 0)), dimension);
+      piece.center = glm::dvec2(frame.origin);
+      piece.sweepRadians = (last - first) * *angle_ *
+                           (boolean(arg(e, 3)) ? 1. : -1.);
+    }
+    appendCenterLinePiece(segments, piece);
+    return curve;
+  } catch (const std::runtime_error &failure) {
+    throw std::runtime_error(e.type + " #" + std::to_string(id) + ": " +
+                             failure.what());
+  }
 }
 
 ParametricCurve Reader::spiral(const Entity &e, double length) {
@@ -1224,7 +1304,8 @@ ParametricCurve Reader::segment(const Entity &e, bool polynomialProfile) {
 }
 
 ParametricCurve Reader::composite(const Entity &e,
-                                  std::optional<uint32_t> uvBasis) {
+                                  std::optional<uint32_t> uvBasis,
+                                  std::vector<IfcCenterLineSegment> *centerLine) {
   std::vector<ParametricCurve> parts;
   std::vector<double> ends;
   std::vector<std::string> transitions;
@@ -1241,15 +1322,35 @@ ParametricCurve Reader::composite(const Entity &e,
     if (i + 1 < segments.size() && transition == "DISCONTINUOUS")
       throw std::runtime_error("Internal discontinuity in composite curve");
     ParametricCurve c;
-    if (s.type == "IFCCURVESEGMENT")
+    if (s.type == "IFCCURVESEGMENT" && !centerLine)
       c = read(s.id);
     else if (s.type == "IFCCOMPOSITECURVESEGMENT" ||
              s.type == "IFCREPARAMETRISEDCOMPOSITECURVESEGMENT") {
-      auto parent = uvBasis ? parameterCurve(reference(arg(s, 2)), *uvBasis)
-                            : read(reference(arg(s, 2)));
+      const auto parentId = reference(arg(s, 2));
+      const size_t firstPiece = centerLine ? centerLine->size() : 0;
+      auto parent = centerLine ? centerLineCurve(parentId, *centerLine)
+                    : uvBasis ? parameterCurve(parentId, *uvBasis)
+                              : read(parentId);
       if (!parent.domain)
         throw std::runtime_error("Unbounded composite parent needs a trim");
       const bool sense = boolean(arg(s, 1));
+      if (centerLine && !sense) {
+        auto appended = std::span(*centerLine).subspan(firstPiece);
+        std::ranges::reverse(appended);
+        for (auto &piece : appended) {
+          std::swap(piece.start, piece.end);
+          piece.sweepRadians = -piece.sweepRadians;
+        }
+      }
+      if (centerLine && !transitions.empty() &&
+          transitions.back() == "CONTSAMEGRADIENTSAMECURVATURE") {
+        const double before = signedCenterLineCurvature((*centerLine)[firstPiece - 1]);
+        const double after = signedCenterLineCurvature((*centerLine)[firstPiece]);
+        const double tolerance = 1e-8 * std::max(std::abs(before), std::abs(after));
+        if (!std::isfinite(before) || !std::isfinite(after) ||
+            std::abs(before - after) > tolerance)
+          throw std::runtime_error("Composite transition has incompatible curvatures");
+      }
       const double a = parent.domain->first, b = parent.domain->second;
       const double length = s.type == "IFCREPARAMETRISEDCOMPOSITECURVESEGMENT"
                                 ? number(arg(s, 3))
@@ -4353,6 +4454,21 @@ readIfcCurve(const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,
   } catch (const std::runtime_error &e) {
     error = e.what();
     return std::nullopt;
+  }
+}
+std::vector<IfcCenterLineSegment>
+readIfcCenterLineSegments(const std::unordered_map<uint32_t, Entity> &entities,
+                          uint32_t id, double units, std::optional<double> angle,
+                          std::string &error, std::stop_token stop) {
+  try {
+    if (!std::isfinite(units) || units <= 0)
+      throw std::runtime_error("Invalid centerline length units");
+    std::vector<IfcCenterLineSegment> segments;
+    Reader(entities, units, angle, stop).centerLineCurve(id, segments);
+    return segments;
+  } catch (const std::runtime_error &e) {
+    error = e.what();
+    return {};
   }
 }
 std::optional<ParametricCurve>

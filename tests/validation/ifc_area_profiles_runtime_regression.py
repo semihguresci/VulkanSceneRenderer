@@ -38,6 +38,10 @@ class Fixture:
 STRIP = ((-.94, -.76), (.51, -.76), (.51, .46), (.94, .46), (.94, .78), (.19, .78), (.19, -.44), (-.94, -.44))
 TRAPEZIUM = ((-1.05, -.73), (1.05, -.73), (.56, .73), (-.56, .73))
 ISLANDS = ((-.64, -.20), (.64, .20))
+CENTERLINE_RADIUS, CENTERLINE_THICKNESS = .60, .36
+CENTERLINE_INNER = CENTERLINE_RADIUS - CENTERLINE_THICKNESS / 2.
+CENTERLINE_OUTER = CENTERLINE_RADIUS + CENTERLINE_THICKNESS / 2.
+CENTERLINE_SWEEP = 1.5 * math.pi
 AREA_WITNESSES = (
     (0, "flat center", (0., 0.), True), (0, "rounded corner", (.99, .76), False),
     (1, "mapped right rim", (.94, 0.), True), (1, "mapped top rim", (0., .69), True),
@@ -65,6 +69,12 @@ STRUCTURAL_WITNESSES = (
     (3, "tapered web neck", (.313, .39), True), (3, "concave fillet", (.38, .59), True),
     (3, "tapered web foot gap", (.24, -.60), False), (3, "sloping flange underside", (.90, .63), False),
     (3, "wide open side", (-.72, 0.), False),
+    (4, "east of arc center", (.60, 0.), True), (4, "north of arc center", (0., .60), True),
+    (4, "near inner radius", (-.41, .29), True), (4, "near outer radius", (.745, .09), True),
+    (4, "inside starting butt", (.085, -.58), True), (4, "past starting butt", (-.097, -.60), False),
+    (4, "inside ending butt", (-.575, .095), True), (4, "past ending butt", (-.60, -.10), False),
+    (4, "open arc center", (0., 0.), False), (4, "inside clear bore", (.308, .075), False),
+    (4, "outside outer radius", (.867, .08), False), (4, "open angular sector", (-.45, -.43), False),
 )
 
 
@@ -117,12 +127,17 @@ def area_step_profiles(step):
 
 
 def structural_step_profiles(step):
+    # From south through east to west, the three points select a 270-degree arc.
+    points = step.add("IFCCARTESIANPOINTLIST2D",
+                      f"((0.,{-CENTERLINE_RADIUS}),({CENTERLINE_RADIUS},0.),({-CENTERLINE_RADIUS},0.))")
+    arc = step.add("IFCINDEXEDPOLYCURVE", points, "(IFCARCINDEX((1,2,3)))", ".F.")
     return (
         step.add("IFCCSHAPEPROFILEDEF", ".AREA.", "$", "$", 1.92, 1.92, .34, .72, .22),
         step.add("IFCZSHAPEPROFILEDEF", ".AREA.", "$", "$", 1.94, 1.19, .4, .34, .12, .1),
         step.add("IFCASYMMETRICISHAPEPROFILEDEF", ".AREA.", "$", "$", 1.9, 2.22, .42, .30, .075,
                  1.2, .35, .12, .07, .27, .05, -.43),
         step.add("IFCTSHAPEPROFILEDEF", ".AREA.", "$", "$", 1.9, 2.2, .55, .31, .24, .12, .07, .17, .13),
+        step.add("IFCCENTERLINEPROFILEDEF", ".AREA.", "$", arc, CENTERLINE_THICKNESS),
     )
 
 
@@ -218,6 +233,10 @@ def area_footprint(index, x, y):
 def structural_footprint(index, x, y):
     import numpy as np
 
+    if index == 4:
+        r = np.hypot(x, y)
+        return (r >= CENTERLINE_INNER) & (r <= CENTERLINE_OUTER) & ((x >= 0.) | (y >= 0.))
+
     if index == 0:
         cavity = rounded_rectangle(x, y, .62, .62, .22)
         opening = (x >= .62) & (np.abs(y) < .24)
@@ -263,6 +282,7 @@ FIXTURES = {
         Profile("Mapped Z section", (1.85, 1.35), (.85, .25, .09), math.radians(18.)),
         Profile("Asymmetric I section", (-1.85, -1.35), (.7, .19, .79)),
         Profile("Sloped T section", (1.85, -1.35), (.18, .82, .31)),
+        Profile("Curved butt-ended centreline", (0., 0.), (.89, .57, .10)),
     ), STRUCTURAL_WITNESSES, structural_step_profiles, structural_footprint),
 }
 
@@ -276,6 +296,43 @@ def interior_mask(fixture, index, x, y):
     for dx, dy in ((d, 0.), (-d, 0.), (0., d), (0., -d), (d, d), (d, -d), (-d, d), (-d, -d)):
         solid = solid & fixture.footprint(index, x + dx, y + dy)
     return solid
+
+
+def check_curved_centerline(visible, x, y, pixel_width):
+    import numpy as np
+
+    r = np.hypot(x, y)
+    inner, outer = CENTERLINE_INNER, CENTERLINE_OUTER
+    # The open bore is smallest at the back extrusion plane. Its projected
+    # radius excludes the inner wall even after perspective foreshortening.
+    back_inner = inner * (DISTANCE - DEPTH) / DISTANCE
+    border = 3. * pixel_width
+    clear = (
+        ("clearBore", r < back_inner - border),
+        ("clearBetweenButts", (x < -border) & (y < -border) & (r > inner) & (r < outer)),
+        ("clearOutsideArc", (y >= 0.) & (r > outer + border) & (r < outer + 2. * border)),
+    )
+    result = {}
+    for label, mask in clear:
+        count = int(np.count_nonzero(mask))
+        coverage = float(np.mean(visible[mask]))
+        require(count >= 200 and coverage < .01, f"Curved centreline {label} unexpectedly filled: {coverage}")
+        result[label] = dict(pixels=count, visibleFraction=coverage)
+
+    # Integrate the visible cap outside a two-pixel inner collar, then add
+    # the analytic collar area. The sampling allowance covers rasterized
+    # outer and butt edges. The fixture lies on the view axis, so the outer
+    # wall projects inside the cap and cannot inflate its estimated area.
+    cap_start = inner + 2. * pixel_width
+    scan = (r >= cap_start) & (r < outer + 2. * pixel_width)
+    sector = CENTERLINE_SWEEP / 2.
+    expected_area = sector * (outer ** 2 - inner ** 2)
+    measured_area = int(np.count_nonzero(visible & scan)) * pixel_width ** 2 + sector * (cap_start ** 2 - inner ** 2)
+    tolerance = 1.5 * pixel_width * (CENTERLINE_SWEEP * outer + 2. * (outer - cap_start))
+    require(abs(measured_area - expected_area) < tolerance,
+            f"Curved centreline cap area {measured_area}, expected {expected_area}")
+    result.update(estimatedCapAreaM2=measured_area, expectedCapAreaM2=expected_area)
+    return result
 
 
 def check_pixels(image, fixture):
@@ -304,6 +361,8 @@ def check_pixels(image, fixture):
                 f"Missing, unlit, or unstyled {product.name} interior: {coverage}, {lit.tolist()}")
         results[product.name] = {"interiorPixels": interior_pixels, "visibleFraction": coverage,
                                  "meanRgb8": lit.tolist(), "meanChannelContrast": contrast}
+        if fixture is FIXTURES["structural"] and index == 4:
+            results[product.name].update(check_curved_centerline(visible, u, v, dx))
     return results
 
 

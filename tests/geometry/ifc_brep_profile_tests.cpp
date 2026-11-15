@@ -819,6 +819,185 @@ TEST(IfcStructuralProfiles, LinearCenterlineExtrusionsUseMiterCornersAndButtEnds
   }
 }
 
+void expectCurvedCenterlineSector(const Model &model, bool tangentLine,
+                                  glm::dvec2 scale = {1, 1},
+                                  glm::dvec2 translation = {0, 0}) {
+  watertight(model);
+  constexpr double tolerance = 2e-6;
+  const double startY = tangentLine ? -3. : 0.;
+  const double capArea = (2 * pi - startY) * std::abs(scale.x * scale.y);
+  EXPECT_NEAR(volume(model), 2 * capArea, .03);
+  std::array<double, 2> area{};
+  std::array<unsigned, 4> walls{};
+  double maxChordError = 0.;
+  for (size_t i = 0; i < model.indices.size(); i += 3) {
+    std::array<glm::dvec3, 3> points;
+    std::array<glm::dvec2, 3> base;
+    for (size_t j = 0; j < points.size(); ++j) {
+      points[j] = model.vertices.at(model.indices.at(i + j)).position;
+      base[j] = (glm::dvec2(points[j]) - translation) / scale;
+      EXPECT_GE(base[j].x, -tolerance);
+      EXPECT_LE(base[j].x, 4.5 + tolerance);
+      EXPECT_GE(base[j].y, startY - tolerance);
+      EXPECT_LE(base[j].y, 4.5 + tolerance);
+    }
+    const auto n = glm::cross(points[1] - points[0], points[2] - points[0]);
+    ASSERT_GT(glm::length(n), 0.);
+    if (points[0].z == points[1].z && points[1].z == points[2].z) {
+      const bool top = points[0].z > 0;
+      EXPECT_EQ(points[0].z, top ? 2. : 0.);
+      EXPECT_GT((top ? 1 : -1) * n.z, 0.);
+      area[top] += .5 * glm::length(n);
+      continue;
+    }
+    glm::dvec2 expected;
+    if (std::ranges::all_of(base, [&](glm::dvec2 p) {
+          return std::abs(p.y - startY) <= tolerance;
+        })) {
+      expected = {0, -1};
+      ++walls[0];
+    } else if (std::ranges::all_of(base, [](glm::dvec2 p) {
+                 return std::abs(p.x) <= tolerance;
+               })) {
+      expected = {-1, 0};
+      ++walls[1];
+    } else {
+      const auto centroid = (base[0] + base[1] + base[2]) / 3.;
+      const bool line = tangentLine && centroid.y <= 0.;
+      const bool outer = (line ? centroid.x : glm::length(centroid)) > 4.;
+      const double radius = outer ? 4.5 : 3.5;
+      const double sign = outer ? 1. : -1.;
+      for (const auto p : base) {
+        EXPECT_NEAR(line ? p.x : glm::length(p), radius, tolerance);
+        EXPECT_TRUE(line ? p.y <= tolerance : p.y >= -tolerance);
+      }
+      if (line) {
+        expected = {sign, 0};
+      } else {
+        expected = sign * glm::normalize(centroid);
+        for (size_t j = 0; j < base.size(); ++j) {
+          const auto k = (j + 1) % base.size();
+          const auto a = glm::dvec2(points[j]), b = glm::dvec2(points[k]);
+          const auto edge = b - a;
+          const double lengthSquared = glm::dot(edge, edge);
+          if (lengthSquared < 1e-12)
+            continue;
+          const auto exact =
+              translation + scale * radius * glm::normalize(base[j] + base[k]);
+          const double t =
+              std::clamp(glm::dot(exact - a, edge) / lengthSquared, 0., 1.);
+          maxChordError =
+              std::max(maxChordError, glm::length(exact - a - t * edge));
+        }
+        ++walls[2 + outer];
+      }
+    }
+    EXPECT_GT(glm::dot(glm::normalize(glm::dvec2(n)),
+                       glm::normalize(expected / scale)),
+              .995);
+  }
+  for (double cap : area)
+    EXPECT_NEAR(cap, capArea, .015);
+  for (unsigned count : walls)
+    EXPECT_GT(count, 0u);
+  EXPECT_LE(maxChordError, .00101);
+}
+
+TEST(IfcStructuralProfiles, CurvedCenterlineExtrusionsKeepExactAnnularSector) {
+  constexpr std::string_view indexed =
+      "#2=IFCCARTESIANPOINTLIST2D(((4.,0.),(2.4,3.2),(0.,4.)));"
+      "#4=IFCINDEXEDPOLYCURVE(#2,(IFCARCINDEX((1,2,3))),.F.);";
+  const std::string reversed =
+      "#2=IFCCARTESIANPOINT((0.,0.)); #3=IFCAXIS2PLACEMENT2D(#2,$);"
+      "#6=IFCCIRCLE(#3,4.);"
+      "#4=IFCTRIMMEDCURVE(#6,(IFCPARAMETERVALUE(90.)),"
+      "(IFCPARAMETERVALUE(0.)),.F.,.PARAMETER.);" +
+      degrees();
+  for (bool circleTrim : {false, true}) {
+    SCOPED_TRACE(circleTrim);
+    const auto source =
+        fixture((circleTrim ? reversed : std::string(indexed)) +
+                    "#5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"
+                    "#10=IFCEXTRUDEDAREASOLID(#5,$,$,2.);",
+                "#10", "'Body','SweptSolid'");
+    const auto model = LoadFromStep(source);
+    EXPECT_NO_FATAL_FAILURE(complete(model));
+    if (!model.indices.empty())
+      expectCurvedCenterlineSector(model, false);
+    if (!circleTrim)
+      exportProfileFixture("area-centerline-curved", source);
+  }
+}
+
+TEST(IfcStructuralProfiles, CurvedCenterlineExtrusionsKeepTangentLineAndArc) {
+  constexpr std::string_view indexed =
+      "#2=IFCCARTESIANPOINTLIST2D(((4.,-3.),(4.,0.),(2.4,3.2),(0.,4.)));"
+      "#4=IFCINDEXEDPOLYCURVE(#2,(IFCLINEINDEX((1,2)),IFCARCINDEX((2,3,4))),.F."
+      ");";
+  const std::string composite =
+      "#2=IFCCARTESIANPOINT((0.,0.)); #3=IFCAXIS2PLACEMENT2D(#2,$);"
+      "#6=IFCCIRCLE(#3,4.); #7=IFCTRIMMEDCURVE(#6,(IFCPARAMETERVALUE(0.)),"
+      "(IFCPARAMETERVALUE(90.)),.T.,.PARAMETER.);"
+      "#8=IFCCARTESIANPOINT((4.,0.)); #9=IFCCARTESIANPOINT((4.,-3.));"
+      "#12=IFCPOLYLINE((#8,#9));"
+      "#13=IFCCOMPOSITECURVESEGMENT(.CONTSAMEGRADIENT.,.F.,#12);"
+      "#14=IFCCOMPOSITECURVESEGMENT(.DISCONTINUOUS.,.T.,#7);"
+      "#4=IFCCOMPOSITECURVE((#13,#14),.F.);" +
+      degrees();
+  for (bool useComposite : {false, true}) {
+    for (bool transformed : {false, true}) {
+      SCOPED_TRACE(::testing::Message() << "composite=" << useComposite
+                                        << " transformed=" << transformed);
+      auto definitions = (useComposite ? composite : std::string(indexed)) +
+                         "#5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);";
+      if (transformed)
+        definitions += "#60=IFCCARTESIANPOINT((1.,-2.));"
+                       "#61=IFCCARTESIANTRANSFORMATIONOPERATOR2DNONUNIFORM($,$,"
+                       "#60,2.5,0.75);"
+                       "#62=IFCDERIVEDPROFILEDEF(.AREA.,$,#5,#61,$);"
+                       "#63=IFCMIRROREDPROFILEDEF(.AREA.,$,#62,*,$);";
+      const auto source =
+          fixture(definitions + "#10=IFCEXTRUDEDAREASOLID(" +
+                      (transformed ? "#63" : "#5") + ",$,$,2.);",
+                  "#10", "'Body','SweptSolid'");
+      const auto model = LoadFromStep(source);
+      EXPECT_NO_FATAL_FAILURE(complete(model));
+      if (!model.indices.empty()) {
+        const auto scale = transformed ? glm::dvec2(-2.5, .75) : glm::dvec2(1);
+        const auto origin = transformed ? glm::dvec2(-1, -2) : glm::dvec2(0);
+        expectCurvedCenterlineSector(model, true, scale, origin);
+      }
+      if (!transformed && useComposite)
+        exportProfileFixture("area-centerline-tangent", source);
+    }
+  }
+}
+
+TEST(IfcStructuralProfiles, CurvedCenterlineExtrusionsJoinOppositeCurvatures) {
+  // The first turn is counterclockwise about (0,0), the second clockwise
+  // about (0,6). Both point along -X at their common endpoint (0,4).
+  const auto source = fixture("#2=IFCCARTESIANPOINTLIST2D(((4.,0.),(2.4,3.2),("
+                              "0.,4.),(-1.2,4.4),(-2.,6.)));"
+                              "#4=IFCINDEXEDPOLYCURVE(#2,(IFCARCINDEX((1,2,3)),"
+                              "IFCARCINDEX((3,4,5))),.F.);"
+                              "#5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"
+                              "#10=IFCEXTRUDEDAREASOLID(#5,$,$,2.);",
+                              "#10", "'Body','SweptSolid'");
+  const auto model = LoadFromStep(source);
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  watertight(model);
+  EXPECT_NEAR(volume(model), 6 * pi, .03);
+  expectProfileBounds(model, {-2.5, 0, 0}, {4.5, 6, 2});
+  for (const double radius : {3.5, 4.5})
+    expectProfileArc(model, {0, 0}, radius, {1, 1});
+  for (const double radius : {1.5, 2.5})
+    expectProfileArc(model, {0, 6}, radius, {-1, -1});
+  for (const float y : {3.5f, 4.5f})
+    EXPECT_TRUE(std::ranges::any_of(model.vertices, [&](const auto &vertex) {
+      return glm::length(vertex.position - glm::vec3(0, y, 0)) < 1e-6f;
+    }));
+}
+
 TEST(IfcStructuralProfiles, CompositeRegionsPreserveMirrorsAndNestedIslands) {
   for (bool islandInsideVoid : {false, true}) {
     SCOPED_TRACE(islandInsideVoid);
@@ -948,9 +1127,30 @@ TEST(IfcStructuralProfiles, InvalidExtendedProfilesRetireEveryFragmentAndKeepFal
       Case{"IFCCENTERLINEPROFILEDEF",
            "#2=IFCCARTESIANPOINTLIST2D(((0.,0.),(4.,0.),(0.2,0.1)));"
            "#4=IFCINDEXEDPOLYCURVE(#2,$,.F.); #5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"},
+      // The thickness equals the diameter and collapses the inner radius.
       Case{"IFCCENTERLINEPROFILEDEF",
            "#2=IFCCARTESIANPOINTLIST2D(((0.,0.),(2.,2.),(4.,0.)));"
            "#4=IFCINDEXEDPOLYCURVE(#2,(IFCARCINDEX((1,2,3))),.F.);"
+           "#5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,4.);"},
+      Case{"IFCCENTERLINEPROFILEDEF",
+           "#2=IFCCARTESIANPOINTLIST2D(((0.,0.),(2.,0.),(4.,0.)));"
+           "#4=IFCINDEXEDPOLYCURVE(#2,(IFCARCINDEX((1,2,3))),.F.);"
+           "#5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"},
+      // The tangent joins, but the line and arc have different curvatures.
+      Case{"IFCCENTERLINEPROFILEDEF",
+           "#2=IFCCARTESIANPOINTLIST2D(((4.,-3.),(4.,0.),(2.4,3.2),(0.,4.)));"
+           "#6=IFCINDEXEDPOLYCURVE(#2,(IFCLINEINDEX((1,2))),.F.);"
+           "#7=IFCINDEXEDPOLYCURVE(#2,(IFCARCINDEX((2,3,4))),.F.);"
+           "#8=IFCCOMPOSITECURVESEGMENT(.CONTSAMEGRADIENTSAMECURVATURE.,.T.,#6);"
+           "#9=IFCCOMPOSITECURVESEGMENT(.DISCONTINUOUS.,.T.,#7);"
+           "#4=IFCCOMPOSITECURVE((#8,#9),.F.);"
+           "#5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"},
+      // This simple centerline's tangent tail crosses the first butt end of its stroke.
+      Case{"IFCCENTERLINEPROFILEDEF",
+           "#2=IFCCARTESIANPOINTLIST2D(((4.,0.),(-4.,0.),(3.84,-1.12),"
+           "(4.4,0.8)));"
+           "#4=IFCINDEXEDPOLYCURVE(#2,(IFCARCINDEX((1,2,3)),"
+           "IFCLINEINDEX((3,4))),.F.);"
            "#5=IFCCENTERLINEPROFILEDEF(.AREA.,$,#4,1.);"}};
   constexpr std::string_view sweep = "#10=IFCEXTRUDEDAREASOLID(#5,$,$,2.);";
   constexpr std::string_view fallback =
