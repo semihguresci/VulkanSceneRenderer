@@ -826,6 +826,8 @@ private:
   std::vector<DrawCommand> selectedBimNativePointDrawCommands_{};
   std::vector<DrawCommand> hoveredBimNativeCurveDrawCommands_{};
   std::vector<DrawCommand> selectedBimNativeCurveDrawCommands_{};
+  std::vector<DrawCommand> hoveredBimNativeCurveStrokeDrawCommands_{};
+  std::vector<DrawCommand> selectedBimNativeCurveStrokeDrawCommands_{};
   std::vector<DrawCommand> hoveredDrawCommands_{};
   std::vector<DrawCommand> selectedDrawCommands_{};
   std::string activePrimaryModelPath_{};

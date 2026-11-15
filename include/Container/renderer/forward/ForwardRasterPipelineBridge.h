@@ -27,6 +27,8 @@ enum class ForwardRasterPipelineId {
   BimPointCloudNoDepth,
   BimCurveDepth,
   BimCurveNoDepth,
+  BimCurveStrokeDepth,
+  BimCurveStrokeNoDepth,
   GeometryDebug,
   NormalValidation,
   NormalValidationFrontCull,
@@ -96,6 +98,10 @@ forwardRasterPipelineName(ForwardRasterPipelineId id) {
     return "bim-curve-depth";
   case ForwardRasterPipelineId::BimCurveNoDepth:
     return "bim-curve-no-depth";
+  case ForwardRasterPipelineId::BimCurveStrokeDepth:
+    return "bim-curve-stroke-depth";
+  case ForwardRasterPipelineId::BimCurveStrokeNoDepth:
+    return "bim-curve-stroke-no-depth";
   case ForwardRasterPipelineId::GeometryDebug:
     return "geometry-debug";
   case ForwardRasterPipelineId::NormalValidation:

@@ -50,6 +50,8 @@ enum class DeferredRasterPipelineId {
   BimPointCloudNoDepth,
   BimCurveDepth,
   BimCurveNoDepth,
+  BimCurveStrokeDepth,
+  BimCurveStrokeNoDepth,
   BimSectionClipCapFill,
   BimSectionClipCapHatch,
   SurfaceNormalLine,
@@ -154,6 +156,10 @@ deferredRasterPipelineName(DeferredRasterPipelineId id) {
     return "bim-curve-depth";
   case DeferredRasterPipelineId::BimCurveNoDepth:
     return "bim-curve-no-depth";
+  case DeferredRasterPipelineId::BimCurveStrokeDepth:
+    return "bim-curve-stroke-depth";
+  case DeferredRasterPipelineId::BimCurveStrokeNoDepth:
+    return "bim-curve-stroke-no-depth";
   case DeferredRasterPipelineId::BimSectionClipCapFill:
     return "bim-section-clip-cap-fill";
   case DeferredRasterPipelineId::BimSectionClipCapHatch:

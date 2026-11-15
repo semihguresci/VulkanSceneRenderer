@@ -45,6 +45,7 @@ struct BimFrameDrawRoutingInputs {
   const BimGeometryDrawLists *unfilteredCurveDraws{nullptr};
   const BimGeometryDrawLists *unfilteredNativePointDraws{nullptr};
   const BimGeometryDrawLists *unfilteredNativeCurveDraws{nullptr};
+  const BimGeometryDrawLists *unfilteredNativeCurveStrokeDraws{nullptr};
   const BimDrawLists *cpuFilteredDraws{nullptr};
 };
 
@@ -55,6 +56,7 @@ struct BimFrameDrawRoutingPlan {
   bool nativePrimitiveDrawsUseGpuVisibility{false};
   bool nativePointDrawsUseGpuVisibility{false};
   bool nativeCurveDrawsUseGpuVisibility{false};
+  bool nativeCurveStrokeDrawsUseGpuVisibility{false};
   BimFrameDrawSource meshDrawSource{BimFrameDrawSource::Unfiltered};
   BimFrameMeshDrawLists meshDraws{};
   BimFrameDrawSource pointPlaceholderDrawSource{
@@ -63,12 +65,16 @@ struct BimFrameDrawRoutingPlan {
       BimFrameDrawSource::Unfiltered};
   BimFrameDrawSource nativePointDrawSource{BimFrameDrawSource::Unfiltered};
   BimFrameDrawSource nativeCurveDrawSource{BimFrameDrawSource::Unfiltered};
+  BimFrameDrawSource nativeCurveStrokeDrawSource{
+      BimFrameDrawSource::Unfiltered};
   const BimGeometryDrawLists *pointPlaceholderDraws{nullptr};
   const BimGeometryDrawLists *curvePlaceholderDraws{nullptr};
   const BimGeometryDrawLists *nativePointDraws{nullptr};
   const BimGeometryDrawLists *nativeCurveDraws{nullptr};
+  const BimGeometryDrawLists *nativeCurveStrokeDraws{nullptr};
   bool pointPrimitivePassEnabled{false};
   bool curvePrimitivePassEnabled{false};
+  bool curveStrokePrimitivePassEnabled{false};
 };
 
 class BimFrameDrawRoutingPlanner {

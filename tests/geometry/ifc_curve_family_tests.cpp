@@ -4,6 +4,7 @@
 #include "Container/geometry/SweptDiskGeometry.h"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -13,6 +14,7 @@
 #include <map>
 #include <numbers>
 #include <set>
+#include <span>
 #include <sstream>
 
 namespace {
@@ -619,6 +621,230 @@ TEST(IfcCurveFamilies, ConicDegreeUnitsAndMappedSourceStyleAreRetained) {
   EXPECT_NEAR(p.back().y, 2, 1e-6);
   ASSERT_EQ(model.elements.size(), 1u);
   EXPECT_EQ(model.elements[0].color, glm::vec4(1, 0, 0, 1));
+}
+
+std::string stylePolyline(double sourceUnitsPerMeter) {
+  const auto length = [&](double x) {
+    return std::to_string(x * sourceUnitsPerMeter);
+  };
+  return "#2=IFCCARTESIANPOINT((0.,0.,0.)); "
+         "#3=IFCCARTESIANPOINT((" +
+         length(3) +
+         ",0.,0.)); "
+         "#4=IFCCARTESIANPOINT((" +
+         length(3) + ",0.," + length(4) +
+         ")); "
+         "#5=IFCCARTESIANPOINT((" +
+         length(4.125) + ",0.," + length(4) +
+         ")); "
+         "#10=IFCPOLYLINE((#2,#3,#4,#5));";
+}
+
+std::string metricCurveStyle(double sourceUnitsPerMeter, bool invalid = false,
+                             bool draughting = false) {
+  const auto length = [&](double x) {
+    return std::to_string(x * sourceUnitsPerMeter);
+  };
+  return "#20=IFCCURVESTYLEFONTPATTERN(" + length(invalid ? -1 : 1) + "," +
+         length(.5) +
+         "); "
+         "#21=IFCCURVESTYLEFONTPATTERN(" +
+         length(.75) + "," + length(.25) +
+         "); "
+         "#22=IFCCURVESTYLEFONT('Two-part',(#20,#21)); "
+         "#23=IFCCOLOURRGB($,0.75,0.25,0.125); "
+         "#24=IFCCURVESTYLE('Metric',#22,IFCPOSITIVELENGTHMEASURE(" +
+         length(invalid ? -.2 : .2) + "),#23," + (draughting ? ".F." : ".T.") +
+         ");";
+}
+
+std::vector<glm::dvec3>
+worldCurveEndpoints(const Model &model,
+                    const container::geometry::dotbim::Element &element) {
+  std::vector<glm::dvec3> result;
+  for (const auto &range : model.nativeCurveRanges) {
+    if (range.meshId != element.meshId)
+      continue;
+    for (size_t i = range.firstIndex;
+         i < size_t(range.firstIndex) + range.indexCount; ++i) {
+      const auto local = model.vertices.at(model.indices.at(i)).position;
+      result.emplace_back(element.transform * glm::vec4(local, 1));
+    }
+  }
+  return result;
+}
+
+bool pickCurveAtXY(const Model &model,
+                   const container::geometry::dotbim::Element &element,
+                   glm::dvec2 xy) {
+  const auto side = [](glm::dvec2 a, glm::dvec2 b, glm::dvec2 p) {
+    const auto ab = b - a, ap = p - a;
+    return ab.x * ap.y - ab.y * ap.x;
+  };
+  for (const auto &range : model.meshRanges) {
+    if (range.meshId != element.meshId)
+      continue;
+    for (size_t i = range.firstIndex;
+         i + 2 < size_t(range.firstIndex) + range.indexCount; i += 3) {
+      const auto xyAt = [&](size_t offset) {
+        const auto local =
+            model.vertices.at(model.indices.at(i + offset)).position;
+        return glm::dvec2(element.transform * glm::vec4(local, 1));
+      };
+      const auto a = xyAt(0), b = xyAt(1), c = xyAt(2);
+      const double area = side(a, b, c);
+      if (std::abs(area) > 1e-12 && side(a, b, xy) * area >= 0 &&
+          side(b, c, xy) * area >= 0 && side(c, a, xy) * area >= 0)
+        return true;
+    }
+  }
+  return false;
+}
+
+const std::array<glm::dvec3, 18> dashedPolylineEndpoints{{
+    {0, 0, 0},
+    {1, 0, 0},
+    {1.5, 0, 0},
+    {2.25, 0, 0},
+    {2.5, 0, 0},
+    {3, 0, 0},
+    {3, 0, 0},
+    {3, .5, 0},
+    {3, 1, 0},
+    {3, 1.75, 0},
+    {3, 2, 0},
+    {3, 3, 0},
+    {3, 3.5, 0},
+    {3, 4, 0},
+    {3, 4, 0},
+    {3.25, 4, 0},
+    {3.5, 4, 0},
+    {4.125, 4, 0},
+}};
+const std::array<glm::dvec3, 6> solidPolylineEndpoints{{
+    {0, 0, 0},
+    {3, 0, 0},
+    {3, 0, 0},
+    {3, 4, 0},
+    {3, 4, 0},
+    {4.125, 4, 0},
+}};
+
+void expectCurveEndpoints(std::span<const glm::dvec3> actual,
+                          std::span<const glm::dvec3> expected) {
+  ASSERT_EQ(actual.size(), expected.size());
+  for (size_t i = 0; i < actual.size(); ++i)
+    EXPECT_LT(glm::length(actual[i] - expected[i]), 2e-6) << i;
+}
+
+void setMillimetreUnits(std::string &step) {
+  const auto position = step.find(".LENGTHUNIT.,$,.METRE.");
+  ASSERT_NE(position, std::string::npos);
+  step.replace(position, std::string_view(".LENGTHUNIT.,$,.METRE.").size(),
+               ".LENGTHUNIT.,.MILLI.,.METRE.");
+}
+
+TEST(IfcCurveStyles, MetricDashPhaseCarriesAcrossCornersAndMatchesPicking) {
+  for (const bool millimetres : {false, true}) {
+    SCOPED_TRACE(millimetres);
+    const double units = millimetres ? 1000. : 1.;
+    auto source = fixture(stylePolyline(units) + metricCurveStyle(units) +
+                          "#25=IFCSTYLEDITEM(#10,(#24),$);");
+    if (millimetres)
+      setMillimetreUnits(source);
+    const auto model = container::geometry::ifc::LoadFromStep(source);
+    ASSERT_NO_FATAL_FAILURE(complete(model));
+    ASSERT_EQ(model.elements.size(), 1u);
+    const auto &element = model.elements.front();
+    EXPECT_EQ(element.geometryKind,
+              container::geometry::dotbim::GeometryKind::Curves);
+    EXPECT_EQ(element.color, glm::vec4(.75, .25, .125, 1));
+    EXPECT_TRUE(element.hasAuthoredCurveWidth);
+    expectCurveEndpoints(worldCurveEndpoints(model, element),
+                         dashedPolylineEndpoints);
+    EXPECT_TRUE(pickCurveAtXY(model, element, {.5, .08}));
+    EXPECT_FALSE(pickCurveAtXY(model, element, {.5, .12}));
+    EXPECT_FALSE(pickCurveAtXY(model, element, {1.25, 0}));
+    EXPECT_TRUE(pickCurveAtXY(model, element, {3, .25}));
+    EXPECT_FALSE(pickCurveAtXY(model, element, {3, .75}));
+  }
+}
+
+TEST(IfcCurveStyles, MappedStyleTransformsDashesAndWidthOnlyForItsOccurrence) {
+  auto source = fixture(
+      stylePolyline(1000.) + metricCurveStyle(1000.) +
+          "#40=IFCSHAPEREPRESENTATION($,'Axis','Curve3D',(#10));"
+          "#41=IFCREPRESENTATIONMAP($,#40);"
+          "#42=IFCCARTESIANPOINT((10000.,0.,0.));"
+          "#43=IFCDIRECTION((-1.,0.,0.)); #44=IFCDIRECTION((0.,1.,0.));"
+          "#45=IFCDIRECTION((0.,0.,1.));"
+          "#46=IFCCARTESIANTRANSFORMATIONOPERATOR3D(#43,#44,#42,2.,#45);"
+          "#47=IFCMAPPEDITEM(#41,#46); #48=IFCMAPPEDITEM(#41,$);"
+          "#49=IFCPRESENTATIONSTYLEASSIGNMENT((#24));"
+          "#50=IFCPRESENTATIONSTYLEASSIGNMENT((#49));"
+          "#51=IFCSTYLEDITEM(#47,(#50),$);",
+      "#47,#48", "'Axis','MappedRepresentation'");
+  setMillimetreUnits(source);
+  const auto model = container::geometry::ifc::LoadFromStep(source);
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  ASSERT_EQ(model.elements.size(), 2u);
+  const auto styled =
+      std::ranges::find_if(model.elements, [](const auto &element) {
+        return element.transform[3].x > 9.f;
+      });
+  ASSERT_NE(styled, model.elements.end());
+  const auto &other = model.elements[styled == model.elements.begin() ? 1 : 0];
+  EXPECT_EQ(styled->color, glm::vec4(.75, .25, .125, 1));
+  EXPECT_TRUE(styled->hasAuthoredCurveWidth);
+  EXPECT_FALSE(other.hasAuthoredCurveWidth);
+  auto reflected = dashedPolylineEndpoints;
+  for (auto &p : reflected)
+    p = {10 - 2 * p.x, 2 * p.y, 2 * p.z};
+  expectCurveEndpoints(worldCurveEndpoints(model, *styled), reflected);
+  expectCurveEndpoints(worldCurveEndpoints(model, other),
+                       solidPolylineEndpoints);
+  EXPECT_TRUE(pickCurveAtXY(model, *styled, {9., .16}));
+  EXPECT_FALSE(pickCurveAtXY(model, *styled, {9., .24}));
+  EXPECT_FALSE(pickCurveAtXY(model, *styled, {7.5, 0.}));
+  EXPECT_TRUE(pickCurveAtXY(model, other, {1.25, 0.}));
+  EXPECT_FALSE(pickCurveAtXY(model, other, {.5, .08}));
+}
+
+TEST(IfcCurveStyles, InvalidAndDraughtingDimensionsFallBackToDrawableCurve) {
+  for (const bool draughting : {false, true}) {
+    SCOPED_TRACE(draughting);
+    const auto model = container::geometry::ifc::LoadFromStep(fixture(
+        stylePolyline(1.) + metricCurveStyle(1., !draughting, draughting) +
+        "#25=IFCSTYLEDITEM(#10,(#24),$);"));
+    ASSERT_EQ(model.elements.size(), 1u);
+    const auto &element = model.elements.front();
+    EXPECT_FALSE(element.hasAuthoredCurveWidth);
+    expectCurveEndpoints(worldCurveEndpoints(model, element),
+                         solidPolylineEndpoints);
+    EXPECT_TRUE(pickCurveAtXY(model, element, {1.25, 0.}));
+    EXPECT_FALSE(pickCurveAtXY(model, element, {.5, .08}));
+  }
+}
+
+TEST(IfcCurveStyles, ScaledDotFontPreservesWidthAndLeavesGaps) {
+  const auto model = container::geometry::ifc::LoadFromStep(
+      fixture(stylePolyline(1.) +
+              "#20=IFCCURVESTYLEFONTPATTERN(0.,2.); "
+              "#21=IFCCURVESTYLEFONT('Dots',(#20)); "
+              "#22=IFCCURVESTYLEFONTANDSCALING('Half interval',#21,0.5); "
+              "#24=IFCCURVESTYLE($,#22,IFCPOSITIVELENGTHMEASURE(0.2),$,.T.); "
+              "#25=IFCSTYLEDITEM(#10,(#24),$);"));
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Complete);
+  ASSERT_EQ(model.elements.size(), 1u);
+  const auto &element = model.elements.front();
+  EXPECT_TRUE(element.hasAuthoredCurveWidth);
+  EXPECT_TRUE(model.nativeCurveRanges.empty());
+  EXPECT_TRUE(pickCurveAtXY(model, element, {1, .08}));
+  EXPECT_FALSE(pickCurveAtXY(model, element, {1, .12}));
+  EXPECT_FALSE(pickCurveAtXY(model, element, {.5, 0}));
+  EXPECT_TRUE(pickCurveAtXY(model, element, {3, 0}));
+  EXPECT_FALSE(pickCurveAtXY(model, element, {3, .5}));
+  EXPECT_TRUE(pickCurveAtXY(model, element, {4.06, 4}));
 }
 
 TEST(ParametricCurve, LengthIntegrationAndInversionUseAnalyticSpeed) {

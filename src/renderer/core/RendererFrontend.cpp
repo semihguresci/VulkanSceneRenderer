@@ -588,10 +588,28 @@ bool decodeDepthReadbackValue(VkFormat format, const void *data,
   return false;
 }
 
-bool depthHitVisible(float hitDepth, float sampledDepth) {
-  constexpr float kDepthVisibilityTolerance = 0.0005f;
+bool depthHitVisible(float hitDepth, float sampledDepth,
+                     float tolerance = 0.0005f) {
   // Reverse-Z stores nearer surfaces as larger values.
-  return sampledDepth <= hitDepth + kDepthVisibilityTolerance;
+  return sampledDepth <= hitDepth + tolerance;
+}
+
+bool curveStrokeDepthVisible(float hitDepth, float sampledDepth) {
+  // The metric stroke ray intersects the actual raster triangles. Use a
+  // rounding allowance instead of the broad visibility slack for proxies.
+  return depthHitVisible(hitDepth, sampledDepth, 1e-6f);
+}
+
+BimPickHit pickVisibleBimCurveStroke(
+    const BimManager *manager, bool curvesVisible,
+    const container::gpu::CameraData &camera, VkExtent2D viewportExtent,
+    double cursorX, double cursorY, const BimDrawFilter &filter,
+    bool sectionPlaneEnabled, glm::vec4 sectionPlane) {
+  if (!manager || !curvesVisible || !manager->hasScene())
+    return {};
+  return manager->pickNativeCurveStroke(camera, viewportExtent, cursorX,
+                                        cursorY, filter, sectionPlaneEnabled,
+                                        sectionPlane);
 }
 
 bool hasTransparentCommands(const std::vector<DrawCommand> &draws,
@@ -628,7 +646,8 @@ bool hasTransparentGeometry(const BimDrawLists &draws, bool includePoints,
   return (includePoints && (hasTransparentGeometry(draws.points) ||
                             hasTransparentGeometry(draws.nativePoints))) ||
          (includeCurves && (hasTransparentGeometry(draws.curves) ||
-                            hasTransparentGeometry(draws.nativeCurves)));
+                            hasTransparentGeometry(draws.nativeCurves) ||
+                            hasTransparentGeometry(draws.nativeCurveStrokes)));
 }
 
 bool hasTransparentBimSurfaceGeometry(const BimDrawLists &draws,
@@ -656,7 +675,8 @@ bool hasTransparentBimGeometry(const BimManager &bimManager, bool includePoints,
            hasTransparentGeometry(bimManager.nativePointDrawLists()))) ||
          (includeCurves &&
           (hasTransparentGeometry(bimManager.curveDrawLists()) ||
-           hasTransparentGeometry(bimManager.nativeCurveDrawLists())));
+           hasTransparentGeometry(bimManager.nativeCurveDrawLists()) ||
+           hasTransparentGeometry(bimManager.nativeCurveStrokeDrawLists())));
 }
 
 bool hasTransparentBimSurfaceGeometry(const BimManager& bimManager,
@@ -714,6 +734,8 @@ bimFrameDrawRoutingInputs(const BimManager &bimManager,
           .unfilteredCurveDraws = &bimManager.curveDrawLists(),
           .unfilteredNativePointDraws = &bimManager.nativePointDrawLists(),
           .unfilteredNativeCurveDraws = &bimManager.nativeCurveDrawLists(),
+          .unfilteredNativeCurveStrokeDraws =
+              &bimManager.nativeCurveStrokeDrawLists(),
           .cpuFilteredDraws = cpuFilteredDraws};
 }
 
@@ -4534,6 +4556,12 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
   glm::vec4 activeSectionPlane{0.0f, 1.0f, 0.0f, 0.0f};
   const bool sectionPlaneEnabled =
       currentSectionPlaneEquation(subs_.guiManager.get(), activeSectionPlane);
+  const bool curvesVisible = !subs_.guiManager ||
+      subs_.guiManager->bimLayerVisibilityState().curvesVisible;
+  const BimPickHit strokeHit = pickVisibleBimCurveStroke(
+      subs_.bimManager.get(), curvesVisible, buffers_.cameraData,
+      svc_.swapChainManager.extent(), cursorX, cursorY, bimFilter,
+      sectionPlaneEnabled, activeSectionPlane);
   uint32_t gpuPickId = container::gpu::kPickIdNone;
   const bool hasGpuPick = samplePickIdAtCursor(cursorX, cursorY, gpuPickId);
   if (hasGpuPick) {
@@ -4545,8 +4573,18 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
 
     std::optional<glm::vec3> gpuPickWorldPoint;
     float gpuPickDepth = 0.0f;
-    if (samplePickDepthAtCursor(cursorX, cursorY, gpuPickDepth) ||
-        sampleDepthAtCursor(cursorX, cursorY, gpuPickDepth)) {
+    const bool hasGpuPickDepth =
+        samplePickDepthAtCursor(cursorX, cursorY, gpuPickDepth) ||
+        sampleDepthAtCursor(cursorX, cursorY, gpuPickDepth);
+    // The late curve stroke pass shares the scene depth test but does not
+    // write surface pick IDs. Test its exact triangles against that depth.
+    if (strokeHit.hit &&
+        (hasGpuPickDepth ? curveStrokeDepthVisible(strokeHit.depth, gpuPickDepth)
+                         : target.kind == GpuPickTargetKind::None)) {
+      selectBimObject(strokeHit.objectIndex, strokeHit.worldPosition);
+      return;
+    }
+    if (hasGpuPickDepth) {
       if (const auto* depthFrame =
               depthVisibilityFrameSlot(depthVisibility_.latestFrameSlot)) {
         gpuPickWorldPoint = unprojectDepthAtCursor(
@@ -4582,11 +4620,12 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
       (subs_.bimManager && subs_.bimManager->hasScene())
           ? subs_.bimManager->pickRenderableObject(
                 buffers_.cameraData, svc_.swapChainManager.extent(), cursorX,
-                cursorY, sectionPlaneEnabled, activeSectionPlane)
+                cursorY, sectionPlaneEnabled, activeSectionPlane, true)
           : BimPickHit{};
 
   float sampledDepth = 0.0f;
-  if (sampleDepthAtCursor(cursorX, cursorY, sampledDepth)) {
+  const bool hasSampledDepth = sampleDepthAtCursor(cursorX, cursorY, sampledDepth);
+  if (hasSampledDepth) {
     if (sceneHit.hit && !depthHitVisible(sceneHit.depth, sampledDepth)) {
       sceneHit.hit = false;
     }
@@ -4599,6 +4638,9 @@ void RendererFrontend::selectMeshNodeAtCursor(double cursorX, double cursorY) {
        !bimObjectVisibleByLayer(bimHit.objectIndex))) {
     bimHit.hit = false;
   }
+  if (strokeHit.hit && (!bimHit.hit || strokeHit.distance < bimHit.distance) &&
+      (!hasSampledDepth || curveStrokeDepthVisible(strokeHit.depth, sampledDepth)))
+    bimHit = strokeHit;
 
   if (!sceneHit.hit && !bimHit.hit) {
     clearSelectedMeshNode();
@@ -4740,11 +4782,23 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
   uint32_t hoveredNode = container::scene::SceneGraph::kInvalidNode;
   uint32_t hoveredBimObject = std::numeric_limits<uint32_t>::max();
 
+  const BimPickHit strokeHit = pickVisibleBimCurveStroke(
+      subs_.bimManager.get(), currentBimLayers.curvesVisible, buffers_.cameraData,
+      svc_.swapChainManager.extent(), cursorX, cursorY, bimFilter,
+      sectionPlaneEnabled, activeSectionPlane);
   uint32_t gpuPickId = container::gpu::kPickIdNone;
   const bool hasGpuPick = samplePickIdAtCursor(cursorX, cursorY, gpuPickId);
   if (hasGpuPick) {
     const GpuPickTarget target = decodeGpuPickId(gpuPickId);
-    if (target.kind == GpuPickTargetKind::Bim && subs_.bimManager &&
+    float depth = 0.0f;
+    const bool hasDepth = strokeHit.hit &&
+        (samplePickDepthAtCursor(cursorX, cursorY, depth) ||
+         sampleDepthAtCursor(cursorX, cursorY, depth));
+    if (strokeHit.hit && target.kind != GpuPickTargetKind::Light &&
+        (hasDepth ? curveStrokeDepthVisible(strokeHit.depth, depth)
+                  : target.kind == GpuPickTargetKind::None)) {
+      hoveredBimObject = strokeHit.objectIndex;
+    } else if (target.kind == GpuPickTargetKind::Bim && subs_.bimManager &&
         target.objectIndex < subs_.bimManager->objectData().size() &&
         subs_.bimManager->objectMatchesFilter(target.objectIndex, bimFilter) &&
         bimObjectVisibleByLayer(target.objectIndex)) {
@@ -4762,13 +4816,19 @@ void RendererFrontend::hoverMeshNodeAtCursor(double cursorX, double cursorY) {
         (subs_.bimManager && subs_.bimManager->hasScene())
             ? subs_.bimManager->pickRenderableObject(
                   buffers_.cameraData, svc_.swapChainManager.extent(), cursorX,
-                  cursorY, sectionPlaneEnabled, activeSectionPlane)
+                  cursorY, sectionPlaneEnabled, activeSectionPlane, true)
             : BimPickHit{};
     if (bimHit.hit && subs_.bimManager &&
         (!subs_.bimManager->objectMatchesFilter(bimHit.objectIndex,
                                                 bimFilter) ||
          !bimObjectVisibleByLayer(bimHit.objectIndex))) {
       bimHit.hit = false;
+    }
+    if (strokeHit.hit && (!bimHit.hit || strokeHit.distance < bimHit.distance)) {
+      float depth = 0.0f;
+      if (!sampleDepthAtCursor(cursorX, cursorY, depth) ||
+          curveStrokeDepthVisible(strokeHit.depth, depth))
+        bimHit = strokeHit;
     }
 
     if (bimHit.hit && (!sceneHit.hit || bimHit.distance < sceneHit.distance)) {
@@ -8537,9 +8597,11 @@ void RendererFrontend::presentSceneControls() {
     bimInspection.nativePointOpaqueDrawCount = stats.nativePointOpaqueDrawCount;
     bimInspection.nativePointTransparentDrawCount =
         stats.nativePointTransparentDrawCount;
-    bimInspection.nativeCurveOpaqueDrawCount = stats.nativeCurveOpaqueDrawCount;
+    bimInspection.nativeCurveOpaqueDrawCount =
+        stats.nativeCurveOpaqueDrawCount + stats.nativeCurveStrokeOpaqueDrawCount;
     bimInspection.nativeCurveTransparentDrawCount =
-        stats.nativeCurveTransparentDrawCount;
+        stats.nativeCurveTransparentDrawCount +
+        stats.nativeCurveStrokeTransparentDrawCount;
     bimInspection.meshletClusterCount = stats.meshletClusterCount;
     bimInspection.meshletSourceClusterCount = stats.meshletSourceClusterCount;
     bimInspection.meshletEstimatedClusterCount =
@@ -9651,6 +9713,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         bimRouting.nativePointDrawsUseGpuVisibility;
     p.bim.nativeCurveDrawsUseGpuVisibility =
         bimRouting.nativeCurveDrawsUseGpuVisibility;
+    p.bim.nativeCurveStrokeDrawsUseGpuVisibility =
+        bimRouting.nativeCurveStrokeDrawsUseGpuVisibility;
     assignFrameDrawLists(p.bim.draws, bimRouting.meshDraws);
     if (bimLayers.pointCloudVisible) {
       if (bimRouting.pointPlaceholderDraws != nullptr) {
@@ -9674,13 +9738,19 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         assignFrameDrawLists(p.bim.nativeCurveDraws,
                              *bimRouting.nativeCurveDraws);
       }
+      if (bimRouting.nativeCurveStrokeDraws != nullptr) {
+        assignFrameDrawLists(p.bim.nativeCurveStrokeDraws,
+                             *bimRouting.nativeCurveStrokeDraws);
+      }
       p.bim.primitivePasses.curves.enabled =
-          bimRouting.curvePrimitivePassEnabled;
+          bimRouting.curvePrimitivePassEnabled ||
+          bimRouting.curveStrokePrimitivePassEnabled;
       p.bim.primitivePasses.curves.depthTest = true;
     }
     hoveredBimDrawCommands_.clear();
     hoveredBimNativePointDrawCommands_.clear();
     hoveredBimNativeCurveDrawCommands_.clear();
+    hoveredBimNativeCurveStrokeDrawCommands_.clear();
     if (bimObjectVisibleByLayer(hoveredBimObjectIndex_)) {
       subs_.bimManager->collectDrawCommandsForObject(hoveredBimObjectIndex_,
                                                      hoveredBimDrawCommands_);
@@ -9691,6 +9761,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       if (bimLayers.curvesVisible) {
         subs_.bimManager->collectNativeCurveDrawCommandsForObject(
             hoveredBimObjectIndex_, hoveredBimNativeCurveDrawCommands_);
+        subs_.bimManager->collectNativeCurveStrokeDrawCommandsForObject(
+            hoveredBimObjectIndex_, hoveredBimNativeCurveStrokeDrawCommands_);
       }
     }
     p.bim.draws.hoveredDrawCommands = &hoveredBimDrawCommands_;
@@ -9698,9 +9770,12 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         &hoveredBimNativePointDrawCommands_;
     p.bim.nativeCurveDraws.hoveredDrawCommands =
         &hoveredBimNativeCurveDrawCommands_;
+    p.bim.nativeCurveStrokeDraws.hoveredDrawCommands =
+        &hoveredBimNativeCurveStrokeDrawCommands_;
     selectedBimDrawCommands_.clear();
     selectedBimNativePointDrawCommands_.clear();
     selectedBimNativeCurveDrawCommands_.clear();
+    selectedBimNativeCurveStrokeDrawCommands_.clear();
     if (!bimFilter.hideSelection &&
         bimObjectVisibleByLayer(selectedBimObjectIndex_)) {
       subs_.bimManager->collectDrawCommandsForObject(selectedBimObjectIndex_,
@@ -9712,6 +9787,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       if (bimLayers.curvesVisible) {
         subs_.bimManager->collectNativeCurveDrawCommandsForObject(
             selectedBimObjectIndex_, selectedBimNativeCurveDrawCommands_);
+        subs_.bimManager->collectNativeCurveStrokeDrawCommandsForObject(
+            selectedBimObjectIndex_, selectedBimNativeCurveStrokeDrawCommands_);
       }
     }
     p.bim.draws.selectedDrawCommands = &selectedBimDrawCommands_;
@@ -9719,6 +9796,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         &selectedBimNativePointDrawCommands_;
     p.bim.nativeCurveDraws.selectedDrawCommands =
         &selectedBimNativeCurveDrawCommands_;
+    p.bim.nativeCurveStrokeDraws.selectedDrawCommands =
+        &selectedBimNativeCurveStrokeDrawCommands_;
     if (const auto *floorPlan = effectiveBimFloorPlanSettings()) {
       p.bim.floorPlanDrawCommands =
           &bimFloorPlanDrawCommands(*subs_.bimManager, floorPlan->elevationMode);
@@ -10485,13 +10564,17 @@ SceneProviderSyncInput RendererFrontend::buildSceneProviderSyncInput(const MeshS
         .nativePointRangeCount = stats.nativePointOpaqueDrawCount +
                                  stats.nativePointTransparentDrawCount,
         .nativeCurveRangeCount = stats.nativeCurveOpaqueDrawCount +
-                                 stats.nativeCurveTransparentDrawCount,
+                                 stats.nativeCurveTransparentDrawCount +
+                                 stats.nativeCurveStrokeOpaqueDrawCount +
+                                 stats.nativeCurveStrokeTransparentDrawCount,
         .nativePointOpaqueRangeCount = stats.nativePointOpaqueDrawCount,
         .nativePointTransparentRangeCount =
             stats.nativePointTransparentDrawCount,
-        .nativeCurveOpaqueRangeCount = stats.nativeCurveOpaqueDrawCount,
+        .nativeCurveOpaqueRangeCount = stats.nativeCurveOpaqueDrawCount +
+                                       stats.nativeCurveStrokeOpaqueDrawCount,
         .nativeCurveTransparentRangeCount =
-            stats.nativeCurveTransparentDrawCount,
+            stats.nativeCurveTransparentDrawCount +
+            stats.nativeCurveStrokeTransparentDrawCount,
         .triangleBatches = subs_.bimManager->sceneProviderTriangleBatches(),
         .bounds = sceneProviderBoundsFromBim(*subs_.bimManager),
         .geometryRevision = subs_.bimManager->geometryRevision(),

@@ -289,6 +289,10 @@ buildGraphicsPipelineHandleRegistry(const GraphicsPipelines &pipelines) {
                     pipelines.bimPointCloudNoDepth);
   registerIfPresent(*registry, "bim-curve-depth", pipelines.bimCurveDepth);
   registerIfPresent(*registry, "bim-curve-no-depth", pipelines.bimCurveNoDepth);
+  registerIfPresent(*registry, "bim-curve-stroke-depth",
+                    pipelines.bimCurveStrokeDepth);
+  registerIfPresent(*registry, "bim-curve-stroke-no-depth",
+                    pipelines.bimCurveStrokeNoDepth);
   registerIfPresent(*registry, "bim-section-clip-cap-fill",
                     pipelines.bimSectionClipCapFill);
   registerIfPresent(*registry, "bim-section-clip-cap-hatch",
@@ -342,6 +346,11 @@ buildGraphicsPipelineHandleRegistry(const GraphicsPipelines &pipelines) {
                     "bim-curve-depth", pipelines.bimCurveDepth);
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
                     "bim-curve-no-depth", pipelines.bimCurveNoDepth);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-curve-stroke-depth", pipelines.bimCurveStrokeDepth);
+  registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,
+                    "bim-curve-stroke-no-depth",
+                    pipelines.bimCurveStrokeNoDepth);
   // Forward's resolved transparency scope has the same single-sample color
   // and depth/stencil formats as deferred lighting, including writable stencil.
   registerIfPresent(*registry, RenderTechniqueId::ForwardRaster,

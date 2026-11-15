@@ -60,6 +60,10 @@ BimDrawCompactionPlanner::build() const {
                inputs_.nativeCurveOpaque);
   appendSource(plan, BimDrawCompactionSlot::NativeCurveTransparent,
                inputs_.nativeCurveTransparent);
+  appendSource(plan, BimDrawCompactionSlot::NativeCurveStrokeOpaque,
+               inputs_.nativeCurveStrokeOpaque);
+  appendSource(plan, BimDrawCompactionSlot::NativeCurveStrokeTransparent,
+               inputs_.nativeCurveStrokeTransparent);
 
   return plan;
 }
@@ -85,6 +89,10 @@ makeBimDrawCompactionPlanInputs(const BimManager &bimManager) {
           &bimManager.nativeCurveDrawLists().opaqueDrawCommands,
       .nativeCurveTransparent =
           &bimManager.nativeCurveDrawLists().transparentDrawCommands,
+      .nativeCurveStrokeOpaque =
+          &bimManager.nativeCurveStrokeDrawLists().opaqueDrawCommands,
+      .nativeCurveStrokeTransparent =
+          &bimManager.nativeCurveStrokeDrawLists().transparentDrawCommands,
   };
 }
 

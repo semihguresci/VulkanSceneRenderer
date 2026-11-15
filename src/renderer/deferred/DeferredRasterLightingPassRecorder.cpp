@@ -351,6 +351,8 @@ bimLightingOverlayPipelineHandles(const FrameRecordParams &p) {
           p, DeferredRasterPipelineId::BimPointCloudDepth),
       .bimCurveDepth = deferredRasterPipelineHandle(
           p, DeferredRasterPipelineId::BimCurveDepth),
+      .bimCurveStrokeDepth = deferredRasterPipelineHandle(
+          p, DeferredRasterPipelineId::BimCurveStrokeDepth),
       .selectionMask = deferredRasterPipelineHandle(
           p, DeferredRasterPipelineId::SelectionMask),
       .selectionOutline = deferredRasterPipelineHandle(
@@ -617,6 +619,8 @@ void DeferredRasterLightingPassRecorder::record(
            p, DeferredRasterPipelineId::BimPointCloudNoDepth),
        .curveNoDepth = deferredRasterPipelineHandle(
            p, DeferredRasterPipelineId::BimCurveNoDepth),
+       .curveStrokeNoDepth = deferredRasterPipelineHandle(
+           p, DeferredRasterPipelineId::BimCurveStrokeNoDepth),
        .capFill = deferredRasterPipelineHandle(
            p, DeferredRasterPipelineId::BimSectionClipCapFill),
        .capHatch = deferredRasterPipelineHandle(

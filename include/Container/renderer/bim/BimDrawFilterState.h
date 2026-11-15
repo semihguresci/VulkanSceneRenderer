@@ -28,6 +28,7 @@ struct BimDrawFilterStateInputs {
   const BimGeometryDrawLists *curveDrawLists{nullptr};
   const BimGeometryDrawLists *nativePointDrawLists{nullptr};
   const BimGeometryDrawLists *nativeCurveDrawLists{nullptr};
+  const BimGeometryDrawLists *nativeCurveStrokeDrawLists{nullptr};
 };
 
 class BimDrawFilterState {

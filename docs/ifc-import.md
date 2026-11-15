@@ -303,14 +303,27 @@ must not be perpendicular to that extrusion axis. Invalid/open/intersecting
 boundaries and invalid placements reject atomically. These half-spaces remain
 Boolean operands rather than standalone drawable solids.
 
-Polyline geometry uses a shared builder for IFC and IFCX. Thin triangle proxies
-provide bounds and picking, while display uses the existing GPU visibility and
-line-list passes in deferred and forward rendering. Proxies are excluded from
-meshlet estimates, surface/shadow draws and solid opening operands. Source
-curve colors are unlit and respect section clipping and pass opacity; hover and
-selection keep their highlight colors. IFC curve fonts and source widths are
-not imported; line width follows the renderer setting and device wide-line
-support. Indexed render curves are limited to 65,536 source/sample points.
+Polyline geometry uses a shared builder for IFC and IFCX. Default curves use
+triangle pick proxies and native line lists. Default display width follows the
+renderer setting, with a one-pixel fallback when the device lacks wide-line
+support. Curve geometry stays outside surface and shadow passes, meshlet
+estimates and solid opening operands.
+
+[IFC model-space curve styles](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcCurveStyle.htm)
+resolve explicit font patterns and scale factors from styled items and
+presentation style assignments. Dash phase follows sampled arc length across
+curve vertices and restarts at each independent path. Source units and the
+mapping transform apply to both dash length and stroke width. A shared source
+can be instanced with different styles. A positive numeric width uses the same
+triangle stroke for display, picking, hover and selection. This supports
+width-defined dots, butt-ended dashes and rounded joins in forward and deferred
+rendering on devices with or without Vulkan wide lines. Source colors remain
+unlit and respect curve visibility, depth and section clipping.
+
+Paper-space styles, layer-derived dimensions and named drafting fonts fall back
+to the default model stroke. Dot patterns require an explicit numeric width.
+Invalid or over-budget optional style fields fall back independently where
+possible. Indexed render curves are limited to 65,536 source/sample points.
 Disconnected, invalid or nonfinite paths are rejected before buffer mutation.
 Curve errors identify the family and source entity and reject that conversion
 atomically; valid siblings can still be retained with a partial-import report.
@@ -652,6 +665,10 @@ reject without leaving mesh buffers. Use
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` with CTest's
 `ifc_periodic_spline_seams_gpu_regression` to verify depth, source colors and
 the torus bore in forward/deferred with TAA off/on.
+Curve style regressions check metric dashes and widths across metre and
+millimetre imports, reflected mapped placements and through-corner phase.
+With the same opt-in, run `ifc_curve_style_gpu_regression` to compare projected
+stroke widths and verify that viewport selection follows visible dashes.
 Sectioned branch regressions check split/merge and multiway source corners,
 zero-width branch tips and constant collapsed strips,
 metre/millimetre stations, sloped crowns and sampled triangle chord error,
@@ -807,7 +824,7 @@ BIM loads use an exterior camera overview. The interior hall heuristic remains
 available for primary glTF scenes such as Sponza; applying it to a thin IFC wall
 could start the camera inside the model's bounds and show a blank-looking view.
 
-The remaining capabilities below and IFC source curve fonts/widths are tracked
+The remaining capabilities below and additional curve style cases are tracked
 in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
 implementation tasks and independent geometry/rendering acceptance criteria.
 

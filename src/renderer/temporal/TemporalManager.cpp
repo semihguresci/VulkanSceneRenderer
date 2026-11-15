@@ -916,12 +916,15 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
       (p.bim.nativePointDraws.transparentDrawCommands &&
        !p.bim.nativePointDraws.transparentDrawCommands->empty()) ||
       (p.bim.nativeCurveDraws.transparentDrawCommands &&
-       !p.bim.nativeCurveDraws.transparentDrawCommands->empty()));
+       !p.bim.nativeCurveDraws.transparentDrawCommands->empty()) ||
+      (p.bim.nativeCurveStrokeDraws.transparentDrawCommands &&
+       !p.bim.nativeCurveStrokeDraws.transparentDrawCommands->empty()));
   // HDR editor overlays and native primitives do not expose matching surface
   // velocity. Their conservative fallback cannot borrow an opaque surface.
   const bool fallback = recordedDisplayOverlays_ ||
                         hasOpaqueDrawCommands(p.bim.nativePointDraws) ||
-                        hasOpaqueDrawCommands(p.bim.nativeCurveDraws);
+                        hasOpaqueDrawCommands(p.bim.nativeCurveDraws) ||
+                        hasOpaqueDrawCommands(p.bim.nativeCurveStrokeDraws);
   // The volume pass writes exact visible coverage into spare HDR alpha. Merge
   // it here, after velocity has cleared/rasterized the surface reactive mask.
   // The flag mirrors the producer so ordinary surface alpha is never consumed.

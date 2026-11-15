@@ -9,6 +9,7 @@
 #include "IfcBrepFaceGeometry.h"
 #include "IfcBrepPcurveLift.h"
 #include "IfcCurveReader.h"
+#include "IfcCurveStroke.h"
 #include "IfcStructuralAreaShapes.h"
 #include "IfcSweptSurfaceMesh.h"
 
@@ -48,6 +49,7 @@ struct MeshGroup {
   uint32_t meshId{0};
   glm::vec4 color{0.8f, 0.82f, 0.86f, 1.0f};
   dotbim::GeometryKind geometryKind{dotbim::GeometryKind::Mesh};
+  bool hasAuthoredCurveWidth{};
 };
 
 struct BoxSolid {
@@ -2063,6 +2065,34 @@ private:
     return std::nullopt;
   }
 
+  uint32_t firstCurveStroke(const StepValue *styles, size_t depth,
+                            StyleWalk &walk) {
+    for (const auto &value : asList(styles)) {
+      if (!walk.budget.visit(depth))
+        break;
+      const auto id = refValue(&value);
+      const auto *style = id ? entity(*id) : nullptr;
+      if (!style)
+        continue;
+      const auto [seen, inserted] = walk.visitedDepth.try_emplace(*id, depth);
+      if (!inserted && seen->second <= depth)
+        continue;
+      seen->second = depth;
+      if (style->type == "IFCCURVESTYLE") {
+        const auto [entry, fresh] = curveStrokesByStyle_.try_emplace(*id);
+        if (fresh)
+          entry->second = detail::readIfcCurveStroke(entities_, *style);
+        if (entry->second.width > 0 || !entry->second.pattern.empty())
+          return *id;
+      } else if (style->type == "IFCPRESENTATIONSTYLEASSIGNMENT") {
+        if (const auto stroke =
+                firstCurveStroke(argAt(*style, 0), depth + 1, walk))
+          return stroke;
+      }
+    }
+    return 0;
+  }
+
   std::vector<glm::vec4> colorList(uint32_t ref) const {
     const Entity *list = entity(ref);
     if (list == nullptr || list->type != "IFCCOLOURRGBLIST") {
@@ -2096,6 +2126,10 @@ private:
       if (auto color = firstStyleColor(argAt(*styledItem, 1), 0, walk)) {
         styleColorByItem_[*itemRef] = *color;
       }
+      StyleWalk strokeWalk{};
+      if (const auto stroke =
+              firstCurveStroke(argAt(*styledItem, 1), 0, strokeWalk))
+        curveStrokeByItem_[*itemRef] = stroke;
     }
 
     for (const auto id : sortedEntityIds_) {
@@ -6467,18 +6501,57 @@ private:
     return cached->second;
   }
 
+  std::optional<MeshGroup> appendRenderCurve(uint32_t id,
+                                             std::span<const glm::vec3> points,
+                                             uint32_t strokeId) {
+    const auto color = styleColorByItem_.contains(id) ? styleColorByItem_.at(id)
+                                                      : defaultColor();
+    const auto group = [&](bool metric) {
+      return MeshGroup{nextMeshId_++, color, dotbim::GeometryKind::Curves,
+                       metric};
+    };
+    const std::array<size_t, 1> counts{points.size()};
+    const float pickRadius = .005f / unitScale_;
+    if (strokeId) {
+      const auto &stroke = curveStrokesByStyle_.at(strokeId);
+      if (!stroke.pattern.empty()) {
+        const auto dashed =
+            detail::splitIfcCurveStroke(points, counts, stroke.pattern, stop_);
+        if (dashed) {
+          if (stroke.width > 0 &&
+              appendMetricPolylineGeometry(model_, dashed->points,
+                                           dashed->counts, dashed->dots,
+                                           nextMeshId_, stroke.width, stop_))
+            return group(true);
+          if (dashed->dots.empty() &&
+              appendPolylineGeometry(model_, dashed->points, dashed->counts,
+                                     nextMeshId_, pickRadius, stop_))
+            return group(false);
+        }
+      }
+      if (stroke.width > 0 &&
+          appendMetricPolylineGeometry(model_, points, counts, {}, nextMeshId_,
+                                       stroke.width, stop_))
+        return group(true);
+    }
+    if (appendPolylineGeometry(model_, points, counts, nextMeshId_, pickRadius,
+                               stop_))
+      return group(false);
+    return std::nullopt;
+  }
+
   const MeshGroup *contextualGeometry(const Entity &source,
-                                      SectionedGuides guides,
+                                      SectionedGuides guides, uint32_t stroke,
                                       std::string &error) {
     const auto [entry, fresh] = contextualGeometry_.try_emplace(
-        std::tuple(source.id, std::move(guides.sameFrame),
+        std::tuple(source.id, stroke, std::move(guides.sameFrame),
                    std::move(guides.differentFrame)));
     auto &[group, reason] = entry->second;
     if (!fresh) {
       error = reason;
       return group ? &*group : nullptr;
     }
-    const auto &[id, sameFrame, differentFrame] = entry->first;
+    const auto &[id, strokeId, sameFrame, differentFrame] = entry->first;
     const auto color = styleColorByItem_.contains(id) ? styleColorByItem_.at(id)
                                                       : defaultColor();
     if (source.type == "IFCSECTIONEDSURFACE") {
@@ -6500,12 +6573,9 @@ private:
     } else {
       const auto points =
           readRenderCurve(id, reason, 65536, 1, sameFrame, differentFrame);
-      const std::array<size_t, 1> counts{points.size()};
-      if (appendPolylineGeometry(model_, points, counts, nextMeshId_,
-                                 .005f / unitScale_, stop_))
-        group = MeshGroup{nextMeshId_++, color, dotbim::GeometryKind::Curves};
-      else if (reason.empty())
-        reason = "Invalid or excessive surface curve tessellation";
+      group = appendRenderCurve(id, points, strokeId);
+      if (!group && reason.empty())
+        reason = "Invalid or excessive curve tessellation";
     }
     error = reason;
     return group ? &*group : nullptr;
@@ -6531,7 +6601,7 @@ private:
                            std::vector<GeometryInstance> &instances,
                            RepresentationWalk &walk, const Entity *product,
                            std::optional<glm::vec4> curveColor = std::nullopt,
-                           uint32_t context = 0) {
+                           uint32_t context = 0, uint32_t curveStroke = 0) {
     if (!walk.budget.visit(walk.visiting.size())) {
       walk.exceeded = true;
       return;
@@ -6554,6 +6624,9 @@ private:
     if (const auto style = styleColorByItem_.find(ref);
         style != styleColorByItem_.end())
       curveColor = style->second;
+    if (const auto style = curveStrokeByItem_.find(ref);
+        style != curveStrokeByItem_.end())
+      curveStroke = style->second;
 
     const auto *tag = argAt(*source, 2);
     const bool isGuide = source->type == "IFCOFFSETCURVEBYDISTANCES" && tag &&
@@ -6572,8 +6645,8 @@ private:
       if (sectioned || !guides.sameFrame.empty() ||
           !guides.differentFrame.empty()) {
         std::string error;
-        const auto *group =
-            contextualGeometry(*source, std::move(guides), error);
+        const auto *group = contextualGeometry(
+            *source, std::move(guides), sectioned ? 0 : curveStroke, error);
         if (group)
           instances.push_back({ref, transform, curveColor, group});
         else
@@ -6586,17 +6659,20 @@ private:
     }
 
     if (detail::isCurveEntity(source->type)) {
+      if (curveStroke) {
+        std::string error;
+        if (const auto *group =
+                contextualGeometry(*source, {}, curveStroke, error))
+          instances.push_back({ref, transform, curveColor, group});
+        else
+          reportGeometryIssue(ref, product, std::move(error));
+        return;
+      }
       if (!groupsByItem_.contains(ref) && !conversionErrors_.contains(ref)) {
         std::string error;
         const auto points = readRenderCurve(ref, error);
-        const std::array<size_t, 1> counts{points.size()};
-        if (appendPolylineGeometry(model_, points, counts, nextMeshId_,
-                                   .005f / unitScale_, stop_)) {
-          groupsByItem_[ref] = {{nextMeshId_++,
-                                 styleColorByItem_.contains(ref)
-                                     ? styleColorByItem_.at(ref)
-                                     : defaultColor(),
-                                 dotbim::GeometryKind::Curves}};
+        if (auto group = appendRenderCurve(ref, points, 0)) {
+          groupsByItem_[ref] = {*group};
         } else {
           conversionErrors_[ref] =
               error.empty() ? "Invalid curve points/indices, disconnected "
@@ -6624,7 +6700,7 @@ private:
           return;
         if (item.kind == StepValue::Kind::Ref)
           collectGeometryInstances(item.ref, transform, instances, walk,
-                                   product, curveColor, context);
+                                   product, curveColor, context, curveStroke);
         else if (!walk.budget.visit(walk.visiting.size()))
           walk.exceeded = true;
         else
@@ -6745,7 +6821,7 @@ private:
         if (walk.exceeded) return;
         if (rep.kind == StepValue::Kind::Ref)
           collectGeometryInstances(rep.ref, transform, instances, walk, product,
-                                   curveColor, context);
+                                   curveColor, context, curveStroke);
         else if (!walk.budget.visit(walk.visiting.size()))
           walk.exceeded = true;
         else
@@ -6761,7 +6837,7 @@ private:
         if (walk.exceeded) return;
         if (item.kind == StepValue::Kind::Ref)
           collectGeometryInstances(item.ref, transform, instances, walk,
-                                   product, curveColor, context);
+                                   product, curveColor, context, curveStroke);
         else if (!walk.budget.visit(walk.visiting.size()))
           walk.exceeded = true;
         else
@@ -6778,7 +6854,8 @@ private:
         return;
       }
       collectGeometryInstances(*sourceRef, transform * mappedItemFrame(*source),
-                               instances, walk, product, curveColor, context);
+                               instances, walk, product, curveColor, context,
+                               curveStroke);
       return;
     }
 
@@ -6790,14 +6867,15 @@ private:
       }
       collectGeometryInstances(*mappedRepRef,
                                transform * representationMapFrame(*source),
-                               instances, walk, product, curveColor, context);
+                               instances, walk, product, curveColor, context,
+                               curveStroke);
       return;
     }
 
     if (source->type == "IFCSTYLEDITEM") {
       if (const auto itemRef = firstRef(*source, 0); itemRef.has_value()) {
         collectGeometryInstances(*itemRef, transform, instances, walk, product,
-                                 curveColor, context);
+                                 curveColor, context, curveStroke);
       }
       return;
     }
@@ -7086,6 +7164,7 @@ private:
           container::geometry::dotbim::Element element{};
           element.meshId = group.meshId;
           element.geometryKind = group.geometryKind;
+          element.hasAuthoredCurveWidth = group.hasAuthoredCurveWidth;
           element.transform = unitTransform * placement * instance.transform;
           element.color = group.geometryKind == dotbim::GeometryKind::Curves
                               ? instance.curveColor.value_or(group.color)
@@ -7178,6 +7257,7 @@ private:
         container::geometry::dotbim::Element element{};
         element.meshId = group.meshId;
         element.geometryKind = group.geometryKind;
+        element.hasAuthoredCurveWidth = group.hasAuthoredCurveWidth;
         element.transform = transform;
         element.color = group.color;
         element.type = entity(id)->type;
@@ -7201,11 +7281,15 @@ private:
   mutable std::unordered_map<uint32_t, glm::mat4> axisPlacementCache_{};
   mutable std::unordered_map<uint32_t, glm::mat4> localPlacementCache_{};
   std::unordered_map<uint32_t, glm::vec4> styleColorByItem_{};
-  std::unordered_map<uint32_t, std::optional<glm::vec4>> styleColorByReference_{};
+  std::unordered_map<uint32_t, std::optional<glm::vec4>>
+      styleColorByReference_{};
+  std::unordered_map<uint32_t, uint32_t> curveStrokeByItem_{};
+  std::unordered_map<uint32_t, detail::IfcCurveStroke> curveStrokesByStyle_{};
   std::unordered_map<uint32_t, std::vector<glm::vec4>> faceColorsByFaceSet_{};
   std::unordered_map<uint32_t, std::vector<MeshGroup>> groupsByItem_{};
   // Node-owned groups keep GeometryInstance references valid as the map grows.
-  std::map<std::tuple<uint32_t, std::vector<uint32_t>, std::vector<uint32_t>>,
+  std::map<std::tuple<uint32_t, uint32_t, std::vector<uint32_t>,
+                      std::vector<uint32_t>>,
            std::pair<std::optional<MeshGroup>, std::string>>
       contextualGeometry_{};
   std::unordered_map<uint32_t, bool> sectionedCurveDependencies_{};

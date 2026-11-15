@@ -28,6 +28,8 @@ struct BimDrawCompactionPlanInputs {
   const std::vector<DrawCommand> *nativePointTransparent{nullptr};
   const std::vector<DrawCommand> *nativeCurveOpaque{nullptr};
   const std::vector<DrawCommand> *nativeCurveTransparent{nullptr};
+  const std::vector<DrawCommand> *nativeCurveStrokeOpaque{nullptr};
+  const std::vector<DrawCommand> *nativeCurveStrokeTransparent{nullptr};
 };
 
 class BimDrawCompactionPlanner {

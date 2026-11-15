@@ -100,14 +100,20 @@ BimFrameDrawRoutingPlan BimFrameDrawRoutingPlanner::build() const {
   const bool nativeCurveDrawsUseGpuVisibility =
       gpuVisibilityAvailable &&
       hasAnyGeometry(inputs_.unfilteredNativeCurveDraws);
+  const bool nativeCurveStrokeDrawsUseGpuVisibility =
+      gpuVisibilityAvailable && inputs_.curvesVisible &&
+      hasAnyGeometry(inputs_.unfilteredNativeCurveStrokeDraws);
 
   BimFrameDrawRoutingPlan plan{};
   plan.meshDrawsUseGpuVisibility = gpuVisibilityAvailable;
   plan.transparentMeshDrawsUseGpuVisibility = gpuVisibilityAvailable;
   plan.nativePointDrawsUseGpuVisibility = nativePointDrawsUseGpuVisibility;
   plan.nativeCurveDrawsUseGpuVisibility = nativeCurveDrawsUseGpuVisibility;
+  plan.nativeCurveStrokeDrawsUseGpuVisibility =
+      nativeCurveStrokeDrawsUseGpuVisibility;
   plan.nativePrimitiveDrawsUseGpuVisibility =
-      nativePointDrawsUseGpuVisibility || nativeCurveDrawsUseGpuVisibility;
+      nativePointDrawsUseGpuVisibility || nativeCurveDrawsUseGpuVisibility ||
+      nativeCurveStrokeDrawsUseGpuVisibility;
 
   if (inputs_.gpuVisibility.filterActive) {
     plan.cpuFilteredDrawsRequired =
@@ -115,11 +121,14 @@ BimFrameDrawRoutingPlan BimFrameDrawRoutingPlanner::build() const {
          hasBimFrameMeshDrawCommands(inputs_.unfilteredMeshDraws)) ||
         (inputs_.pointCloudVisible &&
          hasAnyGeometry(inputs_.unfilteredPointDraws)) ||
-        (inputs_.curvesVisible && hasAnyGeometry(inputs_.unfilteredCurveDraws)) ||
+        (inputs_.curvesVisible &&
+         hasAnyGeometry(inputs_.unfilteredCurveDraws)) ||
         (inputs_.pointCloudVisible && !nativePointDrawsUseGpuVisibility &&
          hasAnyGeometry(inputs_.unfilteredNativePointDraws)) ||
         (inputs_.curvesVisible && !nativeCurveDrawsUseGpuVisibility &&
-         hasAnyGeometry(inputs_.unfilteredNativeCurveDraws));
+         hasAnyGeometry(inputs_.unfilteredNativeCurveDraws)) ||
+        (inputs_.curvesVisible && !nativeCurveStrokeDrawsUseGpuVisibility &&
+         hasAnyGeometry(inputs_.unfilteredNativeCurveStrokeDraws));
   }
 
   const BimDrawLists *filteredDraws = inputs_.cpuFilteredDraws;
@@ -168,6 +177,20 @@ BimFrameDrawRoutingPlan BimFrameDrawRoutingPlanner::build() const {
         inputs_.unfilteredNativeCurveDraws, gpuNativeCurveDraws,
         cpuNativeCurveDraws);
     plan.curvePrimitivePassEnabled = hasAnyGeometry(plan.nativeCurveDraws);
+
+    const BimGeometryDrawLists *gpuNativeCurveStrokeDraws =
+        nativeCurveStrokeDrawsUseGpuVisibility
+            ? inputs_.unfilteredNativeCurveStrokeDraws
+            : nullptr;
+    const BimGeometryDrawLists *cpuNativeCurveStrokeDraws =
+        filteredDraws != nullptr ? &filteredDraws->nativeCurveStrokes : nullptr;
+    plan.nativeCurveStrokeDrawSource = nativePrimitiveDrawSource(
+        gpuNativeCurveStrokeDraws, cpuNativeCurveStrokeDraws);
+    plan.nativeCurveStrokeDraws = chooseNativePrimitiveDraws(
+        inputs_.unfilteredNativeCurveStrokeDraws, gpuNativeCurveStrokeDraws,
+        cpuNativeCurveStrokeDraws);
+    plan.curveStrokePrimitivePassEnabled =
+        hasAnyGeometry(plan.nativeCurveStrokeDraws);
   }
 
   return plan;

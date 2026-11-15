@@ -353,6 +353,8 @@ BimDrawFilterState::filteredDrawLists(const BimDrawFilter &filter,
   reserveLike(filteredDrawLists_.curves, inputs.curveDrawLists);
   reserveLike(filteredDrawLists_.nativePoints, inputs.nativePointDrawLists);
   reserveLike(filteredDrawLists_.nativeCurves, inputs.nativeCurveDrawLists);
+  reserveLike(filteredDrawLists_.nativeCurveStrokes,
+              inputs.nativeCurveStrokeDrawLists);
 
   auto appendFiltered = [&](const std::vector<DrawCommand> *source,
                             std::vector<DrawCommand> &out, bool allowMerge) {
@@ -426,6 +428,8 @@ BimDrawFilterState::filteredDrawLists(const BimDrawFilter &filter,
                          filteredDrawLists_.nativePoints);
   appendFilteredGeometry(inputs.nativeCurveDrawLists,
                          filteredDrawLists_.nativeCurves);
+  appendFilteredGeometry(inputs.nativeCurveStrokeDrawLists,
+                         filteredDrawLists_.nativeCurveStrokes);
 
   return filteredDrawLists_;
 }

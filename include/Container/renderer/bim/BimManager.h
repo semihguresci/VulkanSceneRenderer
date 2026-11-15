@@ -198,6 +198,8 @@ struct BimSceneStats {
   size_t nativePointTransparentDrawCount{0};
   size_t nativeCurveOpaqueDrawCount{0};
   size_t nativeCurveTransparentDrawCount{0};
+  size_t nativeCurveStrokeOpaqueDrawCount{0};
+  size_t nativeCurveStrokeTransparentDrawCount{0};
   size_t meshletClusterCount{0};
   size_t meshletSourceClusterCount{0};
   size_t meshletEstimatedClusterCount{0};
@@ -428,7 +430,9 @@ enum class BimDrawCompactionSlot : uint32_t {
   NativePointTransparent = 7,
   NativeCurveOpaque = 8,
   NativeCurveTransparent = 9,
-  Count = 10,
+  NativeCurveStrokeOpaque = 10,
+  NativeCurveStrokeTransparent = 11,
+  Count = 12,
 };
 
 inline constexpr size_t kBimDrawCompactionSlotCount =
@@ -542,6 +546,7 @@ struct BimDrawLists {
   BimGeometryDrawLists curves{};
   BimGeometryDrawLists nativePoints{};
   BimGeometryDrawLists nativeCurves{};
+  BimGeometryDrawLists nativeCurveStrokes{};
 
   void clear() {
     opaqueDrawCommands.clear();
@@ -556,6 +561,7 @@ struct BimDrawLists {
     curves.clear();
     nativePoints.clear();
     nativeCurves.clear();
+    nativeCurveStrokes.clear();
   }
 };
 
@@ -846,6 +852,9 @@ public:
   [[nodiscard]] const BimGeometryDrawLists &nativeCurveDrawLists() const {
     return nativeCurveDrawLists_;
   }
+  [[nodiscard]] const BimGeometryDrawLists &nativeCurveStrokeDrawLists() const {
+    return nativeCurveStrokeDrawLists_;
+  }
   [[nodiscard]] const std::vector<DrawCommand> &
   floorPlanGroundDrawCommands() const {
     return floorPlanGround_.drawCommands;
@@ -874,7 +883,13 @@ public:
   pickRenderableObject(const container::gpu::CameraData &cameraData,
                        VkExtent2D viewportExtent, double cursorX,
                        double cursorY, bool sectionPlaneEnabled = false,
-                       glm::vec4 sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f}) const;
+                       glm::vec4 sectionPlane = {0.0f, 1.0f, 0.0f, 0.0f},
+                       bool skipNativeCurveStrokes = false) const;
+  [[nodiscard]] BimPickHit
+  pickNativeCurveStroke(const container::gpu::CameraData &cameraData,
+                        VkExtent2D viewportExtent, double cursorX,
+                        double cursorY, const BimDrawFilter &filter,
+                        bool sectionPlaneEnabled, glm::vec4 sectionPlane) const;
   [[nodiscard]] BimPickHit pickTransparentRenderableObject(
       const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
       double cursorX, double cursorY, bool sectionPlaneEnabled = false,
@@ -885,6 +900,8 @@ public:
   void collectNativePointDrawCommandsForObject(
       uint32_t objectIndex, std::vector<DrawCommand> &outCommands) const;
   void collectNativeCurveDrawCommandsForObject(
+      uint32_t objectIndex, std::vector<DrawCommand> &outCommands) const;
+  void collectNativeCurveStrokeDrawCommandsForObject(
       uint32_t objectIndex, std::vector<DrawCommand> &outCommands) const;
 
 private:
@@ -929,8 +946,9 @@ private:
   [[nodiscard]] BimPickHit pickRenderableObjectForDraws(
       const container::gpu::CameraData &cameraData, VkExtent2D viewportExtent,
       double cursorX, double cursorY, bool includeOpaque,
-      bool includeTransparent, bool sectionPlaneEnabled,
-      glm::vec4 sectionPlane) const;
+      bool includeTransparent, bool sectionPlaneEnabled, glm::vec4 sectionPlane,
+      bool skipNativeCurveStrokes = false,
+      const BimDrawFilter *nativeCurveStrokeFilter = nullptr) const;
   void uploadGeometry(std::span<const container::geometry::Vertex> vertices,
                       std::span<const uint32_t> indices);
   void uploadMeshletResidencyBuffers();
@@ -1023,6 +1041,7 @@ private:
   BimGeometryDrawLists curveDrawLists_{};
   BimGeometryDrawLists nativePointDrawLists_{};
   BimGeometryDrawLists nativeCurveDrawLists_{};
+  BimGeometryDrawLists nativeCurveStrokeDrawLists_{};
   size_t meshletClusterCount_{0};
   std::vector<BimMeshletClusterMetadata> meshletClusters_{};
   std::vector<BimObjectLodStreamingMetadata> objectLodMetadata_{};
