@@ -1102,14 +1102,23 @@ private:
         return {};
       }
       const auto curve = firstRef(*profile, 2);
-      const auto points = curve ? readPolylinePoints(*curve, PolylineUse::CenterLine) : std::vector<glm::vec3>{};
-      if (points.size() < 2) {
-        error = std::string("centerline requires one connected 2D polyline or indexed straight-line curve") +
-                (curve ? " (#" + std::to_string(*curve) + ")" : "") +
-                " with 2 to " + std::to_string(detail::kMaxIfcCenterLinePoints) + " points";
+      if (!curve) {
+        error = "missing centerline curve reference";
         return {};
       }
-      auto loop = detail::makeIfcCenterLineAreaLoop(points, *thickness, error, stop_);
+      const auto points = readPolylinePoints(*curve, PolylineUse::CenterLine);
+      std::vector<glm::vec3> loop;
+      if (points.size() >= 2) {
+        loop = detail::makeIfcCenterLineAreaLoop(points, *thickness, error, stop_);
+      } else {
+        const auto segments = detail::readIfcCenterLineSegments(
+            entities_, *curve, unitScale_, projectPlaneAngleScale(), error, stop_);
+        if (segments.empty())
+          return {};
+        const double chordError = .001 / unitScale_ / samplingScale;
+        loop = detail::makeIfcCurvedCenterLineAreaLoop(
+            segments, *thickness, chordError, error, stop_);
+      }
       return loop.empty() ? ProfileLoops{} : ProfileLoops{std::move(loop)};
     }
     if (profile->type == "IFCRECTANGLEHOLLOWPROFILEDEF" ||

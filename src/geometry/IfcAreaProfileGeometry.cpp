@@ -2,6 +2,7 @@
 
 #include "Container/utility/ModelImportCancellation.h"
 
+#include <glm/geometric.hpp>
 #include <glm/vec2.hpp>
 
 #include <algorithm>
@@ -9,12 +10,14 @@
 #include <cmath>
 #include <limits>
 #include <numbers>
+#include <optional>
 #include <tuple>
 
 namespace container::geometry::ifc::detail {
 namespace {
 
 constexpr size_t kMaxQuarterSegments = 1024;
+constexpr size_t kMaxCurvedCenterLineVertices = 4096;
 constexpr size_t kMaxCompositeRegions = 128;
 constexpr size_t kMaxCompositePoints = 32768;
 constexpr size_t kMaxCompositeChecks = 8'000'000;
@@ -126,6 +129,136 @@ struct Bounds {
 
   [[nodiscard]] double size() const { return std::max(max.x - min.x, max.y - min.y); }
 };
+
+double length(Point point) {
+  return std::hypot(point.x, point.y);
+}
+
+Point leftNormal(Point tangent) {
+  return {-tangent.y, tangent.x};
+}
+
+Point rotate(Point point, double radians) {
+  return std::cos(radians) * point + std::sin(radians) * leftNormal(point);
+}
+
+struct CenterLinePiece {
+  Point start{}, end{}, center{};
+  double radius = 0.0;
+  double sweep = 0.0;
+
+  [[nodiscard]] Point tangent(bool atEnd) const {
+    if (radius == 0.0) {
+      const auto delta = end - start;
+      return delta / length(delta);
+    }
+    const auto radial = (atEnd ? end : start) - center;
+    return leftNormal(radial) / std::copysign(length(radial), sweep);
+  }
+
+  [[nodiscard]] CenterLinePiece reversed() const {
+    return {end, start, center, radius, -sweep};
+  }
+};
+
+bool onArc(const CenterLinePiece& arc, Point point, double tolerance) {
+  const auto radial = point - arc.center;
+  if (std::abs(length(radial) - arc.radius) > tolerance) return false;
+  const auto first = (arc.start - arc.center) / arc.radius;
+  const auto direction = radial / arc.radius;
+  const double angle =
+      std::atan2(cross(first, direction), glm::dot(first, direction)) *
+      std::copysign(1.0, arc.sweep);
+  constexpr double turn = 2.0 * std::numbers::pi;
+  const double along = angle < 0 ? angle + turn : angle;
+  const double angularTolerance = tolerance / arc.radius;
+  return along <= std::abs(arc.sweep) + angularTolerance ||
+         along >= turn - angularTolerance;
+}
+
+bool piecesMeet(const CenterLinePiece& a, const CenterLinePiece& b,
+                std::optional<Point> shared) {
+  const double tolerance =
+      4.0 * kRoundoff * std::max({length(a.start), length(a.end), a.radius,
+                                  length(b.start), length(b.end), b.radius});
+  const auto extra = [&](Point point) {
+    return !shared || length(point - *shared) > tolerance;
+  };
+  if (a.radius == 0.0 && b.radius == 0.0) {
+    if (!shared) return intersects(a.start, a.end, b.start, b.end, tolerance);
+    // Two connected line segments only meet again when they overlap.
+    const auto away = [&](const CenterLinePiece& piece) {
+      return length(piece.start - *shared) > tolerance ? piece.start : piece.end;
+    };
+    const auto p = away(a), q = away(b);
+    return orientation(*shared, p, q) == 0 &&
+           glm::dot(p - *shared, q - *shared) > 0.0;
+  }
+
+  if (a.radius == 0.0 || b.radius == 0.0) {
+    const auto& line = a.radius == 0.0 ? a : b;
+    const auto& arc = a.radius == 0.0 ? b : a;
+    const auto delta = line.end - line.start;
+    const double extent = length(delta);
+    if (extent <= tolerance) return true;
+    const auto direction = delta / extent;
+    const auto toCenter = arc.center - line.start;
+    const double along = glm::dot(toCenter, direction);
+    const double distance = std::abs(cross(toCenter, direction));
+    const double gap = arc.radius - distance;
+    if (gap < -tolerance) return false;
+    const auto hit = [&](double t) {
+      const auto point = line.start + t * direction;
+      return t >= -tolerance && t <= extent + tolerance && extra(point) &&
+             onArc(arc, point, tolerance);
+    };
+    if (gap <= tolerance) return !shared && hit(along);
+    const double halfChord = std::sqrt(gap * (arc.radius + distance));
+    return hit(along - halfChord) || hit(along + halfChord);
+  }
+
+  const auto delta = b.center - a.center;
+  const double distance = length(delta);
+  const double outerGap = a.radius + b.radius - distance;
+  const double innerGap = distance - std::abs(a.radius - b.radius);
+  if (outerGap < -tolerance || innerGap < -tolerance) return false;
+  if (distance <= tolerance) {
+    if (std::abs(a.radius - b.radius) > tolerance) return false;
+    // Intersecting intervals on the same circle include an endpoint.
+    return (extra(a.start) && onArc(b, a.start, tolerance)) ||
+           (extra(a.end) && onArc(b, a.end, tolerance)) ||
+           (extra(b.start) && onArc(a, b.start, tolerance)) ||
+           (extra(b.end) && onArc(a, b.end, tolerance));
+  }
+  const auto direction = delta / distance;
+  const auto foot =
+      a.center + .5 * (distance + (a.radius - b.radius) / distance *
+                                      (a.radius + b.radius)) * direction;
+  const auto hit = [&](Point point) {
+    return extra(point) && onArc(a, point, tolerance) && onArc(b, point, tolerance);
+  };
+  if (outerGap <= tolerance || innerGap <= tolerance) return !shared && hit(foot);
+  // Heron's factorization stays stable at internal and external tangency.
+  const double halfChord = .5 * std::sqrt(
+      (outerGap * (a.radius + b.radius + distance)) *
+      (innerGap * (distance + std::abs(a.radius - b.radius)))) / distance;
+  const auto perpendicular = halfChord * leftNormal(direction);
+  return hit(foot - perpendicular) || hit(foot + perpendicular);
+}
+
+bool isSimple(std::span<const CenterLinePiece> pieces, bool closed,
+              std::stop_token stop) {
+  for (size_t i = 0; i < pieces.size(); ++i) {
+    container::util::checkModelImportCancellation(stop);
+    for (size_t j = i + 1; j < pieces.size(); ++j) {
+      std::optional<Point> shared;
+      if (j == i + 1) shared = pieces[i].end;
+      if (closed && i == 0 && j + 1 == pieces.size()) shared = pieces[i].start;
+      if (piecesMeet(pieces[i], pieces[j], shared)) return false;
+    }
+  }
+  return true;
+}
 
 struct Region {
   std::span<const std::vector<glm::vec3>> rings;
@@ -281,6 +414,181 @@ std::vector<glm::vec3> makeIfcCenterLineAreaLoop(std::span<const glm::vec3> poin
   const double area = signedArea(outline);
   if (area <= 0.0 || !isSimple(outline, true, stop)) {
     return rejected(error, "Centerline offset boundary intersects, touches, or collapses");
+  }
+  if (std::abs(area - expectedArea) > expectedArea * 1e-3) {
+    return rejected(error, "Centerline outline loses its thickness at renderer precision");
+  }
+  return result;
+}
+
+std::vector<glm::vec3>
+makeIfcCurvedCenterLineAreaLoop(std::span<const IfcCenterLineSegment> segments,
+                                double fullThickness, double chordError,
+                                std::string& error, std::stop_token stop) {
+  error.clear();
+  container::util::checkModelImportCancellation(stop);
+  const double halfThickness = fullThickness * 0.5;
+  if (!(halfThickness > 0.0) || !fitsFloat({halfThickness, 0.0})) {
+    return rejected(error, "Centerline thickness must be positive and fit renderer precision");
+  }
+  if (!(chordError > 0.0) || !std::isfinite(chordError) || segments.empty() ||
+      segments.size() >= kMaxIfcCenterLinePoints) {
+    return rejected(error, "Invalid centerline chord tolerance or segment count");
+  }
+  const Point origin = segments.front().start;
+  const double joinTolerance = std::min(chordError * .01, halfThickness * 1e-6);
+  std::vector<CenterLinePiece> path;
+  path.reserve(segments.size());
+  std::vector<size_t> steps;
+  steps.reserve(segments.size());
+  size_t railVertices = 1;
+  double areaPerUnitThickness = 0.0;
+  for (const auto& segment : segments) {
+    container::util::checkModelImportCancellation(stop);
+    if (!fitsFloat(segment.start) || !fitsFloat(segment.end) ||
+        !std::isfinite(segment.sweepRadians)) {
+      return rejected(error, "Centerline segments must have finite 2D geometry");
+    }
+    const double tolerance =
+        joinTolerance + 4.0 * kRoundoff *
+                            std::max(length(segment.start), length(segment.end));
+    CenterLinePiece piece{segment.start - origin, segment.end - origin};
+    if (!path.empty()) {
+      if (length(path.back().end - piece.start) > tolerance) {
+        return rejected(error, "Centerline segments are discontinuous");
+      }
+      piece.start = path.back().end;
+    }
+    const double chordLength = length(piece.end - piece.start);
+    if (!(chordLength > tolerance)) {
+      return rejected(error, "Centerline segment endpoints coincide at profile precision");
+    }
+    size_t count = 1;
+    if (segment.sweepRadians != 0.0) {
+      const double extent = std::abs(segment.sweepRadians);
+      if (!fitsFloat(segment.center) || extent >= 2.0 * std::numbers::pi) {
+        return rejected(error, "Centerline arc requires a finite center and an open sweep");
+      }
+      piece.center = segment.center - origin;
+      piece.radius = length(piece.start - piece.center);
+      piece.sweep = segment.sweepRadians;
+      const auto predicted = piece.center + rotate(piece.start - piece.center, piece.sweep);
+      if (length(predicted - piece.end) >
+          tolerance + 4.0 * kRoundoff * piece.radius) {
+        return rejected(error, "Centerline arc endpoints disagree with its signed sweep");
+      }
+      if (!(piece.radius - halfThickness > tolerance)) {
+        return rejected(error, "Centerline thickness collapses the inner arc offset");
+      }
+      const double outerRadius = piece.radius + halfThickness;
+      const double maxAngle = std::min(
+          std::numbers::pi / 2.0,
+          4.0 * std::asin(std::sqrt(std::min(.5, (chordError / outerRadius) * .5))));
+      const double stepCount = std::max(1.0, std::ceil(extent / maxAngle));
+      if (!std::isfinite(stepCount) ||
+          stepCount > double(kMaxCurvedCenterLineVertices / 2)) {
+        return rejected(error, "Centerline arc exceeds its chord sampling budget");
+      }
+      count = static_cast<size_t>(stepCount);
+      // Each pair of chords bounds an annular sector with its sine in place
+      // of the angle. Compare against that area after float conversion.
+      areaPerUnitThickness +=
+          piece.radius * double(count) * std::sin(extent / double(count));
+    } else {
+      areaPerUnitThickness += chordLength;
+    }
+    if (count > kMaxCurvedCenterLineVertices / 2 - railVertices) {
+      return rejected(error, "Centerline outline exceeds its boundary vertex budget");
+    }
+    railVertices += count;
+    steps.push_back(count);
+    path.push_back(piece);
+  }
+  if (length(path.back().end) <= joinTolerance) {
+    return rejected(error, "Centerline must be open");
+  }
+  if (!isSimple(path, false, stop)) {
+    return rejected(error, "Centerline crosses or touches itself");
+  }
+
+  std::vector<Point> offsets;
+  offsets.reserve(path.size() + 1);
+  offsets.push_back(halfThickness * leftNormal(path.front().tangent(false)));
+  for (size_t i = 1; i < path.size(); ++i) {
+    const auto previous = path[i - 1].tangent(true);
+    const auto next = path[i].tangent(false);
+    const double cosine = glm::dot(previous, next);
+    if (path[i - 1].radius != 0.0 || path[i].radius != 0.0) {
+      if (cosine <= 0.0 || std::abs(cross(previous, next)) > 1e-8) {
+        return rejected(error, "Centerline joins involving circular arcs must be tangent");
+      }
+      const auto tangent = path[i].radius != 0.0 ? next : previous;
+      offsets.push_back(halfThickness * leftNormal(tangent));
+    } else {
+      if (cosine < -0.5 - kRoundoff) {
+        return rejected(error, "Centerline turn exceeds the supported 120 degree miter");
+      }
+      offsets.push_back(leftNormal(previous + next) *
+                        (halfThickness / (1.0 + cosine)));
+    }
+  }
+  offsets.push_back(halfThickness * leftNormal(path.back().tangent(true)));
+
+  const auto offsetPiece = [&](size_t index, double side) {
+    auto piece = path[index];
+    piece.start += side * offsets[index];
+    piece.end += side * offsets[index + 1];
+    if (piece.radius != 0.0)
+      piece.radius -= std::copysign(halfThickness, piece.sweep) * side;
+    return piece;
+  };
+  std::vector<CenterLinePiece> outline;
+  outline.reserve(path.size() * 2 + 2);
+  for (size_t i = 0; i < path.size(); ++i) {
+    const auto right = offsetPiece(i, -1.0);
+    const auto left = offsetPiece(i, 1.0);
+    if (path[i].radius == 0.0) {
+      const auto tangent = path[i].tangent(false);
+      if (glm::dot(right.end - right.start, tangent) <= 0.0 ||
+          glm::dot(left.end - left.start, tangent) <= 0.0) {
+        return rejected(error, "Centerline thickness folds an offset segment at a miter");
+      }
+    }
+    outline.push_back(right);
+  }
+  outline.push_back({outline.back().end, offsetPiece(path.size() - 1, 1.0).end});
+  for (size_t i = path.size(); i > 0; --i)
+    outline.push_back(offsetPiece(i - 1, 1.0).reversed());
+  outline.push_back({outline.back().end, outline.front().start});
+  if (!isSimple(outline, true, stop)) {
+    return rejected(error, "Centerline offset boundary intersects or touches itself");
+  }
+
+  std::vector<Point> ring;
+  ring.reserve(railVertices * 2);
+  for (size_t i = 0; i < outline.size(); ++i) {
+    container::util::checkModelImportCancellation(stop);
+    const auto& piece = outline[i];
+    ring.push_back(origin + piece.start);
+    if (piece.radius == 0.0) continue;
+    const size_t source = i < path.size() ? i : 2 * path.size() - i;
+    const size_t count = steps[source];
+    const auto radial = piece.start - piece.center;
+    const auto from = (piece.radius / length(radial)) * radial;
+    for (size_t j = 1; j < count; ++j) {
+      const double radians = piece.sweep * (double(j) / double(count));
+      ring.push_back(origin + (piece.center + rotate(from, radians)));
+    }
+  }
+  auto result = toFloatRing(ring);
+  if (result.empty()) {
+    return rejected(error, "Centerline outline collapses at renderer precision");
+  }
+  for (size_t i = 0; i < result.size(); ++i) ring[i] = Point(result[i]) - origin;
+  const double area = signedArea(ring);
+  const double expectedArea = fullThickness * areaPerUnitThickness;
+  if (!(area > 0.0) || !isSimple(ring, true, stop)) {
+    return rejected(error, "Sampled centerline offset boundary intersects, touches, or collapses");
   }
   if (std::abs(area - expectedArea) > expectedArea * 1e-3) {
     return rejected(error, "Centerline outline loses its thickness at renderer precision");

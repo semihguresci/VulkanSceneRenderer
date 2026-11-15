@@ -1,5 +1,6 @@
 #pragma once
 
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
 
 #include <cstddef>
@@ -25,6 +26,18 @@ makeIfcRoundedRectangleLoop(double width, double height, double radius,
 [[nodiscard]] std::vector<glm::vec3>
 makeIfcCenterLineAreaLoop(std::span<const glm::vec3> points, double fullThickness,
                           std::string& error, std::stop_token stop = {});
+
+struct IfcCenterLineSegment {
+  glm::dvec2 start{}, end{}, center{};
+  double sweepRadians = 0.0;
+};
+
+// Nonzero sweeps are circular arcs about center, with signed orientation.
+// Arc joins must be tangent. Straight joins use the same miters as polylines.
+[[nodiscard]] std::vector<glm::vec3>
+makeIfcCurvedCenterLineAreaLoop(std::span<const IfcCenterLineSegment> segments,
+                                double fullThickness, double chordError,
+                                std::string& error, std::stop_token stop = {});
 
 // Each region has one outer ring followed by its holes. The caller validates
 // the individual regions. Filled areas must be strictly disjoint.

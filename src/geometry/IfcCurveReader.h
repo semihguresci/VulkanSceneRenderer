@@ -12,6 +12,8 @@
 #include <unordered_map>
 
 namespace container::geometry::ifc::detail {
+
+struct IfcCenterLineSegment;
 struct ProfileTransform2D {
   uint32_t parent;
   // Columns include scale; the origin is applied after the parent placement.
@@ -66,6 +68,12 @@ struct ParametricSurface {
   std::vector<double> creaseU, creaseV;
 };
 [[nodiscard]] bool isCurveEntity(std::string_view type);
+// Extract exact line and circular arc pieces in the authored traversal order.
+[[nodiscard]] std::vector<IfcCenterLineSegment>
+readIfcCenterLineSegments(const std::unordered_map<uint32_t, Entity> &entities,
+                          uint32_t id, double metersPerUnit,
+                          std::optional<double> radiansPerAngleUnit,
+                          std::string &error, std::stop_token stop = {});
 // Pure conversion: errors cannot leave partial geometry in the model buffers.
 [[nodiscard]] std::optional<ParametricCurve>
 readIfcCurve(const std::unordered_map<uint32_t, Entity> &entities, uint32_t id,

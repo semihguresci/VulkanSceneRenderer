@@ -48,7 +48,7 @@ checks are free of validation and synchronization errors.
 | `IFCFACETEDBREP` | Connected closed shells with planar `IFCFACE`/polyloop bounds, inner loops, bound orientation and per-face surface colors. Closed topology and outward shell orientation are checked before buffer mutation. |
 | `IFCFACETEDBREPWITHVOIDS` | Faceted outer shells with inward-facing cavity shells. Cavities must be strictly enclosed, disjoint and unnested. Repeated shells/faces, open shells and incorrect winding reject atomically. |
 | `IFCADVANCEDBREP`, `IFCADVANCEDBREPWITHVOIDS` | Planar and curved `IFCADVANCEDFACE` geometry on planes, cylinders, spheres, tori, explicit-knot polynomial/rational spline surfaces and supported extrusion/revolution surfaces. Shared `IFCEDGECURVE`/`IFCORIENTEDEDGE` topology, face holes, periodic bands with independent seams, seam curves and cavity validation are retained. Authored spline trims can use either periodic axis and primitive doubly periodic bands. Spherical pole vertex loops and pole-crossing edge loops mesh through regular local charts. Edge vertices trim their native 3D curves. The importer checks SameSense, boundary orientation, surface membership and opposite edge reuse. |
-| `IFCEXTRUDEDAREASOLID` | Arbitrary supported closed 2D curves with voids, sharp/rounded/hollow rectangles, circles/hollow circles, ellipses, trapezia, capped linear centerlines, disjoint area composites and L/U/I/asymmetric I/C/T/Z sections. Caps and side walls face outward, including negative extrusion directions. |
+| `IFCEXTRUDEDAREASOLID` | Arbitrary supported closed 2D curves with voids, sharp/rounded/hollow rectangles, circles/hollow circles, ellipses, trapezia, capped straight and circular-arc centerlines, disjoint area composites and L/U/I/asymmetric I/C/T/Z sections. Caps and side walls face outward, including negative extrusion directions. |
 | Profile curves | Closed 2D polylines/indexed arcs, conics, B-splines, trims and composites use the shared curve evaluator, with at most 4,097 sampled points. Repeated consecutive polyline points are removed. Profiles must pass planarity, closure, intersection and triangulation checks. |
 | `IfcDerivedProfileDef`, `IfcMirroredProfileDef` | Transform already-supported parent profiles after their 2D placement. Translation, rotation, uniform/non-uniform positive scales and axis mirroring are supported, including nested chains. Extruded profiles retain inner loops and outward winding; swept-surface curves retain source domains, periods and section tags. Parent/profile types must agree. |
 | Opening relations | Analytic rectangular through-openings, with Manifold subtraction for supported closed solids including circular, rotated and overlapping cuts. Source placements/mapped transforms are applied in host coordinates. Failed cuts retain the original host with diagnostics; cut faces inherit the host material. |
@@ -253,11 +253,17 @@ A later `IfcMappedItem` or user import scale scales the tessellated mesh.
 [Hollow rectangle](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcRectangleHollowProfileDef.htm)
 · [Trapezium](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcTrapeziumProfileDef.htm)
 
-An AREA centerline uses a connected, open 2D polyline or indexed straight-line
-curve. The importer forms a constant-width strip with perpendicular ends and
-mitered turns. The limit is 1,024 centerline points and a 120° change in
-direction at each turn. Closed, curved, self-intersecting or folded offsets
-produce a profile diagnostic. [Centerline profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcCenterLineProfileDef.htm)
+An AREA centerline uses a connected, open 2D curve made of straight segments
+and circular arcs. Supported definitions include polylines, indexed
+polylines with line and arc indices, trimmed lines and circles, and
+composites of these curves. The importer forms a constant-width strip with
+perpendicular ends. Straight joins can miter through a direction change of up
+to 120°. Joins involving an arc must be tangent. Circular offset edges are
+sampled to a 1 mm chord-error budget that includes the IFC length unit and
+accumulated profile scales. The limits are 1,024 centerline points and 4,096
+outline vertices. Closed or self-intersecting curves, collapsed or overlapping
+offsets, and unsupported curve types produce a profile diagnostic.
+[Centerline profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcCenterLineProfileDef.htm)
 
 An AREA composite may contain 2–64 distinct nonrecursive region definitions
 and up to 16,384 boundary vertices. Each member retains its placement and
@@ -275,7 +281,9 @@ Forward and Deferred raster, with TAA off and on. Enable it with
 `ctest -R '^ifc_area_profiles_gpu_regression$' --output-on-failure`
 from the configured build directory.
 Run `ifc_structural_area_profiles_gpu_regression` with the same switch for
-the C, Z, T and asymmetric I fixture.
+the C, Z, T and asymmetric I profiles and a 270° centerline extrusion. The
+curved profile checks cap area, rim depth, the clear bore and the opening
+between the ends.
 
 The archived 2014 buildingSMART `basin-faceted-brep.ifc` now reports its invalid
 closed shell (`#851`, B-rep `#852`). An independent inspection finds 120 repeated
@@ -859,9 +867,12 @@ implementation tasks and independent geometry/rendering acceptance criteria.
 
 Ambiguous tag transitions, guided or incompatible sharp joins, other singular
 charts and polar trims with separate meridians or holes meeting an authored
-seam remain outside native coverage. Swept surface limits include profiles
-with arbitrary `AREA` voids, standalone revolutions without a regular one-sided meridian, and
-multi-chart boundaries without enough 3D geometry to select their chart.
+seam remain outside native coverage. Swept surface limits include standalone
+revolutions without a regular one-sided meridian and multi-chart boundaries
+without enough 3D geometry to select their chart. IFC swept surfaces use
+`CURVE` profiles. An arbitrary `AREA` profile with voids can be used with an
+`IfcExtrudedAreaSolid`.
+[Swept surface](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSweptSurface.htm)
 Periodic trims that need a cut through new boundary samples and layouts without
 a unique chart placement are diagnosed.
 Each omitted
