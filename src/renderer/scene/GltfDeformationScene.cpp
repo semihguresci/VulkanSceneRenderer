@@ -10,7 +10,6 @@
 #include <cmath>
 #include <limits>
 #include <map>
-#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -146,6 +145,18 @@ bool sameRange(const GltfDeformationDrawRange& a, const GltfDeformationDrawRange
       a.vertexCount == b.vertexCount && a.instance == b.instance;
 }
 
+size_t canonicalPrimitiveCount(size_t renderCount, std::span<const uint32_t> sources) {
+  if (sources.empty()) return renderCount;
+  if (sources.size() != renderCount) fail("render primitive sources must cover every physical slot");
+  size_t canonicalCount = renderCount;
+  for (size_t i = 0; i < sources.size(); ++i) {
+    if (canonicalCount == renderCount && sources[i] != i) canonicalCount = i;
+    if (i >= canonicalCount && sources[i] >= canonicalCount)
+      fail("render primitive aliases must point to the canonical geometry prefix");
+  }
+  return canonicalCount;
+}
+
 }  // namespace
 
 struct GltfDeformationScene::Impl {
@@ -166,8 +177,9 @@ struct GltfDeformationScene::Impl {
   };
 
   gltf::DeformationData data;
-  std::vector<std::optional<gltf::PreparedDeformationFrames>> preparedFrames;
+  std::vector<std::shared_ptr<const gltf::PreparedDeformationFrames>> preparedFrames;
   std::vector<geometry::Vertex> sourceVertices;
+  uint64_t maxPoseBytes{UINT64_MAX};
   std::vector<uint32_t> sourceIndices;
   std::vector<geometry::PrimitiveRange> sourceRanges;
   std::vector<uint32_t> sourceVertexOffsets;
@@ -175,6 +187,8 @@ struct GltfDeformationScene::Impl {
   std::vector<GltfDeformationBounds> sourceBounds;
   std::vector<std::vector<uint32_t>> localIndices;
   std::vector<int32_t> runtimeToDefinition;
+  std::vector<uint32_t> renderPrimitiveSources;
+  size_t canonicalCount{0};
   std::vector<geometry::Vertex> expandedBind, current, previous;
   std::vector<uint32_t> expandedIndices;
   std::vector<Instance> instances;
@@ -238,18 +252,44 @@ GltfDeformationScene::GltfDeformationScene() : impl_(std::make_unique<Impl>()) {
 GltfDeformationScene::~GltfDeformationScene() = default;
 
 void GltfDeformationScene::configure(gltf::DeformationData data,
-                                      const geometry::Model& sourceGeometry,
-                                      std::span<const uint32_t> sourceDeformationToRuntime) {
+    const geometry::Model& renderGeometry, std::span<const uint32_t> sourceDeformationToRuntime,
+    std::span<const uint32_t> renderPrimitiveSources,
+    std::span<const std::shared_ptr<const gltf::PreparedDeformationFrames>> renderPreparedFrames,
+    uint64_t maxPoseBytes) {
   auto& state = *impl_;
-  const auto& vertices = sourceGeometry.vertices();
-  const auto& indices = sourceGeometry.indices();
-  const auto& ranges = sourceGeometry.primitiveRanges();
-  const auto& meshes = sourceGeometry.meshes();
+  const auto& vertices = renderGeometry.vertices();
+  const auto& indices = renderGeometry.indices();
+  const auto& ranges = renderGeometry.primitiveRanges();
+  const auto& meshes = renderGeometry.meshes();
   if (ranges.size() != meshes.size() || data.primitives.size() > meshes.size()) {
     fail("source primitive mapping differs from runtime geometry");
   }
   auto mapping = scene::MakeSourcePrimitiveMapping(data.primitives.size(), meshes.size(),
                                                   sourceDeformationToRuntime);
+  const size_t canonicalCount = canonicalPrimitiveCount(meshes.size(), renderPrimitiveSources);
+  if (!renderPreparedFrames.empty() && renderPreparedFrames.size() != meshes.size())
+    fail("prepared render frames must be indexed by physical primitive slot");
+  for (size_t i = 0; i < renderPreparedFrames.size(); ++i) {
+    if (renderPreparedFrames[i] && (i < canonicalCount || mapping.runtimeToSource[i] < 0))
+      fail("prepared render frames require a variant deformation definition");
+  }
+  for (size_t i = canonicalCount; i < meshes.size(); ++i) {
+    const auto canonical = renderPrimitiveSources[i];
+    if (ranges[i].indexCount != ranges[canonical].indexCount)
+      fail("render variant changes its canonical triangle count");
+    const auto original = mapping.runtimeToSource[canonical];
+    const auto variant = mapping.runtimeToSource[i];
+    const auto* originalDef = original < 0 ? nullptr : &data.primitives[size_t(original)];
+    const auto* variantDef = variant < 0 ? nullptr : &data.primitives[size_t(variant)];
+    const bool originalDeforms = originalDef && (originalDef->hasMorphing() || originalDef->hasSkinning());
+    const bool variantDeforms = variantDef && (variantDef->hasMorphing() || variantDef->hasSkinning());
+    if (originalDeforms != variantDeforms ||
+        (originalDef && variantDef && (originalDef->sourceMesh != variantDef->sourceMesh ||
+         originalDef->sourcePrimitive != variantDef->sourcePrimitive ||
+         originalDef->hasSkinning() != variantDef->hasSkinning() ||
+         originalDef->morphTargets.size() != variantDef->morphTargets.size())))
+      fail("render variant has a different source deformation definition");
+  }
   narrow(vertices.size());
   narrow(indices.size());
   std::vector<uint32_t> offsets, counts;
@@ -280,12 +320,32 @@ void GltfDeformationScene::configure(gltf::DeformationData data,
     }
   }
   if (vertexOffset != vertices.size()) fail("flattened source vertex count mismatch");
-  std::vector<std::optional<gltf::PreparedDeformationFrames>> preparedFrames(data.primitives.size());
+  std::vector<std::shared_ptr<const gltf::PreparedDeformationFrames>> preparedFrames(data.primitives.size());
   for (size_t i = 0; i < data.primitives.size(); ++i) {
     const auto& primitive = data.primitives[i];
-    if (primitive.hasMorphing() && (!primitive.authoredBaseNormal || !primitive.authoredBaseTangent)) {
-      preparedFrames[i] = gltf::PrepareDeformationFrames(primitive, localIndices[i],
-          {primitive.authoredBaseNormal, primitive.authoredBaseTangent, primitive.normalTextureTexCoord});
+    const auto renderSlot = mapping.sourceToRuntime[i];
+    if (!renderPreparedFrames.empty()) preparedFrames[i] = renderPreparedFrames[renderSlot];
+    if (const auto& supplied = preparedFrames[i]) {
+      const auto& prepared = supplied->primitive;
+      const auto source = mapping.runtimeToSource[renderPrimitiveSources[renderSlot]];
+      if (source < 0) fail("prepared render frames require canonical deformation provenance");
+      const auto& canonicalIndices = localIndices[size_t(source)];
+      if (prepared.sourceMesh != primitive.sourceMesh || prepared.sourcePrimitive != primitive.sourcePrimitive ||
+          supplied->indices.size() != prepared.bindVertices.size() ||
+          supplied->sourceVertexMap != canonicalIndices || supplied->indices.size() != canonicalIndices.size() ||
+          (localIndices[i] != canonicalIndices && localIndices[i] != supplied->indices) ||
+          prepared.hasSkinning() != primitive.hasSkinning() ||
+          prepared.morphTargets.size() != primitive.morphTargets.size() ||
+          supplied->policy.authoredBaseNormal != primitive.authoredBaseNormal ||
+          supplied->policy.authoredBaseTangent != primitive.authoredBaseTangent ||
+          supplied->policy.normalTextureTexCoord != primitive.normalTextureTexCoord)
+        fail("prepared render frames do not match their variant geometry and policy");
+      for (size_t corner = 0; corner < supplied->indices.size(); ++corner)
+        if (supplied->indices[corner] != corner) fail("prepared render frames must use independent corners");
+    } else if (primitive.hasMorphing() && (!primitive.authoredBaseNormal || !primitive.authoredBaseTangent)) {
+      preparedFrames[i] = std::make_shared<gltf::PreparedDeformationFrames>(
+          gltf::PrepareDeformationFrames(primitive, localIndices[i],
+              {primitive.authoredBaseNormal, primitive.authoredBaseTangent, primitive.normalTextureTexCoord}));
     }
   }
   const bool sourceVerticesChanged = !sameVertices(state.sourceVertices, vertices);
@@ -298,11 +358,15 @@ void GltfDeformationScene::configure(gltf::DeformationData data,
   }
   const bool indicesChanged = state.sourceIndices != indices;
   const bool mappingChanged = state.runtimeToDefinition != mapping.runtimeToSource;
+  const bool aliasesChanged = !std::ranges::equal(state.renderPrimitiveSources, renderPrimitiveSources);
+  std::vector<uint32_t> aliases(renderPrimitiveSources.begin(), renderPrimitiveSources.end());
   state.sourceGeometryChanged |= sourceVerticesChanged || indicesChanged || !state.instances.empty();
-  state.sourceTopologyChanged |= rangesChanged || indicesChanged || sourceVerticesChanged || mappingChanged || !state.instances.empty();
+  state.sourceTopologyChanged |= rangesChanged || indicesChanged || sourceVerticesChanged || mappingChanged ||
+      aliasesChanged || !state.instances.empty();
   state.data = std::move(data);
   state.preparedFrames = std::move(preparedFrames);
   state.sourceVertices = vertices;
+  state.maxPoseBytes = maxPoseBytes;
   state.sourceIndices = indices;
   state.sourceRanges = ranges;
   state.sourceVertexOffsets = std::move(offsets);
@@ -310,6 +374,8 @@ void GltfDeformationScene::configure(gltf::DeformationData data,
   state.sourceBounds = std::move(sourceBounds);
   state.localIndices = std::move(localIndices);
   state.runtimeToDefinition = std::move(mapping.runtimeToSource);
+  state.renderPrimitiveSources = std::move(aliases);
+  state.canonicalCount = canonicalCount;
   state.instances.clear();
   state.expandedBind.clear();
   state.expandedIndices.clear();
@@ -323,15 +389,17 @@ void GltfDeformationScene::configure(gltf::DeformationData data,
 
 GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph& graph,
     std::span<const uint32_t> meshOwnerGraphNodes, const tinygltf::Model* evaluatedSource,
-    bool resetHistory) {
+    bool resetHistory, std::span<const uint32_t> renderPrimitivesByGraphNode) {
   auto& state = *impl_;
   if (!state.configured) fail("configure must precede update");
   if (!meshOwnerGraphNodes.empty() && meshOwnerGraphNodes.size() != graph.nodeCount()) {
     fail("mesh owner mapping must be indexed by runtime graph node");
   }
-  state.resetPending |= resetHistory;
+  if (!renderPrimitivesByGraphNode.empty() && renderPrimitivesByGraphNode.size() != graph.nodeCount())
+    fail("render primitive mapping must be indexed by runtime graph node");
+  const bool resetPending = state.resetPending || resetHistory;
   std::vector<std::vector<uint32_t>> sourceGraphNodes(state.data.nodes.size());
-  for (size_t i = 0; i < graph.nodeCount(); ++i) {
+  for (size_t i = 0; !sourceGraphNodes.empty() && i < graph.nodeCount(); ++i) {
     const auto* node = graph.getNode(narrow(i));
     if (node->retired || node->sourceNodeIndex < 0) continue;
     if (static_cast<size_t>(node->sourceNodeIndex) >= sourceGraphNodes.size()) {
@@ -347,12 +415,18 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
   for (size_t i = 0; i < graph.nodeCount(); ++i) {
     const uint32_t nodeIndex = narrow(i);
     const auto& node = *graph.getNode(nodeIndex);
+    const auto selected = renderPrimitivesByGraphNode.empty() ? invalid : renderPrimitivesByGraphNode[i];
+    const auto canonical = node.primitiveIndex;
+    if (selected != invalid && (!node.renderable || canonical >= state.canonicalCount ||
+        (selected != canonical && (selected >= state.renderPrimitiveSources.size() ||
+         state.renderPrimitiveSources[selected] != canonical))))
+      fail("render primitive override does not belong to its graph node's canonical primitive");
     if (!node.renderable || node.primitiveIndex == invalid || !graph.isNodeActive(nodeIndex)) continue;
-    if (node.primitiveIndex >= state.sourceRanges.size()) fail("runtime primitive index is outside the source");
-    const uint32_t primitiveIndex = node.primitiveIndex;
+    if (canonical >= state.canonicalCount) fail("runtime primitive index is outside the canonical source");
+    const uint32_t primitiveIndex = selected == invalid ? canonical : selected;
     const auto& sourceRange = state.sourceRanges[primitiveIndex];
     const uint32_t owner = meshOwnerGraphNodes.empty() ? invalid : meshOwnerGraphNodes[i];
-    GltfDeformationDrawRange range{nodeIndex, primitiveIndex, owner,
+    GltfDeformationDrawRange range{nodeIndex, canonical, owner,
         sourceRange.firstIndex, sourceRange.indexCount,
         state.sourceVertexOffsets[primitiveIndex], state.sourceVertexCounts[primitiveIndex]};
     range.bounds = state.sourceBounds[primitiveIndex];
@@ -377,7 +451,7 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
           const auto key=std::pair{owner,primitiveIndex};
           if (const auto existing=ownerPrimitives.find(key);existing!=ownerPrimitives.end()) {
             // Instance transforms apply after the shared owner-local pose.
-            // Reuse one deformation stream/palette per owner and primitive.
+            // Reuse one deformation stream per owner and physical primitive.
             range.instance=narrow(existing->second);
             range.vertexOffset=candidates[existing->second].outputOffset;
             range.vertexCount=narrow(state.definitionPrimitive(uint32_t(definition)).bindVertices.size());
@@ -420,6 +494,18 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
     }
   }
   topologyChanged |= dynamicLayoutChanged;
+  uint64_t poseBytes=state.maxPoseBytes;
+  const auto chargePose=[&](uint64_t count,uint64_t width) {
+    if(count>poseBytes/width) fail("detached pose storage exceeds its budget");
+    poseBytes-=count*width;
+  };
+  chargePose(vertexOffset-state.sourceVertices.size(),sizeof(geometry::Vertex)*8);
+  chargePose(firstIndex-state.sourceIndices.size(),sizeof(uint32_t)*3);
+  for(const auto& instance:candidates) {
+    chargePose(state.definitionPrimitive(instance.definition).morphTargets.size(),sizeof(float)*6);
+    if(instance.skin>=0)
+      chargePose(state.data.skins.at(size_t(instance.skin)).joints.size(),sizeof(glm::mat4)*6);
+  }
   // Stage replacement storage and poses before publishing any new state, so a
   // missing owner/joint or invalid animation value leaves the prior frame valid.
   std::vector<geometry::Vertex> replacementBind;
@@ -483,7 +569,7 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
       instance.hasCurrent = true;
       poseChanged = true;
     }
-    anyReset |= state.resetPending || !instance.submitted;
+    anyReset |= resetPending || !instance.submitted;
   }
   for (auto& range : candidateRanges) {
     if (range.instance == invalid) continue;
@@ -498,6 +584,7 @@ GltfDeformationSceneUpdate GltfDeformationScene::update(const scene::SceneGraph&
   }
   state.instances = std::move(candidates);
   state.ranges = std::move(candidateRanges);
+  state.resetPending = resetPending;
   state.nodeRanges.assign(graph.nodeCount(), invalid);
   for (size_t i = 0; i < state.ranges.size(); ++i) state.nodeRanges[state.ranges[i].graphNode] = narrow(i);
   state.assemblePoses();

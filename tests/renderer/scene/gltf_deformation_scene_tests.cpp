@@ -1,4 +1,5 @@
 #include <Container/renderer/scene/GltfDeformationScene.h>
+#include <Container/geometry/GltfDeformationFrames.h>
 
 #include <gtest/gtest.h>
 
@@ -110,6 +111,46 @@ TEST(GltfDeformationScene, EmptyAndProceduralScenesNeedNoDynamicStreams) {
   EXPECT_TRUE(scene.gpuInstances().empty());
   EXPECT_EQ(scene.currentVertices().data(), scene.bindVertices().data());
   EXPECT_EQ(scene.previousVertices().data(), scene.bindVertices().data());
+}
+
+TEST(GltfDeformationScene, StaticBindingsUsePhysicalFrameRangesWithCanonicalIdentity) {
+  GltfDeformationScene scene;
+  SceneGraph graph;
+  auto alternate = triangle();
+  for (auto& vertex : alternate) vertex.tangent = {0, 1, 0, 1};
+  const auto model = Model::FromMeshes({Mesh(triangle(), {0, 1, 2}),
+      Mesh(triangle(), {0, 1, 2}), Mesh(alternate, {0, 1, 2})});
+  const auto canonicalNode = graph.createNode(glm::mat4(1), 0, true, 0);
+  const auto alternateNode = graph.createNode(glm::mat4(1), 1, true, 0);
+  graph.getNode(alternateNode)->sourceNodeIndex = 7;
+  graph.updateWorldTransforms();
+
+  constexpr std::array aliases{0u, 1u, 0u};
+  scene.configure({}, model, {}, aliases);
+  std::vector<uint32_t> bindings(graph.nodeCount(), invalid);
+  bindings[alternateNode] = 2;
+  EXPECT_TRUE(scene.update(graph, {}, nullptr, false, bindings).topologyChanged);
+  const auto* canonical = scene.drawRange(canonicalNode);
+  const auto* variant = scene.drawRange(alternateNode);
+  ASSERT_NE(canonical, nullptr);
+  ASSERT_NE(variant, nullptr);
+  EXPECT_EQ(canonical->sourcePrimitive, 0u);
+  EXPECT_EQ(variant->sourcePrimitive, 0u);
+  EXPECT_EQ(graph.getNode(alternateNode)->primitiveIndex, 0u);
+  EXPECT_EQ(canonical->firstIndex, 0u);
+  EXPECT_EQ(variant->firstIndex, 6u);
+  EXPECT_EQ(scene.indices()[variant->firstIndex], variant->vertexOffset);
+  EXPECT_EQ(scene.currentVertices()[canonical->vertexOffset].tangent, triangle()[0].tangent);
+  EXPECT_EQ(scene.currentVertices()[variant->vertexOffset].tangent, alternate[0].tangent);
+  EXPECT_EQ(scene.previousVertices()[variant->vertexOffset].tangent, alternate[0].tangent);
+  EXPECT_TRUE(scene.gpuInstances().empty());
+
+  bindings[alternateNode] = 1;
+  EXPECT_THROW(scene.update(graph, {}, nullptr, false, bindings), std::runtime_error);
+  EXPECT_EQ(scene.drawRange(alternateNode)->firstIndex, 6u);
+  constexpr std::array invalidAliases{0u, 0u, 1u};
+  EXPECT_THROW(scene.configure({}, model, {}, invalidAliases), std::runtime_error);
+  EXPECT_EQ(scene.drawRange(alternateNode)->firstIndex, 6u);
 }
 
 TEST(GltfDeformationScene, MorphDefaultsAppendIndependentGlobalRangeAndBounds) {
@@ -547,6 +588,91 @@ TEST(GltfDeformationScene, InstanceChildrenShareOwnerPoseAndKeepHistoryWhenFirst
     expectPosition(f.scene.previousVertices()[offset].position,{.5f,0,0});
     EXPECT_EQ(f.scene.drawRange(nodes[1])->vertexOffset,offset);
   }
+}
+
+TEST(GltfDeformationScene, SameOwnerFrameAliasesKeepIndependentMorphAndSkinHistory) {
+  Fixture f(true, true);
+  auto& original = f.data.primitives.front();
+  auto fourth = original.bindVertices.front();
+  fourth.position = {1, 1, 0};
+  original.bindVertices.push_back(fourth);
+  original.influences.push_back(original.influences.front());
+  original.morphTargets.front().positions.emplace_back(2, 0, 0);
+  for (auto& vertex : original.bindVertices) {
+    vertex.texCoord = {vertex.position.x, vertex.position.y};
+    vertex.texCoord1 = {vertex.position.y, vertex.position.x};
+  }
+  const std::vector<uint32_t> quadIndices{0, 1, 2, 1, 3, 2};
+  const auto prepared = std::make_shared<const gltf::PreparedDeformationFrames>(
+      gltf::PrepareDeformationFrames(original, quadIndices, {true, false, 1}));
+  auto variantDef = original;
+  variantDef.authoredBaseTangent = false;
+  variantDef.normalTextureTexCoord = 1;
+  for (auto& vertex : variantDef.bindVertices) vertex.tangent = {0, 1, 0, -1};
+  f.model = Model::FromMeshes({Mesh(original.bindVertices, quadIndices),
+      Mesh(variantDef.bindVertices, quadIndices)});
+  f.data.primitives.push_back(std::move(variantDef));
+  const auto firstAlias = f.graph.createNode(glm::mat4(1), 0, true, 0);
+  const auto secondAlias = f.graph.createNode(glm::mat4(1), 0, true, 0);
+  f.graph.setParent(firstAlias, f.owner);
+  f.graph.setParent(secondAlias, f.owner);
+  f.owners.resize(f.graph.nodeCount(), invalid);
+  f.owners[firstAlias] = f.owners[secondAlias] = f.owner;
+  std::vector<uint32_t> bindings(f.graph.nodeCount(), invalid);
+  bindings[firstAlias] = bindings[secondAlias] = 1;
+  constexpr std::array aliases{0u, 0u};
+  const std::array<std::shared_ptr<const gltf::PreparedDeformationFrames>, 2> frames{{{}, prepared}};
+  f.scene.configure(f.data, f.model, {}, aliases, frames);
+  const auto update = [&] {
+    f.graph.updateWorldTransforms();
+    return f.scene.update(f.graph, f.owners, &f.source, false, bindings);
+  };
+  EXPECT_TRUE(update().historyReset);
+  ASSERT_EQ(f.scene.gpuInstances().size(), 2u);
+  const auto* canonical = f.scene.drawRange(f.primitive);
+  const auto* alternate = f.scene.drawRange(firstAlias);
+  ASSERT_NE(canonical, nullptr);
+  ASSERT_NE(alternate, nullptr);
+  ASSERT_NE(f.scene.drawRange(secondAlias), nullptr);
+  EXPECT_EQ(canonical->sourcePrimitive, alternate->sourcePrimitive);
+  EXPECT_NE(canonical->firstIndex, alternate->firstIndex);
+  EXPECT_NE(canonical->instance, alternate->instance);
+  EXPECT_EQ(canonical->vertexCount, 4u);
+  EXPECT_EQ(alternate->vertexCount, 6u);
+  EXPECT_EQ(alternate->instance, f.scene.drawRange(secondAlias)->instance);
+  EXPECT_EQ(f.scene.gpuInstances()[alternate->instance].primitive, &prepared->primitive);
+  expectPosition(glm::vec3(f.scene.currentVertices()[canonical->vertexOffset].tangent), {1, 0, 0});
+  expectPosition(glm::vec3(f.scene.currentVertices()[alternate->vertexOffset].tangent), {0, 1, 0});
+  EXPECT_FLOAT_EQ(f.scene.currentVertices()[alternate->vertexOffset].tangent.w, -1);
+
+  f.scene.commitSubmitted();
+  f.source.nodes[0].weights = {1};
+  f.graph.setLocalTransform(2, glm::translate(glm::mat4(1), glm::vec3(0, 3, 0)));
+  const auto poseChange = update();
+  EXPECT_FALSE(poseChange.topologyChanged);
+  EXPECT_FALSE(poseChange.historyReset);
+  alternate = f.scene.drawRange(firstAlias);
+  EXPECT_EQ(f.scene.indices()[alternate->firstIndex], alternate->vertexOffset);
+  const auto& pose = f.scene.gpuPoses()[alternate->instance];
+  ASSERT_EQ(pose.evaluatedVertices.size(), 6u);
+  ASSERT_EQ(pose.previousEvaluatedVertices.size(), 6u);
+  expectPosition(pose.evaluatedVertices.front().position, {2, 3, 0});
+  expectPosition(pose.previousEvaluatedVertices.front().position, {.5f, 0, 0});
+
+  bindings[f.primitive] = 1;
+  EXPECT_FALSE(update().historyReset);
+  ASSERT_EQ(f.scene.gpuInstances().size(), 1u);
+  alternate = f.scene.drawRange(firstAlias);
+  EXPECT_EQ(f.scene.drawRange(f.primitive)->instance, alternate->instance);
+  expectPosition(f.scene.previousVertices()[alternate->vertexOffset].position, {.5f, 0, 0});
+
+  bindings[f.primitive] = invalid;
+  EXPECT_TRUE(update().historyReset);
+  ASSERT_EQ(f.scene.gpuInstances().size(), 2u);
+  canonical = f.scene.drawRange(f.primitive);
+  alternate = f.scene.drawRange(firstAlias);
+  expectPosition(f.scene.previousVertices()[canonical->vertexOffset].position, {2, 3, 0});
+  expectPosition(f.scene.previousVertices()[alternate->vertexOffset].position, {.5f, 0, 0});
 }
 
 TEST(GltfDeformationScene, ActiveSceneViewsEvaluateOnlySelectedOwnersAndResetNewPoseHistory) {

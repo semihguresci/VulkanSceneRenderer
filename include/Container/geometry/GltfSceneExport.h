@@ -73,6 +73,9 @@ struct SceneExportSnapshot {
   GltfResourceExportMasks sourceResourceMasks{};
   std::span<const uint8_t> omitNodeMeshes{};
   GltfExportResourceIndexMaps* resourceIndexMaps{};
+  // UV sets that can keep the authored tangent, per source-flat primitive.
+  // Bindings outside this mask regenerate tangents after portable reload.
+  std::span<const uint8_t> sourceAuthoredTangentUvMask{};
 };
 
 // Rebuilds current geometry and hierarchy in glTF-native coordinates. Images

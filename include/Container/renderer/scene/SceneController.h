@@ -194,6 +194,12 @@ class SceneController {
     [[nodiscard]] uint64_t objectDataRevision() const noexcept;
     [[nodiscard]] uint64_t expectedGraphRevision() const noexcept;
     [[nodiscard]] uint64_t candidateGraphRevision() const noexcept;
+    [[nodiscard]] bool geometryChanged() const noexcept;
+    [[nodiscard]] uint64_t geometryRevision() const noexcept;
+    [[nodiscard]] const GltfDeformationScene* deformationScene() const noexcept;
+    [[nodiscard]] std::span<const container::geometry::Vertex> geometryVertices() const noexcept;
+    [[nodiscard]] std::span<const uint32_t> geometryIndices() const noexcept;
+    [[nodiscard]] std::span<const container::geometry::Vertex> gpuBindVertices() const noexcept;
    private:
     friend class SceneController;
     struct State;
@@ -411,6 +417,21 @@ class SceneController {
       container::scene::SceneGraph&,container::scene::SceneManager&,uint32_t,bool,uint64_t,uint64_t,bool preserveContext) const;
   void swapGenerationState(PreparedGeneration::State& state) noexcept;
   void setOwnedGeometrySlices(size_t sceneIndexCount) noexcept;
+  struct NormalFrameBinding {
+    uint32_t graphNode{}, primitive{}, texCoord{};
+    bool operator==(const NormalFrameBinding&) const = default;
+  };
+  struct NormalFrameGeometry {
+    std::unique_ptr<GltfDeformationScene> scene;
+    std::vector<uint32_t> renderPrimitives;
+  };
+  [[nodiscard]] std::vector<NormalFrameBinding> planNormalFrameBindings(
+      std::span<const container::scene::MaterialRenderProperties> prospective = {},
+      const container::scene::PreparedMaterialBindingChange* bindings = nullptr) const;
+  [[nodiscard]] NormalFrameGeometry configureNormalFrameGeometry(
+      std::span<const NormalFrameBinding>) const;
+  [[nodiscard]] GltfDeformationSceneUpdate updateConfiguredDeformation(
+      GltfDeformationScene*, std::span<const uint32_t> renderPrimitives, bool resetHistory) const;
   void rebuildDeformationBindStreams();
   void invalidateObjectDataCache();
   void refreshObjectDataCache(bool showDiagCube);
@@ -438,6 +459,10 @@ class SceneController {
   // changing draw classification must never replace the geometry allocation.
   std::unique_ptr<OwnedGenerationBuffers> ownedMaterialObjectBuffers_;
   std::unique_ptr<GltfDeformationScene> deformationScene_;
+  std::vector<NormalFrameBinding> normalFrameBindings_;
+  std::vector<uint32_t> normalFrameRenderPrimitives_;
+  uint64_t normalFrameGraphRevision_{std::numeric_limits<uint64_t>::max()};
+  uint64_t normalFrameMaterialRevision_{std::numeric_limits<uint64_t>::max()};
   std::vector<container::geometry::Vertex> gpuBindVertices_;
   std::vector<uint32_t> gpuBindIndices_;
   size_t generationSceneVertexCount_{},generationSceneIndexCount_{};

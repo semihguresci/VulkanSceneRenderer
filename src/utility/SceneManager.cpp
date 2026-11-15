@@ -1085,6 +1085,8 @@ MaterialRenderProperties SceneManager::materialRenderProperties(
   properties.specularGlossiness = material->specularGlossinessWorkflow;
   properties.unlit = material->unlit;
   properties.heightScale = material->heightScale;
+  if (material->normalTextureIndex != UINT32_MAX)
+    properties.normalTexCoord = material->normalTextureTransform.texCoord;
   return properties;
 }
 
@@ -1689,6 +1691,133 @@ std::optional<uint32_t> SceneManager::retainedPrimitiveNormalTexCoord(uint32_t r
   return std::nullopt;
 }
 
+std::optional<CanonicalPrimitiveFrameView>
+SceneManager::canonicalPrimitiveFrameView(uint32_t runtime) const noexcept {
+  using namespace container::geometry::gltf;
+  if (runtime == UINT32_MAX || runtime >= runtimePrimitiveToSource_.size())
+    return std::nullopt;
+  const auto source = runtimePrimitiveToSource_[runtime];
+  if (source < 0) return std::nullopt;
+  const auto flat = size_t(source);
+  if (flat >= sourcePrimitiveToRuntime_.size() || sourcePrimitiveToRuntime_[flat] != runtime ||
+      flat >= bindNormalTexCoords_.size() || flat >= variantNormalTexCoords_.size() ||
+      flat >= materialVariants_.primitives().size()) return std::nullopt;
+  const auto bindUv = bindNormalTexCoords_[flat];
+  const auto retainedUv = variantNormalTexCoords_[flat];
+  if (bindUv > 1 || retainedUv > 1) return std::nullopt;
+  const auto& geometry = variantOriginalModel_ ? *variantOriginalModel_ : model_;
+  if (runtime >= geometry.meshes().size()) return std::nullopt;
+  const auto& mesh = geometry.meshes()[runtime];
+  const auto& identity = materialVariants_.primitives()[flat];
+  if (identity.sourceMesh >= gltfModel_.meshes.size()) return std::nullopt;
+  const auto& primitives = gltfModel_.meshes[identity.sourceMesh].primitives;
+  if (identity.sourcePrimitive >= primitives.size()) return std::nullopt;
+  const auto& attributes = primitives[identity.sourcePrimitive].attributes;
+  const auto accessor = [&](std::string_view name, int type) -> bool {
+    const auto found = std::ranges::find_if(attributes, [name](const auto& value) {
+      return value.first == name;
+    });
+    if (found == attributes.end() || found->second < 0 ||
+        size_t(found->second) >= gltfModel_.accessors.size()) return false;
+    const auto& value = gltfModel_.accessors[size_t(found->second)];
+    return value.type == type && value.count == mesh.vertices().size();
+  };
+  if (!accessor("POSITION", TINYGLTF_TYPE_VEC3)) return std::nullopt;
+  const bool authoredNormal = accessor("NORMAL", TINYGLTF_TYPE_VEC3);
+  const bool authoredTangent = accessor("TANGENT", TINYGLTF_TYPE_VEC4);
+  const uint8_t availableUvs = uint8_t(accessor("TEXCOORD_0", TINYGLTF_TYPE_VEC2)) |
+      (uint8_t(accessor("TEXCOORD_1", TINYGLTF_TYPE_VEC2)) << 1);
+  const auto* bind = variantOriginalDeformation_ ? &*variantOriginalDeformation_ : deformationData();
+  const DeformationPrimitive* definition = nullptr;
+  if (bind) {
+    if (flat >= bind->primitives.size()) return std::nullopt;
+    definition = &bind->primitives[flat];
+    if (definition->sourceMesh != identity.sourceMesh ||
+        definition->sourcePrimitive != identity.sourcePrimitive ||
+        definition->bindVertices.size() != mesh.vertices().size() ||
+        definition->normalTextureTexCoord != bindUv ||
+        definition->authoredBaseNormal != authoredNormal ||
+        definition->authoredBaseTangent != authoredTangent) return std::nullopt;
+  }
+  return CanonicalPrimitiveFrameView{
+      CanonicalPrimitiveFrameMetadata(runtime, uint32_t(source), authoredNormal,
+                                      authoredTangent, bindUv, availableUvs,
+                                      geometryRevision_),
+      &mesh, definition, retainedUv};
+}
+
+PrimitiveNormalFrameVariant SceneManager::preparePrimitiveNormalFrameVariant(
+    uint32_t runtime, uint32_t texCoord, const PrimitiveNormalFrameLimits& limits) const {
+  using namespace container::geometry::gltf;
+  const auto canonical = canonicalPrimitiveFrameView(runtime);
+  if (!canonical || texCoord > 1)
+    throw std::invalid_argument("Normal UV is absent or has no retained source frame");
+  const auto& mesh = *canonical->mesh;
+  const auto cornerCount = uint64_t(mesh.indices().size());
+  const auto vertexCount = uint64_t(mesh.vertices().size());
+  const bool changed = texCoord != canonical->metadata.bindNormalTexCoord();
+  if (changed && !(canonical->metadata.availableTexCoordMask() & (1u << texCoord)))
+    throw std::invalid_argument("Normal UV is absent from the retained primitive");
+  // Limit the input to external MikkTSpace independently of the detached
+  // storage limits. Its cost varies with welded vertex fans and UV seams.
+  constexpr uint64_t mikkCornerScratch = 512;
+  if (!cornerCount || cornerCount % 3 || !vertexCount ||
+      cornerCount > limits.frames.maxTriangleCorners || vertexCount > limits.frames.maxInputVertices ||
+      (changed && (cornerCount > limits.maxGeneratedCorners ||
+                   cornerCount > limits.frames.maxWorkspaceBytes / mikkCornerScratch)) ||
+      vertexCount > limits.frames.maxWorkspaceBytes / sizeof(container::geometry::Vertex) ||
+      vertexCount > limits.frames.maxOutputBytes / sizeof(container::geometry::Vertex) ||
+      cornerCount > (limits.frames.maxOutputBytes - vertexCount * sizeof(container::geometry::Vertex)) / sizeof(uint32_t) ||
+      std::ranges::any_of(mesh.indices(), [vertexCount](uint32_t index) {return index >= vertexCount;}))
+    throw std::length_error("Normal frame variant exceeds its work budget or has invalid triangles");
+
+  PrimitiveNormalFrameVariant result;
+  if (canonical->definition && (canonical->definition->hasSkinning() ||
+                                canonical->definition->hasMorphing())) {
+    const std::array requests{PrimitiveFrameBindingRequest{0,
+        changed ? std::optional{texCoord} : std::nullopt}};
+    auto frameLimits = limits.frames;
+    auto& bytes = frameLimits.maxOutputBytes;
+    const auto charge = [&](uint64_t count, uint64_t size) {
+      if (count > bytes / size)
+        throw std::length_error("Normal frame variant exceeds its deformation storage budget");
+      bytes -= count * size;
+    };
+    charge(vertexCount, sizeof(container::geometry::Vertex));
+    charge(cornerCount, sizeof(uint32_t));
+    const auto& definition = *canonical->definition;
+    charge(1, sizeof(DeformationPrimitive));
+    charge(definition.bindVertices.size(), sizeof(container::geometry::Vertex));
+    charge(definition.meshDefaultWeights.size(), sizeof(float));
+    charge(definition.influences.size(), sizeof(VertexSkinInfluences));
+    for (const auto& vertex : definition.influences)
+      charge(vertex.values.size(), sizeof(JointInfluence));
+    charge(definition.morphTargets.size(), sizeof(MorphTarget));
+    for (const auto& target : definition.morphTargets) {
+      charge(target.positions.size(), sizeof(glm::vec3));
+      charge(target.normals.size(), sizeof(glm::vec3));
+      charge(target.tangents.size(), sizeof(glm::vec3));
+    }
+    // The shared posed frames may coexist with the single-use CPU plan.
+    if (changed && definition.hasMorphing()) bytes /= 2;
+    const auto plan = PreparePrimitiveFrameVariants(canonical->metadata, *canonical->definition,
+                                                   mesh.indices(), requests, frameLimits);
+    result.definition = *canonical->definition;
+    if (changed) {
+      const auto& frames = plan.templates().front().frames();
+      if (result.definition->hasMorphing())
+        result.preparedFrames = std::make_shared<const PreparedDeformationFrames>(frames);
+      result.definition->authoredBaseTangent = false;
+      result.definition->normalTextureTexCoord = texCoord;
+      for (auto& target : result.definition->morphTargets)
+        std::vector<glm::vec3>{}.swap(target.tangents);
+    }
+  }
+  result.mesh = changed ? RegenerateGltfPrimitiveTangents(mesh, texCoord, !result.preparedFrames) : mesh;
+  if (result.definition) result.definition->bindVertices = result.mesh.vertices();
+  return result;
+}
+
 container::geometry::GltfLoadResult SceneManager::prepareGltfModel(
     const std::string& path, uintmax_t maxInputBytes, bool enableLinkedAssets,
     bool requireSelfContained, bool enableExperimentalMaterials, bool enableOpacityMicromaps,
@@ -2239,12 +2368,20 @@ tinygltf::Model SceneManager::buildSceneExport(const SceneGraph& graph,
   roots.reserve(sceneCatalog_.entries.size());
   for(size_t i=0;i<sceneCatalog_.entries.size();++i)
     roots.push_back(planSceneSelection(graph,i,kMaxAssetRenderableObjects).runtimeRoots);
+  std::vector<uint8_t> authoredTangentUvMask;
+  authoredTangentUvMask.reserve(bindNormalTexCoords_.size());
+  for(size_t i=0;i<bindNormalTexCoords_.size();++i) {
+    uint8_t mask=0;
+    for(const auto uv:{bindNormalTexCoords_[i],variantNormalTexCoords_[i]})
+      if(uv<2) mask|=uint8_t(1u << uv);
+    authoredTangentUvMask.push_back(mask);
+  }
   return container::geometry::gltf::buildExportModel(
       {graph, baseGeometry ? *baseGeometry : model_, &source, sourcePath_, sourceNodes, materials, sourceMaterials,
        &exportSource_,roots,int32_t(selectedScene_),runtimePrimitiveToSource_,
        {phases.images,phases.textures,phases.samplers,materialActive},
        linked ? linked->linkedGraphNodes : std::span<const uint8_t>{},
-       linked ? linked->resourceIndexMaps : nullptr});
+       linked ? linked->resourceIndexMaps : nullptr, authoredTangentUvMask});
 }
 
 container::geometry::gltf::GltfNodeFlagEdit SceneManager::prepareGltfNodeFlagEdit(
@@ -2275,43 +2412,40 @@ bool SceneManager::applyMaterialVariant(SceneGraph& graph,const MaterialVariantG
   for (const auto& assignment:edit.assignments)
     if (!graph.getNode(assignment.node) || graph.isNodeRetired(assignment.node) ||
         !materialIsActive(forward?assignment.after:assignment.before)) return false;
-  auto texCoords=variantNormalTexCoords_;
+  auto texCoords=bindNormalTexCoords_;
   const auto sourceCount=sourcePrimitiveCount(gltfModel_);
   if (variantOriginalModel_) {
     ValidateSourcePrimitiveIds(sourcePrimitiveToRuntime_,sourceCount,model_.meshes().size());
     if (variantOriginalModel_->meshes().size()!=model_.meshes().size() || texCoords.size()!=sourceCount)
       throw std::runtime_error("Variant source/runtime primitive tables disagree");
   }
-  std::map<std::pair<size_t,size_t>,size_t> primitiveIndices;
-  for (size_t i=0;i<materialVariants_.primitives().size();++i) {
-    const auto& primitive=materialVariants_.primitives()[i];
-    primitiveIndices.emplace(std::pair{primitive.sourceMesh,primitive.sourcePrimitive},i);
-  }
-  std::vector<bool> constrainedNormalTexCoords(texCoords.size());
-  for (const auto& assignment:edit.assignments) {
-    if (!variantOriginalModel_) break;
-    const auto& node=*graph.getNode(assignment.node);
-    const auto found=primitiveIndices.find({size_t(node.sourceMeshIndex),size_t(node.sourcePrimitiveIndex)});
-    if (found==primitiveIndices.end() || found->second>=sourcePrimitiveToRuntime_.size() ||
-        sourcePrimitiveToRuntime_[found->second]!=node.primitiveIndex) return false;
-    const auto index=found->second;
-    const auto& source=gltfModel_.meshes[size_t(node.sourceMeshIndex)].primitives[size_t(node.sourcePrimitiveIndex)];
-    if (source.attributes.contains("NORMAL") && source.attributes.contains("TANGENT")) continue;
-    const auto uv=materialNormalTexCoord(forward?assignment.after:assignment.before);
-    // Instances share the same generated tangents. Only normal maps constrain their UV set.
-    if (constrainedNormalTexCoords[index]) {
-      if (uv && *uv!=texCoords[index])
-        throw std::runtime_error("Material variant instances of a shared primitive require conflicting normal texture UV sets");
-    } else {
-      texCoords[index]=uv.value_or(0);
-      constrainedNormalTexCoords[index]=uv.has_value();
+  const auto selected=forward?edit.afterSelection:edit.beforeSelection;
+  bool streamsChanged=false;
+  if (variantOriginalModel_) {
+    // Named variants keep the imported shared basis. Manual assignments and
+    // edited UVs, including ones restored by Undo, select per-binding ranges.
+    const auto primitives=materialVariants_.primitives();
+    if (primitives.size()!=texCoords.size()) return false;
+    for (size_t index=0;index<primitives.size();++index) {
+      const auto& primitive=primitives[index];
+      int32_t material=primitive.defaultMaterial;
+      if (selected) {
+        const auto mapping=std::ranges::lower_bound(primitive.mappings,*selected,{},
+            &std::pair<size_t,int32_t>::first);
+        if (mapping!=primitive.mappings.end() && mapping->first==*selected) material=mapping->second;
+      }
+      texCoords[index]=importedMaterialNormalTexCoord(material).value_or(texCoords[index]);
+      const auto& source=gltfModel_.meshes[primitive.sourceMesh].primitives[primitive.sourcePrimitive];
+      if (texCoords[index]!=variantNormalTexCoords_[index] &&
+          (!source.attributes.contains("NORMAL") || !source.attributes.contains("TANGENT")))
+        streamsChanged=true;
     }
   }
   std::optional<container::geometry::Model> regenerated;
   std::optional<container::geometry::gltf::DeformationData> deformation;
   std::vector<container::geometry::Vertex> regeneratedVertices;
   std::vector<uint32_t> regeneratedIndices;
-  if (texCoords!=variantNormalTexCoords_) {
+  if (streamsChanged) {
     // The tangent generator consumes source-flat geometry. Keep procedural
     // slots and the runtime ordering intact around that source-only operation.
     std::vector<container::geometry::Mesh> sourceMeshes;
@@ -2340,8 +2474,9 @@ bool SceneManager::applyMaterialVariant(SceneGraph& graph,const MaterialVariantG
     if (previousGeometry && !*previousGeometry) previousGeometry->emplace(std::move(model_));
     model_=std::move(*regenerated); deformation_=std::move(deformation);
     vertices_=std::move(regeneratedVertices); indices_=std::move(regeneratedIndices);
-    variantNormalTexCoords_=std::move(texCoords); ++geometryRevision_;
+    ++geometryRevision_;
   }
+  variantNormalTexCoords_=std::move(texCoords);
   ++materialRevision_;
   return true;
 }
@@ -3011,7 +3146,8 @@ void SceneManager::loadGltfAssets(int requestedScene,
   mergedAssets_=false;
   deformation_.reset();
   materialVariants_={}; selectedMaterialVariant_.reset();
-  variantOriginalModel_.reset(); variantOriginalDeformation_.reset(); variantNormalTexCoords_.clear();
+  variantOriginalModel_.reset(); variantOriginalDeformation_.reset(); variantNormalTexCoords_.clear(); bindNormalTexCoords_.clear();
+  importedMaterialNormalTexCoords_.clear();
   exportSource_ = tinygltf::Model{};
   gltfTextureResources_ = {};
   archiveTextureResources_={};archiveTextureToEvaluated_.clear();archiveTextureIdentities_.clear();
@@ -3129,11 +3265,13 @@ void SceneManager::loadGltfAssets(int requestedScene,
       // after their Normal binding is cleared or reassigned in the editor.
       variantNormalTexCoords_.reserve(materialVariants_.primitives().size());
       for (const auto& primitive:materialVariants_.primitives()) {
-        const auto* material=primitive.defaultMaterial<0?nullptr:
-            materialManager_.getMaterial(resolveLoadedMaterialIndex(primitive.defaultMaterial));
-        variantNormalTexCoords_.push_back(material && material->normalTextureIndex!=std::numeric_limits<uint32_t>::max()
-            ?material->normalTextureTransform.texCoord:0);
+        const auto& source = gltfModel_.meshes[primitive.sourceMesh].primitives[primitive.sourcePrimitive];
+        variantNormalTexCoords_.push_back(container::geometry::gltf::GltfSourceNormalTexCoord(gltfModel_,source));
       }
+      bindNormalTexCoords_ = variantNormalTexCoords_;
+      importedMaterialNormalTexCoords_.reserve(sourceMaterialToRuntime_.size());
+      for (const auto runtime:sourceMaterialToRuntime_)
+        importedMaterialNormalTexCoords_.push_back(materialNormalTexCoord(runtime));
       auto primitiveMapping = MakeSourcePrimitiveMapping(sourcePrimitiveCount(gltfModel_),model_.meshes().size());
       sourcePrimitiveToRuntime_ = std::move(primitiveMapping.sourceToRuntime);
       runtimePrimitiveToSource_ = std::move(primitiveMapping.runtimeToSource);
@@ -4056,7 +4194,8 @@ void SceneManager::resetLoadedAssets() {
   if(materialResourceRevision_==UINT64_MAX) throw std::overflow_error("Material resource revision exhausted");
   invalidateEditorSceneRootMembership();
   materialVariants_={}; selectedMaterialVariant_.reset();
-  variantOriginalModel_.reset(); variantOriginalDeformation_.reset(); variantNormalTexCoords_.clear();
+  variantOriginalModel_.reset(); variantOriginalDeformation_.reset(); variantNormalTexCoords_.clear(); bindNormalTexCoords_.clear();
+  importedMaterialNormalTexCoords_.clear();
   ++geometryRevision_;
   ++materialRevision_;
   ++materialResourceRevision_;

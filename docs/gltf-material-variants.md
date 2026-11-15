@@ -93,12 +93,11 @@ authored tangents remain intact. The geometry revision triggers matching GPU
 bind/current/previous stream rebuilds and ray/probe/temporal invalidation;
 undo/redo resolves and regenerates the restored UV policy too.
 
-All instances of a source primitive share its generated tangent frame. A normal
-map constrains the shared UV set, even when other instances use materials with
-no normal map. If none of the instances use a normal map, the generated frame
-uses UV0. If the assignments to apply or restore require conflicting UV sets
-on a shared primitive, the edit fails before publishing geometry or material
-assignments.
+Named variants choose a shared frame from the original normal-map UV of each
+authored mapping. A mapping without a normal map uses the imported primitive
+frame. Manual assignments and edited normal UVs can choose a separate frame
+per instance, including when Undo restores those bindings after a variant
+switch.
 
 ## Save and reload policy
 
