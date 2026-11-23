@@ -7,6 +7,8 @@ expose incorrect MASK depth writes. Shadow receivers have independently chosen
 blocked/lit regions. No production evaluator or shader helper supplies oracles.
 
 The opt-in cutoff suite checks constant MASK coverage in the flat interior.
+The authoring-shadows suite checks live alpha edits, history and portable reload
+against independently authored directional and point-light shadow controls.
 --generate-only launches no renderer. Requires NumPy, Pillow and Vulkan for runs.
 """
 from __future__ import annotations
@@ -15,13 +17,16 @@ import argparse
 import copy
 import json
 import math
+import os
 from pathlib import Path
+import struct
+import tempfile
 
 import numpy as np
 from PIL import Image
 
 from gltf_accessor_runtime_regression import (Asset, NativeRun, TECHNIQUES,
-    compare, decode_accessor, f32, load_asset, mesh, pixels, require, source_accessor_signature)
+    compare, decode_accessor, f32, finite_json, load_asset, mesh, pixels, require, source_accessor_signature)
 
 CASES = ('float-mask', 'u8-blend', 'u16-mask', 'float-opaque', 'deform-u16-blend',
          'opaque-transmission-zero', 'opaque-transmission-gradient')
@@ -40,6 +45,16 @@ CUTOFF_EDGE_PIXEL = (128, 131)  # Highest Bayer threshold in the transition colu
 CUTOFF_ROI = np.s_[112:144, 112:144]
 CUTOFF_ARGS = ('--width', '256', '--height', '256', '--camera-fov', '45', '--import-scale', '1',
                '--sky', 'plain', '--sky-horizon', '0', '0', '0', '--screenshot-viewport')
+AUTHORING_SHADOW_CONTROLS = {'covered': ('MASK', .3), 'discarded': ('MASK', .6),
+                             'opaque': ('OPAQUE', .6), 'blend': ('BLEND', .6)}
+AUTHORING_SHADOW_STEPS = (
+    ('initial', 'covered', (0, 0)), ('discarded', 'discarded', (1, 0)),
+    ('undo-cutoff', 'covered', (0, 1)), ('redo-cutoff', 'discarded', (1, 0)),
+    ('opaque', 'opaque', (2, 0)), ('undo-opaque', 'discarded', (1, 1)),
+    ('redo-opaque', 'opaque', (2, 0)), ('blend', 'blend', (3, 0)),
+    ('undo-blend', 'opaque', (2, 1)), ('redo-blend', 'blend', (3, 0)),
+    ('final-mask', 'discarded', (4, 0)),
+)
 
 
 def alpha_texture(reference=False, *, opaque=False, zero=False):
@@ -497,22 +512,329 @@ def run_cutoff_suite(run, techniques, *, generate_only, color_only):
     print('PASS cutoff ray interiors, motion vectors, raster shadows, OIT and gradient edges', flush=True)
 
 
+def authoring_shadow_pixels(actual, reference):
+    images = [np.asarray(Image.open(record['image']).convert('RGB'), dtype=np.int16)
+              for record in (actual, reference)]
+    require(all(image.shape == (256, 256, 3) for image in images), 'Wrong authoring shadow capture extent')
+    delta = np.abs(images[0] - images[1])
+    error = float(delta.mean())
+    require(error <= .03, f'Live alpha/shadow image differs from its literal control: {error}')
+    return dict(meanAbsolutePixelError=error, receiverMean=float(images[0][CUTOFF_ROI].mean()))
+
+
+def authoring_shadow_state(state, control, light, history, publications, *, baseline=None):
+    from scene_node_authoring_runtime_regression import history_cursor
+
+    mode, cutoff = AUTHORING_SHADOW_CONTROLS[control]
+    require(finite_json(state) and state['resolution'] == [256, 256] and
+            state['msaaSamples'] == 1 and not state['taa']['enabled'] and
+            state['scene']['primaryObjectCount'] == 2, 'Wrong alpha authoring scene or render configuration')
+    history_cursor(state, *history, allow_uncreated=publications == 0)
+    active = {item['name'] for item in state['passes'] if item['active']}
+    prefix = 'ShadowCascade' if light == 'directional' else 'LocalShadowDepth'
+    require(not state['rayShadows']['active'] and any(name.startswith(prefix) for name in active),
+            f'Missing {light} raster shadow pass')
+    if light == 'point':
+        require(state['lighting']['pointLightCount'] == 1 and state['lighting']['activeLocalShadowLayers'] == 6,
+                'Point authoring fixture needs six active shadow cube faces')
+    require(('OitResolve' in active) == (mode == 'BLEND'), 'Alpha authoring did not update transparent lighting')
+    assignments = {row['mesh']: row for row in state['gltfMaterialVariants']['assignments']}
+    require(set(assignments) == {0, 1}, 'Missing caster or independent receiver assignment')
+    caster, receiver = assignments[0], assignments[1]
+    require(caster['transparent'] == (mode == 'BLEND') and caster['alphaMasked'] == (mode == 'MASK') and
+            caster['doubleSided'] and not receiver['transparent'] and not receiver['alphaMasked'] and
+            not receiver['doubleSided'], 'Alpha edit changed the wrong material route')
+    authoring = state['gltfMaterialAuthoring']
+    require(authoring['publications'] == publications and not authoring['pendingGesture'],
+            'Wrong alpha material publication count or unfinished gesture')
+    if publications:
+        require(authoring['sourceMaterial'] == 0 and authoring['runtimeMaterial'] == caster['material'] and
+                authoring['uploadedMaterialHash'] > 0, 'Wrong published source/runtime alpha material')
+        for record in (authoring['authored'], authoring['evaluated']):
+            require(record['alphaMode'] == mode and abs(record['alphaCutoff'] - cutoff) < 1e-6 and
+                    record['doubleSided'] and record['extensions'].get('KHR_materials_unlit') == {} and
+                    np.allclose(record['pbrMetallicRoughness']['baseColorFactor'], [0, 1, 0, .8], rtol=0, atol=1e-6) and
+                    record['pbrMetallicRoughness']['baseColorTexture']['index'] == 0,
+                    'Live alpha state lost authored factors, texture binding or material properties')
+        properties = authoring['materialProperties']
+        require(properties['transparent'] == caster['transparent'] and
+                properties['alphaMasked'] == caster['alphaMasked'] and properties['doubleSided'],
+                'Published alpha material properties disagree with graph routing')
+    else:
+        require(authoring['sourceMaterial'] == -1, 'Static reference unexpectedly performed material authoring')
+    if baseline is not None:
+        for key in ('graphIdentity', 'graphNodeCount', 'activeRoots', 'sourceTables', 'authoringNodes'):
+            require(state['gltfMerge'][key] == baseline['gltfMerge'][key], 'Alpha edit changed graph/source identity '+key)
+        for key in ('primaryObjectCount', 'primaryVertexCount', 'primaryIndexCount'):
+            require(state['scene'][key] == baseline['scene'][key], 'Alpha edit changed geometry '+key)
+        require(receiver == {row['mesh']: row for row in baseline['gltfMaterialVariants']['assignments']}[1],
+                'Alpha edit changed the independent receiver binding')
+    return dict(mode=mode, cutoff=cutoff, publications=publications, history=list(history))
+
+
+def authoring_shadow_export(path):
+    from gltf_material_authoring_runtime_regression import deep_contains, serialized_material_record
+    from gltf_merge_runtime_regression import forest_worlds
+
+    model, _ = load_asset(path)
+    require(path.read_bytes()[:4] == b'glTF', 'Alpha authoring export is not GLB')
+    require(len(model['meshes']) == 2 and all(len(mesh['primitives']) == 1 for mesh in model['meshes']),
+            'Alpha authoring export lost its two primitive meshes')
+    worlds, visible = forest_worlds(model)
+    pending = list(model['scenes'][model['scene']]['nodes'])
+    represented = {}
+    for index in pending:
+        node = model['nodes'][index]
+        pending.extend(node.get('children', []))
+        if 'mesh' in node:
+            mesh_index = node['mesh']
+            require(mesh_index in (0, 1) and mesh_index not in represented and visible[index],
+                    'Alpha authoring export changed its represented caster/receiver set')
+            represented[mesh_index] = index
+    require(set(represented) == {0, 1}, 'Alpha authoring export lost its represented receiver or caster')
+    bound = [model['meshes'][index]['primitives'][0].get('material', -1) for index in (0, 1)]
+    # Source fixture GLBs bind source slots 0/1. Renderer exports retain two
+    # unused schema-default runtime rows before the represented materials.
+    require(bound in ([0, 1], [2, 3]) and len(model['materials']) == bound[-1] + 1,
+            'Alpha authoring export changed its distinct material bindings')
+    default = serialized_material_record({})
+    require(all(serialized_material_record(row) == default for row in model['materials'][:bound[0]]),
+            'Alpha authoring export added an unbound nondefault material')
+    caster, receiver = [serialized_material_record(model['materials'][index]) for index in bound]
+    deep_contains(caster, dict(alphaMode='MASK', alphaCutoff=.6, doubleSided=True, emissiveFactor=[0., 0., 0.],
+        extensions=dict(KHR_materials_unlit={}), pbrMetallicRoughness=dict(baseColorFactor=[0., 1., 0., .8],
+            metallicFactor=0., roughnessFactor=1., baseColorTexture=dict(index=0, texCoord=0))), 'saved caster')
+    deep_contains(receiver, dict(alphaMode='OPAQUE', alphaCutoff=.5, doubleSided=False, emissiveFactor=[0., 0., 0.],
+        pbrMetallicRoughness=dict(baseColorFactor=[.75, .75, .75, 1.], metallicFactor=0., roughnessFactor=1.)), 'saved receiver')
+    require(set(caster.get('extensions', {})) == {'KHR_materials_unlit'} and not receiver.get('extensions') and
+            not any(key.endswith('Texture') for key in receiver) and
+            not any(key.endswith('Texture') for key in receiver['pbrMetallicRoughness']),
+            'Alpha authoring export changed its receiver material')
+    expected_positions = [np.array([[-1, -1, 0], [1, -1, 0], [1, 1, 0], [-1, 1, 0]]),
+        np.array([[-1.6, -1.2, 0], [1.6, -1.2, 0], [1.6, 1.2, 0], [-1.6, 1.2, 0]])]
+    for index in (0, 1):
+        primitive = model['meshes'][index]['primitives'][0]
+        positions = decode_accessor(path, primitive['attributes']['POSITION'])
+        normals = decode_accessor(path, primitive['attributes']['NORMAL'])
+        indices = decode_accessor(path, primitive['indices']).reshape(-1)
+        require(primitive.get('mode', 4) == 4 and positions.shape == normals.shape == (4, 3) and
+                np.allclose(positions, expected_positions[index], rtol=0, atol=1e-6) and
+                np.array_equal(normals, np.tile([0, 0, 1], (4, 1))) and
+                np.array_equal(indices, [0, 1, 2, 0, 2, 3]), 'Portable export changed caster/receiver geometry')
+        expected_world = np.eye(4)
+        if index == 0:
+            expected_world[:3, 3] = [1.35, 0, 1]
+        require(np.allclose(worlds[represented[index]], expected_world, rtol=0, atol=1e-6),
+                'Portable export changed caster/receiver placement')
+    primitive = model['meshes'][0]['primitives'][0]
+    colors = decode_accessor(path, primitive['attributes']['COLOR_0'])
+    require(colors.shape == (4, 4) and np.array_equal(colors[:, 3], np.full(4, .5)),
+            'Portable export lost vertex alpha')
+    require(np.array_equal(decode_accessor(path, primitive['attributes']['TEXCOORD_0']), UV),
+            'Portable export changed the alpha texture coordinates')
+    texture = caster['pbrMetallicRoughness']['baseColorTexture']['index']
+    require(len(model['textures']) == len(model['images']) == 1 and texture == 0 and model['textures'][texture]['source'] == 0,
+            'Portable export lost the alpha texture resource')
+    return dict(materials=len(model['materials']), representedMaterialBindings=bound, vertexAlpha=.5,
+                savedMode='MASK', savedCutoff=.6, receiverAndCasterGeometryVerified=True)
+
+
+def authoring_shadow_self_test(output):
+    rejected = []
+
+    def reject(label, check):
+        try:
+            check()
+        except RuntimeError:
+            rejected.append(label)
+        else:
+            raise RuntimeError('Alpha shadow oracle accepted ' + label)
+
+    with tempfile.TemporaryDirectory(prefix='alpha-shadow-oracle-', dir=output) as folder:
+        root = Path(folder)
+        source = root / 'fixture.gltf'
+        write_cutoff_fixture(source, .8, .6, shadow='directional', textured_vertex_alpha=.5)
+        model = json.loads(source.read_text(encoding='utf-8'))
+
+        def export(value):
+            # A GLB JSON chunk may contain the fixture's embedded data URIs.
+            data = json.dumps(value).encode('utf-8')
+            data += b' ' * (-len(data) % 4)
+            path = root / 'saved.glb'
+            path.write_bytes(struct.pack('<4sII', b'glTF', 2, 20 + len(data)) +
+                             struct.pack('<I4s', len(data), b'JSON') + data)
+            return path
+
+        authoring_shadow_export(export(model))
+        wrong = copy.deepcopy(model)
+        wrong['materials'][0]['alphaCutoff'] = .3
+        reject('lost exported cutoff', lambda: authoring_shadow_export(export(wrong)))
+        wrong = copy.deepcopy(model)
+        wrong['materials'][0]['alphaMode'] = 'OPAQUE'
+        reject('lost exported mask mode', lambda: authoring_shadow_export(export(wrong)))
+        wrong = copy.deepcopy(model)
+        wrong['scenes'][0]['nodes'] = [0]
+        reject('missing represented receiver', lambda: authoring_shadow_export(export(wrong)))
+        wrong = copy.deepcopy(model)
+        wrong['meshes'][1]['primitives'][0]['material'] = 0
+        reject('aliased caster receiver binding', lambda: authoring_shadow_export(export(wrong)))
+        runtime = copy.deepcopy(model)
+        runtime['materials'] = [{}, {}] + runtime['materials']
+        for mesh in runtime['meshes']:
+            mesh['primitives'][0]['material'] += 2
+        authoring_shadow_export(export(runtime))
+        runtime['materials'][0] = dict(pbrMetallicRoughness=dict(baseColorFactor=[1, 0, 0, 1]))
+        reject('unbound nondefault prefix material', lambda: authoring_shadow_export(export(runtime)))
+        expected = dict(image=str(root / 'expected.png'))
+        actual = dict(image=str(root / 'actual.png'))
+        image = np.full((256, 256, 3), 80, dtype=np.uint8)
+        Image.fromarray(image).save(expected['image'])
+        Image.fromarray(image).save(actual['image'])
+        authoring_shadow_pixels(actual, expected)
+        image[CUTOFF_ROI] = 0
+        Image.fromarray(image).save(actual['image'])
+        reject('stale receiver pixels', lambda: authoring_shadow_pixels(actual, expected))
+        material = model['materials'][0]
+        state = dict(resolution=[256, 256], msaaSamples=1, taa=dict(enabled=False),
+            scene=dict(primaryObjectCount=2), passes=[dict(name='ShadowCascade[0]', active=True)],
+            rayShadows=dict(active=False), gltfMaterialVariants=dict(undoCount=1, redoCount=0, assignments=[
+                dict(mesh=0, material=2, transparent=False, alphaMasked=True, doubleSided=True),
+                dict(mesh=1, material=3, transparent=False, alphaMasked=False, doubleSided=False)]),
+            gltfMaterialAuthoring=dict(publications=1, pendingGesture=False, sourceMaterial=0, runtimeMaterial=2,
+                uploadedMaterialHash=11, authored=material, evaluated=material,
+                materialProperties=dict(transparent=False, alphaMasked=True, doubleSided=True)))
+        authoring_shadow_state(state, 'discarded', 'directional', (1, 0), 1)
+        wrong_state = copy.deepcopy(state)
+        wrong_state['gltfMaterialVariants']['assignments'][0]['alphaMasked'] = False
+        reject('stale mask classification', lambda: authoring_shadow_state(wrong_state, 'discarded', 'directional', (1, 0), 1))
+        wrong_state = copy.deepcopy(state)
+        wrong_state['gltfMaterialVariants']['undoCount'] = 0
+        reject('lost edit history', lambda: authoring_shadow_state(wrong_state, 'discarded', 'directional', (1, 0), 1))
+    return dict(check='oracle-negative-controls', suite='authoring-shadows', rejected=rejected)
+
+
+def run_authoring_shadow_suite(run, techniques, *, generate_only):
+    from gltf_merge_runtime_regression import portable_copy
+    from gltf_extended_materials_runtime_regression import validation_log_error
+
+    # Material alpha .8 * vertex alpha .5 * white texture alpha 1 = .4.
+    # The .3/.6 thresholds are deliberately far from derivative/dither edges.
+    require(.3 < .8 * .5 < .6, 'Alpha authoring coverage controls are vacuous')
+    run.report['checks'].append(authoring_shadow_self_test(run.output))
+    script = run.output / 'authoring-shadow-sequence.json'
+    actions = [dict(materialEdit=dict(sourceMaterial=0, values=[dict(property='alphaCutoff', value=.6)])),
+               dict(sceneHistory='undo'), dict(sceneHistory='redo'),
+               dict(materialEdit=dict(sourceMaterial=0, alphaMode='OPAQUE')),
+               dict(sceneHistory='undo'), dict(sceneHistory='redo'),
+               dict(materialEdit=dict(sourceMaterial=0, alphaMode='BLEND')),
+               dict(sceneHistory='undo'), dict(sceneHistory='redo'),
+               dict(materialEdit=dict(sourceMaterial=0, alphaMode='MASK'))]
+    frames = [13 * (index + 1) for index in range(len(AUTHORING_SHADOW_STEPS))]
+    script.write_text(json.dumps(dict(schemaVersion=1, frames=frames[-1], sampleFrames=frames,
+        events=[dict(frame=frames[index] + 1, **action) for index, action in enumerate(actions)])), encoding='utf-8')
+    for light in ('directional', 'point'):
+        controls = {}
+        for control, (mode, cutoff) in AUTHORING_SHADOW_CONTROLS.items():
+            path = run.output / f'authoring-shadow-{light}-{control}.gltf'
+            write_cutoff_fixture(path, .8, cutoff, shadow=light, textured_vertex_alpha=.5)
+            model = json.loads(path.read_text(encoding='utf-8'))
+            model['materials'][0]['alphaMode'] = mode
+            path.write_text(json.dumps(model), encoding='utf-8')
+            colors = decode_accessor(path, model['meshes'][0]['primitives'][0]['attributes']['COLOR_0'])
+            require(np.array_equal(colors[:, 3], np.full(4, .5)) and model['nodes'][0]['translation'] == [1.35, 0, 1],
+                    'Alpha authoring fixture changed its vertex coverage or caster geometry')
+            controls[control] = path
+        run.report['fixtures'].append(dict(suite='authoring-shadows', light=light, script=str(script),
+            paths={key: str(path) for key, path in controls.items()}, combinedAlpha=.4,
+            receiverRoi=[112, 112, 144, 144]))
+        if generate_only:
+            continue
+        light_args = ('--directional-direction', '-1.35', '0', '-1') if light == 'directional' else ()
+        extra = (*CUTOFF_ARGS, *light_args, '--bounce-intensity', '0', '--ray-shadows', 'raster', '--no-ray-query')
+
+        def capture(source, name, technique, **options):
+            record = run.capture(source, name, technique, extra=extra + options.pop('extra', ()),
+                                 lit=light == 'directional', **options)
+            text = Path(record['log']).read_text(encoding='utf-8', errors='replace')
+            require(not validation_log_error(text), 'Strict Vulkan validation failed: ' + record['log'])
+            require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in text,
+                    'Khronos validation layer did not load: ' + record['log'])
+            return record
+
+        for technique in techniques:
+            stem = f'{technique}-authoring-shadow-{light}'
+            references = {control: capture(path, stem + '-reference-' + control, technique)
+                          for control, path in controls.items()}
+            for control, record in references.items():
+                authoring_shadow_state(record['state'], control, light, (0, 0), 0)
+            receiver = {key: cutoff_roi(record) for key, record in references.items()}
+            darkening = float((receiver['discarded'] - receiver['covered']).mean())
+            require(darkening > 20 and np.array_equal(receiver['covered'], receiver['opaque']) and
+                    np.array_equal(receiver['discarded'], receiver['blend']),
+                    f'Literal {light} alpha shadow receiver controls disagree: {darkening}')
+            run.report['checks'].append(dict(suite='authoring-shadows', technique=technique, light=light,
+                check='independent-receiver-controls', shadowDarkening=darkening, receiverPixels=1024))
+            exported = run.output / (stem + '-edited.glb')
+            final = capture(controls['covered'], stem + '-live', technique, destination=exported,
+                            extra=('--capture-sequence', str(script)))
+            records = {}
+            for index, (label, control, history) in enumerate(AUTHORING_SHADOW_STEPS):
+                image = Path(final['image'])
+                if index + 1 < len(frames):
+                    image = image.with_name(image.stem + f'.frame-{frames[index]:04d}.png')
+                telemetry = image.with_suffix('.telemetry.json')
+                require(image.is_file() and telemetry.is_file(), f'Missing live alpha checkpoint {image}')
+                record = dict(image=str(image), telemetry=str(telemetry), log=final['log'],
+                              state=json.loads(telemetry.read_text(encoding='utf-8-sig')))
+                records[label] = record
+                status = authoring_shadow_state(record['state'], control, light, history, index,
+                    baseline=records['initial']['state'] if index else None)
+                comparison = authoring_shadow_pixels(record, references[control])
+                if index + 1 < len(frames):
+                    run.report['captures'].append(dict(image=str(image), telemetry=str(telemetry), log=final['log'],
+                        command=final['command'], frame=frames[index], checkpoint=label))
+                run.report['checks'].append(dict(suite='authoring-shadows', technique=technique, light=light,
+                    check='live-history', checkpoint=label, image=str(image), telemetry=str(telemetry), **status, **comparison))
+            run.report['checks'].append(dict(suite='authoring-shadows', technique=technique, light=light,
+                check='edited-export', **authoring_shadow_export(exported)))
+            copied, closure = portable_copy(exported, run.output / (stem + '-portable'))
+            reload = capture(copied, stem + '-reload', technique)
+            authoring_shadow_state(reload['state'], 'discarded', light, (0, 0), 0)
+            run.report['checks'].append(dict(suite='authoring-shadows', technique=technique, light=light,
+                check='portable-reload', portableFiles=closure, **authoring_shadow_pixels(reload, references['discarded'])))
+            run.save()
+            print('PASS live alpha edits, history and portable shadow reload', light, technique, flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--renderer', required=True, type=Path)
     parser.add_argument('--output', required=True, type=Path)
-    parser.add_argument('--suite', action='append', choices=('coverage', 'shadows', 'cutoff'))
+    parser.add_argument('--suite', action='append', choices=('coverage', 'shadows', 'cutoff', 'authoring-shadows'))
     parser.add_argument('--cutoff-color-only', action='store_true', help='Run only color, depth and picking in the cutoff suite')
     parser.add_argument('--case', action='append', choices=CASES)
     parser.add_argument('--technique', action='append', choices=TECHNIQUES)
     parser.add_argument('--shadow-mode', action='append', choices=('raster', 'hard'))
     parser.add_argument('--roundtrip', action='store_true')
     parser.add_argument('--generate-only', action='store_true')
+    parser.add_argument('--managed-output', action='store_true', help='Keep captures in a fresh child of the output directory')
+    parser.add_argument('--require-opt-in', action='store_true', help='Require CONTAINER_RUN_GPU_GLTF_MATERIAL_AUTHORING=1 for authoring-shadows')
     parser.add_argument('--timeout', type=float, default=180)
     args = parser.parse_args()
+    authoring = 'authoring-shadows' in (args.suite or ())
+    if authoring and args.require_opt_in and not args.generate_only and os.environ.get('CONTAINER_RUN_GPU_GLTF_MATERIAL_AUTHORING') != '1':
+        print('Set CONTAINER_RUN_GPU_GLTF_MATERIAL_AUTHORING=1 to run the alpha authoring shadow regression.')
+        return 77
+    if args.managed_output:
+        args.output.mkdir(parents=True, exist_ok=True)
+        args.output = Path(tempfile.mkdtemp(prefix='run-', dir=args.output))
+    if authoring and not args.generate_only:
+        os.environ['VK_LOADER_DEBUG'] = os.environ.get('VK_LOADER_DEBUG', '') + ',layer'
     run = NativeRun(args.renderer, args.output, args.timeout)
     run.report['mode'] = 'generate-only' if args.generate_only else 'native'
     try:
+        if 'authoring-shadows' in (args.suite or ()):
+            run_authoring_shadow_suite(run, args.technique or TECHNIQUES, generate_only=args.generate_only)
         if 'cutoff' in (args.suite or ()):
             run_cutoff_suite(run, args.technique or TECHNIQUES,
                              generate_only=args.generate_only, color_only=args.cutoff_color_only)
@@ -599,4 +921,4 @@ def main():
 
 
 if __name__ == '__main__':
-    main()
+    raise SystemExit(main())

@@ -51,6 +51,5 @@ Live editor resource IDs remain stable.
 
 Undo history retains selected GPU images until their last history or reader
 owner is released. Shared allocations remain alive while another alias uses
-them. Retired source records currently retain their CPU image payloads; CPU
-payload reclamation and additional external renderer acceptance remain tracked
-in #108 and #121.
+them. Deleting unused source images releases their retained payloads from the
+live source rows. Undo restores the exact selected bytes retained by history.
