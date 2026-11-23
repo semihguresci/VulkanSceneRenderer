@@ -7,8 +7,10 @@ sets the scattering fraction from 0 to 1. `--fog-anisotropy` sets the
 Henyey–Greenstein phase parameter from −0.9 to 0.9. Positive values concentrate
 light toward the incident propagation direction. `--fog-distance` limits the
 view-space integration depth from 0.5 to 5,000 scene units. `off` and zero
-density bypass the pass and allocate no fog buffers. A device without
-RGBA16F storage support uses the normal raster path and reports the fallback.
+density bypass the pass and allocate no fog buffers. If the device does
+not support the required RGBA16F storage operations or the fog pipelines
+cannot initialize, the renderer reports the problem and continues on the
+normal raster path.
 
 `transmittance` displays the remaining background fraction and `scattering`
 displays the scene-linear light added by the fog. Both use the high grid.
@@ -27,10 +29,12 @@ origins.
 The pass injects lighting, integrates each froxel column with Beer–Lambert
 attenuation, and composites the fog into HDR before temporal reconstruction,
 exposure, bloom, and UI. Composition stops at each pixel's resolved opaque
-depth, including the partial final slice. A background pixel integrates to
-the fog distance. The pass also applies transmittance and scattering at
-the depth of each alpha-blended or transmissive surface in the existing
-order-independent transparency list. The resolve keeps each surface's
+depth, including the partial final slice. In perspective views, the
+composite adjusts interpolated scattering to the opacity along the actual
+pixel ray. A background pixel integrates to the fog distance. The pass
+also applies transmittance and scattering at the depth of each alpha-blended
+or transmissive surface in the existing order-independent transparency
+list. The resolve keeps each surface's
 shaded opacity and sorts the layers as usual, so fog behind foreground
 glass is visible in proportion to the glass's remaining transparency.
 The glass material's existing transmission approximation shades the
@@ -46,25 +50,54 @@ one cumulative field use 16 bytes per cell each. Per-frame uniform data and
 the actual VMA allocation total appear in capture telemetry alongside the
 `VolumetricFog` GPU pass time.
 
-The native regression is `tests/validation/volumetric_fog_runtime_regression.py`.
-It compares the scene-linear attenuation with independent analytic values
-and checks zero-density bypass, shadows, and temporal history. It also
-checks attenuation and added scattering for isolated and overlapping alpha
-and glass layers in both raster techniques. The rectangle and disk fixtures
-compare scene-linear scattering with numerical integration, including
-occlusion and one-sided emission. `--with-mode-switches` adds
-coverage for FSR, reference path tracing, and viewport resize on supported systems.
+The CTest targets cover parameter bounds and bypass on the CPU, and compare
+native scene-linear EXRs from both raster techniques against analytic
+attenuation and scattering. The fixtures check pixel-identical zero density,
+perspective ray length, signed phase response, directional and point-light
+blockers, and isolated and overlapping alpha and glass layers. The rectangle
+and disk fixtures compare scattering with numerical integration, including
+occlusion and one-sided emission. The GPU regression requires a display,
+the Khronos validation layer, and Python with NumPy and OpenCV EXR support.
+It captures pass timestamps, VMA allocation bytes, and temporal history.
+
+```powershell
+$env:CONTAINER_RUN_GPU_VOLUMETRIC_FOG = '1'
+ctest --test-dir out/build/windows-release --output-on-failure -R '^volumetric_fog_'
+```
+
+Each GPU run saves EXRs, validation logs, and a `results.json` report under
+`test_results/volumetric-fog/run-*` in the build directory. The clear and
+blocked EXRs share the same camera and lighting, so they can be compared
+directly. The script can also run directly with `--with-mode-switches` to
+cover FSR, reference path tracing, and viewport resize on supported systems.
 [Froxel integration reference](https://advances.realtimerendering.com/s2015/)
 
-On the RTX 2080 SUPER at 320×200, the native fog pass measured 0.038–0.062 ms
-and allocated 3,073,920 bytes. The captured transmittance was 0.54834 at
-three units and 0.20178 at eight units for an extinction of 0.2 per unit.
-The same fixtures verified directional and point shadow response, camera
-motion history, cut rejection, and viewport resize. Evidence is in
-`out/feature-parity/volumetric-fog-native/results.json`.
+On a GeForce RTX 2080 SUPER, 54 captures passed with Vulkan synchronization
+validation enabled. Both raster techniques allocated 3,073,920 bytes at
+320×200. The deferred viewport resize to 256×160 reduced the allocation
+to 1,968,000 bytes. Timed fog passes at 320×200 measured the following
+GPU durations across the regression fixtures.
 
-On the same GPU and viewport, fog with overlapping alpha and glass layers
-measured 0.057–0.075 ms at the same allocation size. The largest mean RGB
-error against the analytic layer fixtures was 0.000155 across both raster
-techniques. Evidence for the layered fixtures and FSR, reference, and resize
+| Technique | Frames timed | Minimum (ms) | Median (ms) | Maximum (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Deferred raster | 24 | 0.038 | 0.059 | 0.454 |
+| Forward raster | 20 | 0.041 | 0.059 | 0.423 |
+
+At an extinction of 0.2 per unit, the captured transmittance was 0.54834
+at three units and 0.20178 at eight units. In the shadowed region, the
+blocker reduced mean directional scattering by 70.7% and point-light
+scattering by 99.9% in both techniques. Samples from the center and all
+four corners of the 120° camera views agreed with analytic transmittance
+and scattering within 0.00043 scene-linear units.
+With the same deferred raster fixture and executable, the shader change
+reduced the maximum top-left error from 0.005301 to 0.000120 in low quality
+and from 0.002493 to 0.000120 in the high-quality scattering view.
+Removing the injection shader from an isolated runtime copy produced a
+fallback warning and a pixel-identical fog-off capture in each raster
+technique.
+
+An earlier run with overlapping alpha and glass layers measured
+0.057–0.075 ms at the same viewport and allocation size. The largest mean
+RGB error against the analytic layer fixtures was 0.000155 across both
+raster techniques. Evidence for that run and FSR, reference, and resize
 switches is in `out/feature-parity/volumetric-fog-transparent-native/results.json`.

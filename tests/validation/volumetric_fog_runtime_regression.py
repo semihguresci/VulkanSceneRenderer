@@ -1,18 +1,16 @@
-"""Validate froxel attenuation, transparent layers, and raster shadows in native captures."""
+"""Validate froxel attenuation, scattering, shadows, and GPU cost in native captures."""
 
 import argparse
 import json
 import math
 import os
 from pathlib import Path
+from statistics import median
 import subprocess
+import sys
+import tempfile
 
 os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
-import cv2
-import numpy as np
-
-from gltf_accessor_runtime_regression import Asset
-from gltf_extended_materials_runtime_regression import validation_log_error
 
 
 WIDTH, HEIGHT = 320, 200
@@ -20,10 +18,16 @@ TECHNIQUES = ("deferred-raster", "forward-raster")
 BACK_COLOR = (.24, .32, .55)
 BLEND_COLOR = (.8, .15, .1)
 GLASS_COLOR = (.12, .71, .24)
+SUN_COLOR = (1, .96, .9)
+OPT_IN = "CONTAINER_RUN_GPU_VOLUMETRIC_FOG"
+PERSPECTIVE_FOV = math.radians(120)
+PERSPECTIVE_DEPTH = 10
 
 
 def fixture(path, *, step=False, blocker=False, punctual=False, transparent=False,
-            area=None, away=False):
+            area=None, away=False, perspective=False):
+    from gltf_accessor_runtime_regression import Asset
+
     asset = Asset()
     model = asset.model
     model["nodes"], model["meshes"] = [], []
@@ -36,9 +40,11 @@ def fixture(path, *, step=False, blocker=False, punctual=False, transparent=Fals
         model["nodes"].append({"mesh": len(model["meshes"]), "name": name})
         model["meshes"].append({"primitives": [primitive]})
 
-    back_depth = -2 if step or transparent else -4
-    quad("Back plate", [[-3, -1.9, back_depth], [3, -1.9, back_depth],
-                        [3, 1.9, back_depth], [-3, 1.9, back_depth]], [0, 0, 1], 0)
+    back_depth = -2 if step or transparent else 6 - PERSPECTIVE_DEPTH
+    back_width, back_height = (34, 22) if perspective else (3, 1.9)
+    quad("Back plate", [[-back_width, -back_height, back_depth], [back_width, -back_height, back_depth],
+                        [back_width, back_height, back_depth], [-back_width, back_height, back_depth]],
+         [0, 0, 1], 0)
     if step:
         quad("Foreground plate", [[-3, -1.9, 3], [-.1, -1.9, 3], [-.1, 1.9, 3], [-3, 1.9, 3]], [0, 0, 1], 0)
     if transparent:
@@ -48,7 +54,12 @@ def fixture(path, *, step=False, blocker=False, punctual=False, transparent=Fals
         quad("Side blocker", [[-1.4, -.7, -.4], [-1.4, .7, -.4], [-1.4, .7, 5.4], [-1.4, -.7, 5.4]], [1, 0, 0], 1)
     camera = len(model["nodes"])
     model["nodes"].append({"camera": 0, "translation": [0, 0, 6]})
-    model["cameras"] = [{"type": "orthographic", "orthographic": {"xmag": 3.2, "ymag": 2,
+    if perspective:
+        model["cameras"] = [{"type": "perspective", "perspective": {"yfov": PERSPECTIVE_FOV,
+                                                                   "aspectRatio": WIDTH / HEIGHT,
+                                                                   "znear": .1, "zfar": 25}}]
+    else:
+        model["cameras"] = [{"type": "orthographic", "orthographic": {"xmag": 3.2, "ymag": 2,
                                                                      "znear": .1, "zfar": 25}}]
     model["nodes"].append({"translation": [-2.6, 0, 2.5], "extensions": {"KHR_lights_punctual": {"light": 0}}})
     model["extensions"] = {"KHR_lights_punctual": {"lights": [{"type": "point", "range": 14,
@@ -62,8 +73,10 @@ def fixture(path, *, step=False, blocker=False, punctual=False, transparent=Fals
             extras={"areaLight": {"shape": area, "width": .8, "height": .8,
                                   "radius": .4, "range": 14}})
     model["extensionsUsed"] = ["KHR_lights_punctual", "KHR_materials_unlit"]
+    back_color = 0 if perspective else .5
     model["materials"] = [
-        {"extensions": {"KHR_materials_unlit": {}}, "pbrMetallicRoughness": {"baseColorFactor": [.5, .5, .5, 1]}},
+        {"extensions": {"KHR_materials_unlit": {}},
+         "pbrMetallicRoughness": {"baseColorFactor": [back_color, back_color, back_color, 1]}},
         {"doubleSided": True, "pbrMetallicRoughness": {"baseColorFactor": [.1, .1, .1, 1], "metallicFactor": 0}},
     ]
     if transparent:
@@ -82,6 +95,8 @@ def fixture(path, *, step=False, blocker=False, punctual=False, transparent=Fals
 
 
 def expected_area_scattering(shape):
+    import numpy as np
+
     # Independent midpoint integration along the central orthographic ray.
     # The four emitter samples have equal area and the fog is isotropic.
     depth = (np.arange(4096) + .5) * (10 / 4096)
@@ -98,7 +113,26 @@ def expected_area_scattering(shape):
     return integrated * np.array([1, .8, .6])
 
 
+def expected_perspective_fog(density, albedo, sun):
+    import numpy as np
+
+    # A pinhole ray reaches the plate at a fixed Z but travels farther off-axis.
+    # For an isotropic, spatially constant source, the in-scatter integrates to
+    # the directional radiance times albedo, phase, and the removed fraction.
+    y, x = np.mgrid[0:HEIGHT, 0:WIDTH] + .5
+    scale = math.tan(PERSPECTIVE_FOV / 2)
+    horizontal = (2 * x / WIDTH - 1) * scale * WIDTH / HEIGHT
+    vertical = (1 - 2 * y / HEIGHT) * scale
+    length = PERSPECTIVE_DEPTH * np.sqrt(1 + horizontal**2 + vertical**2)
+    transmittance = np.exp(-density * length)[..., None]
+    scattering = (1 - transmittance) * (sun * albedo / (4 * math.pi)) * np.array(SUN_COLOR)
+    return np.broadcast_to(transmittance, scattering.shape), scattering
+
+
 def read_pixels(path):
+    import cv2
+    import numpy as np
+
     pixels = cv2.imdecode(np.frombuffer(path.read_bytes(), np.uint8), cv2.IMREAD_UNCHANGED)
     assert pixels is not None and pixels.dtype == np.float32 and np.isfinite(pixels).all(), path
     return pixels[..., :3]
@@ -113,13 +147,28 @@ def main():
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--generate-only", action="store_true")
+    parser.add_argument("--managed-output", action="store_true", help="Keep each run in a fresh output subdirectory")
+    parser.add_argument("--require-opt-in", action="store_true", help=f"Require {OPT_IN}=1 for native runs")
     parser.add_argument("--with-mode-switches", action="store_true",
                         help="Also validate switching FSR raster, reference path tracing, and viewport size")
     args = parser.parse_args()
+    if args.require_opt_in and not args.generate_only and os.environ.get(OPT_IN) != "1":
+        print(f"Set {OPT_IN}=1 to run native volumetric fog validation.", flush=True)
+        return 77
+    import numpy as np
+
+    from gltf_extended_materials_runtime_regression import validation_log_error
+
     renderer, output = args.renderer.resolve(), args.output.resolve()
-    output.mkdir(parents=True, exist_ok=False)
+    if args.managed_output:
+        output.mkdir(parents=True, exist_ok=True)
+        output = Path(tempfile.mkdtemp(prefix="run-", dir=output))
+    else:
+        output.mkdir(parents=True, exist_ok=False)
+    print(f"Volumetric fog fixtures and captures {output}", flush=True)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     depth_scene = fixture(output / "depth-step.gltf", step=True)
+    perspective_scene = fixture(output / "perspective-plate.gltf", perspective=True)
     layered_scene = fixture(output / "transparent-layers.gltf", transparent=True)
     clear_directional = fixture(output / "clear-directional.gltf")
     blocked_directional = fixture(output / "blocked-directional.gltf", blocker=True)
@@ -136,7 +185,8 @@ def main():
 
     captures = {}
 
-    def capture(label, asset, technique, mode, *, density=.2, albedo=.9, sun=0, history=None, fsr=None):
+    def capture(label, asset, technique, mode, *, density=.2, albedo=.9, anisotropy=0,
+                sun=0, sun_direction=(1, 0, 0), history=None, fsr=None):
         source, camera = asset
         stem = output / label
         image, log = stem.with_suffix(".exr"), stem.with_suffix(".log")
@@ -144,8 +194,9 @@ def main():
                    "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1", "--no-taa", "--no-bloom", "--no-ddgi",
                    "--render-technique", technique, "--display-mode", "lit", "--ray-shadows", "raster",
                    "--environment-intensity", "0", "--directional-intensity", str(sun),
-                   "--directional-direction", "1", "0", "0", "--volumetric-fog", mode, "--fog-density", str(density),
-                   "--fog-albedo", str(albedo), "--fog-anisotropy", "0", "--fog-distance", "15",
+                   "--directional-direction", *map(str, sun_direction), "--directional-color", *map(str, SUN_COLOR),
+                   "--volumetric-fog", mode, "--fog-density", str(density), "--fog-albedo", str(albedo),
+                   "--fog-anisotropy", str(anisotropy), "--fog-distance", "15",
                    "--screenshot", str(image)]
         if history:
             script = stem.with_suffix(".sequence.json")
@@ -157,32 +208,52 @@ def main():
             command += ["--fsr", fsr]
         with log.open("w", encoding="utf-8") as stream:
             subprocess.run(command, cwd=renderer.parent, stdout=stream, stderr=subprocess.STDOUT, check=True,
-                           timeout=240, env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)))
+                           timeout=240, env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output), VK_LOADER_DEBUG="layer"),
+                           creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
         log_text = log.read_text(encoding="utf-8", errors="replace")
-        assert not validation_log_error(log_text), log
+        assert 'Insert instance layer "VK_LAYER_KHRONOS_validation"' in log_text, f"Khronos validation was not loaded: {log}"
+        assert not validation_log_error(log_text), f"Vulkan validation failed: {log}"
         assert "Volumetric fog unavailable" not in log_text, log
         frames = history["sampleFrames"] if history else [1]
+        # A fresh frame or resource transition can precede GPU query readback.
+        transition_frames = {1, *(event["frame"] for event in (history or {}).get("events", []))}
         results = []
         evidence = []
         for frame in frames:
             prefix = stem if frame == frames[-1] else output / f"{label}.frame-{frame:04d}"
-            png_or_exr = Path(str(prefix) + ".exr")
+            capture_image = Path(str(prefix) + ".exr")
             telemetry = Path(str(prefix) + ".telemetry.json")
             state = json.loads(telemetry.read_text(encoding="utf-8"))
-            raster = state["technique"] in TECHNIQUES
+            active_technique = state["technique"]
+            assert history or active_technique == technique, (label, active_technique)
+            raster = active_technique in TECHNIQUES
             active = raster and mode != "off" and density > 0
             fog = fog_pass(state)
-            assert bool(fog and fog["active"]) == active, (label, fog)
+            assert bool(fog and fog["active"]) == active, (label, frame, fog)
             settings = state.get("volumetricFog", {})
-            if raster:
-                assert bool(settings.get("allocationBytes", 0)) == active, (label, settings)
-            results.append((read_pixels(png_or_exr), state))
-            evidence.append({"image": str(png_or_exr), "telemetry": str(telemetry), "pass": fog, "fog": settings})
-        captures[label] = {"frames": evidence, "log": str(log)}
+            assert settings.get("active", False) == active, (label, frame, settings)
+            render_extent = state["fsr"]["renderExtent"]
+            if active:
+                render_width, render_height = render_extent
+                # Fixture extents fit the high grid's 8x8 tiles and 64 slices.
+                # Allocation includes two history fields, one cumulative field and per-frame uniforms.
+                cells = math.ceil(render_width / 8) * math.ceil(render_height / 8) * 64
+                assert settings["allocationBytes"] > cells * 3 * 16, (label, frame, render_extent, settings)
+                if fog["gpuTimed"]:
+                    assert math.isfinite(fog["gpuMs"]) and fog["gpuMs"] > 0, (label, frame, fog)
+                else:
+                    assert history and frame in transition_frames, (label, frame, fog)
+            elif raster:
+                assert settings.get("allocationBytes", 0) == 0, (label, frame, settings)
+            results.append((read_pixels(capture_image), state))
+            evidence.append({"image": str(capture_image), "telemetry": str(telemetry), "pass": fog, "fog": settings,
+                             "technique": active_technique, "renderExtent": render_extent})
+        captures[label] = {"frames": evidence, "log": str(log), "gpu": state["gpu"]}
         return results if history else results[0]
 
     measured = {}
     transparent = {}
+    center = (slice(96, 104), slice(156, 164))
     near_roi = (slice(84, 116), slice(55, 108))
     far_roi = (slice(84, 116), slice(200, 259))
     for technique in TECHNIQUES:
@@ -217,7 +288,7 @@ def main():
                 transmittance = math.exp(-.2 * depth)
                 color = np.asarray(rgb)
                 # Isotropic directional scattering with the default sun tint.
-                scatter = np.array([1, .96, .9]) * (4 * .9 / (4 * math.pi)) * (1 - transmittance)
+                scatter = np.array(SUN_COLOR) * (4 * .9 / (4 * math.pi)) * (1 - transmittance)
                 expected += revealage * alpha * np.array([color, color * transmittance, scatter])
                 revealage *= 1 - alpha
             expected_rgb_by_capture = dict(zip(("off", "absorption", "scattering"), expected))
@@ -231,20 +302,72 @@ def main():
                 transparent[technique][region][capture_name] = {
                     "expectedRgb": expected_rgb.tolist(), "measuredRgb": actual_rgb.mean(axis=(0, 1)).tolist()}
 
+    perspective = {}
+    perspective_density, perspective_albedo, perspective_sun = .035, .9, 4
+    perspective_transmission, perspective_scatter = expected_perspective_fog(
+        perspective_density, perspective_albedo, perspective_sun)
+    # The outermost pixels lie past the nearest froxel centers. Sampling all four
+    # corners catches under-integration from clamping to those center rays.
+    regions = {
+        "center": center,
+        "topLeft": (slice(0, 3), slice(0, 3)),
+        "topRight": (slice(0, 3), slice(-3, None)),
+        "bottomLeft": (slice(-3, None), slice(0, 3)),
+        "bottomRight": (slice(-3, None), slice(-3, None)),
+    }
+    for technique in TECHNIQUES:
+        perspective[technique] = {}
+        for mode, expected in (("transmittance", perspective_transmission),
+                               ("scattering", perspective_scatter), ("low", perspective_scatter)):
+            # Low uses lit output. The receiver is black and unlit, so only fog contributes.
+            label = f"{technique}-perspective-{mode}"
+            pixels, _ = capture(label, perspective_scene, technique, mode,
+                                density=perspective_density, albedo=perspective_albedo, sun=perspective_sun)
+            rgb = pixels[..., ::-1]
+            assert rgb.shape == expected.shape, (label, rgb.shape)
+            errors = np.abs(rgb - expected)
+            perspective[technique][mode] = {}
+            for name, roi in regions.items():
+                max_error = float(errors[roi].max())
+                assert max_error < .0006, (label, name, max_error, rgb[roi].mean(axis=(0, 1)),
+                                           expected[roi].mean(axis=(0, 1)))
+                perspective[technique][mode][name] = {
+                    "expectedRgb": expected[roi].mean(axis=(0, 1)).tolist(),
+                    "measuredRgb": rgb[roi].mean(axis=(0, 1)).tolist(), "maxAbsoluteError": max_error}
+
     shadow_roi = (slice(91, 109), slice(176, 220))
     shadows = {}
-    for label, clear, blocked, sun in (("directional", clear_directional, blocked_directional, 4),
-                                       ("point", clear_local, blocked_local, 0)):
-        lit, _ = capture(label + "-clear", clear, "deferred-raster", "scattering", sun=sun)
-        occluded, state = capture(label + "-blocked", blocked, "deferred-raster", "scattering", sun=sun)
-        assert next(record for record in state["passes"] if record["name"] ==
-                    ("ShadowCascade0" if label == "directional" else "LocalShadowDepth"))["active"], label
-        bright, dark = float(lit[shadow_roi].mean()), float(occluded[shadow_roi].mean())
-        assert bright > .01 and dark < .85 * bright, (label, bright, dark)
-        shadows[label] = {"clear": bright, "occluded": dark}
+    phase_scattering = {}
+    for technique in TECHNIQUES:
+        shadows[technique] = {}
+        for light, clear, blocked, sun, shadow_pass in (
+                ("directional", clear_directional, blocked_directional, 4, "ShadowCascade0"),
+                ("point", clear_local, blocked_local, 0, "LocalShadowDepth")):
+            label = f"{technique}-{light}"
+            lit, _ = capture(label + "-clear", clear, technique, "scattering", sun=sun)
+            occluded, state = capture(label + "-blocked", blocked, technique, "scattering", sun=sun)
+            assert next(record for record in state["passes"] if record["name"] == shadow_pass)["active"], label
+            bright, dark = float(lit[shadow_roi].mean()), float(occluded[shadow_roi].mean())
+            assert bright > .01 and dark < .85 * bright, (label, bright, dark)
+            shadows[technique][light] = {"clear": bright, "occluded": dark}
+
+        phase_scattering[technique] = {}
+        # A -Z camera ray and incoming sun propagation (0.8, 0, -0.6)
+        # give a scattering angle cosine of -0.6. The plate is 10 units away.
+        cosine, depth = -.6, 10
+        for phase_name, anisotropy in (("positive", .6), ("negative", -.6)):
+            label = f"{technique}-phase-{phase_name}"
+            pixels, _ = capture(label, clear_directional, technique, "scattering", sun=4,
+                                sun_direction=(.8, 0, -.6), anisotropy=anisotropy)
+            phase = (1 - anisotropy**2) / (4 * math.pi * (1 + anisotropy**2 - 2 * anisotropy * cosine)**1.5)
+            expected = np.array(SUN_COLOR) * (4 * .9 * phase) * (1 - math.exp(-.2 * depth))
+            rgb = pixels[center][..., ::-1]
+            assert np.allclose(rgb, expected, atol=.004, rtol=0), (label, rgb.mean(axis=(0, 1)), expected)
+            phase_scattering[technique][phase_name] = {
+                "anisotropy": anisotropy, "cosine": cosine, "expectedRgb": expected.tolist(),
+                "measuredRgb": rgb.mean(axis=(0, 1)).tolist()}
 
     area_scattering = {}
-    center = (slice(96, 104), slice(156, 164))
     for technique in TECHNIQUES:
         area_scattering[technique] = {}
         for shape, (clear, blocked, away) in area_fixtures.items():
@@ -274,10 +397,12 @@ def main():
     accepted = [state["volumetricFog"]["historyReprojected"] for _, state in trajectory]
     assert accepted == [False, True, True, False, True, False], accepted
     assert trajectory[-1][0].shape[:2] == (160, 256), trajectory[-1][0].shape
+    assert (trajectory[-1][1]["volumetricFog"]["allocationBytes"] <
+            trajectory[0][1]["volumetricFog"]["allocationBytes"]), "Fog allocation did not shrink after resize"
 
     report = {"passed": True, "analyticTransmittance": measured, "shadowScattering": shadows,
-              "areaScattering": area_scattering, "transparentLayers": transparent,
-              "historyReprojected": accepted, "captures": captures}
+              "phaseScattering": phase_scattering, "areaScattering": area_scattering, "transparentLayers": transparent,
+              "perspectiveFog": perspective, "historyReprojected": accepted, "captures": captures}
     if args.with_mode_switches:
         modes = {"schemaVersion": 1, "frames": 10, "sampleFrames": [2, 4, 6, 8, 10],
                  "camera": [{"frame": 1, "position": [0, 0, 6], "target": [0, 0, 0]}],
@@ -301,9 +426,19 @@ def main():
                             ["deferred-raster", "quality"], ["deferred-raster", "quality"]], observed
         assert trajectory[-1][0].shape[:2] == (160, 256), trajectory[-1][0].shape
         report["modeSwitches"] = observed
+    gpu_metrics = {}
+    for technique in TECHNIQUES:
+        active_frames = [frame for capture in captures.values() for frame in capture["frames"]
+                         if frame["technique"] == technique and frame["pass"]["active"]]
+        times = [frame["pass"]["gpuMs"] for frame in active_frames if frame["pass"]["gpuTimed"]]
+        gpu_metrics[technique] = {
+            "timedFrames": len(times), "minPassMs": min(times), "medianPassMs": median(times), "maxPassMs": max(times),
+            "allocationBytes": sorted({frame["fog"]["allocationBytes"] for frame in active_frames})}
+    report["gpuMetrics"] = gpu_metrics
     (output / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print("PASS froxel attenuation, alpha blend and glass, area emitters, raster shadows, zero-density bypass, and fog history")
+    print("PASS froxel attenuation, perspective fog, phase scattering, transparent layers, area emitters, raster shadows, "
+          "zero-density bypass, fog history, and GPU telemetry")
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

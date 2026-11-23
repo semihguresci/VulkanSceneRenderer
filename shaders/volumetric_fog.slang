@@ -212,17 +212,20 @@ void injectFog(uint3 id : SV_DispatchThreadID)
             float rejection = smoothstep(0.16, 0.55, max(relative.x, max(relative.y, relative.z)));
             source = lerp(source, previous.rgb, fog.temporal.x * (1.0 - rejection));
         }
-        cell = float4(source, fog.medium.x);
+        // Keep the source per world-space unit for reprojection, together with
+        // the column ray's conversion from view depth to world distance.
+        cell = float4(source, ray.distancePerViewDepth);
     }
     currentFroxels[FroxelIndex(id)] = cell;
 }
 
-float4 AdvanceFog(float4 accumulated, float4 cell, float stepLength)
+float4 AdvanceFog(float4 accumulated, float4 cell, float viewStep)
 {
-    float opticalDepth = max(cell.w * stepLength, 0.0);
+    float stepLength = viewStep * cell.w;
+    float opticalDepth = fog.medium.x * stepLength;
     float stepTransmittance = exp(-opticalDepth);
     float integratedLength = opticalDepth < 0.001 ? stepLength * (1.0 - 0.5 * opticalDepth) :
-        (1.0 - stepTransmittance) / cell.w;
+        (1.0 - stepTransmittance) / fog.medium.x;
     accumulated.rgb += accumulated.a * cell.rgb * integratedLength;
     accumulated.a *= stepTransmittance;
     return accumulated;
@@ -233,24 +236,31 @@ float4 AdvanceFog(float4 accumulated, float4 cell, float stepLength)
 void integrateFog(uint3 id : SV_DispatchThreadID)
 {
     if (any(id.xy >= fog.grid.xy)) return;
-    FogRay ray;
-    if (!MakeFogRay((float2(id.xy) + 0.5.xx) / float2(fog.grid.xy), ray))
-        ray.distancePerViewDepth = 1.0;
     float4 accumulated = float4(0.0, 0.0, 0.0, 1.0);
     for (uint z = 0; z < fog.grid.z; ++z)
     {
         uint index = FroxelIndex(uint3(id.xy, z));
-        float length = (FogSliceDepth(float(z + 1u)) - FogSliceDepth(float(z))) * ray.distancePerViewDepth;
-        accumulated = AdvanceFog(accumulated, currentFroxels[index], length);
+        float viewStep = FogSliceDepth(float(z + 1u)) - FogSliceDepth(float(z));
+        accumulated = AdvanceFog(accumulated, currentFroxels[index], viewStep);
         cumulativeFroxels[index] = accumulated;
     }
 }
 
-float3 PartialFog(uint2 coordinate, uint z, float stepLength)
+float FogOpacity(float opticalDepth, float transmittance)
+{
+    // Retain small optical depths when 1 - exp(-x) loses precision.
+    return opticalDepth < 0.01 ? opticalDepth * (1.0 - opticalDepth * (0.5 - opticalDepth / 6.0)) :
+        1.0 - transmittance;
+}
+
+float4 PartialFog(uint2 coordinate, uint z, float viewDepth, float viewStep)
 {
     float4 accumulated = float4(0.0, 0.0, 0.0, 1.0);
     if (z > 0u) accumulated = cumulativeFroxels[FroxelIndex(uint3(coordinate, z - 1u))];
-    return AdvanceFog(accumulated, currentFroxels[FroxelIndex(uint3(coordinate, z))], stepLength).rgb;
+    float4 cell = currentFroxels[FroxelIndex(uint3(coordinate, z))];
+    accumulated = AdvanceFog(accumulated, cell, viewStep);
+    accumulated.a = FogOpacity(fog.medium.x * viewDepth * cell.w, accumulated.a);
+    return accumulated;
 }
 
 float FogViewDepth(float2 uv, float depth)
@@ -271,15 +281,23 @@ struct FogColumns
 
 float3 FoggedColor(float3 source, float viewDepth, float distancePerViewDepth, FogColumns columns)
 {
-    float transmittance = exp(-fog.medium.x * viewDepth * distancePerViewDepth);
+    float opticalDepth = fog.medium.x * viewDepth * distancePerViewDepth;
+    float transmittance = exp(-opticalDepth);
     if (fog.viewport.z == 3u) return transmittance.xxx;
     uint z = min(uint(FogSliceCoordinate(viewDepth)), fog.grid.z - 1u);
-    float partialLength = max(viewDepth - FogSliceDepth(float(z)), 0.0) * distancePerViewDepth;
+    float partialStep = max(viewDepth - FogSliceDepth(float(z)), 0.0);
     uint2 lo = columns.lo, hi = columns.hi;
     float2 w = columns.weights;
-    float3 a = lerp(PartialFog(lo, z, partialLength), PartialFog(uint2(hi.x, lo.y), z, partialLength), w.x);
-    float3 b = lerp(PartialFog(uint2(lo.x, hi.y), z, partialLength), PartialFog(hi, z, partialLength), w.x);
-    float3 scatter = lerp(a, b, w.y);
+    float4 a = lerp(PartialFog(lo, z, viewDepth, partialStep),
+                    PartialFog(uint2(hi.x, lo.y), z, viewDepth, partialStep), w.x);
+    float4 b = lerp(PartialFog(uint2(lo.x, hi.y), z, viewDepth, partialStep),
+                    PartialFog(hi, z, viewDepth, partialStep), w.x);
+    float4 integrated = lerp(a, b, w.y);
+    float3 scatter = integrated.rgb;
+    // Rescale the sampled scattering profile by the pixel ray's opacity.
+    // This anchors uniform lighting to Beer-Lambert without another march.
+    if (fog.temporal.z <= 0.5 && integrated.a > 0.0)
+        scatter *= FogOpacity(opticalDepth, transmittance) / integrated.a;
     return fog.viewport.z == 4u ? scatter : source * transmittance + scatter;
 }
 
