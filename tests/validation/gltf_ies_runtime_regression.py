@@ -23,11 +23,18 @@ PUNCTUAL = "KHR_lights_punctual"
 SIZE = 320
 PROFILE = b"IESNA:LM-63-2002\n[TEST] Asymmetric fixture\nTILT=NONE\n1 -1 1 3 2 1 2 0 0 0\n1 1 12\n0 45 90\n0 90\n64 64 0\n1 1 0\n"
 LEGACY_PROFILE = b"IESNA:LM-63-1995\n[TEST] Reserved field fixture\nTILT=NONE\n1 -1 1 3 2 1 2 0 0 0\n1 .25 12\n0 45 90\n0 90\n64 64 0\n1 1 0\n"
+FULL_PROFILE = (b"IESNA:LM-63-2002\n[TEST] Signed azimuth fixture\nTILT=NONE\n"
+                b"1 -1 1 3 5 1 2 0 0 0\n1 1 12\n0 45 90\n0 90 180 270 360\n"
+                b"64 64 0\n16 16 0\n8 8 0\n32 32 0\n64 64 0\n")
 HDR_ABSOLUTE_TOLERANCE = .001
 HDR_RELATIVE_TOLERANCE = .003
+PREVIEW_SAMPLES = {
+    13: "initial", 19: "preview-half", 25: "preview-zero", 31: "cancel",
+    37: "commit", 43: "undo", 49: "redo", 55: "source-node-transform-only",
+}
 
 
-def fixture(path, *, attachment, rotation=0, transparent=False, multiplier=1, profile=PROFILE):
+def fixture(path, *, attachment, rotation=0, transparent=False, multiplier=1, profile=PROFILE, spot=False):
     asset = Asset()
     model = asset.model
     corners = [[-3, -3, 0], [3, -3, 0], [3, 3, 0], [-3, 3, 0]]
@@ -46,9 +53,12 @@ def fixture(path, *, attachment, rotation=0, transparent=False, multiplier=1, pr
     model["scenes"] = [{"nodes": [0, 1, 2]}]
     model["extensions"], model["extensionsUsed"] = {}, []
     light = model["nodes"][1].setdefault("extensions", {})
-    if attachment in {"punctual", "invalid"}:
+    if spot or attachment in {"punctual", "invalid"}:
         model["extensionsUsed"].append(PUNCTUAL)
-        model["extensions"][PUNCTUAL] = {"lights": [{"type": "point", "intensity": 16.0}]}
+        punctual = {"type": "point", "intensity": 16.0}
+        if spot:
+            punctual.update(type="spot", spot={"innerConeAngle": math.radians(5), "outerConeAngle": math.radians(10)})
+        model["extensions"][PUNCTUAL] = {"lights": [punctual]}
         light[PUNCTUAL] = {"light": 0}
     if attachment != "punctual":
         model["extensionsUsed"].append(IES)
@@ -59,6 +69,64 @@ def fixture(path, *, attachment, rotation=0, transparent=False, multiplier=1, pr
         model["extensions"][IES] = {"lights": [source]}
         light[IES] = {"light": 0, "multiplier": multiplier}
     asset.write(path)
+
+
+def write_light_sequence(path):
+    target = {"type": "point", "source": "imported", "sourceNode": 1}
+
+    def edit(frame, phase, intensity=None):
+        request = {"target": target, "phase": phase}
+        if phase != "commit":
+            request["gesture"] = 101
+        if intensity is not None:
+            request["values"] = {"intensity": intensity}
+        return {"frame": frame, "lightEdit": request}
+
+    events = [
+        {"frame": 1, "lightSelection": target},
+        edit(14, "begin", .5),
+        edit(20, "update", 0),
+        edit(26, "cancel"),
+        edit(32, "commit", .5),
+        {"frame": 38, "sceneHistory": "undo"},
+        {"frame": 44, "sceneHistory": "redo"},
+        {"frame": 50, "expectLightEditFailure": True,
+         "lightEdit": {"target": target, "phase": "commit",
+                       "gizmo": {"tool": "translate", "axis": "x", "amount": [1, 0, 0]}}},
+    ]
+    path.write_text(json.dumps({"schemaVersion": 1, "frames": max(PREVIEW_SAMPLES),
+                               "sampleFrames": list(PREVIEW_SAMPLES), "events": events},
+                               indent=2) + "\n", encoding="utf-8")
+
+
+def verify_preview_state(state, name, multiplier, gesture, publications, commits, replays, undo, redo):
+    edits = state["lightEdits"]
+    expected_error = ("Move or rotate the IES fixture through its source node"
+                      if name == "source-node-transform-only" else "")
+    require(not edits["truncated"] and edits["error"] == expected_error,
+            f"Wrong IES light edit diagnostic in {name}: {edits['error']!r}")
+    lights = [light for light in edits["lights"] if light["source"] == 1]
+    require(len(lights) == 1 and state["lighting"]["pointLightCount"] == 1,
+            f"Wrong imported light count in {name}")
+    light = lights[0]
+    require(light["type"] == 1 and light["sourceNode"] == 1 and light["extension"] == IES and light["selected"],
+            f"Wrong selected IES fixture in {name}")
+    require(light["range"] == 0 and light["intensity"] == multiplier and light["color"] == [1, 1, 1],
+            f"Wrong IES light values in {name}")
+    require(np.allclose(light["direction"], [0, 0, -1], atol=1e-6) and
+            np.allclose(light["position"], [0, 0, 3], atol=1e-6), f"IES transform changed in {name}")
+    require([edits[key] for key in ("gesture", "publications", "commits", "replays")] ==
+            [gesture, publications, commits, replays], f"Wrong IES edit state in {name}")
+    require(state.get("sceneEditHistory", {"undo": 0, "redo": 0}) == {"undo": undo, "redo": redo},
+            f"Wrong IES edit history in {name}")
+
+
+def verify_saved_profile(model):
+    saved_profile = model["extensions"][IES]["lights"][0]["uri"]
+    require(saved_profile.startswith("data:application/x-ies-lm-63;base64,"),
+            "Portable export did not embed its IES profile")
+    require(base64.b64decode(saved_profile.split(",", 1)[1], validate=True) == PROFILE,
+            "Portable export changed the original IES profile bytes")
 
 
 def image_pixels(path):
@@ -89,6 +157,21 @@ def angular_intensity_ratio(image, *, rotated=False):
     require(math.isclose(actual, expected, rel_tol=.005),
             f"Wrong interpolated IES angular ratio: {actual}, expected {expected}")
     return {"measuredRatio": actual, "expectedRatio": expected, "relativeTolerance": .005}
+
+
+def full_profile_response(image, quarter_turns):
+    # Successive 90-degree rotations of the same pixel centre keep the incident
+    # angle, distance and BRDF fixed. Each azimuth is just past a measured plane.
+    plane_candela = np.array([64., 16., 8., 32.])
+    fraction = math.atan2(.5, 76.5) / (math.pi / 2)
+    expected = np.roll(plane_candela * (1 - fraction) + np.roll(plane_candela, -1) * fraction, quarter_turns)
+    measured = np.array([image[y, x].mean() for y, x in ((159, 236), (83, 159), (160, 83), (236, 160))])
+    require(np.min(measured) > 0, "Full IES profile did not illuminate every sample")
+    expected /= expected.max()
+    measured /= measured.max()
+    require(np.allclose(measured, expected, rtol=.005, atol=0),
+            f"Signed IES azimuth mismatch: {measured}, expected {expected}")
+    return {"measured": measured.tolist(), "expected": expected.tolist()}
 
 
 def image_agreement(actual, expected, *, exact=False):
@@ -141,7 +224,19 @@ def main():
     fixture(dimmed, attachment="buffer-view", multiplier=.5)
     fixture(unlit, attachment="buffer-view", multiplier=0)
     fixture(legacy, attachment="buffer-view", profile=LEGACY_PROFILE)
-    fixtures = set(output.glob("*.gltf")) | set(output.glob("*.ies")) | {output / "vk_layer_settings.txt"}
+    spot, invalid_spot, measured_spot = [output / (name + ".gltf") for name in
+        ("spot", "invalid-spot", "measured-spot")]
+    fixture(spot, attachment="punctual", spot=True)
+    fixture(invalid_spot, attachment="invalid", spot=True)
+    fixture(measured_spot, attachment="buffer-view", spot=True)
+    signed_fixtures = {}
+    for quarter_turns in (0, 1):
+        signed = output / f"full-profile-{quarter_turns}.gltf"
+        fixture(signed, attachment="buffer-view", profile=FULL_PROFILE, rotation=quarter_turns * math.pi / 2)
+        signed_fixtures[quarter_turns] = signed
+    light_sequence = output / "light-history.json"
+    write_light_sequence(light_sequence)
+    fixtures = set(output.glob("*.gltf")) | set(output.glob("*.ies")) | {output / "vk_layer_settings.txt", light_sequence}
     captures = {}
     report = {"passed": None if args.generate_only else False, "generatedOnly": args.generate_only,
               "rendererExecuted": False, "nativeValidationPerformed": False, "captures": captures,
@@ -173,7 +268,7 @@ def main():
             require(sha(Path(name)) == expected_hash, "Portable IES export changed " + name)
         return actual
 
-    def capture(label, model, technique, *, save=None, camera_node=2):
+    def capture(label, model, technique, *, save=None, camera_node=2, sequence=None):
         verify()
         stem = output / label
         image, log, telemetry = stem.with_suffix(".exr"), stem.with_suffix(".log"), stem.with_suffix(".telemetry.json")
@@ -186,6 +281,8 @@ def main():
                    "--screenshot", str(image)]
         if save:
             command += ["--save-scene", str(save)]
+        if sequence:
+            command += ["--capture-sequence", str(sequence)]
         report["rendererExecuted"] = True
         persist()
         with log.open("w", encoding="utf-8") as stream:
@@ -195,6 +292,19 @@ def main():
         text = log.read_text(encoding="utf-8", errors="replace")
         require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in text and not validation_log_error(text),
                 "Khronos layer loading or strict Vulkan validation failed " + str(log))
+        if sequence:
+            for sample_frame, sample_name in PREVIEW_SAMPLES.items():
+                sample_image = image if sample_frame == max(PREVIEW_SAMPLES) else image.with_name(
+                    f"{image.stem}.frame-{sample_frame:04d}{image.suffix}")
+                inspect_capture(f"{label}-{sample_name}", sample_image, sample_image.with_suffix(".telemetry.json"),
+                                technique, log, command)
+        else:
+            pixels = inspect_capture(label, image, telemetry, technique, log, command)
+        verify()
+        persist()
+        return None if sequence else pixels, text
+
+    def inspect_capture(label, image, telemetry, technique, log, command):
         require(image.is_file() and telemetry.is_file(), "Missing fresh IES capture " + str(image))
         pixels = image_pixels(image)
         frame = json.loads(telemetry.read_text(encoding="utf-8-sig"))
@@ -217,9 +327,7 @@ def main():
                            "vmaAllocationBytes": frame["gltfMerge"]["vmaAllocationBytes"],
                            "vmaAllocationCount": frame["gltfMerge"]["vmaAllocationCount"],
                            "build": frame["build"]}
-        verify()
-        persist()
-        return pixels, text
+        return pixels
 
     try:
         saved = output / "portable.glb"
@@ -250,6 +358,16 @@ def main():
                                      "relativeTolerance": HDR_RELATIVE_TOLERANCE,
                                      **image_agreement(forward, deferred)})
 
+        for quarter_turns, model in signed_fixtures.items():
+            label = f"full-profile-{quarter_turns}"
+            deferred, _ = capture("deferred-raster-" + label, model, "deferred-raster")
+            forward, _ = capture("forward-raster-" + label, model, "forward-raster")
+            for technique, pixels in (("deferred-raster", deferred), ("forward-raster", forward)):
+                report["checks"].append({"check": "signed-profile-orientation", "technique": technique,
+                                         "quarterTurns": quarter_turns, **full_profile_response(pixels, quarter_turns)})
+            report["checks"].append({"check": "cross-technique-agreement", "fixture": label,
+                                     **image_agreement(forward, deferred)})
+
         reduced, _ = capture("half-output", dimmed, "deferred-raster")
         full = image_pixels(output / "deferred-raster-measured.exr")
         baseline, _ = capture("zero-output", unlit, "deferred-raster")
@@ -268,12 +386,63 @@ def main():
                             "measuredMinusPunctualVmaAllocations": measured["vmaAllocationCount"] - control["vmaAllocationCount"],
                             "evidence": "Packed payload arithmetic and observed whole-renderer VMA totals"}
 
+        for technique in ("deferred-raster", "forward-raster"):
+            original = image_pixels(Path(captures[technique + "-measured"]["image"]))
+            control_spot, _ = capture(technique + "-spot", spot, technique)
+            fallback_spot, warning = capture(technique + "-invalid-spot", invalid_spot, technique)
+            measured_with_spot, _ = capture(technique + "-measured-spot", measured_spot, technique)
+            require(float(control_spot[158:162, 158:162].mean()) > .05 and max(axis_luminance(control_spot)) < 1e-5,
+                    "Spot control did not light the centre while excluding the measured off-axis samples")
+            require("Only TILT=NONE is supported" in warning, "Missing invalid IES spot fallback diagnostic")
+            report["checks"].append({"check": "spot-fallback", "technique": technique,
+                                     **image_agreement(fallback_spot, control_spot, exact=True)})
+            report["checks"].append({"check": "ies-supersedes-companion-spot", "technique": technique,
+                                     **image_agreement(measured_with_spot, original, exact=True)})
+
+            if technique == "deferred-raster":
+                half, zero = reduced, baseline
+            else:
+                half, _ = capture(technique + "-half-output", dimmed, technique)
+                zero, _ = capture(technique + "-zero-output", unlit, technique)
+            edited = output / (technique + "-edited.glb")
+            history_label = technique + "-light-history"
+            capture(history_label, measured_spot, technique, save=edited, sequence=light_sequence)
+            preview_expectations = [
+                ("initial", original, 1, 0, 0, 0, 0, 0, 0),
+                ("preview-half", half, .5, 101, 1, 0, 0, 0, 0),
+                ("preview-zero", zero, 0, 101, 2, 0, 0, 0, 0),
+                ("cancel", original, 1, 0, 3, 0, 0, 0, 0),
+                ("commit", half, .5, 0, 4, 1, 0, 1, 0),
+                ("undo", original, 1, 0, 5, 1, 1, 0, 1),
+                ("redo", half, .5, 0, 6, 1, 2, 1, 0),
+                ("source-node-transform-only", half, .5, 0, 6, 1, 2, 1, 0),
+            ]
+            for sample_name, expected_image, *expected_state in preview_expectations:
+                sample = captures[f"{history_label}-{sample_name}"]
+                state = json.loads(Path(sample["telemetry"]).read_text(encoding="utf-8-sig"))
+                verify_preview_state(state, sample_name, *expected_state)
+                report["checks"].append({"check": "editor-photometric-preview", "technique": technique,
+                                         "sample": sample_name, "multiplier": expected_state[0],
+                                         **image_agreement(image_pixels(Path(sample["image"])), expected_image, exact=True)})
+            exports[str(edited)] = sha(edited)
+            edited_model, _ = load_asset(edited)
+            verify_saved_profile(edited_model)
+            edited_lights = [node["extensions"] for node in edited_model["nodes"]
+                             if IES in node.get("extensions", {})]
+            require(len(edited_lights) == 1 and edited_lights[0][IES]["light"] == 0 and
+                    edited_lights[0][IES]["multiplier"] == .5,
+                    "Saved IES fixture lost the committed multiplier")
+            edited_spot = edited_model["extensions"][PUNCTUAL]["lights"][edited_lights[0][PUNCTUAL]["light"]]
+            spot_model, _ = load_asset(spot)
+            require(edited_spot == spot_model["extensions"][PUNCTUAL]["lights"][0],
+                    "Saved IES fixture changed the companion spot")
+            edited_camera = next(index for index, node in enumerate(edited_model["nodes"]) if "camera" in node)
+            edited_pixels, _ = capture(technique + "-edited-reload", edited, technique, camera_node=edited_camera)
+            report["checks"].append({"check": "edited-ies-reload", "technique": technique,
+                                     **image_agreement(edited_pixels, half, exact=True)})
+
         saved_model, _ = load_asset(saved)
-        saved_profile = saved_model["extensions"][IES]["lights"][0]["uri"]
-        require(saved_profile.startswith("data:application/x-ies-lm-63;base64,"),
-                "Portable export did not embed its IES profile")
-        require(base64.b64decode(saved_profile.split(",", 1)[1], validate=True) == PROFILE,
-                "Portable export changed the original IES profile bytes")
+        verify_saved_profile(saved_model)
         verify()
         moved_profile = output / "moved-source.ies"
         source_profile.rename(moved_profile)
@@ -284,7 +453,7 @@ def main():
         camera = next(index for index, node in enumerate(saved_model["nodes"]) if "camera" in node)
         reloaded, _ = capture("portable-reload", saved, "deferred-raster", camera_node=camera)
         report["checks"].append({"check": "portable-reload", **image_agreement(full, reloaded, exact=True)})
-        require(len(captures) == 13, "Incomplete IES capture set")
+        require(len(captures) == 43, "Incomplete IES capture set")
         report["inputSha256After"] = verify()
         report.update(passed=True, nativeValidationPerformed=True)
     except Exception as error:
@@ -292,7 +461,7 @@ def main():
         raise
     finally:
         persist()
-    print(f"PASS IES versions, orientation, renderer agreement, multiplier, fallback and portable save in {len(captures)} captures")
+    print(f"PASS IES photometry, spot fallback, editor preview and portable save in {len(captures)} captures")
     return 0
 
 

@@ -400,7 +400,8 @@ bool RendererFrontend::authorManualLightAdd(EditableLightType type) {
 void RendererFrontend::beginLightGizmoGesture(container::ui::ViewportTool,container::ui::TransformSpace,
     container::ui::TransformAxis,bool) {
   if(!subs_.lightingManager || sceneState_.selectedMeshNode!=container::scene::SceneGraph::kInvalidNode) return;
-  if(!subs_.lightingManager->selectedEditableLight()) return;
+  const auto selected = subs_.lightingManager->selectedEditableLight();
+  if(!selected || selected->iesProfileAddress) return;
   if(subs_.sceneManager)
     requireEditableLinkedLight(*subs_.sceneManager,subs_.lightingManager->selectedEditableLightId());
   if(subs_.guiManager) {subs_.guiManager->finishLightEditGesture();processLightEditRequests();}
@@ -532,6 +533,8 @@ void RendererFrontend::processCaptureLightEvent() {
         const auto current=subs_.lightingManager->lightEditSnapshot(id);
         accepted=authorLightEditRequest({current.target,intent.phase,intent.gesture,intent.values.value_or(LightEditPatch{})});
       } else {
+        if (snapshot.light.iesProfileAddress)
+          throw std::invalid_argument("Move or rotate the IES fixture through its source node");
         using CaptureGizmo=container::temporal::CaptureLightGizmo;
         const auto& gizmo=*intent.gizmo;
         const auto tool=gizmo.tool==CaptureGizmo::Tool::Translate?container::ui::ViewportTool::Translate:

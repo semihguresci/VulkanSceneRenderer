@@ -10,6 +10,7 @@
 #include <bit>
 #include <cstdlib>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <string>
 
@@ -88,10 +89,14 @@ protected:
     auto* window=ImGui::FindWindowByName("Light edit widget");
     auto seed=window->ID;if(group) seed=ImHashStr(group,0,seed);return ImHashStr(label,0,seed);
   }
-  ImVec2 locate(ImGuiID wanted,float x=70) {
+  std::optional<ImVec2> findHoveredWidget(ImGuiID wanted,float x=70) {
     for(float y=30;y<1050;y+=2) {
-      ImGui::GetIO().AddMousePosEvent(x,y);frame();if(context->HoveredId==wanted) return {x,y};
+      ImGui::GetIO().AddMousePosEvent(x,y);frame();if(context->HoveredId==wanted) return ImVec2{x,y};
     }
+    return std::nullopt;
+  }
+  ImVec2 locate(ImGuiID wanted,float x=70) {
+    if(const auto point=findHoveredWidget(wanted,x)) return *point;
     ADD_FAILURE()<<"Could not find light widget "<<wanted;return {0,0};
   }
   ImVec2 beginDrag(const char* label,const char* group=nullptr) {
@@ -134,6 +139,77 @@ TEST_F(LightEditWidgetTests, EscapeCancelsActualDragWithoutAReleaseCommitOrDupli
   ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape,false);frame();release();
   EXPECT_EQ(count(LightEditPhase::Cancel),1u);EXPECT_EQ(count(LightEditPhase::End),0u);
   EXPECT_FALSE(controls.gestureActive());EXPECT_EQ(events.back().patch.fields,0u);
+}
+
+TEST_F(LightEditWidgetTests, MeasuredFixtureMultiplierPreviewsAndCompletesTheSelectedLightGesture) {
+  const auto position = id("##X", "Position");
+  const auto range = id("Range");
+  const auto intensity = id("Intensity");
+  ASSERT_TRUE(findHoveredWidget(position).has_value());
+  ASSERT_TRUE(findHoveredWidget(range).has_value());
+  ASSERT_TRUE(findHoveredWidget(intensity).has_value());
+
+  container::gpu::PointLightData fixture{};
+  fixture.positionRadius = {2.0f, 3.0f, 4.0f, 0.0f};
+  fixture.directionInnerCos = {0.0f, 0.0f, -1.0f, 1.0f};
+  fixture.colorIntensity = {0.25f, 0.5f, 1.0f, 0.5f};
+  fixture.iesProfileAddress = 4096;
+  state.light = editablePointLight(EditableLightSource::Imported, 2, fixture, true);
+  state.target.id = state.light.id;
+  ++state.target.incarnation;
+  controls.setSnapshot(state);
+  frame();
+  EXPECT_FALSE(findHoveredWidget(position).has_value());
+  EXPECT_FALSE(findHoveredWidget(range).has_value());
+  EXPECT_FALSE(findHoveredWidget(intensity).has_value());
+  ASSERT_TRUE(events.empty());
+
+  auto point = beginDrag("Photometric multiplier");
+  EXPECT_TRUE(events.empty());
+  move(point, 25);
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events.front().phase, LightEditPhase::Begin);
+  EXPECT_EQ(events.front().target, state.target);
+  EXPECT_EQ(events.front().patch.fields, LightEditFieldBit(LightEditField::Intensity));
+  const auto gesture = events.front().gesture;
+  EXPECT_NE(gesture, 0u);
+  state.light.intensity = events.front().patch.values.intensity;
+  EXPECT_GT(state.light.intensity, 0.5f);
+  EXPECT_TRUE(controls.gestureActive());
+
+  ++state.target.revision;
+  controls.setSnapshot(state);
+  move(point, 45);
+  release();
+  ASSERT_EQ(events.size(), 3u);
+  EXPECT_EQ(events[1].phase, LightEditPhase::Update);
+  EXPECT_EQ(events[1].target, state.target);
+  EXPECT_EQ(events[1].gesture, gesture);
+  EXPECT_EQ(events[1].patch.fields, LightEditFieldBit(LightEditField::Intensity));
+  EXPECT_GT(events[1].patch.values.intensity, state.light.intensity);
+  EXPECT_EQ(events[2].phase, LightEditPhase::End);
+  EXPECT_EQ(events[2].target, state.target);
+  EXPECT_EQ(events[2].gesture, gesture);
+  EXPECT_EQ(events[2].patch.fields, 0u);
+  EXPECT_FALSE(controls.gestureActive());
+
+  events.clear();
+  point = beginDrag("Photometric multiplier");
+  move(point, 25);
+  ASSERT_EQ(events.size(), 1u);
+  EXPECT_EQ(events.front().phase, LightEditPhase::Begin);
+  EXPECT_NE(events.front().gesture, gesture);
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+  frame();
+  ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+  frame();
+  release();
+  ASSERT_EQ(events.size(), 2u);
+  EXPECT_EQ(events.back().phase, LightEditPhase::Cancel);
+  EXPECT_EQ(events.back().target, state.target);
+  EXPECT_EQ(events.back().gesture, events.front().gesture);
+  EXPECT_EQ(events.back().patch.fields, 0u);
+  EXPECT_FALSE(controls.gestureActive());
 }
 
 TEST_F(LightEditWidgetTests, WindowFocusLossCancelsActualPreviewAndIdleActivationCreatesNoHistoryIntent) {
