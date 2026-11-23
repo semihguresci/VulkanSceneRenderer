@@ -1,12 +1,13 @@
 # Resource lifecycle implementation contracts
 
-These contracts cover material and source/runtime resource retirement, plus
-the remaining lifecycle work in #108. The existing ImGui Material inspector
+These contracts cover material and source/runtime resource retirement.
+The existing ImGui Material inspector
 exposes independent Material and Resource catalogs with unused-entry deletion.
 Texture slot clearing preserves source resources. Original creation/import
 history and independent Delete commands retain distinct replay authority.
-Complete reference authority, CPU payload reclamation and external renderer
-acceptance remain tracked separately.
+Retirement requires the frontend's current reference proof. Deleting source
+images releases image bytes from live rows while history retains the selected
+payloads needed for Undo.
 
 ## Identity and retention
 
@@ -527,12 +528,38 @@ failure atomicity. Vulkan suites exercise material transactions and actual image
 lifetime, aliases, batch migration, rollback and reader retirement. The material
 retirement native harness separately checks deletion, current-clock history,
 failed requests and dense save/reload in forward and deferred raster. Passing
-native checks, real editor interaction, and remaining BIM/ray/DDGI acceptance
-must be recorded against their actual executable; component tests alone do not
-prove all those paths. Full image/texture deletion acceptance remains incomplete.
+native checks must be recorded against their actual executable. The ray-resource
+lifecycle check exercises texture replacement, failed decode, resource deletion
+and original import history with active ray shadows and DDGI. Its direct-shadow
+comparison uses zero DDGI lighting contribution.
 
 Validation of the logical resource catalog/history extension is recorded
 separately against the resulting executable in `docs/feature-parity-progress.md`.
 The runtime-retirement milestone includes source/runtime resource controls,
-dense export and native portable save/reload; it does not establish a new
-Windows desktop Delete interaction or complete external-reader acceptance.
+dense export and native portable save/reload. `gui_material_authoring_tests`
+checks widget input and emitted material/resource requests. Native fixtures
+exercise renderer publication through the same authoring entry points.
+
+The native material acceptance checks include alpha edits and shadow receivers
+in both raster engines, plus texture replacement and resource deletion with
+active ray shadows and DDGI. Run them with NumPy, Pillow and Vulkan validation
+available, using your configured build directory in place of `build`.
+
+```powershell
+$env:CONTAINER_RUN_GPU_GLTF_MATERIAL_AUTHORING = '1'
+ctest --test-dir build --output-on-failure -R '^(gltf_live_alpha_shadows_gpu_regression|gltf_material_ray_resources_gpu_regression)$'
+```
+
+Each check writes captures and telemetry to a fresh directory under the build's
+`test_results` directory. The ray-resource check requires ray-query support.
+It traces DDGI rays with their lighting contribution set to zero while comparing
+direct shadows on the receiver.
+
+The image ownership and retirement Vulkan cases have independent opt-ins.
+
+```powershell
+$env:CONTAINER_RUN_GPU_MATERIAL_TEXTURES = '1'
+$env:CONTAINER_RUN_GPU_MATERIAL_RETIREMENTS = '1'
+$env:CONTAINER_RUN_GPU_SOURCE_RESOURCE_RETIREMENT = '1'
+ctest --test-dir build --output-on-failure -R '^(material_texture_generation_gpu_tests|material_retirement_generation_gpu_tests|source_resource_retirement_gpu_tests)$'
+```
