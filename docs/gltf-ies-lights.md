@@ -19,11 +19,18 @@ For an unrotated fixture, 0° vertical aims down local −Z and the C0 plane
 points along +X. Positive azimuth goes toward +Y. Node translation and
 rotation define the world-space emission frame. Node scale does not multiply
 the emitted intensity. The measured values are in candela after the file's
-candela multiplier and ballast factors. The glTF instance multiplier and
+candela multiplier and ballast factor. The glTF instance multiplier and
 linear RGB tint scale these values before the usual inverse-square punctual
 attenuation. The renderer preserves the measured absolute intensities and
 does not normalize each profile's peak. A valid IES profile takes precedence
 over the punctual light on the same node.
+
+All three supported revisions use the candela multiplier and ballast factor
+for photometric scaling. The following field is parsed as metadata. It is
+reserved in LM-63-1995/2002 and identifies file generation in LM-63-2019.
+The feet/metres unit field describes luminous dimensions, and both units retain
+the same measured candela for these point fixtures.
+[Radiance LM-63 reader](https://github.com/LBNL-ETA/Radiance/blob/master/src/cv/ies2rad.c)
 
 The asset can refer to a confined relative `.ies` file, a base64 data URI of
 type `application/x-ies-lm-63`, or a buffer view with that MIME type. Remote
@@ -42,6 +49,23 @@ and key storage to 32 MiB and 256 entries. Each input file is limited to
 2 MiB, each glTF table to 64 profiles and 16 MiB of profile text, and each
 profile to 1,024 angles per axis and 262,144 measured values.
 
-`gltf_loader_tests` exercises asymmetric interpolation, resource preparation
-and required versus optional fallback. The native validation harness is
-`tests/validation/gltf_ies_runtime_regression.py`.
+`gltf_loader_tests` exercises the three revisions, scaling, units, all five
+horizontal symmetry modes, nonuniform interpolation, malformed input,
+resource preparation and required versus optional fallback.
+
+Run the native photometric checks with NumPy, OpenCV with OpenEXR support and
+Vulkan validation available. Use your configured build directory in place of
+`build`.
+
+```powershell
+$env:CONTAINER_RUN_GPU_IES = '1'
+ctest --test-dir build --output-on-failure -R '^gltf_ies_gpu_regression$'
+```
+
+The test writes scene-linear EXRs, telemetry and GPU pass timings to a fresh
+directory under `test_results/gltf-ies`. It compares 1995 and 2002 photometry,
+rotation, transparency, instance scaling, optional-profile fallback, portable
+reload and agreement between the two raster engines.
+Environment, directional and preview bounce intensities are zero for these
+direct photometry checks. Symmetric receiver samples also check the expected
+interpolated candela ratio independently of the renderer's BRDF magnitude.

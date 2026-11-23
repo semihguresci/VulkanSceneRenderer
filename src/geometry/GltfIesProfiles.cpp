@@ -53,11 +53,13 @@ class Numbers {
     const auto end = text_.find_first_of(" ,\t\r\n");
     auto token = text_.substr(0, end);
     text_.remove_prefix(token.size());
-    if (token.starts_with('+')) token.remove_prefix(1);
+    const bool leadingPlus = token.starts_with('+');
+    if (leadingPlus) token.remove_prefix(1);
     T number{};
     if (token.empty()) fail("Missing LM-63 " + std::string(field));
     const auto result = std::from_chars(token.data(), token.data() + token.size(), number);
-    if (result.ec != std::errc{} || result.ptr != token.data() + token.size() || !std::isfinite(number))
+    if ((leadingPlus && token.starts_with('-')) || result.ec != std::errc{} ||
+        result.ptr != token.data() + token.size() || !std::isfinite(number))
       fail("Invalid LM-63 " + std::string(field));
     return number;
   }
@@ -225,12 +227,13 @@ IesProfile ParseIesProfile(std::string_view text) {
   input.read<double>("luminous length");
   input.read<double>("luminous height");
   const auto ballast = input.read<double>("ballast factor");
-  const auto legacyFactor = input.read<double>("file generation or ballast lamp factor");
+  // LM-63-1995/2002 reserve this field. LM-63-2019 records file generation.
+  input.read<double>("reserved or file generation metadata");
   input.read<double>("input watts");
   if (vertical < 2 || horizontal < 1 || static_cast<size_t>(vertical) > kMaxAngles ||
       static_cast<size_t>(horizontal) > kMaxAngles || static_cast<size_t>(vertical) * horizontal > kMaxMeasurements)
     fail("LM-63 angular table exceeds the supported measurement range");
-  const double scale = multiplier * ballast * (lm95 ? legacyFactor : 1.0);
+  const double scale = multiplier * ballast;
   if (!(multiplier > 0) || !(ballast > 0) || !(scale > 0) || !std::isfinite(scale))
     fail("Invalid LM-63 candela or ballast scale");
 

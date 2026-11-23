@@ -18,6 +18,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <string>
@@ -1429,6 +1430,29 @@ constexpr std::string_view kAsymmetricIes =
     "IESNA:LM-63-2002\r\n[TEST] Fixture\r\nTILT=NONE\r\n"
     "1 -1 2 3 2 1 2 0 0 0\r\n0.5 1 12\r\n"
     "0 40 90\r\n0 90\r\n10 30 50\r\n20 50 90\r\n";
+
+struct IesReferenceSample {
+  float vertical;
+  float horizontal;
+  float candela;
+};
+
+void expectIesSamples(const container::geometry::gltf::IesProfile& profile,
+    std::initializer_list<IesReferenceSample> samples) {
+  for (const auto& sample : samples) {
+    SCOPED_TRACE(::testing::Message() << "vertical=" << sample.vertical << ", horizontal=" << sample.horizontal);
+    EXPECT_FLOAT_EQ(profile.sample(sample.vertical, sample.horizontal), sample.candela);
+  }
+}
+
+void expectInvalidIes(std::string_view text, std::string_view diagnostic) {
+  try {
+    (void)container::geometry::gltf::ParseIesProfile(text);
+    FAIL() << "Expected invalid IES profile with diagnostic " << diagnostic;
+  } catch (const std::invalid_argument& error) {
+    EXPECT_NE(std::string_view(error.what()).find(diagnostic), std::string_view::npos) << error.what();
+  }
+}
 }
 
 TEST(GltfIesProfiles, RetainsCandelaAndAsymmetryAcrossMeasuredAngles) {
@@ -1440,6 +1464,173 @@ TEST(GltfIesProfiles, RetainsCandelaAndAsymmetryAcrossMeasuredAngles) {
   EXPECT_FLOAT_EQ(profile.sample(90.0f, 180.0f), 50.0f);
   EXPECT_FLOAT_EQ(profile.sample(90.1f, 0.0f), 0.0f);
   EXPECT_EQ(profile.packedForGpu(), (std::vector<float>{3, 2, 1, 0, 0, 40, 90, 0, 90, 10, 30, 50, 20, 50, 90}));
+}
+
+TEST(GltfIesProfiles, SupportedVersionsIgnoreReservedAndGenerationMetadata) {
+  namespace gltf = container::geometry::gltf;
+  for (const auto header : {"IESNA:LM-63-1995", "IESNA:LM-63-2002", "IES:LM-63-2019"}) {
+    for (const auto metadata : {"0", "0.25", "1", "2"}) {
+      SCOPED_TRACE(::testing::Message() << header << ", metadata=" << metadata);
+      const std::string text = std::string(header) + "\nTILT=NONE\n"
+          "2 1000 3 3 1 1 2 0.2 0.3 0.4\n0.5 " + metadata + " 20\n"
+          "0 45 90\n0\n2 6 10\n";
+      const auto profile = gltf::ParseIesProfile(text);
+      // Measured candela is multiplied by 3 * 0.5, independently of lamp
+      // count, lumens, reserved metadata and the table's peak.
+      EXPECT_EQ(profile.candela, (std::vector<float>{3, 9, 15}));
+      EXPECT_EQ(profile.packedForGpu(), (std::vector<float>{3, 1, 0, 0, 0, 45, 90, 0, 3, 9, 15}));
+      expectIesSamples(profile, {{0, 0, 3}, {22.5f, 120, 6}, {45, -90, 9}, {90, 721, 15}});
+    }
+  }
+}
+
+TEST(GltfIesProfiles, FeetAndMetresDoNotRescaleAbsoluteCandela) {
+  namespace gltf = container::geometry::gltf;
+  const auto feet = gltf::ParseIesProfile(
+      "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 2 1 1 1 1 2 3\n1 1 12\n0 90\n0\n16 48\n");
+  const auto metres = gltf::ParseIesProfile(
+      "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 2 1 1 2 0.3048 0.6096 0.9144\n1 1 12\n0 90\n0\n16 48\n");
+  EXPECT_EQ(feet.candela, (std::vector<float>{16, 48}));
+  EXPECT_EQ(feet.packedForGpu(), metres.packedForGpu());
+  expectIesSamples(feet, {{0, 0, 16}, {45, 90, 32}, {90, 180, 48}});
+  expectIesSamples(metres, {{0, 0, 16}, {45, 90, 32}, {90, 180, 48}});
+}
+
+TEST(GltfIesProfiles, AxialSamplingRetainsTheNonuniformVerticalGrid) {
+  namespace gltf = container::geometry::gltf;
+  const auto profile = gltf::ParseIesProfile(
+      "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 3 1 1 2 0 0 0\n1 1 12\n"
+      "0 60 90\n0\n20 80 140\n");
+  EXPECT_EQ(profile.symmetry, gltf::IesHorizontalSymmetry::Axial);
+  expectIesSamples(profile, {{15, 0, 35}, {75, -1080, 110}, {75, -270, 110}, {75, -45, 110},
+      {75, 0, 110}, {75, 30, 110}, {75, 90, 110}, {75, 180, 110}, {75, 360, 110}, {75, 1095, 110}});
+}
+
+TEST(GltfIesProfiles, QuadrantSamplingInterpolatesBothNonuniformAxesBeforeMirroring) {
+  namespace gltf = container::geometry::gltf;
+  const auto profile = gltf::ParseIesProfile(
+      "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 3 3 1 2 0 0 0\n1 1 12\n"
+      "0 30 90\n0 20 90\n10 40 100\n30 100 220\n100 240 520\n");
+  EXPECT_EQ(profile.symmetry, gltf::IesHorizontalSymmetry::Quadrant);
+  // At vertical 60 degrees the three measured horizontal planes contain
+  // 70, 160 and 380 cd. Their two interval midpoints are 115 and 270 cd.
+  expectIesSamples(profile, {{60, 0, 70}, {60, 10, 115}, {60, 20, 160}, {60, 55, 270},
+      {60, 90, 380}, {60, 125, 270}, {60, 170, 115}, {60, 180, 70}, {60, 190, 115},
+      {60, 235, 270}, {60, 270, 380}, {60, 305, 270}, {60, 350, 115}, {60, -10, 115},
+      {60, 730, 115}});
+}
+
+TEST(GltfIesProfiles, HalfPlaneSamplingRetainsDistinctAzimuths) {
+  namespace gltf = container::geometry::gltf;
+  const auto profile = gltf::ParseIesProfile(
+      "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 2 3 1 2 0 0 0\n1 1 12\n"
+      "0 90\n0 120 180\n12 24\n36 72\n60 120\n");
+  EXPECT_EQ(profile.symmetry, gltf::IesHorizontalSymmetry::Half);
+  expectIesSamples(profile, {{45, 0, 18}, {45, 60, 36}, {45, 90, 45}, {45, 120, 54},
+      {45, 150, 72}, {45, 180, 90}, {45, 210, 72}, {45, 240, 54}, {45, 270, 45},
+      {45, 300, 36}, {45, -60, 36}, {45, 540, 90}});
+}
+
+TEST(GltfIesProfiles, OppositeHalfPlaneMirrorsTheAuthoredNinetyToTwoSeventyRange) {
+  namespace gltf = container::geometry::gltf;
+  const auto profile = gltf::ParseIesProfile(
+      "IESNA:LM-63-1995\nTILT=NONE\n1 -1 1 2 3 1 2 0 0 0\n1 1 12\n"
+      "0 90\n90 180 270\n10 30\n50 90\n130 190\n");
+  EXPECT_EQ(profile.symmetry, gltf::IesHorizontalSymmetry::OppositeHalf);
+  expectIesSamples(profile, {{45, 0, 70}, {45, 45, 45}, {45, 90, 20}, {45, 135, 45},
+      {45, 180, 70}, {45, 225, 115}, {45, 270, 160}, {45, 315, 115}, {45, 360, 70},
+      {45, -45, 115}, {45, -270, 20}, {45, 450, 20}});
+}
+
+TEST(GltfIesProfiles, FullCoveragePreservesAsymmetryAndWrapsItsSharedSeam) {
+  namespace gltf = container::geometry::gltf;
+  const auto profile = gltf::ParseIesProfile(
+      "IES:LM-63-2019\nTILT=NONE\n1 -1 1 2 4 1 2 0 0 0\n1 1 12\n"
+      "0 90\n0 60 210 360\n4 12\n24 48\n64 96\n4 12\n");
+  EXPECT_EQ(profile.symmetry, gltf::IesHorizontalSymmetry::Full);
+  expectIesSamples(profile, {{45, 0, 8}, {45, 30, 22}, {45, 60, 36}, {45, 135, 58},
+      {45, 210, 80}, {45, 285, 44}, {45, 330, 22.4f}, {45, 360, 8}, {45, -75, 44},
+      {45, 420, 36}, {45, 720, 8}});
+  EXPECT_NEAR(profile.sample(45, std::nextafter(360.0f, 0.0f)), 8.0f, 0.0001f);
+}
+
+TEST(GltfIesProfiles, VerticalCoverageAndNonfiniteQueriesHaveDefinedZeroOutput) {
+  namespace gltf = container::geometry::gltf;
+  const auto profile = gltf::ParseIesProfile(
+      "IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 3 1 1 2 0 0 0\n1 1 12\n"
+      "90 120 180\n0\n8 20 44\n");
+  expectIesSamples(profile, {{90, 0, 8}, {105, 0, 14}, {150, 0, 32}, {180, 0, 44},
+      {0, 0, 0}, {89.99f, 0, 0}, {180.01f, 0, 0}});
+  for (const auto nonfinite : {std::numeric_limits<float>::quiet_NaN(),
+      std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity()}) {
+    EXPECT_EQ(profile.sample(nonfinite, 0), 0.0f);
+    EXPECT_EQ(profile.sample(120, nonfinite), 0.0f);
+  }
+}
+
+TEST(GltfIesProfiles, ZeroCandelaAndSignedFiniteTokensDoNotRequirePeakNormalization) {
+  namespace gltf = container::geometry::gltf;
+  const auto profile = gltf::ParseIesProfile(
+      "\xef\xbb\xbfIESNA:LM-63-2002\r\nTILT=NONE\r\n"
+      "+1,-1,+1,2,+1,1,2,-1,-2,-3\r\n+1,+1,+12\r\n+0,+90\r\n+0\r\n+0,-0\r\n");
+  EXPECT_EQ(profile.candela, (std::vector<float>{0, 0}));
+  EXPECT_EQ(profile.packedForGpu(), (std::vector<float>{2, 1, 0, 0, 0, 90, 0, 0, 0}));
+  expectIesSamples(profile, {{0, 0, 0}, {45, 90, 0}, {90, 359, 0}});
+}
+
+TEST(GltfIesProfiles, RejectsMalformedNumericAndAngularTablesWithFieldDiagnostics) {
+  struct InvalidRecord {
+    std::string_view before;
+    std::string_view after;
+    std::string_view diagnostic;
+  };
+  const InvalidRecord records[] = {
+      {"IESNA:LM-63-2002", "IESNA:LM-63-1991", "Unsupported IES header"},
+      {"TILT=NONE", "TILT=INCLUDE", "Only TILT=NONE"},
+      {"TILT=NONE", "TILT=tilt.ies", "Only TILT=NONE"},
+      {"3 2 1 2", "3 2 3 2", "Only Type C"},
+      {"3 2 1 2", "1 2 1 2", "supported measurement range"},
+      {"3 2 1 2", "3 0 1 2", "supported measurement range"},
+      {"3 2 1 2", "1025 2 1 2", "supported measurement range"},
+      {"3 2 1 2", "1024 257 1 2", "supported measurement range"},
+      {"3 2 1 2", "3.0 2 1 2", "Invalid LM-63 vertical angle count"},
+      {"0 40 90", "0 50 40", "vertical angle values must be increasing"},
+      {"0 40 90", "-1 40 90", "vertical angle values must be increasing"},
+      {"0 40 90", "0 40 181", "vertical angle values must be increasing"},
+      {"0 90\r\n10", "0 0\r\n10", "horizontal angle values must be increasing"},
+      {"0 90\r\n10", "0 361\r\n10", "horizontal angle values must be increasing"},
+      {"0 90\r\n10", "30 90\r\n10", "Unsupported Type C horizontal coverage"},
+      {"0 90\r\n10", "0 80\r\n10", "Unsupported Type C horizontal coverage"},
+      {"10 30 50", "10 -30 50", "Invalid or unrepresentable LM-63 candela"},
+      {"10 30 50", "10 nan 50", "Invalid LM-63 candela measurement"},
+      {"10 30 50", "10 inf 50", "Invalid LM-63 candela measurement"},
+      {"10 30 50", "10 1e39 50", "Invalid or unrepresentable LM-63 candela"},
+      {"1 -1 2 3", "1 -1 1e309 3", "Invalid LM-63 candela multiplier"},
+      {"1 -1 2 3", "1 nan 2 3", "Invalid LM-63 lumens per lamp"},
+      {"20 50 90", "20 50", "Missing LM-63 candela measurement"},
+  };
+  for (const auto& record : records) {
+    SCOPED_TRACE(::testing::Message() << record.before << " -> " << record.after);
+    std::string text(kAsymmetricIes);
+    const auto offset = text.find(record.before);
+    ASSERT_NE(offset, std::string::npos);
+    text.replace(offset, record.before.size(), record.after);
+    expectInvalidIes(text, record.diagnostic);
+  }
+  expectInvalidIes(std::string(kAsymmetricIes) + "1", "Unexpected data after");
+  expectInvalidIes({}, "supported text range");
+  expectInvalidIes(std::string(kAsymmetricIes) + '\0', "supported text range");
+  expectInvalidIes(std::string(container::geometry::gltf::kIesMaximumProfileBytes + 1, 'x'), "supported text range");
+}
+
+TEST(GltfIesProfiles, RejectsDuplicateSignTokensInIgnoredAndMeasuredFields) {
+  for (const auto header : {"1 +-1 1 2 1 1 2 0 0 0", "1 -1 1 2 1 1 2 +-1 0 0"}) {
+    const std::string text = std::string("IESNA:LM-63-2002\nTILT=NONE\n") + header +
+        "\n1 1 12\n0 90\n0\n10 20\n";
+    expectInvalidIes(text, "Invalid LM-63");
+  }
+  expectInvalidIes("IESNA:LM-63-2002\nTILT=NONE\n1 -1 1 2 1 1 2 0 0 0\n1 1 12\n"
+      "0 90\n0\n+-0 20\n", "Invalid LM-63 candela measurement");
 }
 
 TEST(GltfIesProfiles, RejectsUnsupportedTiltTypeAndInvalidTables) {
@@ -1485,6 +1676,75 @@ TEST(GltfIesProfiles, EmbedsValidResourcesAndKeepsOptionalPunctualFallback) {
   source["extensionsRequired"] = {gltf::kGltfIesExtension};
   writeGltfJson(path, source);
   EXPECT_THROW(gltf::LoadSourceModel(path.string()), std::runtime_error);
+}
+
+TEST(GltfIesProfiles, MalformedNumericProfileKeepsValidSiblingAndPunctualFallback) {
+  namespace gltf = container::geometry::gltf;
+  const auto path = writeTriangleGltf("ies-malformed-numeric-sibling", {0, 1, 2});
+  const auto original = gltf::LoadModelWithSource(path.string());
+  std::string malformed(kAsymmetricIes);
+  malformed.replace(malformed.find("20 50 90"), std::string_view("20 50 90").size(), "20 -50 90");
+  std::ofstream(path.parent_path() / "malformed-numeric.ies", std::ios::binary) << malformed;
+  std::ofstream(path.parent_path() / "valid-numeric-sibling.ies", std::ios::binary) << kAsymmetricIes;
+  auto source = readGltfJson(path);
+  source["extensionsUsed"] = {gltf::kGltfIesExtension, "KHR_lights_punctual"};
+  source["extensions"][gltf::kGltfIesExtension]["lights"] = {
+      {{"uri", "malformed-numeric.ies"}}, {{"uri", "valid-numeric-sibling.ies"}}};
+  source["extensions"]["KHR_lights_punctual"]["lights"] = {
+      {{"type", "point"}, {"intensity", 37.0}, {"color", {0.2, 0.4, 0.6}}}};
+  source["nodes"][0]["extensions"] = {{gltf::kGltfIesExtension,
+      {{"light", 1}, {"multiplier", 2.0}, {"color", {0.25, 0.5, 0.75}}}}};
+  source["nodes"].push_back({{"name", "Malformed numeric luminaire"},
+      {"extensions", {{gltf::kGltfIesExtension, {{"light", 0}}}, {"KHR_lights_punctual", {{"light", 0}}}}}});
+  source["scenes"][0]["nodes"].push_back(1);
+  writeGltfJson(path, source);
+
+  const auto loaded = gltf::LoadModelWithSource(path.string());
+  ASSERT_EQ(loaded.gltfModel.extensions.at(gltf::kGltfIesExtension).Get("lights").ArrayLen(), 1u);
+  const auto* uri = gltf::GltfIesEmbeddedProfileUri(loaded.gltfModel, 0);
+  ASSERT_NE(uri, nullptr);
+  EXPECT_EQ(gltf::DecodeGltfIesProfileUri(*uri), kAsymmetricIes);
+  const auto binding = gltf::ParseGltfIesBinding(loaded.gltfModel.nodes[0].extensions.at(gltf::kGltfIesExtension), 1);
+  EXPECT_EQ(binding.profile, 0u);
+  EXPECT_EQ(binding.multiplier, 2.0f);
+  EXPECT_EQ(binding.color[0], 0.25f);
+  EXPECT_EQ(binding.color[1], 0.5f);
+  EXPECT_EQ(binding.color[2], 0.75f);
+  EXPECT_FALSE(loaded.gltfModel.nodes[1].extensions.contains(gltf::kGltfIesExtension));
+  EXPECT_EQ(loaded.gltfModel.nodes[1].light, 0);
+  ASSERT_EQ(loaded.gltfModel.lights.size(), 1u);
+  EXPECT_EQ(loaded.gltfModel.lights[0].intensity, 37.0);
+  EXPECT_EQ(loaded.gltfModel.lights[0].color, (std::vector<double>{0.2, 0.4, 0.6}));
+  EXPECT_EQ(loaded.model.vertices().size(), original.model.vertices().size());
+  EXPECT_EQ(loaded.model.indices(), original.model.indices());
+  ASSERT_EQ(loaded.gltfModel.buffers.size(), original.gltfModel.buffers.size());
+  EXPECT_EQ(loaded.gltfModel.buffers[0].data, original.gltfModel.buffers[0].data);
+  EXPECT_EQ(readGltfJson(path), source);
+
+  std::vector<std::string> diagnostics;
+  for (const auto& diagnostic : loaded.capabilityDiagnostics) {
+    if (diagnostic.code != "unsupported_ies_profile") continue;
+    EXPECT_EQ(diagnostic.assetPath, path.string());
+    EXPECT_EQ(diagnostic.severity, gltf::CapabilitySeverity::Warning);
+    diagnostics.push_back(diagnostic.message);
+  }
+  ASSERT_EQ(diagnostics.size(), 2u);
+  EXPECT_TRUE(diagnostics[0].contains("EXT_lights_ies profile 0"));
+  EXPECT_TRUE(diagnostics[0].contains("Invalid or unrepresentable LM-63 candela measurement"));
+  EXPECT_TRUE(diagnostics[1].contains("EXT_lights_ies node 1"));
+  EXPECT_TRUE(diagnostics[1].contains("IES profile is unavailable"));
+
+  source["extensionsRequired"] = {gltf::kGltfIesExtension};
+  writeGltfJson(path, source);
+  try {
+    (void)gltf::LoadModelWithSource(path.string());
+    FAIL() << "Expected required malformed photometry rejection";
+  } catch (const std::runtime_error& error) {
+    const std::string_view message(error.what());
+    EXPECT_NE(message.find(path.string()), std::string_view::npos);
+    EXPECT_NE(message.find("EXT_lights_ies profile 0"), std::string_view::npos);
+    EXPECT_NE(message.find("candela measurement"), std::string_view::npos);
+  }
 }
 
 TEST(GltfModelLoader, LinkedOptInPreservesOrdinaryRelativeResourcesAndRequiredIes) {
