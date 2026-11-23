@@ -5,6 +5,10 @@ asset through the ordinary model loader, select the IES light in the light
 inspector, and use its **Photometric multiplier** and color controls. Move
 or rotate the source node to reposition or aim the fixture. The inspector
 shows its aim, and the lit viewport previews the measured distribution.
+Dragging **Photometric multiplier** previews the change in the viewport.
+Release to commit, or press Escape to restore the previous multiplier.
+Committed changes support Undo and Redo. Select the source node in the scene
+browser to access the transform handles for the fixture.
 [glTF extension](https://github.com/KhronosGroup/glTF/tree/main/extensions/2.0/Vendor/EXT_lights_ies)
 
 The importer accepts LM-63-1995, LM-63-2002 and LM-63-2019 Type C profiles
@@ -23,7 +27,9 @@ candela multiplier and ballast factor. The glTF instance multiplier and
 linear RGB tint scale these values before the usual inverse-square punctual
 attenuation. The renderer preserves the measured absolute intensities and
 does not normalize each profile's peak. A valid IES profile takes precedence
-over the punctual light on the same node.
+over the punctual light on the same node. If the profile is unavailable, the
+companion point light uses the ordinary isotropic distribution, and a companion
+spot light uses its authored cone.
 
 All three supported revisions use the candela multiplier and ballast factor
 for photometric scaling. The following field is parsed as metadata. It is
@@ -65,7 +71,11 @@ ctest --test-dir build --output-on-failure -R '^gltf_ies_gpu_regression$'
 The test writes scene-linear EXRs, telemetry and GPU pass timings to a fresh
 directory under `test_results/gltf-ies`. It compares 1995 and 2002 photometry,
 rotation, transparency, instance scaling, optional-profile fallback, portable
-reload and agreement between the two raster engines.
+reload and agreement between the two raster engines. A full-circle fixture
+checks signed azimuth and the direction of rotation. The test also compares
+spot-light fallback against a spot-only control and verifies multiplier
+previews, cancellation, undo, redo and saving the edited profile.
+`light_edit_controls_tests` drives the multiplier widget with ImGui input.
 Environment, directional and preview bounce intensities are zero for these
 direct photometry checks. Symmetric receiver samples also check the expected
 interpolated candela ratio independently of the renderer's BRDF magnitude.

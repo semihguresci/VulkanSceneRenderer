@@ -4954,7 +4954,7 @@ void RendererFrontend::transformSelectedNodeByDrag(
   const bool transformingEditableLight =
       sceneState_.selectedMeshNode ==
           container::scene::SceneGraph::kInvalidNode &&
-      selectedEditableLight.has_value();
+      selectedEditableLight && !selectedEditableLight->iesProfileAddress;
   const bool transformingSectionPlane =
       subs_.guiManager && subs_.guiManager->sectionPlaneState().enabled &&
       subs_.guiManager->sectionPlaneState().visualPlaneEditable &&
@@ -9360,7 +9360,7 @@ FrameTransformGizmoState RendererFrontend::buildTransformGizmoState() const {
   } else if (subs_.lightingManager) {
     selectedEditableLightForGizmo =
         subs_.lightingManager->selectedEditableLight();
-    if (selectedEditableLightForGizmo) {
+    if (selectedEditableLightForGizmo && !selectedEditableLightForGizmo->iesProfileAddress) {
       const EditableLightEntity &light = *selectedEditableLightForGizmo;
       const float lightRadius =
           light.type == EditableLightType::Area
