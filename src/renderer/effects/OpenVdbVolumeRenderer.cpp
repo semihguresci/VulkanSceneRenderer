@@ -766,15 +766,19 @@ void OpenVdbVolumeRenderer::prepare(
   updateTextureDescriptors();
 }
 
+bool OpenVdbVolumeRenderer::hasEnabledMedia() const noexcept {
+  if (!settings_.enabled) return false;
+  for (uint32_t index = 0; index < volumes_.size(); ++index) {
+    if (!volumeSettings_[index] || volumeSettings_[index]->enabled) return true;
+  }
+  return false;
+}
+
 bool OpenVdbVolumeRenderer::records(const FrameRecordParams& frame) const noexcept {
-  if (!settings_.enabled || !pipeline_ || volumes_.empty() ||
+  if (!pipeline_ || !hasEnabledMedia() ||
       frame.runtime.imageIndex >= sets_.size() || frame.runtime.imageIndex >= mediumBuffers_.size() ||
       (frame.debug.displayMode != 0 && frame.debug.displayMode != 8 &&
        (frame.debug.displayMode < 100 || frame.debug.displayMode > 104))) return false;
-  bool enabled = false;
-  for (uint32_t index = 0; index < volumes_.size(); ++index)
-    enabled |= volumeSettings_[index] ? volumeSettings_[index]->enabled : settings_.enabled;
-  if (!enabled) return false;
   const auto* color = frame.imageBinding(frame.runtime.activeTechnique, "scene-color");
   return color && color->image && color->extent.width && color->extent.height;
 }

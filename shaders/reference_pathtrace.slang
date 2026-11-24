@@ -417,7 +417,8 @@ void PtResolveSpecularGlossiness(inout PtMaterial result, GpuMaterial material,
     result.specular = 1.0;
     result.eta = 1.5;
 }
-PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, float3 view, bool visibility = false)
+PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, float3 view, bool visibility = false,
+                             bool reuseEmission = false, float3 emission = 0.0.xxx)
 {
     PtMaterial result = (PtMaterial)0;
     if (hit.ground != 0u)
@@ -442,7 +443,7 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, float3 view, bool visibi
     {
         result.unlit = 1u;
         if (visibility) return result;
-        result.emission = PtUnlitRadiance(m, input, texGrad);
+        result.emission = reuseEmission ? emission : PtUnlitRadiance(m, input, texGrad);
         if (!all(isfinite(result.emission)) || any(result.emission < 0.0.xxx))
             result.fault = 2u;
         return result;
@@ -613,7 +614,7 @@ PtMaterial PtResolveMaterial(PtHit hit, float2 texGrad, float3 view, bool visibi
         }
     }
     result.bitangent = cross(result.normal, result.tangent);
-    result.emission = PtEmission(m, point, texGrad);
+    result.emission = reuseEmission ? emission : PtEmission(m, point, texGrad);
     if (result.clearcoat.factor > 0.0)
     {
         const float3 coatNormal = result.clearcoat.normal;
@@ -1020,6 +1021,8 @@ struct PtMeshSample
     float pdf;
     uint instanceIndex;
     uint triangleIndex;
+    RaySurfacePoint point;
+    float2 texGrad;
 };
 PtMeshSample PtSampleMesh(uint index, float triangleSample, float2 u, float3 origin,
                           RayCone cone, inout uint fault)
@@ -1051,24 +1054,45 @@ PtMeshSample PtSampleMesh(uint index, float triangleSample, float2 u, float3 ori
     result.triangleIndex = triangleIndex;
     float worldFoot = RayConeWorldFootprint(cone, result.distance, point.geometricNormal, -result.direction);
     float2 texGrad = worldFoot * point.texelDensity;
+    point.frontFace = dot(point.geometricNormal, -result.direction) > 0.0 ? 1u : 0u;
+    result.point = point;
+    result.texGrad = texGrad;
     result.radiance = coverage * ((flags & PT_MATERIAL_UNLIT) != 0u
         ? PtUnlitRadiance(material, point, texGrad) : PtEmission(material, point, texGrad));
-    if ((flags & PT_MATERIAL_UNLIT) == 0u && material.clearcoatFactor != 0.0)
-    {
-        point.frontFace = dot(point.geometricNormal, -result.direction) > 0.0 ? 1u : 0u;
-        const RaySurfacePoint oriented = OrientRaySurfaceForShading(point, flags |
-            (PtPotentialVolume(material, flags) ? kGpuMaterialFlagDoubleSided : 0u));
-        const PtClearcoat coat = PtResolveClearcoat(material, oriented, texGrad, fault);
-        const float coatWeight = PtClearcoatWeight(coat, -result.direction);
-        if (fault != 0u || coatWeight < 0.0) { fault = 2u; return (PtMeshSample)0; }
-        result.radiance *= 1.0 - coatWeight;
-    }
     return result;
+}
+
+float3 PtMeshEndpointEmission(PtMeshSample light, inout uint fault)
+{
+    // The visibility ray skips its sampled triangle. Classify that endpoint
+    // with the same filtered inputs as an ordinary hit. The CPU mesh proposal
+    // excludes solid boundaries, so no medium-crossing state is required.
+    PtHit endpoint = (PtHit)0;
+    endpoint.point = light.point;
+    const PtMaterial material = PtResolveMaterial(endpoint, light.texGrad, -light.direction,
+        false, true, light.radiance);
+    fault = material.fault;
+    return material.emission;
+}
+
+float3 PtOccludedMeshIncidentEmission(PtMeshSample light)
+{
+    // The matte estimates incident power even behind an opaque blocker.
+    // Preserve the coating film on that estimate without classifying hidden transport.
+    const GpuMaterial material = materials[light.point.materialIndex];
+    const uint flags = light.point.objectFlags | material.flags;
+    if ((flags & PT_MATERIAL_UNLIT) != 0u || material.clearcoatFactor == 0.0)
+        return light.radiance;
+    const RaySurfacePoint oriented = OrientRaySurfaceForShading(light.point, flags);
+    uint invalidCoat = 0u;
+    const PtClearcoat coat = PtResolveClearcoat(material, oriented, light.texGrad, invalidCoat);
+    const float weight = PtClearcoatWeight(coat, -light.direction);
+    return invalidCoat == 0u && weight >= 0.0 ? (1.0 - weight) * light.radiance : light.radiance;
 }
 #endif
 float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNormal,
     uint pixel, uint sampleIndex, uint bounce, uint4 counts, bool useMis, PtMediumState medium,
-    uint spectral, RayCone cone, bool meshProposal, inout uint fault)
+    uint spectral, RayCone cone, bool meshProposal, float3 throughput, inout uint fault)
 {
     uint count = meshProposal ? frame.sampling.w : PtLightCount(counts);
     if (count == 0u) return 0.0.xxx;
@@ -1081,18 +1105,21 @@ float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNor
     bool delta = true;
     uint ignoredEmitter = 0xffffffffu;
     uint targetInstance = 0xffffffffu, targetTriangle = 0xffffffffu;
+#if !REFERENCE_EMPTY_SCENE
+    PtMeshSample meshLight = (PtMeshSample)0;
+#endif
     if (meshProposal)
     {
 #if !REFERENCE_EMPTY_SCENE
         float triangleSample = PtRandom(pixel, sampleIndex, bounce, dimension + 3u, frame.sampling.z);
-        PtMeshSample light = PtSampleMesh(index, triangleSample, u, hit.point.position, cone, fault);
-        if (fault != 0u || light.pdf <= 0.0) return 0.0.xxx;
-        direction = light.direction;
-        radiance = light.radiance;
-        distance = light.distance;
-        pdf = light.pdf;
-        targetInstance = light.instanceIndex;
-        targetTriangle = light.triangleIndex;
+        meshLight = PtSampleMesh(index, triangleSample, u, hit.point.position, cone, fault);
+        if (fault != 0u || meshLight.pdf <= 0.0) return 0.0.xxx;
+        direction = meshLight.direction;
+        radiance = meshLight.radiance;
+        distance = meshLight.distance;
+        pdf = meshLight.pdf;
+        targetInstance = meshLight.instanceIndex;
+        targetTriangle = meshLight.triangleIndex;
         delta = false;
 #else
         return 0.0.xxx;
@@ -1140,16 +1167,32 @@ float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNor
     if (!PtValidDirection(direction)) { fault = 2u; return 0.0.xxx; }
     if (frame.ground.x == PT_GROUND_MATTE)
     {
-        if (!isfinite(pdf) || !all(isfinite(radiance)) || any(radiance < 0.0.xxx))
+        if (!isfinite(pdf))
         { fault = 2u; return 0.0.xxx; }
         float cosine = dot(geometricNormal, direction);
         if (pdf <= 0.0 || cosine <= 0.0 || all(radiance == 0.0.xxx)) return 0.0.xxx;
-        float3 incident = radiance * (cosine / pdf);
         float3 transmittance;
         float nullPdf;
         bool visible = PtVisible(hit.point.position, geometricNormal, direction, distance, counts.w,
             ignoredEmitter, PtCoverageSeed(pixel, sampleIndex, bounce, 1u), medium, delta, spectral,
             cone, targetInstance, targetTriangle, transmittance, nullPdf, fault);
+        if (fault != 0u) return 0.0.xxx;
+        if (!all(isfinite(radiance)) || any(radiance < 0.0.xxx))
+        {
+            if (!meshProposal || (visible && any(transmittance > 0.0.xxx))) fault = 2u;
+            return 0.0.xxx;
+        }
+#if !REFERENCE_EMPTY_SCENE
+        if (meshProposal)
+        {
+            if (visible && any(radiance * transmittance > 0.0.xxx))
+                radiance = PtMeshEndpointEmission(meshLight, fault);
+            else
+                radiance = PtOccludedMeshIncidentEmission(meshLight);
+            if (fault != 0u) return 0.0.xxx;
+        }
+#endif
+        float3 incident = radiance * (cosine / pdf);
         float3 blocked = visible ? incident * (1.0.xxx - saturate(transmittance)) : incident;
         float3 luma = float3(0.2126, 0.7152, 0.0722);
         return float3(dot(blocked, luma), dot(incident, luma), 0.0);
@@ -1157,7 +1200,8 @@ float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNor
     float3 localDirection = PtLocal(material, direction);
     if (pdf <= 0.0 || localDirection.z * dot(direction, geometricNormal) <= 0.0) return 0.0.xxx;
     PtBsdfEvaluation evaluated = PtEvaluateSurface(material, PtLocal(material, view), localDirection);
-    if (evaluated.valid == 0u || !isfinite(pdf) || !all(isfinite(radiance)) || any(radiance < 0.0.xxx))
+    const bool validRadiance = all(isfinite(radiance)) && all(radiance >= 0.0.xxx);
+    if (evaluated.valid == 0u || !isfinite(pdf) || (!meshProposal && !validRadiance))
     {
         if (!PtValidDirection(PtLocal(material, view)) || !PtValidDirection(localDirection))
             PtMarkPathDiagnostic(4096u);
@@ -1177,6 +1221,20 @@ float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNor
         PtCoverageSeed(pixel, sampleIndex, bounce, 1u), medium, delta, spectral, cone, targetInstance, targetTriangle,
         transmittance, nullPdf, fault)) return 0.0.xxx;
     float weight = !delta && useMis ? PtPowerHeuristic(pdf, evaluated.pdf * nullPdf) : 1.0;
+#if !REFERENCE_EMPTY_SCENE
+    if (meshProposal)
+    {
+        const float3 contributionWeight = transmittance * evaluated.value * throughput;
+        if (!validRadiance)
+        {
+            if (any(contributionWeight > 0.0.xxx)) fault = 2u;
+            return 0.0.xxx;
+        }
+        if (!any(radiance * contributionWeight > 0.0.xxx)) return 0.0.xxx;
+        radiance = PtMeshEndpointEmission(meshLight, fault);
+        if (fault != 0u) return 0.0.xxx;
+    }
+#endif
     return radiance * transmittance * evaluated.value * (abs(dot(material.normal, direction)) * weight / pdf);
 }
 float3 PtTraceShadowMatte(RayDesc ray, uint pixel, uint sampleIndex, uint4 counts,
@@ -1199,7 +1257,7 @@ float3 PtTraceShadowMatte(RayDesc ray, uint pixel, uint sampleIndex, uint4 count
     for (uint proposal = 0u; proposal < proposals; ++proposal)
     {
         value += PtDirect(ground, (PtMaterial)0, -ray.Direction, ground.point.geometricNormal,
-            pixel, sampleIndex, 0u, counts, false, medium, 0xffffffffu, cone, proposal != 0u, fault);
+            pixel, sampleIndex, 0u, counts, false, medium, 0xffffffffu, cone, proposal != 0u, 1.0.xxx, fault);
         if (fault != 0u) return 0.0.xxx;
     }
     if (!all(isfinite(value))) { fault = 2u; return 0.0.xxx; }
@@ -1544,7 +1602,7 @@ float3 PtTracePath(uint2 pixel, uint sampleIndex, out uint fault
         for (uint proposal = 0u; proposal < proposals; ++proposal)
         {
             result += throughput * PtDirect(hit, material, view, geometricNormal, address, sampleIndex,
-                bounce, counts, continuePath, medium, spectral, scatteringCone, proposal != 0u, fault);
+                bounce, counts, continuePath, medium, spectral, scatteringCone, proposal != 0u, throughput, fault);
             if (fault != 0u) { if ((fault & 2u) != 0u) PtMarkPathDiagnostic(64u); return 0.0.xxx; }
         }
         bool canPassNull = material.volume != 0u ? material.eta == 1.0 : material.transmissionRoughness == 0.0;

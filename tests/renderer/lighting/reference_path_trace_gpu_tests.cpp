@@ -1480,6 +1480,67 @@ TEST_F(ReferencePathTraceGpu, CoatedMeshEmissionMatchesItsNeeAndPathMisOutgoingW
   EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
   std::printf("REFERENCE_CLEARCOAT_MESH_MIS mean=%.9f nee=%.9f expected=%.9f\n", mis.x, nee.x, expected);
 }
+TEST_F(ReferencePathTraceGpu, VisibleUnsupportedMeshLightDoesNotEnterRawMoments) {
+  meshLightProposal = true;
+  lighting.environmentIntensity = 0.f;
+  materialValues.resize(3);
+  auto& emitter = materialValues[1];
+  emitter.color = {0, 0, 0, 1};
+  emitter.specularFactor = 0.f;
+  emitter.emissiveColor = {1, .25f, .1f};
+  emitter.emissiveStrength = 2.f;
+  vertices.clear();
+  indices.clear();
+  objects.clear();
+  draws.clear();
+  addQuad({0, 0, 0}, 1, 1, true, 0);
+  // The emitter is behind the camera's near plane and lights the receiver
+  // through the explicit mesh proposal even with a one-bounce budget.
+  addQuad({0, 0, 2}, 1, 1, false, 1);
+  syncInputs();
+  build(0);
+  build(1);
+  constexpr uint32_t samples = 16;
+  constexpr uint32_t total = 32 * 32 * samples;
+  input.settings.sampleLimit = samples;
+  input.settings.maxBounces = 1;
+  const auto supported = render();
+  EXPECT_GT(supported.roi().x, .18);
+  EXPECT_EQ(tracer->diagnostics(0).acceptedSamples, total);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  save(supported, "mesh-endpoint-supported");
+
+  emitter.sheenColorFactor = {.4f, .1f, .2f, 1};
+  syncInputs();
+  const auto unsupported = render();
+  EXPECT_EQ(tracer->diagnostics(0).acceptedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, total);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  EXPECT_EQ(unsupported.roi(), glm::dvec3(0));
+  EXPECT_EQ(unsupported.roi(2), glm::dvec3(1, 0, 1));
+  save(unsupported, "mesh-endpoint-unsupported");
+
+  emitter.flags = kObjectFlagUnlit;
+  syncInputs();
+  const auto unlit = render();
+  EXPECT_EQ(unlit.images, supported.images);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+
+  emitter.flags = 0;
+  // A downward-facing blocker is visible only to the receiver's light rays.
+  addQuad({0, 0, 1}, 1.25f, 1.25f, false, 2);
+  syncInputs();
+  build(0);
+  build(1);
+  const auto occluded = render();
+  EXPECT_EQ(occluded.roi(), glm::dvec3(0));
+  EXPECT_EQ(tracer->diagnostics(0).acceptedSamples, total);
+  EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  save(occluded, "mesh-endpoint-occluded");
+}
 TEST_F(ReferencePathTraceGpu, AlphaMaskRejectsCoverageWhileOpaqueIgnoresVertexAndMaterialAlpha) {
   for(auto& vertex:vertices) vertex.colorAlpha=.1f;
   ++revision;build(0);build(1);

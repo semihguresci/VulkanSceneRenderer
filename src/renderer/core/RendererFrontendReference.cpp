@@ -3,6 +3,7 @@
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/bim/BimManager.h"
+#include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 #include "Container/renderer/pathtracing/ReferencePathTracePass.h"
 #include "Container/renderer/platform/VulkanContextInitializer.h"
 #include "Container/renderer/resources/FrameResourceManager.h"
@@ -25,6 +26,7 @@
 #include <cmath>
 #include <cstdio>
 #include <span>
+#include <string_view>
 #include <utility>
 
 namespace container::renderer {
@@ -141,19 +143,23 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   input.scene = subs_.rayShadowManager->surfaceBindings(image);
   input.emptyScene = !input.scene;
   referenceStatus_.clear();
-  if (input.emptyScene && (!sceneGraph_.renderableNodes().empty() || (subs_.bimManager && subs_.bimManager->hasScene()))) {
+  const auto reportUnsupported = [&](std::string_view reason) {
     input.data.limits.w |= 8u;
-    referenceStatus_ = "Unsupported scene: " + subs_.rayShadowManager->surfaceUnsupportedReason();
+    if (!referenceStatus_.empty()) referenceStatus_ += ", ";
+    referenceStatus_ += reason;
+  };
+  if (input.emptyScene && (!sceneGraph_.renderableNodes().empty() || (subs_.bimManager && subs_.bimManager->hasScene()))) {
+    const auto& reason = subs_.rayShadowManager->surfaceUnsupportedReason();
+    reportUnsupported(reason.empty() ? "unavailable surface ray scene" : std::string_view(reason));
   }
   // These paths cannot yet provide the same radiometric scene as raster.
-  if (frame.bim.semanticColorMode || vdbLoadedFrame_) {
-    input.data.limits.w |= 8u;
-    referenceStatus_ = "Unsupported reference scene: semantic colors or volume transport";
-  }
-  if (subs_.environmentManager->activeSkyMode() == SkyMode::Atmosphere) {
-    input.data.limits.w |= 8u;
-    referenceStatus_ = "Unsupported reference scene: atmosphere and solar transport";
-  }
+  if (frame.bim.semanticColorMode) reportUnsupported("BIM semantic colors");
+  if (frame.services.openVdbVolumeRenderer && frame.services.openVdbVolumeRenderer->hasEnabledMedia())
+    reportUnsupported("OpenVDB volume transport");
+  if (frame.volumetricFog.settings.enabled()) reportUnsupported("raster froxel fog transport");
+  if (subs_.environmentManager->activeSkyMode() == SkyMode::Atmosphere)
+    reportUnsupported("atmosphere and solar transport");
+  if (!referenceStatus_.empty()) referenceStatus_ = "Unsupported reference scene (" + referenceStatus_ + ")";
   // Hash only radiometric inputs. Camera jitter, raster shadow controls, exposure
   // and the display grade must not discard the accumulated linear samples.
   uint64_t revision = 14695981039346656037ull;
