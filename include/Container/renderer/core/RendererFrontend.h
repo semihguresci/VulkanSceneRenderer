@@ -332,6 +332,7 @@ private:
   void drawModelLoadProgressFrame();
   container::capture::Journal gfxJournal_;
   [[nodiscard]] nlohmann::json captureTelemetry() const;
+  [[nodiscard]] nlohmann::json captureSceneRevisions() const;
   [[nodiscard]] const container::ui::BimFloorPlanOverlayState *
   effectiveBimFloorPlanSettings() const;
   [[nodiscard]] std::string_view effectiveBimStoreyFilter() const;

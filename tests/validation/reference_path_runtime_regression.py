@@ -13,13 +13,21 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from bim_floor_plan_runtime_regression import panel
 from gltf_extended_materials_runtime_regression import fixture, validation_log_error
+
+
+def write_environment(path, rgb):
+    pixels = np.full((32, 64, 3), rgb[::-1], dtype=np.float32)
+    if not cv2.imwrite(str(path), pixels):
+        raise RuntimeError(f'Could not write constant HDR fixture {path}')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--renderer', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--visibility-only', action='store_true', help='Run the scene visibility and provider reload sequence')
     args = parser.parse_args()
     renderer, output = args.renderer.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -33,6 +41,10 @@ def main():
     model = output / 'radiance.gltf'
     asset = fixture(model, dict(material=material))
     model.write_text(json.dumps(asset))
+    environment = output / 'constant.hdr'
+    sky_rgb = [1., .5, .25]
+    write_environment(environment, sky_rgb)
+    environment_flags = ('--environment', str(environment), '--environment-intensity', '1')
 
     def capture(name, *, model_path=model, frames=(6,), events=(), cameras=(), suffix='.png', flags=(), ui=False):
         base = output / name
@@ -90,7 +102,41 @@ def main():
             ('TemporalResolve', 'TemporalVelocity', 'DdgiTrace', 'DdgiUpdate', 'RayShadowTrace', 'RayShadowFilter'))
         return path
 
-    try:
+    def check_restart_checkpoints(captures):
+        reference(captures[0], resets=1)
+        for resets, (first, full) in enumerate(zip(captures[1::2], captures[2::2], strict=True), start=2):
+            reference(first, samples=4, resets=resets)
+            reference(full, resets=resets)
+        return captures[::2]
+
+    def check_visibility():
+        bim = output / 'provider-panel.bim'
+        bim.write_text(json.dumps(dict(schema_version='1.1.0', meshes=[panel(1, (-1, -.8, 1, .8), 0)],
+            elements=[dict(mesh_id=1, guid='reference-panel', type='IfcWall',
+                           color=dict(r=32, g=64, b=128, a=255))])), encoding='utf-8')
+        visibility = capture('visibility-provider-history', suffix='.exr', flags=environment_flags,
+            frames=(4, 5, 8, 9, 12, 13, 16, 17, 20, 21, 24, 25, 28),
+            cameras=(dict(frame=1, position=[0, 0, 4], target=[0, 0, 0]),), events=(
+                dict(frame=5, nodeFlags=dict(sourceNode=0, visible=False)),
+                dict(frame=9, sceneHistory='undo'),
+                dict(frame=13, sceneHistory='redo'),
+                dict(frame=17, reload=str(bim)),
+                dict(frame=21, bimHiddenObject=0),
+                dict(frame=25, reload=str(model))))
+        original, hidden, restored, hidden_again, auxiliary, filtered, reloaded = check_restart_checkpoints(visibility)
+        assert Path(auxiliary['state']['scene']['auxiliary']).resolve() == bim
+        assert auxiliary['state']['rayShadows']['build']['instances'] == 1
+        assert Path(reloaded['state']['scene']['primary']).resolve() == model
+        np.testing.assert_allclose(original['pixels'][120, 160], [4, 2, 1], atol=.002, rtol=0)
+        assert np.max(np.abs(auxiliary['pixels'][120, 160] - sky_rgb)) > .1
+        for sample in (restored, reloaded):
+            np.testing.assert_array_equal(sample['pixels'], original['pixels'])
+        sky = np.broadcast_to(sky_rgb, hidden['pixels'].shape)
+        np.testing.assert_allclose(hidden['pixels'], sky, atol=.002, rtol=0)
+        for sample in (hidden_again, filtered):
+            np.testing.assert_array_equal(sample['pixels'], hidden['pixels'])
+
+    def check_viewport():
         progress = capture('sample-stop', frames=(1, 2, 3, 4, 6))
         for sample, count in zip(progress, (4, 8, 12, 13, 13), strict=True):
             reference(sample, samples=count, resets=1)
@@ -122,12 +168,46 @@ def main():
         background = capture('empty-scene', model_path=empty, suffix='.exr')[0]
         reference(background, resets=1)
         np.testing.assert_array_equal(background['pixels'], 0)
-        environment = output / 'constant.hdr'
-        cv2.imwrite(str(environment), np.full((32,64,3), [.25,.5,1.], dtype=np.float32))
-        env = capture('environment-scene', model_path=empty, suffix='.exr',
-            flags=('--environment', str(environment), '--environment-intensity', '1'))[0]
-        reference(env, resets=1)
-        np.testing.assert_allclose(env['pixels'], np.broadcast_to([1.,.5,.25], env['pixels'].shape), atol=.002, rtol=0)
+        replacement_environment = output / 'replacement.hdr'
+        replacement_rgb = [.125, .25, 2.]
+        write_environment(replacement_environment, replacement_rgb)
+        sky_frames = capture('environment-replacement', model_path=empty, suffix='.exr',
+            flags=environment_flags, frames=(4, 5, 6, 7, 8, 9, 12), events=(
+                dict(frame=5, environment=str(replacement_environment)),
+                dict(frame=6, referenceDisplay='standard-error'),
+                dict(frame=7, referenceDisplay='beauty'),
+                dict(frame=9, environment=str(environment))))
+        for sample, count, resets in zip(sky_frames, (13, 4, 8, 12, 13, 4, 13), (1, 2, 2, 2, 2, 3, 3), strict=True):
+            path = reference(sample, samples=count, resets=resets)
+            frame = sample['frame']
+            assert path['display'] == ('standard-error' if frame == 6 else 'beauty'), path
+            rgb = replacement_rgb if 5 <= frame < 9 else sky_rgb
+            np.testing.assert_allclose(sample['pixels'], np.broadcast_to(rgb, sample['pixels'].shape),
+                                       atol=.002, rtol=0)
+
+        texture = output / 'red-emissive.png'
+        Image.new('RGBA', (4, 4), (255, 0, 0, 255)).save(texture)
+        textures = capture('material-texture-history', suffix='.exr', frames=(4, 5, 8, 9, 12, 13, 16), events=(
+            dict(frame=5, materialTextureEdit=dict(sourceMaterial=0, slot='emissive', operation='importFile',
+                path=str(texture), sampler=dict(minFilter=9728, magFilter=9728))),
+            dict(frame=9, sceneHistory='undo'),
+            dict(frame=13, sceneHistory='redo')))
+        original, edited, restored, replayed = check_restart_checkpoints(textures)
+        np.testing.assert_allclose(edited['pixels'][120, 160], [4, 0, 0], atol=.002, rtol=0)
+        np.testing.assert_array_equal(original['pixels'], raw['pixels'])
+        np.testing.assert_array_equal(restored['pixels'], original['pixels'])
+        np.testing.assert_array_equal(replayed['pixels'], edited['pixels'])
+
+        displaced = output / 'unsupported-displacement.gltf'
+        displaced_asset = json.loads(model.read_text())
+        displaced_asset.update(images=[dict(uri=texture.name)], textures=[dict(source=0)])
+        displaced_asset['materials'][0].update(heightTexture=dict(index=0), heightScale=.125)
+        displaced.write_text(json.dumps(displaced_asset), encoding='utf-8')
+        displaced_state = capture('displaced-surface', model_path=displaced)[0]['state']
+        path = displaced_state['referencePath']
+        assert path['active'] and path['attemptedSamples'] == 13, path
+        assert path['unsupportedSamples'] == 320*240*13 and path['rejectedSamples'] == 0, path
+        assert 'ray scene is incompatible with active geometry' in path['status'], path
 
         blend = output / 'unsupported-blend.gltf'
         blend_asset=json.loads(model.read_text())
@@ -189,6 +269,11 @@ def main():
         reference(gpu, resets=1)
         assert gpu['state']['hierarchyTransforms']['active']
         reference(capture('simple-ui', ui=True, flags=('--width','1280','--height','800'))[0], resets=1)
+
+    try:
+        check_visibility()
+        if not args.visibility_only:
+            check_viewport()
         if hashlib.sha256(renderer.read_bytes()).hexdigest() != report['executableSha256']:
             raise RuntimeError('Executable changed during validation')
         report['passed'] = True

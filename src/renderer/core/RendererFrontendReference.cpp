@@ -148,7 +148,7 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
     if (!referenceStatus_.empty()) referenceStatus_ += ", ";
     referenceStatus_ += reason;
   };
-  if (input.emptyScene && (!sceneGraph_.renderableNodes().empty() || (subs_.bimManager && subs_.bimManager->hasScene()))) {
+  if (input.emptyScene && subs_.rayShadowManager->hasRayGeometry()) {
     const auto& reason = subs_.rayShadowManager->surfaceUnsupportedReason();
     reportUnsupported(reason.empty() ? "unavailable surface ray scene" : std::string_view(reason));
   }

@@ -774,6 +774,9 @@ uint64_t ReferencePathTracePass::diagnosticEpoch(uint32_t image) const {return i
 uint64_t ReferencePathTracePass::diagnosticSubmission(uint32_t image) const {return image<impl_->frames.size()?impl_->frames[image].submission:0;}
 uint32_t ReferencePathTracePass::attemptedSamples() const {return impl_->samples;}
 uint32_t ReferencePathTracePass::lastSubmittedSamples() const {return impl_->lastSubmittedSamples;}
+uint64_t ReferencePathTracePass::submittedContentRevision() const {
+  return impl_->historyValid ? impl_->submittedRevision : 0;
+}
 std::optional<ReferencePathLensSettings> ReferencePathTracePass::effectiveLens() const {
   if (!impl_->historyValid || impl_->submittedKey.trace.z == 0.0f) return {};
   return ReferencePathLensSettings{impl_->submittedKey.trace.z, impl_->submittedKey.trace.w};

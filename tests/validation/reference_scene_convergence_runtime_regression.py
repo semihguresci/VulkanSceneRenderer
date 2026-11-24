@@ -1,10 +1,11 @@
-"""Raw scene convergence and matched raster/reference calibration for #47.
+"""Raw convergence, matched raster/reference calibration, and an analytic mirror.
 
---self-check and --generate-only do not launch a renderer or use a GPU. Native
-execution requires an explicit frozen runtime/helper/layer manifest. Defaults:
-five independent generated scenes, four low seeds at 32/128/512 spp, two
-different 4096-spp reference seeds, raw forward/deferred views and three matched
-display views: 40 processes, 95 captures at 256x192. No production test API.
+Five generated convergence scenes use four seeds at 32/128/512 spp, two
+independent 4096-spp reference seeds, raw forward/deferred views and three
+matched display views. The mirror adds two independent 32-spp captures and the
+same matched raster and display views.
+Native execution freezes runtime files, helpers, and the Vulkan layer. The
+self-check, plan generation, and manifest generation do not launch a renderer.
 """
 from __future__ import annotations
 
@@ -23,6 +24,11 @@ import tempfile
 import time
 import traceback
 
+# A disabled CTest entry also skips on machines without the analysis packages.
+if __name__ == '__main__' and '--ctest' in sys.argv[1:] and os.environ.get('CONTAINER_RUN_GPU_REFERENCE_CONVERGENCE') != '1':
+    print('SKIP set CONTAINER_RUN_GPU_REFERENCE_CONVERGENCE=1 to run native convergence')
+    sys.exit(77)
+
 os.environ.setdefault('OPENCV_IO_ENABLE_OPENEXR', '1')
 import cv2
 import numpy as np
@@ -35,14 +41,15 @@ CHECKPOINTS = (32, 128, 512)
 LOW_SEEDS = (23, 1543, 7919, 32413)
 REFERENCE_SEEDS = (104729, 130363)
 REFERENCE_SAMPLES, BATCH, BOUNCES = 4096, 64, 8
-NAMES = ('cornell', 'area', 'blocker', 'roughness', 'interior')
+MIRROR_SAMPLES, MIRROR_ABSOLUTE_TOLERANCE = 32, 5e-5
 EXPOSURE, TONE_MAPPER = .5, 1  # Reinhard, explicit manual exposure.
 # Declared before native work. Empirical paired-seed noise envelopes, not a
 # pixelwise monotonicity rule or a rigorous confidence guarantee for heavy tails.
 THRESHOLDS = dict(pairedSeedStandardErrors=4.541, finalToInitialMse=.55,
     finalToInitialReplicateVariance=.4, referenceFloorAllowance=4.,
     maximumReferenceNoiseToFinalReplicateVariance=.5,
-    maximumFinalNormalizedRmse=.18, maximumReferenceNormalizedNoise=.04)
+    maximumFinalNormalizedRmse=.18, maximumReferenceNormalizedNoise=.04,
+    mirrorAbsoluteChannelError=MIRROR_ABSOLUTE_TOLERANCE)
 
 
 def require(condition, message):
@@ -64,11 +71,15 @@ def verify_manifest(path, required=(), *, identity=None):
     document = json.loads(Path(path).read_text(encoding='utf-8-sig'))
     files = document.get('files', {})
     require(isinstance(files, dict) and files, 'Freeze manifest needs a nonempty files map')
+    require(all(Path(name).is_absolute() and isinstance(digest, str) and re.fullmatch('[0-9a-fA-F]{64}', digest)
+                for name, digest in files.items()), 'Freeze manifest requires absolute paths and SHA-256 digests')
     frozen = {Path(name).resolve(): expected.lower() for name, expected in files.items()}
+    require(len(frozen) == len(files), 'Freeze manifest contains duplicate file identities')
     require(set(map(Path.resolve, required)) <= frozen.keys(), 'Freeze manifest omits a consumed native/helper/layer input')
     for file, expected in frozen.items():
         require(file.is_file() and sha(file) == expected, f'Frozen input changed: {file}')
-    return dict(path=str(Path(path).resolve()), sha256=sha(path), entryCount=len(frozen), verified=True)
+    return dict(path=str(Path(path).resolve()), sha256=sha(path), entryCount=len(frozen), verified=True,
+                validationLayerApiVersion=document.get('validationLayerApiVersion'), sourceCheckout=document.get('sourceCheckout'))
 
 
 def dependencies():
@@ -76,6 +87,47 @@ def dependencies():
     # along with both new modules; installed numerical/image tools are versioned.
     return [Path(__file__).resolve(), Path(fixtures.__file__).resolve(),
             Path(sys.modules[fixtures.Asset.__module__].__file__).resolve()]
+
+
+def runtime_inputs(renderer, layer_manifest, expected_version):
+    require(renderer is not None and renderer.is_file(), '--renderer must name a built renderer executable')
+    require(layer_manifest is not None and layer_manifest.is_file(), '--layer-manifest must name the Vulkan validation-layer JSON')
+    renderer, layer_manifest = renderer.resolve(), layer_manifest.resolve()
+    layer = json.loads(layer_manifest.read_text(encoding='utf-8-sig'))['layer']
+    version = layer['api_version']
+    require(layer['name'] == 'VK_LAYER_KHRONOS_validation' and re.fullmatch(r'\d+\.\d+\.\d+', version),
+            'Invalid validation-layer name or API version')
+    require(expected_version is None or version == expected_version, f'Validation layer version {version} != {expected_version}')
+    library = (layer_manifest.parent/layer['library_path']).resolve()
+    shaders = sorted((renderer.parent/'spv_shaders').rglob('*.spv'))
+    require(shaders, f'No runtime SPIR-V files beside {renderer}')
+    shared_libraries = [*renderer.parent.glob('*.dll'), *renderer.parent.glob('*.so*'), *renderer.parent.glob('*.dylib')]
+    ltc = [renderer.parent/'materials'/'ltc'/name for name in ('matrix.bin', 'amplitude.bin')]
+    consumed = sorted({p.resolve() for p in [renderer, *shared_libraries, *shaders, *ltc,
+                                            *dependencies(), layer_manifest, library]})
+    for path in consumed:
+        require(path.is_file(), f'Missing runtime input: {path}')
+    return renderer, layer_manifest, library, version, consumed
+
+
+def freeze_manifest(path, consumed, version):
+    root = Path(__file__).resolve().parents[2]
+    revision, dirty = None, None
+    try:
+        git = ['git', '--no-optional-locks', '-C', str(root)]
+        head = subprocess.run([*git, 'rev-parse', 'HEAD'], capture_output=True, text=True, check=False)
+        if head.returncode == 0:
+            revision = head.stdout.strip()
+            diff = subprocess.run([*git, 'diff', '--quiet', 'HEAD'], capture_output=True, check=False)
+            dirty = {0: False, 1: True}.get(diff.returncode)
+    except FileNotFoundError:
+        pass  # Runtime byte identities still cover a packaged checkout without Git.
+    document = dict(schemaVersion=1, validationLayerApiVersion=version,
+                    sourceCheckout=dict(revision=revision, trackedFilesDirty=dirty),
+                    files={str(file):sha(file) for file in consumed})
+    with path.open('x', encoding='utf-8') as stream:
+        json.dump(document, stream, indent=2, allow_nan=False)
+        stream.write('\n')
 
 
 def finite_image(image, shape=(HEIGHT, WIDTH, 3)):
@@ -157,6 +209,9 @@ def check_reference(state, metadata, count, seed, *, exact):
             'Reference display filtering/reconstruction entered calibration')
     require(metadata['referencePath']['attemptedSamplesPerPixel'] == count, 'Capture count and telemetry differ')
     capture = metadata['referencePath']
+    revision = path['contentRevision']
+    require(type(revision) is int and revision > 0 and capture['contentRevision'] == revision,
+            'Reference content revision differs between telemetry and the captured history')
     require(capture['seed'] == seed and capture['maxBounces'] == BOUNCES and capture['samplesPerFrame'] == BATCH,
             'Capture sampling metadata differs from actual plan')
     if exact:
@@ -167,10 +222,89 @@ def check_reference(state, metadata, count, seed, *, exact):
     lighting = next((p['gpuMs'] for p in state['passes'] if p['name'] == 'Lighting'), None)
     require(lighting is None or (math.isfinite(lighting) and lighting >= 0), 'Invalid GPU timestamp')
     return dict(attemptedSamples=count, acceptedSamplesPerPixel=count if exact else None,
+        contentRevision=revision,
         acceptedCountProof='Exact export checks every pixel' if exact else 'Telemetry has zero path faults; exact raw checkpoints checked separately',
         ownedReferenceBytes=path['allocatedBytes'], lightingGpuMs=lighting if lighting else None,
         totalInstrumentedGpuMs=state['gpuKnownMs'],
         borrowedAsBytes=state.get('rayShadows', {}).get('build', {}).get('asAllocatedBytes'))
+
+
+def capture_identity(sample, scene, authored):
+    state, metadata = sample['state'], sample['metadata']
+    build = state['build']
+    require(build == metadata['build'] and all(isinstance(build[field], str) for field in ('revision', 'configuration', 'compiler'))
+            and build['revision'] and build['compiler'], 'Missing or mismatched renderer build metadata')
+    revisions = state['sceneRevisions']
+    require(revisions == metadata['sceneRevisions'] and set(revisions) == {'graph', 'geometry', 'objectData', 'material'}
+            and all(type(revision) is int and revision >= 0 for revision in revisions.values()),
+            'Missing or mismatched scene revision metadata')
+    runtime = state['scene']
+    require(Path(runtime['primary']).resolve() == Path(scene['path']).resolve() and runtime['primaryImportScale'] == 1
+            and not runtime['auxiliary'] and runtime['auxiliaryObjectCount'] == 0,
+            'Runtime scene identity differs from the authored fixture')
+    require(runtime['primaryObjectCount'] == authored['primitiveCount'] and
+            runtime['primaryIndexCount'] == 3*authored['triangleCount'] and
+            runtime['primaryVertexCount'] == authored['vertexCount'], 'Runtime geometry differs from the authored fixture')
+    lighting = state['lighting']
+    require(lighting['areaLightCount'] == authored['areaLightCount'] == scene['expectedAreaLights'] and
+            lighting['pointLightCount'] == lighting['environmentIntensity'] == lighting['directionalIntensity'] == 0,
+            'Runtime lights differ from the authored fixture')
+    if state['technique'] in ('forward-raster', 'deferred-raster'):
+        require(lighting['ltcReady'] and lighting['areaLightingMode'] == lighting['areaLightingRequestedMode'] == 1,
+                'Raster approximation did not use the frozen LTC tables')
+    require(state['validationEnabled'], 'Capture was rendered without Vulkan validation')
+    return dict(image=str(sample['image']), build=build, sceneRevisions=revisions, primary=runtime['primary'],
+                primaryObjectCount=runtime['primaryObjectCount'], primaryIndexCount=runtime['primaryIndexCount'],
+                primaryVertexCount=runtime['primaryVertexCount'])
+
+
+def mirror_expectation(scene):
+    require(scene['cameraPosition'] == [0., 0., fixtures.MIRROR_CAMERA_Z] and scene['cameraTarget'] == [0., 0., 0.]
+            and scene['cameraFov'] == 45, 'Mirror camera differs from the analytic setup')
+    # Rays reflected at z=0 have the same x/y slopes. At the emitter plane their
+    # x/y displacement equals the slopes times the distance to the virtual camera.
+    pixel_slope = 2*math.tan(math.radians(scene['cameraFov']/2))/HEIGHT
+    pixel_world = pixel_slope*(fixtures.MIRROR_CAMERA_Z+fixtures.MIRROR_EMITTER_Z)
+    y, x = np.indices((HEIGHT, WIDTH), dtype=float)
+    x = (x+.5-WIDTH/2)*pixel_world
+    y = (HEIGHT/2-y-.5)*pixel_world
+    require(WIDTH/2*pixel_slope*fixtures.MIRROR_CAMERA_Z < fixtures.MIRROR_HALF[0] and
+            HEIGHT/2*pixel_slope*fixtures.MIRROR_CAMERA_Z < fixtures.MIRROR_HALF[1], 'Mirror does not fill the view')
+    black = np.ones((HEIGHT, WIDTH), dtype=bool)
+    expected = np.zeros((HEIGHT, WIDTH, 3))
+    regions = {}
+    for label, (center_x, center_y), (half_x, half_y), emission in fixtures.MIRROR_PATCHES:
+        round_trip_growth = 1+2*fixtures.MIRROR_EMITTER_Z/(fixtures.MIRROR_CAMERA_Z+fixtures.MIRROR_EMITTER_Z)
+        require((abs(center_x)-half_x)*round_trip_growth > abs(center_x)+half_x,
+                'A second mirror reflection can return to an emitter')
+        dx, dy = abs(x-center_x), abs(y-center_y)
+        # Ignore one pixel on either side of a patch edge to allow arbitrary
+        # subpixel jitter and finite ray-origin offsets. F0=1 gives unit Fresnel.
+        interior = (dx < half_x-pixel_world) & (dy < half_y-pixel_world)
+        black &= ~((dx < half_x+pixel_world) & (dy < half_y+pixel_world))
+        expected[interior] = emission
+        regions[label] = interior
+    regions['black-surround'] = black
+    require(all(mask.sum() > 100 for mask in regions.values()), 'Mirror check regions are empty or too small')
+    return expected, regions
+
+
+def mirror_witness(scene, captures):
+    expected, regions = mirror_expectation(scene)
+    require([capture['seed'] for capture in captures] == list(REFERENCE_SEEDS), 'Mirror requires both independent seeds')
+    results = []
+    for capture in captures:
+        pixels = finite_image(capture['pixels'])
+        measured = {}
+        for label, mask in regions.items():
+            max_error = float(np.max(np.abs(pixels[mask]-expected[mask])))
+            require(max_error <= MIRROR_ABSOLUTE_TOLERANCE,
+                    f'Analytic mirror {label} exceeded the absolute HDR tolerance: {max_error:.7g}')
+            measured[label] = dict(pixelCount=int(mask.sum()), expectedRgb=expected[mask][0].tolist(),
+                                  measuredMeanRgb=pixels[mask].mean(axis=0).tolist(), maxAbsoluteChannelError=max_error)
+        results.append(dict(seed=capture['seed'], image=str(capture['image']), regions=measured))
+    return dict(samplesPerPixel=MIRROR_SAMPLES, absoluteChannelTolerance=MIRROR_ABSOLUTE_TOLERANCE,
+                excludedBoundaryPixels=int(WIDTH*HEIGHT-sum(mask.sum() for mask in regions.values())), captures=results)
 
 
 def camera_and_display(samples, scene):
@@ -232,10 +366,13 @@ def command(renderer, model, scene):
 
 def plan(output, scenes, renderer):
     runs = []
-    for name, scene in scenes.items():
+    for name in (fixtures.MIRROR, *fixtures.NAMES):
+        scene = scenes[name]
         model = Path(scene['path'])
-        for role, seeds, counts in (('low', LOW_SEEDS, CHECKPOINTS),
-                                   ('high', REFERENCE_SEEDS, (REFERENCE_SAMPLES,))):
+        display_samples = MIRROR_SAMPLES if name == fixtures.MIRROR else CHECKPOINTS[-1]
+        reference_runs = (('analytic', REFERENCE_SEEDS, (MIRROR_SAMPLES,)),) if name == fixtures.MIRROR else (
+            ('low', LOW_SEEDS, CHECKPOINTS), ('high', REFERENCE_SEEDS, (REFERENCE_SAMPLES,)))
+        for role, seeds, counts in reference_runs:
             for seed in seeds:
                 label = f'{name}-{role}-{seed}'
                 base = output/(label+'.exr')
@@ -246,17 +383,17 @@ def plan(output, scenes, renderer):
         for role, extension, techniques in (('raster', '.exr', ('forward-raster', 'deferred-raster')),
                                              ('display', '.png', ('path-tracing', 'forward-raster', 'deferred-raster'))):
             label = f'{name}-{role}'
-            first = CHECKPOINTS[-1]//BATCH if role == 'display' else 2
+            first = max(2, math.ceil(display_samples/BATCH)) if role == 'display' else 2
             frames = [first+2*i for i in range(len(techniques))]
             events = [dict(frame=f-1, technique=t) for f, t in zip(frames, techniques) if t != 'path-tracing']
             sequence = output/(label+'.sequence.json')
             write(sequence, dict(schemaVersion=1, frames=frames[-1], sampleFrames=frames, events=events))
             base = output/(label+extension)
             images = [output/(label+(f'.frame-{frame:04d}' if frame != frames[-1] else '')+extension) for frame in frames]
-            runs.append(dict(name=label, scene=name, role=role, seed=LOW_SEEDS[0], frames=frames,
+            runs.append(dict(name=label, scene=name, role=role, seed=LOW_SEEDS[0], frames=frames, pathSamples=display_samples,
                 techniques=list(techniques), images=list(map(str, images)),
                 command=command(renderer, model, scene)+['--path-seed', str(LOW_SEEDS[0]),
-                    '--path-samples', str(CHECKPOINTS[-1]), '--capture-sequence', str(sequence), '--screenshot', str(base)]))
+                    '--path-samples', str(display_samples), '--capture-sequence', str(sequence), '--screenshot', str(base)]))
     return dict(processCount=len(runs), captureCount=sum(len(r['images']) for r in runs), runs=runs)
 
 
@@ -277,37 +414,83 @@ def read_capture(path):
     return dict(image=path, state=state, metadata=metadata, pixels=pixels)
 
 
+def read_process(run, scene, authored):
+    samples = [read_capture(p) for p in run['images']]
+    identities = [capture_identity(sample, scene, authored) for sample in samples]
+    require(all(row['sceneRevisions'] == identities[0]['sceneRevisions'] for row in identities),
+            f"Scene changed in static process {run['name']}")
+    costs = []
+    if run['role'] in ('low', 'high', 'analytic'):
+        for count, sample in zip(run['counts'], samples, strict=True):
+            require(sample['metadata']['source'] == 'path-trace-mean', 'Reference is not raw mean')
+            costs.append(dict(image=str(sample['image']), **check_reference(
+                sample['state'], sample['metadata'], count, run['seed'], exact=True)))
+        require(all(row['contentRevision'] == costs[0]['contentRevision'] for row in costs),
+                f"Reference content changed in static process {run['name']}")
+    else:
+        require([s['state']['technique'] for s in samples] == run['techniques'], 'Comparison techniques differ from plan')
+        if run['role'] == 'display':
+            sample = samples[0]
+            costs.append(dict(image=str(sample['image']), **check_reference(
+                sample['state'], sample['metadata'], run['pathSamples'], run['seed'], exact=False)))
+        else:
+            require(all(s['metadata']['source'] == 'raster-scene-composite' for s in samples), 'Raster raw source mismatch')
+    return samples, identities, costs
+
+
+def analytic_capture(run, sample):
+    return dict(seed=run['seed'], image=sample['image'], pixels=sample['pixels'])
+
+
+def compare_raster(samples, reference):
+    reference_rms = float(np.sqrt(np.mean(reference**2)))
+    require(reference_rms > 0, 'Raw comparison reference is black')
+    raw_differences = []
+    for sample in samples:
+        error = sample['pixels']-reference
+        rmse = float(np.sqrt(np.mean(error**2)))
+        state = sample['state']
+        lighting = next((p['gpuMs'] for p in state['passes'] if p['name'] == 'Lighting'), None)
+        require(lighting is None or (math.isfinite(lighting) and lighting >= 0), 'Invalid raster GPU timestamp')
+        raw_differences.append(dict(technique=state['technique'], image=str(sample['image']), rmse=rmse,
+            normalizedRmse=rmse/reference_rms, meanAbsoluteError=float(np.mean(abs(error))),
+            meanSignedRgbError=error.mean(axis=(0, 1)).tolist(),
+            lightingGpuMs=lighting if lighting else None, totalInstrumentedGpuMs=state['gpuKnownMs']))
+    return raw_differences
+
+
 def analyze(output, scenes, inventory):
     report = {}
+    builds = []
     for name, scene in scenes.items():
+        authored = fixtures.validate(Path(scene['path']), name)
         low = [[] for _ in CHECKPOINTS]
-        references, comparison, display, costs, all_captures = [], [], [], [], []
+        references, comparison, display, costs, all_captures, identities, analytic = [], [], [], [], [], [], []
         for run in (r for r in inventory['runs'] if r['scene'] == name):
-            samples = [read_capture(p) for p in run['images']]
+            samples, process_identities, process_costs = read_process(run, scene, authored)
             all_captures.extend(samples)
-            require(all(s['state']['lighting']['areaLightCount'] == scene['expectedAreaLights'] for s in samples),
-                    'Generated area lights did not reach the actual renderer')
-            if run['role'] in ('low', 'high'):
-                for index, (count, sample) in enumerate(zip(run['counts'], samples, strict=True)):
-                    require(sample['metadata']['source'] == 'path-trace-mean', 'Reference is not raw mean')
-                    costs.append(dict(image=str(sample['image']), **check_reference(
-                        sample['state'], sample['metadata'], count, run['seed'], exact=True)))
-                    if run['role'] == 'low': low[index].append(sample['pixels'])
-                    else: references.append(sample['pixels'])
+            builds.extend(row['build'] for row in process_identities)
+            identities.extend(process_identities)
+            costs.extend(process_costs)
+            if run['role'] == 'low':
+                for checkpoint, sample in zip(low, samples, strict=True):
+                    checkpoint.append(sample['pixels'])
+            elif run['role'] == 'high':
+                references.extend(sample['pixels'] for sample in samples)
+            elif run['role'] == 'analytic':
+                analytic.append(analytic_capture(run, samples[0]))
+            elif run['role'] == 'display':
+                display = samples
             else:
-                require([s['state']['technique'] for s in samples] == run['techniques'], 'Comparison techniques differ from plan')
-                if run['role'] == 'display':
-                    check_reference(samples[0]['state'], samples[0]['metadata'], CHECKPOINTS[-1], LOW_SEEDS[0], exact=False)
-                    display = samples
-                else:
-                    require(all(s['metadata']['source'] == 'raster-scene-composite' for s in samples), 'Raster raw source mismatch')
-                    comparison = samples
-        stats = convergence(low, references)
+                comparison = samples
         state_match = camera_and_display(all_captures, scene)
-        reference = np.mean(references, axis=0)
-        raw_differences = [dict(technique=s['state']['technique'], image=str(s['image']),
-            rmse=float(np.sqrt(np.mean((s['pixels']-reference)**2))),
-            normalizedRmse=float(np.sqrt(np.mean((s['pixels']-reference)**2)))/stats['referenceMeanRadianceRms']) for s in comparison]
+        if name == fixtures.MIRROR:
+            proof = dict(analytic=mirror_witness(scene, analytic))
+            references = [capture['pixels'] for capture in analytic]
+        else:
+            proof = dict(convergence=convergence(low, references))
+            require(any(c['lightingGpuMs'] is not None for c in costs), 'Missing measured reference GPU timing')
+        raw_differences = compare_raster(comparison, np.mean(references, axis=0))
         # Save actual display views side by side. Pixel equality is deliberately
         # not an oracle for raster approximations versus multibounce transport.
         contact = Image.new('RGB', (WIDTH*3, HEIGHT+20))
@@ -316,13 +499,15 @@ def analyze(output, scenes, inventory):
         for i, sample in enumerate(display):
             contact.paste(Image.fromarray(sample['pixels']), (i*WIDTH, 20))
             draw.text((i*WIDTH+2, 2), sample['state']['technique'], fill='white')
-        contact.save(output/(name+'-comparison.png'))
-        require(any(c['lightingGpuMs'] is not None for c in costs), 'Missing measured reference GPU timing')
-        report[name] = dict(convergence=stats, matchedComparisonState=state_match,
+        contact_path = output/(name+'-comparison.png')
+        contact.save(contact_path)
+        report[name] = dict(**proof, matchedComparisonState=state_match, displayComparison=str(contact_path),
+            authoredScene=authored, captureIdentities=identities,
             rasterAgainstRawReference=raw_differences, costs=costs,
             timingScope='Latest retired reference Lighting GPU dispatch and instrumented pass sum; an initial unavailable timestamp is null, not zero-cost. Excludes CPU extraction/AS build/end-to-end latency.',
             memoryScope='Owned reference allocations; borrowed scene/AS and driver allocations excluded unless separately identified.',
             approximationPolicy='Raster uses LTC, hard ray visibility, DDGI/reflections off; indirect lighting/area visibility/BRDF differences are measured, not required to match.')
+    require(builds and all(build == builds[0] for build in builds), 'Renderer build changed between captures')
     return report
 
 
@@ -341,11 +526,16 @@ def calibration_guide(output, scene_results):
         'and compare against a noise-converged raw reference, not against one noisy low-spp frame. ',
         'Do not tune production approximation thresholds to a single seed. Standard-error view estimates noise, not model bias.', '',
         '| Scene | RMSE32 | RMSE128 | RMSE512 | Measured target noise |', '|---|---:|---:|---:|---:|']
-    for name, item in scene_results.items():
-        stats = item['convergence']
+    for name in fixtures.NAMES:
+        stats = scene_results[name]['convergence']
         values = [r['aggregateRmse'] for r in stats['checkpoints']]
         lines += [f'| {name} | '+ ' | '.join(f'{v:.7g}' for v in values+[stats['estimatedReferenceMeanNoiseRmse']])+' |',
                   f'\n![{name} matched views]({name}-comparison.png)\n']
+    lines += ['## Analytic mirror', '',
+        'Each of the two 32-spp raw EXRs is checked against the authored emissive radiance in the reflected patches and zero in the surround.',
+        f'Every checked channel has an absolute radiance tolerance of {MIRROR_ABSOLUTE_TOLERANCE:g}. Pixels near patch edges are excluded to allow subpixel sampling.',
+        'The mean of both raw mirror captures serves as the HDR target for the matched forward and deferred raster views.',
+        '', '![Mirror matched views](mirror-comparison.png)']
     (output/'CALIBRATION.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
 
 
@@ -369,7 +559,7 @@ def self_check():
         rejected = []
         def negative(name, callback):
             try: callback()
-            except (RuntimeError, AssertionError, ValueError, KeyError): rejected.append(name)
+            except (RuntimeError, AssertionError, ValueError, KeyError, FileExistsError): rejected.append(name)
             else: raise RuntimeError('Oracle accepted corruption: '+name)
         bad = copy.deepcopy(low); bad[2] = [a+1 for a in bad[2]]
         negative('nonconverging-bias', lambda: convergence(bad, high))
@@ -406,23 +596,26 @@ def self_check():
         negative('strict-validation-diagnostic', lambda:layer_proof(log+'\nSYNC-HAZARD-WRITE-AFTER-WRITE', library))
         path_state = dict(technique='path-tracing', gpuKnownMs=1., passes=[dict(name='Lighting', gpuMs=.5)],
             referencePath=dict(active=True, attemptedSamples=32, seed=23, unsupportedSamples=0, rejectedSamples=0,
-                maxBounces=BOUNCES, samplesPerFrame=BATCH, historyResets=1,
+                maxBounces=BOUNCES, samplesPerFrame=BATCH, historyResets=1, contentRevision=391,
                 allocatedBytes=WIDTH*HEIGHT*48, fireflyClamp=0, display='beauty',
                 oidn=dict(quality='off'), optix=dict(requested=False), dlss=dict(active=False)))
         path_metadata = dict(referencePath=dict(attemptedSamplesPerPixel=32, requestedSamplesPerPixel=32,
-            seed=23, maxBounces=BOUNCES, samplesPerFrame=BATCH,
+            seed=23, maxBounces=BOUNCES, samplesPerFrame=BATCH, contentRevision=391,
             acceptedSamplesPerPixel=32, hasDiagnostics=False))
         check_reference(path_state, path_metadata, 32, 23, exact=True)
         for name, field, value in (('wrong-attempted-count', 'attemptedSamples', 31),
                                   ('wrong-seed', 'seed', 24), ('unsupported-path', 'unsupportedSamples', 1),
-                                  ('rejected-path', 'rejectedSamples', 1), ('biased-firefly-clamp', 'fireflyClamp', 4)):
+                                  ('rejected-path', 'rejectedSamples', 1), ('biased-firefly-clamp', 'fireflyClamp', 4),
+                                  ('unmatched-path-revision', 'contentRevision', 392)):
             bad = copy.deepcopy(path_state); bad['referencePath'][field] = value
             negative(name, lambda:check_reference(bad, path_metadata, 32, 23, exact=True))
         bad_metadata = copy.deepcopy(path_metadata); bad_metadata['referencePath']['acceptedSamplesPerPixel'] = 31
         negative('incomplete-accepted-count', lambda:check_reference(path_state, bad_metadata, 32, 23, exact=True))
         frozen_file = output/'frozen.txt'; frozen_file.write_text('original')
-        manifest = output/'freeze.json'; write(manifest, dict(files={str(frozen_file):sha(frozen_file)}))
+        manifest = output/'freeze.json'
+        freeze_manifest(manifest, [frozen_file], '1.4.363')
         verify_manifest(manifest, [frozen_file])
+        negative('overwritten-freeze-manifest', lambda: freeze_manifest(manifest, [frozen_file], '1.4.363'))
         negative('manifest-omitted-input', lambda:verify_manifest(manifest, [library]))
         frozen_file.write_text('changed')
         negative('manifest-changed-input', lambda:verify_manifest(manifest))
@@ -430,32 +623,56 @@ def self_check():
         write(manifest, dict(files={str(frozen_file):sha(frozen_file)}))
         negative('replaced-freeze-manifest', lambda:verify_manifest(manifest, identity=manifest_identity))
         generated = fixtures.generate(output/'plan')
+        authored = {name:fixtures.validate(Path(scene_data['path']), name) for name, scene_data in generated.items()}
         inventory = plan(output, generated, Path('renderer.exe'))
-        require(inventory['processCount'] == 40 and inventory['captureCount'] == 95, 'Default capture inventory changed')
+        require(inventory['processCount'] == 44 and inventory['captureCount'] == 102, 'Default capture inventory changed')
+        require([run['role'] for run in inventory['runs'] if run['scene'] == fixtures.MIRROR] ==
+                ['analytic', 'analytic', 'raster', 'display'], 'Mirror capture inventory changed')
+        mirror = generated[fixtures.MIRROR]
+        mirror_pixels, mirror_masks = mirror_expectation(mirror)
+        mirror_captures = [dict(seed=seed, image='fixture.exr', pixels=mirror_pixels) for seed in REFERENCE_SEEDS]
+        mirror_witness(mirror, mirror_captures)
+        negative('mirror-reversed-reflection', lambda: mirror_witness(mirror, [
+            dict(capture, pixels=capture['pixels'][:, ::-1]) for capture in mirror_captures]))
+        negative('mirror-radiance-scale', lambda: mirror_witness(mirror, [
+            dict(capture, pixels=capture['pixels']*.99) for capture in mirror_captures]))
+        contaminated = mirror_pixels.copy()
+        contaminated[mirror_masks['black-surround']] = .001
+        negative('mirror-lit-surround', lambda: mirror_witness(mirror, [
+            dict(capture, pixels=contaminated) for capture in mirror_captures]))
+        build = dict(revision='a'*40, configuration='Release', compiler='test')
+        revisions = dict(graph=11, geometry=14, objectData=16, material=18)
         # Exercise real EXR/PNG decoding, checkpoint/sequence filename mapping,
-        # full five-scene analysis and artifact generation without a renderer.
+        # five-scene convergence, mirror analysis and output without a renderer.
         for run in inventory['runs']:
             scene_data = generated[run['scene']]
+            geometry = authored[run['scene']]
             for index, image_path in enumerate(map(Path, run['images'])):
-                exact = run['role'] in ('low', 'high')
-                count = run['counts'][index] if exact else CHECKPOINTS[-1]
+                exact = run['role'] in ('low', 'high', 'analytic')
+                count = run['counts'][index] if exact else run['pathSamples']
                 technique = 'path-tracing' if exact else run['techniques'][index]
                 state = dict(technique=technique, resolution=[WIDTH, HEIGHT], msaaSamples=1,
                     taa=dict(enabled=False), fsr=copy.deepcopy(native_upscale), dlss=copy.deepcopy(native_upscale),
                     camera=dict(position=scene_data['cameraPosition'], unjitteredViewProjColumns=np.eye(4).tolist(), jitterUv=[0]*4),
-                    lighting=dict(areaLightCount=scene_data['expectedAreaLights']),
+                    lighting=dict(areaLightCount=scene_data['expectedAreaLights'], pointLightCount=0, environmentIntensity=0,
+                                  directionalIntensity=0, ltcReady=True, areaLightingMode=1, areaLightingRequestedMode=1),
+                    build=build, sceneRevisions=revisions, validationEnabled=True,
+                    scene=dict(primary=scene_data['path'], primaryImportScale=1, auxiliary='', auxiliaryObjectCount=0,
+                               primaryObjectCount=geometry['primitiveCount'], primaryIndexCount=3*geometry['triangleCount'],
+                               primaryVertexCount=geometry['vertexCount']),
                     gpuKnownMs=1., passes=[dict(name='Lighting', gpuMs=.5, active=True), *copy.deepcopy(disabled_passes)])
                 metadata = dict(includesUi=False, colorSpace='linear-sRGB', exposureApplied=False,
-                    toneMappingApplied=False, source='raster-scene-composite')
-                pixels = truth
+                    toneMappingApplied=False, source='raster-scene-composite', build=build, sceneRevisions=revisions)
+                pixels = np.zeros_like(truth) if run['scene'] == fixtures.MIRROR else truth
                 if technique == 'path-tracing':
                     if run['role'] == 'low': pixels=low[CHECKPOINTS.index(count)][LOW_SEEDS.index(run['seed'])]
                     elif run['role'] == 'high': pixels=high[REFERENCE_SEEDS.index(run['seed'])]
+                    elif run['role'] == 'analytic': pixels=mirror_pixels
                     else: pixels=low[-1][0]
                     state['referencePath'] = copy.deepcopy(path_state['referencePath'])
                     state['referencePath'].update(attemptedSamples=count, seed=run['seed'])
                     metadata['referencePath'] = dict(attemptedSamplesPerPixel=count,
-                        seed=run['seed'], maxBounces=BOUNCES, samplesPerFrame=BATCH,
+                        seed=run['seed'], maxBounces=BOUNCES, samplesPerFrame=BATCH, contentRevision=391,
                         acceptedSamplesPerPixel=count, requestedSamplesPerPixel=count, hasDiagnostics=False)
                     metadata['source']='path-trace-mean'
                 if image_path.suffix == '.exr':
@@ -469,10 +686,25 @@ def self_check():
                 write(image_path.with_suffix('.telemetry.json'), state)
                 write(Path(str(image_path)+'.capture.json'), metadata)
         simulated = analyze(output, generated, inventory)
+        mirror_report = simulated[fixtures.MIRROR]
+        require(len(mirror_report['captureIdentities']) == 7 and Path(mirror_report['displayComparison']).is_file(),
+                'Mirror raster and display comparison is incomplete')
+        comparisons = mirror_report['rasterAgainstRawReference']
+        require([item['technique'] for item in comparisons] == ['forward-raster', 'deferred-raster'] and
+                all(math.isclose(item['normalizedRmse'], 1) for item in comparisons), 'Mirror raster HDR metrics differ from oracle')
+        last_capture = read_capture(inventory['runs'][0]['images'][0])
+        for label, change in (
+            ('mismatched-build', lambda capture: capture['metadata']['build'].update(revision='b'*40)),
+            ('mismatched-scene-revision', lambda capture: capture['metadata']['sceneRevisions'].update(geometry=25)),
+            ('wrong-loaded-fixture', lambda capture: capture['state']['scene'].update(primary=str(frozen_file))),
+            ('wrong-runtime-geometry', lambda capture: capture['state']['scene'].update(primaryIndexCount=3)),
+        ):
+            bad = copy.deepcopy(last_capture); change(bad)
+            negative(label, lambda: capture_identity(bad, mirror, authored[fixtures.MIRROR]))
         calibration_guide(output, simulated)
-        require(len(simulated) == 5 and (output/'CALIBRATION.md').is_file(), 'Full simulated capture analysis failed')
+        require(len(simulated) == 6 and (output/'CALIBRATION.md').is_file(), 'Full simulated capture analysis failed')
         return dict(passed=True, gpuUsed=False, fixtureChecks=fixture_receipt,
-            statisticalAndComparisonNegativeChecks=rejected, processCount=40, captureCount=95,
+            statisticalAndComparisonNegativeChecks=rejected, processCount=inventory['processCount'], captureCount=inventory['captureCount'],
             simulatedCapturedArtifactAnalysis=True, syntheticConvergence=good, thresholds=THRESHOLDS)
 
 
@@ -481,11 +713,14 @@ def main():
     parser.add_argument('--renderer', type=Path)
     parser.add_argument('--manifest', type=Path)
     parser.add_argument('--layer-manifest', type=Path)
-    parser.add_argument('--expect-layer-version', default='1.4.363')
+    parser.add_argument('--expect-layer-version', help='require this layer API version in the configured manifest')
     parser.add_argument('--output', type=Path)
-    parser.add_argument('--self-check', action='store_true')
-    parser.add_argument('--generate-only', action='store_true')
-    parser.add_argument('--analyze-only', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--self-check', action='store_true', help='run the CPU fixture and analysis checks')
+    mode.add_argument('--generate-only', action='store_true', help='write fixtures and capture plan without running the renderer')
+    mode.add_argument('--analyze-only', action='store_true', help='verify and reanalyze a completed run with its frozen inputs')
+    mode.add_argument('--freeze-manifest', action='store_true', help='write a new --manifest from the configured renderer and layer')
+    mode.add_argument('--ctest', action='store_true', help='opt in with CONTAINER_RUN_GPU_REFERENCE_CONVERGENCE=1; freeze and run under --output')
     parser.add_argument('--timeout', type=int, default=600)
     args = parser.parse_args()
     if args.self_check:
@@ -494,11 +729,20 @@ def main():
             args.output.mkdir(parents=True, exist_ok=False)
             write(args.output/'self-check.json', receipt)
         print(json.dumps(receipt, indent=2)); return
+    if args.freeze_manifest:
+        require(args.manifest is not None, '--freeze-manifest requires a new --manifest path')
+        _, _, _, version, consumed = runtime_inputs(args.renderer, args.layer_manifest, args.expect_layer_version)
+        manifest = args.manifest.resolve()
+        freeze_manifest(manifest, consumed, version)
+        print(json.dumps(verify_manifest(manifest, consumed), indent=2)); return
     require(args.output is not None, '--output is required')
     output = args.output.resolve()
     if args.analyze_only:
         report = json.loads((output/'results.json').read_text())
-        verify_manifest(Path(report['manifestBefore']['path']), identity=report['manifestBefore']['sha256'])
+        require(report['passed'] and report['completedProcesses'] == report['expectedProcesses']
+                and report['captures'] == report['expectedCaptures'], 'Replay requires a completed passing capture')
+        verify_manifest(Path(report['manifestBefore']['path']), dependencies(),
+                        identity=report['manifestBefore']['sha256'])
         require(all(sha(Path(p)) == h for p,h in report['generatedInputsSha256'].items()), 'Generated inputs changed')
         for run in report['runs']:
             require(all(sha(Path(p)) == h for p,h in run['captureArtifacts'].items()), 'Captured artifacts changed')
@@ -508,10 +752,23 @@ def main():
         calibration_guide(output, report['scenes'])
         report['analysisPassed'] = True
         write(output/'results.json', report)
-        print('PASS read-only capture analysis'); return
+        print('PASS frozen capture analysis'); return
+    if not args.generate_only:
+        renderer, layer_manifest, library, version, consumed = runtime_inputs(args.renderer, args.layer_manifest, args.expect_layer_version)
+        if args.ctest:
+            require(args.manifest is None, '--ctest automatically freezes its runtime; omit --manifest')
+            output.mkdir(parents=True, exist_ok=True)
+            run_root = Path(tempfile.mkdtemp(prefix='golden-', dir=output))
+            manifest, output = run_root/'freeze-manifest.json', run_root/'captures'
+            freeze_manifest(manifest, consumed, version)
+        else:
+            require(args.manifest is not None, 'Native execution requires --manifest; use --freeze-manifest to generate one')
+            manifest = args.manifest.resolve()
+        before = verify_manifest(manifest, consumed)
+        require(before['validationLayerApiVersion'] in (None, version), 'Frozen validation-layer API version differs')
     output.mkdir(parents=True, exist_ok=False)
     scenes = fixtures.generate(output/'fixtures')
-    for name, scene in scenes.items(): fixtures.validate(Path(scene['path']), name)
+    authored = {name:fixtures.validate(Path(scene['path']), name) for name, scene in scenes.items()}
     inventory = plan(output, scenes, (args.renderer or Path('VulkanSceneRenderer.exe')).resolve())
     write(output/'fixtures.json', scenes)
     write(output/'launch-plan.json', inventory)
@@ -519,16 +776,6 @@ def main():
     if args.generate_only:
         print(json.dumps(dict(gpuUsed=False, processCount=inventory['processCount'],
                               captureCount=inventory['captureCount'], output=str(output)), indent=2)); return
-    require(args.renderer and args.renderer.is_file() and args.manifest and args.layer_manifest,
-            'Native execution requires --renderer, --manifest and --layer-manifest')
-    renderer, manifest, layer_manifest = args.renderer.resolve(), args.manifest.resolve(), args.layer_manifest.resolve()
-    layer = json.loads(layer_manifest.read_text(encoding='utf-8'))['layer']
-    require(layer['name'] == 'VK_LAYER_KHRONOS_validation' and layer['api_version'] == args.expect_layer_version,
-            'Wrong validation-layer name/version')
-    library = (layer_manifest.parent/layer['library_path']).resolve()
-    consumed = [renderer, *renderer.parent.glob('*.dll'), *(renderer.parent/'spv_shaders').glob('*.spv'),
-                *dependencies(), layer_manifest, library]
-    before = verify_manifest(manifest, consumed)
     local_inputs = [output/'fixtures.json', output/'launch-plan.json', output/'thresholds.json',
                     *[Path(s['path']) for s in scenes.values()], *output.glob('*.sequence.json')]
     local_hashes = {str(p): sha(p) for p in local_inputs}
@@ -537,14 +784,16 @@ def main():
     local_hashes[str(settings)] = sha(settings)
     environment = dict(os.environ, VK_LAYER_PATH=str(layer_manifest.parent),
         VK_LAYER_SETTINGS_PATH=str(output), VK_LOADER_DEBUG='error,warn,info,layer,driver,debug')
-    report = dict(passed=False, rendererSha256=sha(renderer), manifestBefore=before,
+    report = dict(passed=False, rendererSha256=sha(renderer), manifestBefore=before, validationLayerApiVersion=version,
         generatedInputsSha256=local_hashes, thresholds=THRESHOLDS, completedProcesses=0,
         expectedProcesses=inventory['processCount'], expectedCaptures=inventory['captureCount'], runs=[],
         tools=dict(python=sys.version, numpy=np.__version__, opencv=cv2.__version__, platform=platform.platform()),
         sourceDependencies={str(p):sha(p) for p in dependencies()})
     started = time.perf_counter()
+    mirror_captures, mirror_samples = [], []
     def verify():
-        verify_manifest(manifest, consumed, identity=before['sha256'])
+        _, _, _, _, current_inputs = runtime_inputs(renderer, layer_manifest, version)
+        verify_manifest(manifest, current_inputs, identity=before['sha256'])
         require(all(sha(Path(p)) == h for p,h in local_hashes.items()), 'Generated fixture/plan/settings changed during native work')
     try:
         for run in inventory['runs']:
@@ -559,17 +808,38 @@ def main():
             require(process.returncode == 0, f'Native process failed ({process.returncode}): {log_path}')
             proof = layer_proof(log, library)
             require(all(Path(p).is_file() for p in run['images']), 'A native capture is missing')
-            sample = read_capture(run['images'][0])
-            hardware = {key:sample['state'][key] for key in ('gpu', 'driverVersion', 'vulkanApiVersion')}
-            if 'hardware' in report: require(report['hardware'] == hardware, 'GPU/driver changed during acceptance')
-            report['hardware'] = hardware
             artifacts = [Path(p) for p in run['images']]
             artifacts += [Path(p).with_suffix('.telemetry.json') for p in run['images']]
             artifacts += [Path(p+'.capture.json') for p in run['images']]
             artifacts.append(log_path)
-            report['runs'].append(dict(name=run['name'], log=str(log_path), returnCode=process.returncode,
+            process_report = dict(name=run['name'], log=str(log_path), returnCode=process.returncode,
                 elapsedSeconds=time.perf_counter()-run_started, captureCount=len(run['images']),
-                layer=proof, captureArtifacts={str(p):sha(p) for p in artifacts}))
+                layer=proof, captureArtifacts={str(p):sha(p) for p in artifacts})
+            report['runs'].append(process_report)
+            name = run['scene']
+            samples, identities, costs = read_process(run, scenes[name], authored[name])
+            process_report.update(captureIdentities=identities, costs=costs)
+            camera_and_display(samples, scenes[name])
+            for sample, identity in zip(samples, identities, strict=True):
+                build = identity['build']
+                require('build' not in report or report['build'] == build, 'Renderer build changed between captures')
+                report['build'] = build
+                hardware = {key:sample['state'][key] for key in ('gpu', 'driverVersion', 'vulkanApiVersion')}
+                require('hardware' not in report or report['hardware'] == hardware, 'GPU/driver changed during acceptance')
+                report['hardware'] = hardware
+            if name == fixtures.MIRROR:
+                mirror_samples.extend(samples)
+                if run['role'] == 'analytic':
+                    mirror_captures.append(analytic_capture(run, samples[0]))
+                    if len(mirror_captures) == len(REFERENCE_SEEDS):
+                        camera_and_display(mirror_samples, scenes[name])
+                        report['analyticMirror'] = mirror_witness(scenes[name], mirror_captures)
+                        print('PASS analytic mirror radiance for both seeds', flush=True)
+                elif run['role'] == 'raster':
+                    reference = np.mean([capture['pixels'] for capture in mirror_captures], axis=0)
+                    report['mirrorRasterAgainstRawReference'] = compare_raster(samples, reference)
+                else:
+                    camera_and_display(mirror_samples, scenes[name])
             report['completedProcesses'] += 1
             write(output/'results.json', report)
             print(f"{run['name']}: {len(run['images'])} strict-clean captures", flush=True)
@@ -589,7 +859,7 @@ def main():
     finally:
         report['elapsedSeconds'] = time.perf_counter()-started
         write(output/'results.json', report)
-    print(f"PASS {report['captures']} captures / {report['completedProcesses']} processes", flush=True)
+    print(f"PASS {report['captures']} captures / {report['completedProcesses']} processes: {output}", flush=True)
 
 
 if __name__ == '__main__':

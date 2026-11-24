@@ -15,7 +15,9 @@ Expand **Export Image** and enter an output path without an extension:
 | Window PNG | Displayed image including enabled editor overlays. |
 
 Each image has a `.capture.json` sidecar recording dimensions, color space,
-source, display settings, and whether UI is included. Transparent raster
+source, display settings, whether UI is included, the renderer build, and the
+primary scene graph, geometry, object data and material revisions. Path-traced
+images also identify the submitted reference content revision. Transparent raster
 surfaces contribute to scene HDR before bloom, auto exposure, and EXR readback
 with or without TAA. The temporal resolve discards prior
 color when switching between the editor view and EXR capture so selection

@@ -100,6 +100,8 @@ public:
   // populated by recordBuild before fragment/compute query consumers execute.
   [[nodiscard]] VkDescriptorSetLayout traceDescriptorLayout() const;
   [[nodiscard]] VkDescriptorSet traceDescriptorSet(uint32_t image) const;
+  // Eligible draws before surface compatibility and allocation checks.
+  [[nodiscard]] bool hasRayGeometry() const;
   [[nodiscard]] RaySurfaceGpuBindings surfaceBindings(uint32_t image) const;
   [[nodiscard]] RaySurfaceMotionSnapshot surfaceMotionSnapshot(uint32_t image) const;
   // Host metadata for the same fence-retained surface generation.

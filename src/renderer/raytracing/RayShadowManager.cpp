@@ -204,7 +204,8 @@ struct RayShadowManager::Impl {
   std::optional<uint64_t> rejectedSurfaceScene;
   std::string rejectedSurfaceReason;
   bool validHistory{false}, recorded{false}, enabled{false},
-      surfaceRequested{false}, surfaceEnabled{false}, sceneEnabled{false};
+      surfaceRequested{false}, surfaceEnabled{false}, sceneEnabled{false},
+      hasRayGeometry{false};
   glm::mat4 previousViewProj{1}, previousInverseViewProj{1};
   TraceData data{};
 
@@ -373,6 +374,7 @@ VkDescriptorSet RayShadowManager::traceDescriptorSet(uint32_t image) const {
   return active() && image < impl_->slots.size() ? impl_->slots[image].traceSet
                                                  : VK_NULL_HANDLE;
 }
+bool RayShadowManager::hasRayGeometry() const { return impl_->hasRayGeometry; }
 RaySurfaceGpuBindings RayShadowManager::surfaceBindings(uint32_t image) const {
   const auto &p = *impl_;
   if (!p.sceneEnabled || !p.surfaceEnabled || image >= p.slots.size())
@@ -554,7 +556,7 @@ void RayShadowManager::prepare(VkExtent2D extent, uint32_t imageCount) {
   p.extent = extent;
   p.frameId = 0;
   p.sceneHash = p.lightingHash = p.sceneRevision = 0;
-  p.enabled = p.sceneEnabled = p.surfaceEnabled = false;
+  p.enabled = p.sceneEnabled = p.surfaceEnabled = p.hasRayGeometry = false;
   p.surfaceUnsupported.clear();
   p.rejectedSurfaceScene.reset();
   p.rejectedSurfaceReason.clear();
@@ -619,7 +621,7 @@ void RayShadowManager::update(
     bool geometryCompatible) {
   auto &p = *impl_;
   p.settings = sanitizeRayShadowSettings(p.settings);
-  const bool hasRayGeometry = std::any_of(
+  p.hasRayGeometry = std::any_of(
       sources.begin(), sources.end(), [](const auto &source) {
         return std::any_of(source.draws.begin(), source.draws.end(),
                            [](const auto &draw) {
@@ -627,10 +629,10 @@ void RayShadowManager::update(
                                     draw.instanceCount != 0u;
                            });
       });
-  p.enabled = hasRayGeometry && supported() && geometryCompatible &&
+  p.enabled = p.hasRayGeometry && supported() && geometryCompatible &&
               p.settings.mode != RayShadowMode::Raster && *p.tracePipeline;
-  p.surfaceEnabled = p.surfaceRequested && hasRayGeometry;
-  if (!hasRayGeometry) {
+  p.surfaceEnabled = p.surfaceRequested && p.hasRayGeometry;
+  if (!p.hasRayGeometry) {
     // Unloading or filtering out every triangle is a normal empty scene, not
     // an optional-surface failure. Keep requests/modes for the next loaded model.
     p.rejectedSurfaceScene.reset();
