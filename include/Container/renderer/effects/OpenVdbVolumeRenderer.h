@@ -106,6 +106,7 @@ public:
   void setVolumeSettings(uint32_t index, const OpenVdbVolumeSettings& settings);
   void clearVolumeSettings(uint32_t index);
   [[nodiscard]] uint32_t volumeCount() const noexcept { return static_cast<uint32_t>(volumes_.size()); }
+  [[nodiscard]] bool hasEnabledMedia() const noexcept;
   // Exactly mirrors record() eligibility. Its per-pixel alpha coverage is only
   // consumed by temporal composition when this predicate is true.
   [[nodiscard]] bool records(const FrameRecordParams& frame) const noexcept;

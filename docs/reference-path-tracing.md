@@ -292,9 +292,9 @@ filters and retires graphics readers before replacement. The cube uses the exist
 environment bake precision; extreme HDR environment precision remains a limitation.
 An explicit background-only shader variant handles empty scenes without statically
 accessing acceleration-structure descriptors. A nonempty scene whose surface
-generation is unavailable produces an unsupported diagnostic, not an unobstructed
-background. Semantic BIM coloring, volume transport, atmosphere/solar transport and
-the material capabilities listed below are reported as unsupported in this mode.
+generation is unavailable produces an unsupported diagnostic. BIM semantic coloring,
+enabled OpenVDB media, active raster froxel fog, atmosphere and solar transport, and
+the material capabilities listed below also produce unsupported diagnostics in this mode.
 
 Two viewport-scale GPU regressions also cover floating-point boundaries. Shared
 closest-hit color interpolation uses affine differences and its vertex-value hull,
@@ -540,6 +540,66 @@ Closed homogeneous glass volumes support refraction and absorption, including
 properly nested media and cameras inside them. See the solid-volume checkpoint
 below for explicit topology, clipping, capacity and caustic limits.
 
+### Material and transport coverage
+
+The component GPU tests check the production shader and the transport math
+against independent references. The application regression checks the same
+renderer through model import, the render graph, capture export and capability
+fallback.
+
+| Material or path | Reference behavior and coverage |
+| --- | --- |
+| Metallic-roughness and unlit | Lambert and GGX energy, exact mirror events, textured base and emission, and alpha mask and blend coverage. |
+| Specular-glossiness and clearcoat | Authored specular-glossiness lobes and textures. Separate base and coat normals, Fresnel, mixture PDFs, and coated emission. |
+| Normal maps and filtered textures | Geometric hemisphere checks, independently sampled UV sets and transforms, and primary and secondary ray-cone footprints. Alpha coverage and volume-boundary classification use mip zero. The shading frame uses the documented energy approximation above. |
+| Thin transmission and layered light paths | Tint, rough and straight-through specular transmission, opposite-hemisphere diffuse transmission, and transmission through multiple panes. The light and BSDF proposals agree on the footprint and probability through a minified sheet. |
+| Closed homogeneous material volumes | Ray distance absorption, inside and nested glass, Snell refraction, total internal reflection, and RGB dispersion. Open and overlapping volumes and unsupported caustic connections are diagnosed. |
+| Unsupported surface models | On lit materials, active sheen, iridescence, height displacement, and incompatible layered combinations are diagnosed at surface hits and visible emissive-mesh light connections. Occluded emissive endpoints leave the result determined by visible contributions. |
+| Raster-only scene media | Active OpenVDB media, including static and sequence volumes, and positive-density froxel fog produce a scene diagnostic. Turning the medium off restores ordinary reference accumulation. |
+
+Unsupported samples stay out of the raw EXR mean. The viewport marks affected
+pixels in magenta, and telemetry records unsupported sample counts. An enabled
+scene-wide unsupported feature also publishes its name in the reference
+status. Turning that feature off starts fresh accumulation.
+
+```powershell
+cmake --build out/build/windows-release --target VulkanSceneRenderer path_transport_gpu_tests reference_path_trace_gpu_tests
+$env:CONTAINER_RUN_GPU_PATH_TRANSPORT = '1'
+$env:CONTAINER_RUN_GPU_REFERENCE_PATH_TRACE = '1'
+$env:CONTAINER_RUN_GPU_REFERENCE_MATERIAL_PARITY = '1'
+ctest --test-dir out/build/windows-release --output-on-failure -R '^(path_transport_gpu_tests|reference_path_trace_gpu_tests|reference_material_parity_gpu_regression)$'
+```
+
+The native test needs NumPy, OpenCV with EXR support, a display, and the
+Khronos Vulkan validation layer. It writes capture images, Vulkan logs and
+telemetry under `test_results/reference-material-parity/run-*`. An
+OpenVDB-enabled build also runs the static-volume fixtures using its
+`OpenVdbTool` executable. Build that target before running the tests in
+that configuration.
+
+On the RTX 2080 SUPER, 73 transport-math tests and 90 production backend
+tests passed with Vulkan synchronization validation. In a 192×144 capture
+at 32 samples per pixel, a visible sheen emitter originally contributed
+center RGB (0.03417, 0.01220, 0.00366) and reported zero unsupported samples.
+The updated shader classified all 884,736 samples as unsupported, left the raw EXR at zero,
+and marked the viewport magenta. An opaque blocker kept the unsupported
+count at zero. The supported control matched the independent rectangle
+integral within 0.37%. Its last eight-sample Lighting interval took
+3.19 ms and the reference pass owned 2,360,592 VMA bytes.
+
+The UV1 checker and normal-map captures agreed with their analytic
+controls within 0.00249 scene-linear units in both perspective and
+orthographic projection. Enabling raster fog in the reference viewport
+produced the scene diagnostic. Disabling it restored the original raw
+EXR after a fresh accumulation. Forced raster fallback rendered fog
+with a maximum channel error of 0.00045 against analytic attenuation.
+
+The native suite passed 12 captures in the standard build and 14 with
+OpenVDB 12.0.1 enabled. The enabled static volume reported
+`OpenVDB volume transport` and its disabled control was pixel-identical
+to the reference scene. The OpenVDB validation build used MSVC's `/bigobj`
+option for the template-heavy object files.
+
 The pass owns three explicit RGBA32F storage images: mean/count, second central
 moment/diagnostic flags, and display. Typed image formats avoid requiring storage
 image reads/writes without a format. Resources require the existing Vulkan 1.4
@@ -572,8 +632,9 @@ Application integration obtains surface bindings after the image's
 `RayShadowManager::recordBuild`, then prepares/records the reference pass before
 post-processing. The current backend extent describes the whole camera image;
 future docked viewport offsets/cropping need an explicit presentation contract.
-The backend represents triangle surfaces and analytic lights, not participating
-media/volumes or atmosphere propagation along scene rays.
+The backend traces triangle surfaces, emissive meshes and analytic lights.
+Closed homogeneous material volumes use surface boundaries and distance
+absorption. Raster media and atmosphere requests use scene diagnostics.
 
 ### Backend validation checkpoint
 

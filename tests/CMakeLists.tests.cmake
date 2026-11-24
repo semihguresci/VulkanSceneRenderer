@@ -876,6 +876,20 @@ target_compile_definitions(reference_path_trace_gpu_tests PRIVATE
 add_dependencies(reference_path_trace_gpu_tests shaders_all)
 set_tests_properties(reference_path_trace_gpu_tests PROPERTIES
     LABELS "requires-vulkan;requires-display;ray-query;path-tracing" RUN_SERIAL TRUE TIMEOUT 600)
+
+set(reference_material_parity_options)
+if(ENABLE_OPENVDB)
+    list(APPEND reference_material_parity_options --openvdb-tool "$<TARGET_FILE:OpenVdbTool>")
+endif()
+add_test(NAME reference_material_parity_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/reference_material_parity_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/reference-material-parity" --managed-output --require-opt-in
+            ${reference_material_parity_options})
+set_tests_properties(reference_material_parity_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 800
+    LABELS "requires-vulkan;requires-display;ray-query;path-tracing;material;visual-regression")
+
 set_tests_properties(ray_shadow_surface_gpu_tests PROPERTIES
     LABELS "requires-vulkan;requires-display;ray-query;ddgi")
 
