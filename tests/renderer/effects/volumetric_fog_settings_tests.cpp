@@ -12,7 +12,7 @@ using container::renderer::VolumetricFogMode;
 using container::renderer::VolumetricFogSettings;
 
 constexpr std::array kEnabledModes{VolumetricFogMode::Low, VolumetricFogMode::High,
-    VolumetricFogMode::Transmittance, VolumetricFogMode::Scattering};
+    VolumetricFogMode::Transmittance, VolumetricFogMode::Scattering, VolumetricFogMode::Froxels};
 
 struct SettingRange {
   const char* name;
@@ -95,7 +95,7 @@ TEST(VolumetricFogSettings, RejectsNonfiniteParameters) {
 }
 
 TEST(VolumetricFogSettings, RejectsUnknownModes) {
-  for (const uint32_t invalid : {static_cast<uint32_t>(VolumetricFogMode::Scattering) + 1u,
+  for (const uint32_t invalid : {static_cast<uint32_t>(VolumetricFogMode::Froxels) + 1u,
                                   std::numeric_limits<uint32_t>::max()}) {
     SCOPED_TRACE(invalid);
     const VolumetricFogSettings settings{.mode = static_cast<VolumetricFogMode>(invalid)};

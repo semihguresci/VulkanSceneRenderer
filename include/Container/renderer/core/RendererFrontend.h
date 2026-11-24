@@ -25,6 +25,7 @@
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
 #include "Container/renderer/core/RendererMsaa.h"
 #include "Container/renderer/debug/DebugRenderState.h"
+#include "Container/renderer/effects/VolumetricFogSettings.h"
 #include "Container/renderer/lighting/EditableLight.h"
 #include "Container/renderer/lighting/LightEditTypes.h"
 #include "Container/renderer/lighting/DdgiProbeVolume.h"
@@ -447,6 +448,8 @@ private:
 
   OwnedSubsystems subs_;
   BorrowedServices svc_;
+  VolumetricFogSettings volumetricFogSettings_;
+  std::string volumetricFogStatus_;
 
   bool referencePathActive() const;
   [[nodiscard]] ReferencePathDisplayMode referencePathDisplay() const;
@@ -990,6 +993,8 @@ private:
   void createSceneBuffers();
   void createGeometryBuffers();
   void createFrameResources();
+  void createVolumetricFogResources();
+  void applyVolumetricFogSettings(const VolumetricFogSettings&);
   [[nodiscard]] VkExtent2D sceneRenderExtent() const;
   [[nodiscard]] UpscaleResourceRequest currentUpscaleResourceRequest() const;
   void reconcileUpscaleResources();

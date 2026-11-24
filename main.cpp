@@ -350,7 +350,7 @@ void printCommandLineHelp() {
   --experimental-opacity-micromaps Enable authored glTF micromaps on compatible ray-query devices
   --screen-reflections MODE         off, low, high, confidence, distance, source, or history (deferred raster)
   --screen-reflections-ray-query   Trace off-screen reflection misses on ray-query devices
-  --volumetric-fog MODE            off, low, high, transmittance, or scattering
+  --volumetric-fog MODE            off, low, high, transmittance, scattering, or froxels
   --fog-density N                 Fog extinction density in inverse scene units
   --fog-albedo N                  Fog scattering albedo [0,1]
   --fog-anisotropy N              Fog phase anisotropy [-0.9,0.9]
@@ -862,14 +862,10 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else if (arg == "--screen-reflections-ray-query") {
       config.screenReflectionRayFallback = true;
     } else if (arg == "--volumetric-fog") {
-      using Mode = container::renderer::VolumetricFogMode;
-      const auto mode = requireValue(argc, argv, i, arg);
-      if (mode == "off") config.volumetricFog.mode = Mode::Off;
-      else if (mode == "low") config.volumetricFog.mode = Mode::Low;
-      else if (mode == "high") config.volumetricFog.mode = Mode::High;
-      else if (mode == "transmittance") config.volumetricFog.mode = Mode::Transmittance;
-      else if (mode == "scattering") config.volumetricFog.mode = Mode::Scattering;
-      else throw std::invalid_argument("--volumetric-fog expects off, low, high, transmittance, or scattering");
+      const auto mode = container::renderer::parseVolumetricFogMode(requireValue(argc, argv, i, arg));
+      if (!mode)
+        throw std::invalid_argument("--volumetric-fog expects off, low, high, transmittance, scattering, or froxels");
+      config.volumetricFog.mode = *mode;
     } else if (arg == "--fog-density") {
       config.volumetricFog.density = parseFloat(requireValue(argc, argv, i, arg), arg);
     } else if (arg == "--fog-albedo") {

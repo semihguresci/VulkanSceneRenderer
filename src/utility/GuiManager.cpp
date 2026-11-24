@@ -5180,7 +5180,8 @@ void GuiManager::drawSceneControls(
   enum class ControlsSection {
     None, Project, GltfScene, Hierarchy, Selection, Material, Variants,
     Animation, RenderSetups, Physics, Volumes,
-    Rendering, Lighting, Shadows, Ddgi, PostProcess, Transforms, Bim, Diagnostics
+    Rendering, Lighting, Shadows, VolumetricFog, Ddgi, PostProcess,
+    Transforms, Bim, Diagnostics
   };
   ControlsSection requestedSection = ControlsSection::None;
   bool focusTelemetry = false;
@@ -5214,6 +5215,7 @@ void GuiManager::drawSceneControls(
       sectionItem("Rendering / display / overlays", ControlsSection::Rendering);
       sectionItem("Lights", ControlsSection::Lighting);
       sectionItem("Shadows", ControlsSection::Shadows);
+      sectionItem("Volumetric Fog", ControlsSection::VolumetricFog);
       sectionItem("Global illumination (DDGI)", ControlsSection::Ddgi);
       sectionItem("Exposure / anti-aliasing / bloom", ControlsSection::PostProcess);
       sectionItem("Camera / scene transforms", ControlsSection::Transforms);
@@ -9192,6 +9194,32 @@ void GuiManager::drawSceneControls(
                      static_cast<int>(
                          container::gpu::kMaxShadowedLocalLightLayers)));
     }
+    ImGui::TreePop();
+  }
+
+  if (sectionAnchor(ControlsSection::VolumetricFog)) ImGui::SetNextItemOpen(true);
+  if (ImGui::TreeNode("Volumetric Fog")) {
+    using container::renderer::VolumetricFogMode;
+    using container::renderer::VolumetricFogSettings;
+    int fogMode = static_cast<int>(volumetricFogSettings_.mode);
+    if (ImGui::Combo("Fog mode", &fogMode,
+                     "Off\0Low\0High\0Transmittance\0Scattering\0Froxel grid\0"))
+      volumetricFogSettings_.mode = static_cast<VolumetricFogMode>(fogMode);
+    if (volumetricFogSettings_.mode != VolumetricFogMode::Off) {
+      constexpr auto kLogSlider = ImGuiSliderFlags_AlwaysClamp | ImGuiSliderFlags_Logarithmic;
+      ImGui::SliderFloat("Extinction (per unit)", &volumetricFogSettings_.density,
+                         0.0f, VolumetricFogSettings::kMaxDensity, "%.4f", kLogSlider);
+      ImGui::SliderFloat("Scattering albedo", &volumetricFogSettings_.albedo,
+                         0.0f, 1.0f, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat("Anisotropy", &volumetricFogSettings_.anisotropy,
+                         VolumetricFogSettings::kMinAnisotropy,
+                         VolumetricFogSettings::kMaxAnisotropy, "%.3f", ImGuiSliderFlags_AlwaysClamp);
+      ImGui::SliderFloat("Distance (scene units)", &volumetricFogSettings_.distance,
+                         VolumetricFogSettings::kMinDistance,
+                         VolumetricFogSettings::kMaxDistance, "%.1f", kLogSlider);
+    }
+    if (!volumetricFogStatus_.empty())
+      ImGui::TextWrapped("%s", volumetricFogStatus_.c_str());
     ImGui::TreePop();
   }
 

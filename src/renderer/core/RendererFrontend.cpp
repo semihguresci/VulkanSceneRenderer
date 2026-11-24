@@ -1471,7 +1471,8 @@ RendererFrontend::RendererFrontend(RendererFrontendCreateInfo info)
            *info.commandBufferManager,
            *info.config,
            info.nativeWindow,
-           *info.inputManager} {}
+           *info.inputManager},
+      volumetricFogSettings_(info.config->volumetricFog) {}
 
 RendererFrontend::~RendererFrontend() { shutdown(); }
 
@@ -3448,6 +3449,11 @@ void RendererFrontend::applyTemporalCapture(
   if (event.ddgiRoomPlan) applyCaptureDdgiRoomPlan(*event.ddgiRoomPlan);
   if (event.exposure)
     captureExposure_ = *event.exposure;
+  if (event.volumetricFogMode) {
+    auto settings = volumetricFogSettings_;
+    settings.mode = *event.volumetricFogMode;
+    applyVolumetricFogSettings(settings);
+  }
   if (event.areaLightPosition) {
     const auto &lights = subs_.lightingManager->editableLights();
     const auto it = std::ranges::find_if(lights, [](const auto &light) {
@@ -4161,9 +4167,9 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
             subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::ScreenReflections) &&
             subs_.screenReflectionPass->rayFallbackActive()}};
   }
-  if (svc_.config.volumetricFog.mode != VolumetricFogMode::Off) {
-    json["volumetricFog"] = {{"mode", static_cast<uint32_t>(svc_.config.volumetricFog.mode)},
-        {"density", svc_.config.volumetricFog.density},
+  if (volumetricFogSettings_.mode != VolumetricFogMode::Off || volumetricFogSettings_ != svc_.config.volumetricFog) {
+    json["volumetricFog"] = {{"mode", static_cast<uint32_t>(volumetricFogSettings_.mode)},
+        {"density", volumetricFogSettings_.density},
         {"active", subs_.volumetricFogPass && subs_.deferredRasterFrameGraphContext &&
             subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::VolumetricFog)},
         {"historyReprojected", subs_.volumetricFogPass && subs_.volumetricFogPass->historyReprojected()},
@@ -6728,17 +6734,7 @@ void RendererFrontend::createFrameResources() {
           "Screen reflections unavailable: {}", error.what());
     }
   }
-  if (svc_.config.volumetricFog.enabled() && subs_.shadowManager) {
-    try {
-      auto fog = std::make_unique<VolumetricFogPass>(svc_.ctx.deviceWrapper,
-          svc_.allocationManager, svc_.pipelineManager);
-      fog->createResources(container::util::executableDirectory(), *subs_.frameResourceManager,
-          sceneExtent, *subs_.shadowManager, subs_.lightingManager->lightDescriptorSetLayout());
-      subs_.volumetricFogPass = std::move(fog);
-    } catch (const std::exception& error) {
-      container::log::ContainerLogger::instance().renderer()->warn("Volumetric fog unavailable: {}", error.what());
-    }
-  }
+  createVolumetricFogResources();
   if (subs_.openVdbVolumeRenderer)
     subs_.openVdbVolumeRenderer->prepare(
         *subs_.frameResourceManager, buffers_.cameras,
@@ -6755,6 +6751,42 @@ void RendererFrontend::createFrameResources() {
         static_cast<uint32_t>(svc_.swapChainManager.imageCount()),
         subs_.environmentManager->prefilteredView(),
         subs_.environmentManager->envSampler());
+}
+
+void RendererFrontend::createVolumetricFogResources() {
+  volumetricFogStatus_.clear();
+  if (!volumetricFogSettings_.enabled()) return;
+  if (!subs_.shadowManager || !subs_.lightingManager) {
+    volumetricFogStatus_ = "Volumetric fog requires the raster lighting and shadow resources.";
+    return;
+  }
+  try {
+    auto fog = std::make_unique<VolumetricFogPass>(svc_.ctx.deviceWrapper,
+        svc_.allocationManager, svc_.pipelineManager);
+    fog->createResources(container::util::executableDirectory(), *subs_.frameResourceManager,
+        subs_.frameResourceManager->sceneExtent(), *subs_.shadowManager,
+        subs_.lightingManager->lightDescriptorSetLayout());
+    subs_.volumetricFogPass = std::move(fog);
+  } catch (const std::exception& error) {
+    volumetricFogStatus_ = "Volumetric fog resources could not initialize.";
+    container::log::ContainerLogger::instance().renderer()->warn("Volumetric fog unavailable: {}", error.what());
+  }
+}
+
+void RendererFrontend::applyVolumetricFogSettings(const VolumetricFogSettings& settings) {
+  if (!settings.valid() || settings == volumetricFogSettings_) return;
+  const bool wasEnabled = volumetricFogSettings_.enabled();
+  if (!settings.enabled() && subs_.volumetricFogPass) {
+    // The fog buffers and descriptors are shared by submitted graphics work.
+    subs_.frameSyncManager->waitForAllFrames();
+    subs_.volumetricFogPass.reset();
+  }
+  volumetricFogSettings_ = settings;
+  if (settings.enabled() && !wasEnabled)
+    createVolumetricFogResources();
+  else if (!settings.enabled())
+    volumetricFogStatus_.clear();
+  subs_.temporalManager->reset("volumetric fog settings changed");
 }
 
 // ---------------------------------------------------------------------------
@@ -8452,6 +8484,12 @@ void RendererFrontend::presentSceneControls() {
       sceneEdits_->canRedo() && !transforming,
       std::string(sceneEdits_->undoLabel()), std::string(sceneEdits_->redoLabel()));
   presentPhysicsControls();
+  auto fogStatus = volumetricFogStatus_;
+  if (fogStatus.empty() && (referencePathActive() ||
+      frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config)) !=
+          container::ui::GBufferViewMode::Lit))
+    fogStatus = "Volumetric fog is available in the Lit view of both raster renderers.";
+  subs_.guiManager->setVolumetricFogState(volumetricFogSettings_, std::move(fogStatus));
   subs_.guiManager->setOpenVdbVolumeState(
       bool(subs_.openVdbVolumeRenderer),
       subs_.openVdbVolumeRenderer ? subs_.openVdbVolumeRenderer->settings()
@@ -9241,6 +9279,8 @@ void RendererFrontend::presentSceneControls() {
     subs_.guiManager->setEnvironmentStatus(
         subs_.environmentManager->environmentStatus());
   }
+
+  applyVolumetricFogSettings(subs_.guiManager->volumetricFogSettings());
 
   // Sync render pass toggles: pull GUI toggle states back into the render
   // graph.
@@ -10230,7 +10270,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       .materialRevision = subs_.sceneManager ? subs_.sceneManager->materialRevision() : 0u,
       .lightRevision = subs_.lightingManager ? subs_.lightingManager->lightEditRevision() : 0u};
   p.services.volumetricFogPass = subs_.volumetricFogPass.get();
-  p.volumetricFog = {.settings = svc_.config.volumetricFog, .cameraData = &buffers_.cameraData,
+  p.volumetricFog = {.settings = volumetricFogSettings_, .cameraData = &buffers_.cameraData,
       .lightSet = subs_.lightingManager ? subs_.lightingManager->lightDescriptorSet(imageIndex) : VK_NULL_HANDLE,
       .historyRevision = p.scene.objectDataRevision ^ (p.bim.scene.objectDataRevision << 1) ^
           (subs_.lightingManager ? subs_.lightingManager->lightEditRevision() << 2 : 0u) ^

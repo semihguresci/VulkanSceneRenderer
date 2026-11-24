@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Container/renderer/bim/BimSunHours.h"
+#include "Container/renderer/effects/VolumetricFogSettings.h"
 
 #include "Container/renderer/temporal/UpscaleMode.h"
 
@@ -241,6 +242,7 @@ struct CaptureEvent {
   bool guiWaitForLoad{true};
   std::optional<bool> taa, orthographic, objectVisible, minimized;
   std::optional<container::renderer::UpscaleSelection> upscaling;
+  std::optional<container::renderer::VolumetricFogMode> volumetricFogMode;
   std::optional<bool> rayShadowDenoise;
   std::optional<bool> ddgiPaused, ddgiEnabled;
   std::optional<float> ddgiIntensity;
@@ -624,6 +626,13 @@ public:
       }
       if (value.contains("bimFloorPlan"))
         event.bimFloorPlan = bimFloorPlan(value.at("bimFloorPlan"));
+      if (value.contains("volumetricFogMode")) {
+        const auto& mode = value.at("volumetricFogMode");
+        if (mode.is_string())
+          event.volumetricFogMode = container::renderer::parseVolumetricFogMode(mode.get_ref<const std::string&>());
+        if (!event.volumetricFogMode)
+          throw std::invalid_argument("Capture volumetricFogMode requires off, low, high, transmittance, scattering, or froxels");
+      }
       if (value.contains("bimAnnotations"))
         event.bimAnnotations = bimAnnotations(value.at("bimAnnotations"));
       if (value.contains("bimClash"))

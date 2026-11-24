@@ -1383,6 +1383,15 @@ set_tests_properties(volumetric_fog_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
     LABELS "requires-vulkan;requires-display;lighting;visual-regression")
 
+add_test(NAME volumetric_fog_temporal_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/volumetric_fog_temporal_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/volumetric-fog-temporal"
+            --managed-output --require-opt-in --with-controls)
+set_tests_properties(volumetric_fog_temporal_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 850
+    LABELS "requires-vulkan;requires-display;lighting;temporal;visual-regression")
+
 add_test(NAME gltf_live_alpha_shadows_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/gltf_vertex_alpha_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>" --suite authoring-shadows

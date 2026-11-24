@@ -34,6 +34,7 @@
       "objectVisible": {"type": "boolean"}, "minimized": {"type": "boolean"}, "orthographic": {"type": "boolean"},
       "acquireOutOfDate": {"type": "boolean"}, "presentSuboptimal": {"type": "boolean"},
       "samples": {"enum": [1, 2, 4, 8]}, "exposure": {"type": "number", "minimum": 0},
+      "volumetricFogMode": {"enum": ["off", "low", "high", "transmittance", "scattering", "froxels"]},
       "depthProbe": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 0, "maximum": 16384}},
       "resize": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1, "maximum": 16384}},
       "swapchainFormat": {"enum": ["bgra8-srgb", "rgba8-srgb", "bgra8-unorm", "rgba8-unorm"], "description": "Request a supported SDR swapchain image format"},
