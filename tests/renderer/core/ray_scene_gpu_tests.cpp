@@ -641,7 +641,7 @@ TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {
   bimVertices[0].position = {-1, -1, 0};
   bimVertices[1].position = {1, -1, 0};
   bimVertices[2].position = {0, 1, 0};
-  const auto meshVertices = bimVertices;
+  auto meshVertices = bimVertices;
   const std::vector<uint32_t> indices{0, 1, 2};
   std::vector<container::gpu::ObjectData> bimObjects(1), meshObjects(1);
   meshObjects[0].model =
@@ -649,6 +649,7 @@ TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {
   const std::vector<DrawCommand> draws{{0, 0, 3}};
   std::vector<RaySceneProviderSource> providers{
       {{"bim"}, 7, bimVertices, indices, bimObjects, draws}};
+  providers[0].assetId = container::scene::SceneAssetId::mint();
   RaySceneExtractionCache cache;
   RaySceneAcceleration backend(*device, *memory);
   auto build = [&](const std::shared_ptr<const RaySceneGeneration> &previous) {
@@ -665,6 +666,7 @@ TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {
   EXPECT_EQ(first->stats().blasBuilt, 1u);
   providers.insert(providers.begin(),
                    {{"mesh"}, 1, meshVertices, indices, meshObjects, draws});
+  providers[0].assetId = container::scene::SceneAssetId::mint();
   const auto added = build(first);
   EXPECT_EQ(added->stats().blasBuilt, 1u);
   EXPECT_EQ(added->stats().blasReused, 1u);
@@ -673,12 +675,11 @@ TEST_F(RaySceneGpu, KeepsUnchangedProviderBlasAcrossProviderChanges) {
   EXPECT_EQ(reordered->stats().blasBuilt, 0u);
   EXPECT_EQ(reordered->stats().blasReused, 2u);
 
-  // Replacement storage has the same provider ID, topology and revision, but
-  // different positions. Reuse the BIM BLAS and rebuild only the mesh BLAS.
-  auto replacement = meshVertices;
-  for (auto &vertex : replacement)
+  // A replacement can reuse the arena, topology and local revision. Reuse the
+  // BIM BLAS and rebuild only the mesh BLAS, even with the same buffer address.
+  for (auto &vertex : meshVertices)
     vertex.position.z = -1;
-  providers[1].vertices = replacement;
+  providers[1].assetId = container::scene::SceneAssetId::mint();
   (void)cache.update(providers); // A second CPU update may precede submission.
   const auto replaced = build(reordered);
   EXPECT_EQ(replaced->stats().blasBuilt, 1u);

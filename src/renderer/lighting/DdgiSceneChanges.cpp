@@ -25,7 +25,7 @@ std::vector<DdgiDirtyRegion> DdgiSceneChangeTracker::update(
         const auto &object = source.objects[index];
         const auto key = std::make_pair(source.provider.value, uint32_t(index));
         auto entry = current.try_emplace(key,
-          Object{object.model, object.objectInfo, source.geometryRevision,
+          Object{object.model, object.objectInfo, source.assetId, source.geometryRevision,
                  materialRevision ? materialRevision(object.objectInfo.x) : 0}).first;
         auto &topology = entry->second.topology;
         topology = (topology ^ draw.firstIndex) * 1099511628211ull;

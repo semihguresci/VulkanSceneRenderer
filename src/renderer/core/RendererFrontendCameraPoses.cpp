@@ -344,7 +344,9 @@ bool RendererFrontend::publishCameraViewPose(CameraViewPosePublication& publicat
   MeshSceneProviderSyncInput nextMesh{.available=mesh.primitiveCount>0 || mesh.bounds.valid,.primitiveCount=mesh.primitiveCount,
       .materialCount=mesh.materialCount,.instanceCount=mesh.instanceCount,.triangleBatches=mesh.triangleBatches,.bounds=mesh.bounds,
       .geometryRevision=nextController.geometryRevision(),.materialRevision=material,.instanceRevision=nextController.objectDataRevision(),
-      .displayName=activePrimaryModelPath_.empty()?"Primary mesh scene":activePrimaryModelPath_,.triangleBatchesAuthoritative=mesh.triangleBatchesAuthoritative};
+      .displayName=activePrimaryModelPath_.empty()?"Primary mesh scene":activePrimaryModelPath_,
+      .triangleBatchesAuthoritative=mesh.triangleBatchesAuthoritative,
+      .geometryAssetId=nextController.geometryAssetId()};
   auto providerInput=buildSceneProviderSyncInput(&nextMesh);SceneProviderSynchronizer providers;
   container::scene::SceneProviderRegistry registry;providers.sync(registry,providerInput);
   std::unique_ptr<RayShadowManager> ray;
@@ -358,16 +360,19 @@ bool RendererFrontend::publishCameraViewPose(CameraViewPosePublication& publicat
     std::vector<RaySceneProviderSource> sources;const bool wanted=ray->supported() && (gi || ray->settings().mode!=RayShadowMode::Raster);
     const auto vertices=deformed?nextController.geometryVertices():std::span<const container::geometry::Vertex>(manager.vertices());
     const auto indices=deformed?nextController.geometryIndices():std::span<const uint32_t>(manager.indices());
-    if(providerInput.mesh.available && wanted) sources.push_back({{"primary-mesh-scene"},nextController.geometryRevision(),
-        vertices,indices,nextController.objectData(),meshDraws});
+    if(providerInput.mesh.available && wanted)
+      sources.push_back({.provider={"primary-mesh-scene"}, .geometryRevision=nextController.geometryRevision(),
+          .vertices=vertices, .indices=indices, .objects=nextController.objectData(), .draws=meshDraws,
+          .assetId=providerInput.mesh.geometryAssetId});
     std::vector<DrawCommand> bimDraws;
     if(subs_.bimManager && subs_.bimManager->hasScene() && wanted) {
       auto filter=currentBimDrawFilter();filter.drawBudgetEnabled=false;filter.drawBudgetMaxObjects=0;
       const auto add=[&](const auto& draws) {for(const auto& draw:draws)
         if(subs_.bimManager->objectMatchesFilter(draw.objectIndex,filter) && bimObjectVisibleByLayer(draw.objectIndex)) bimDraws.push_back(draw);};
       add(subs_.bimManager->opaqueDrawCommands());if(gi) add(subs_.bimManager->transparentDrawCommands());
-      sources.push_back({{"auxiliary-bim-scene"},subs_.bimManager->geometryRevision(),subs_.bimManager->vertices(),
-          subs_.bimManager->indices(),subs_.bimManager->objectData(),bimDraws});
+      sources.push_back({.provider={"auxiliary-bim-scene"}, .geometryRevision=subs_.bimManager->geometryRevision(),
+          .vertices=subs_.bimManager->vertices(), .indices=subs_.bimManager->indices(), .objects=subs_.bimManager->objectData(),
+          .draws=bimDraws, .assetId=providerInput.bim.geometryAssetId});
     }
     bool compatible=true;for(const auto& source:sources) for(const auto& draw:source.draws)
       for(uint32_t instance=0;instance<draw.instanceCount;++instance) {

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/scene/SceneAssetIdentity.h"
+
 #include <cstdint>
 #include <memory>
 
@@ -10,14 +12,15 @@ class AllocationManager;
 class TextureAllocationIdentity {
  public:
   TextureAllocationIdentity() noexcept = default;
-  explicit operator bool() const noexcept { return incarnation_!=0 && !owner_.expired(); }
-  [[nodiscard]] uint64_t incarnation() const noexcept { return incarnation_; }
+  explicit operator bool() const noexcept { return bool(assetId_) && !owner_.expired(); }
+  [[nodiscard]] container::scene::SceneAssetId assetId() const noexcept { return assetId_; }
+  [[nodiscard]] uint64_t incarnation() const noexcept { return assetId().value(); }
   bool operator==(const TextureAllocationIdentity& other) const noexcept {
-    return incarnation_==other.incarnation_ && !owner_.owner_before(other.owner_) && !other.owner_.owner_before(owner_);
+    return assetId_==other.assetId_ && !owner_.owner_before(other.owner_) && !other.owner_.owner_before(owner_);
   }
  private:
   friend class AllocationManager;
   std::weak_ptr<const void> owner_;
-  uint64_t incarnation_{};
+  container::scene::SceneAssetId assetId_{};
 };
 } // namespace container::gpu

@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <compare>
 #include <filesystem>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -516,7 +517,10 @@ class SceneManager {
                    float importScale,
                    std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
                    const container::gpu::AllocatedBuffer& objectBuffer,
-                   container::geometry::GltfLoadResult* prepared = nullptr);
+                   container::geometry::GltfLoadResult* prepared = nullptr,
+                   bool reusePrimaryArenas = true,
+                   const std::function<void()>& beforeCommit = {},
+                   VkDeviceSize releasingGeometryBytes = 0);
 
   void updateDescriptorSets(
       std::span<const container::gpu::AllocatedBuffer> cameraBuffers,

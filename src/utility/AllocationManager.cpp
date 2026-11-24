@@ -14,22 +14,14 @@ namespace container::gpu {
 
 namespace {
 
-void EnsureArenaCapacity(std::unique_ptr<BufferArena>& arena,
-                         VulkanMemoryManager& memoryManager,
-                         VkDeviceSize requiredSize,
-                         VkBufferUsageFlags usage,
-                         VmaMemoryUsage memoryUsage,
-                         VmaAllocationCreateFlags allocationFlags) {
-  const VkDeviceSize safeRequiredSize = std::max<VkDeviceSize>(1, requiredSize);
-
-  if (!arena || arena->remainingSize() < safeRequiredSize) {
-    VkDeviceSize requestedSize = safeRequiredSize;
-    if (arena) {
-      requestedSize = std::max(safeRequiredSize, arena->totalSize() * 2);
-    }
-    arena = std::make_unique<BufferArena>(memoryManager, requestedSize, usage,
-                                          memoryUsage, allocationFlags);
-  }
+VkDeviceSize arenaAllocationSize(const BufferArena* arena,
+    VkDeviceSize requiredSize, bool bounded) {
+  if (!arena || bounded)
+    return requiredSize;
+  constexpr VkDeviceSize halfMax = (std::numeric_limits<VkDeviceSize>::max)() / 2;
+  return arena->totalSize() <= halfMax
+      ? (std::max)(requiredSize, arena->totalSize() * 2)
+      : requiredSize;
 }
 
 bool textureFormatSupportsLinearBlit(VkPhysicalDevice physicalDevice,
@@ -180,15 +172,15 @@ AllocationManager::beginTextureAllocationBatch() {
 std::shared_ptr<const AllocationManager::TextureImageAllocationLease>
 AllocationManager::retainTextureImage(const container::material::TextureResource& resource) {
   const auto owner=resource.allocationIdentity.owner_.lock();
-  if(!owner || !textureBatchControl_ || owner.get()!=textureBatchControl_.get() || !resource.allocationIdentity.incarnation_)
+  if(!owner || !textureBatchControl_ || owner.get()!=textureBatchControl_.get() || !resource.allocationIdentity.incarnation())
     throw std::invalid_argument("texture image identity is absent or belongs to another allocator");
   const auto validate=[&]() -> TextureAllocation& {
     if(textureRetirementInProgress_ || activeTextureBatchGroup_ || activeUploadOperations_)
       throw std::logic_error("cannot retain a texture image during upload, batch preparation or retirement");
     if(textureBatchControl_->owner!=this) throw std::invalid_argument("texture image allocator has expired");
-    const auto found=std::lower_bound(textureAllocations_.begin(),textureAllocations_.end(),resource.allocationIdentity.incarnation_,
+    const auto found=std::lower_bound(textureAllocations_.begin(),textureAllocations_.end(),resource.allocationIdentity.incarnation(),
         [](const auto& allocation,uint64_t id){return allocation.incarnation<id;});
-    if(found==textureAllocations_.end() || found->incarnation!=resource.allocationIdentity.incarnation_ || found->image!=resource.image || found->imageView!=resource.imageView ||
+    if(found==textureAllocations_.end() || found->incarnation!=resource.allocationIdentity.incarnation() || found->image!=resource.image || found->imageView!=resource.imageView ||
         found->image==VK_NULL_HANDLE || found->imageView==VK_NULL_HANDLE || !found->allocation)
       throw std::invalid_argument("texture image identity is stale or its image/view pair differs");
     if(found->lifetime!=TextureAllocationLifetime::Scene)
@@ -214,15 +206,15 @@ bool AllocationManager::textureImageMatches(
     const container::material::TextureResource& resource) const noexcept {
   const auto owner=resource.allocationIdentity.owner_.lock();
   if(!owner || !textureBatchControl_ || owner.get()!=textureBatchControl_.get() ||
-      !resource.allocationIdentity.incarnation_) return false;
+      !resource.allocationIdentity.incarnation()) return false;
   std::lock_guard lock(textureBatchControl_->mutex);
   if(textureBatchControl_->owner!=this || textureRetirementInProgress_ ||
       activeTextureBatchGroup_ || activeUploadOperations_) return false;
   const auto found=std::lower_bound(textureAllocations_.begin(),textureAllocations_.end(),
-      resource.allocationIdentity.incarnation_,
+      resource.allocationIdentity.incarnation(),
       [](const auto& allocation,uint64_t id){return allocation.incarnation<id;});
   return found!=textureAllocations_.end() &&
-      found->incarnation==resource.allocationIdentity.incarnation_ &&
+      found->incarnation==resource.allocationIdentity.incarnation() &&
       found->lifetime==TextureAllocationLifetime::Scene &&
       found->image!=VK_NULL_HANDLE && found->imageView!=VK_NULL_HANDLE && found->allocation &&
       found->image==resource.image && found->imageView==resource.imageView;
@@ -235,7 +227,7 @@ bool AllocationManager::textureImagesAdoptable(
   uint64_t previous{};
   for(const auto& lease:images) {
     if(!lease || !lease->armed_) return false;
-    const auto owner=lease->identity_.owner_.lock();const auto incarnation=lease->identity_.incarnation_;
+    const auto owner=lease->identity_.owner_.lock();const auto incarnation=lease->identity_.incarnation();
     if(!owner || owner.get()!=textureBatchControl_.get() || incarnation<=previous) return false;
     const auto found=std::lower_bound(textureAllocations_.begin(),textureAllocations_.end(),incarnation,
         [](const auto& allocation,uint64_t id){return allocation.incarnation<id;});
@@ -258,7 +250,7 @@ bool AllocationManager::adoptTextureImages(
   if(!textureBatchControl_) return false;
   std::lock_guard lock(textureBatchControl_->mutex);if(!textureImagesAdoptable(images)) return false;
   for(const auto& lease:images) {
-    const auto found=std::lower_bound(textureAllocations_.begin(),textureAllocations_.end(),lease->identity_.incarnation_,
+    const auto found=std::lower_bound(textureAllocations_.begin(),textureAllocations_.end(),lease->identity_.incarnation(),
         [](const auto& allocation,uint64_t id){return allocation.incarnation<id;});
     found->individuallyManaged=true;
   }
@@ -282,11 +274,13 @@ TextureAllocationIdentity AllocationManager::registerTextureAllocation(TextureAl
   // not acquire a late allocation after its only rollback owner has gone away.
   if (allocation.batchGroup != textureAllocationGroup(allocation.lifetime))
     throw std::logic_error("texture allocation batch changed during upload");
-  if(!nextTextureAllocationIncarnation_) throw std::overflow_error("texture image allocation incarnations exhausted");
   if(!textureBatchControl_) {textureBatchControl_=std::make_shared<TextureBatchControl>();textureBatchControl_->owner=this;}
-  TextureAllocationIdentity identity;identity.owner_=textureBatchControl_;identity.incarnation_=nextTextureAllocationIncarnation_++;
-  allocation.incarnation=identity.incarnation_;allocation.aggregateRetained=allocation.batchGroup!=0;
-  textureAllocations_.push_back(allocation);
+  TextureAllocationIdentity identity;
+  identity.owner_ = textureBatchControl_;
+  identity.assetId_ = container::scene::SceneAssetId::mint();
+  allocation.incarnation = identity.incarnation();
+  allocation.aggregateRetained = allocation.batchGroup != 0;
+  textureAllocations_.push_back(std::move(allocation));
   return identity;
 }
 
@@ -300,6 +294,8 @@ void AllocationManager::destroyTextureAllocation(TextureAllocation& texture) noe
     texture.image = VK_NULL_HANDLE;
     texture.allocation = nullptr;
   }
+  texture.budget.reset();
+  texture.residentBytes = 0;
 }
 
 void AllocationManager::retireTextureAllocationGroup(uint64_t group,
@@ -374,8 +370,9 @@ void AllocationManager::initialize(VkInstance instance,
   config_ = config;
   enabledTextureFeatures_ = {};
 
+  assetBudget_.reset({config_.assetMemoryBytes, config_.assetUploadBytes});
   memoryManager_ = std::make_unique<VulkanMemoryManager>(
-      instance_, physicalDevice_, device_);
+      instance_, physicalDevice_, device_, VK_API_VERSION_1_4, &assetBudget_);
 }
 
 void AllocationManager::cleanup() {
@@ -400,9 +397,14 @@ void AllocationManager::cleanup() {
   enabledTextureFeatures_ = {};
 }
 
-void AllocationManager::resetGeometryAllocations() {
+void AllocationManager::resetGeometryAllocations(bool releaseStorage) {
   if (activeUploadOperations_)
     throw std::logic_error("cannot reset geometry during an allocation upload");
+  if (releaseStorage) {
+    vertexArena_.reset();
+    indexArena_.reset();
+    return;
+  }
   if (vertexArena_)
     vertexArena_->reset();
   if (indexArena_)
@@ -414,53 +416,98 @@ VkDeviceSize AllocationManager::geometryArenaCapacityBytes() const {
          (indexArena_ ? indexArena_->totalSize() : 0u);
 }
 
+VkDeviceSize AllocationManager::geometryArenaAllocationBytes() const {
+  return (vertexArena_ ? vertexArena_->backingBuffer().allocation_info.size : 0u) +
+         (indexArena_ ? indexArena_->backingBuffer().allocation_info.size : 0u);
+}
+
+SceneAssetBytes AllocationManager::geometryAssetBytes(VkDeviceSize vertices,
+    VkDeviceSize indices, bool reusePrimaryArenas) const {
+  const auto bytesFor = [&](VkDeviceSize size, const BufferArena* arena,
+                            VkBufferUsageFlags geometryUsage) {
+    if (size == 0 || (arena && arena->totalSize() >= size))
+      return VkDeviceSize{0};
+    return memoryManager_->bufferAllocationBytes(
+        arenaAllocationSize(arena, size, config_.assetMemoryBytes != 0),
+        geometryUsage | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+  };
+  const auto* vertexArena = reusePrimaryArenas ? vertexArena_.get() : nullptr;
+  const auto* indexArena = reusePrimaryArenas ? indexArena_.get() : nullptr;
+  const auto vertexAllocation = bytesFor(vertices, vertexArena, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+  const auto indexAllocation = bytesFor(indices, indexArena, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+  // Arena replacement allocates a new vertex backing store before freeing its
+  // predecessor. The index allocation follows after the vertex retirement.
+  const auto oldVertexBytes = vertexAllocation && vertexArena
+      ? vertexArena->backingBuffer().allocation_info.size : 0u;
+  const auto retainedVertexGrowth = vertexAllocation - (std::min)(vertexAllocation, oldVertexBytes);
+  if (indexAllocation > (std::numeric_limits<VkDeviceSize>::max)() - retainedVertexGrowth)
+    throw SceneAssetBudgetExceeded("Scene geometry admission bytes overflow");
+  return {(std::max)(vertexAllocation, retainedVertexGrowth + indexAllocation),
+      memoryManager_->bufferAllocationBytes((std::max)(vertices, indices),
+                                             VK_BUFFER_USAGE_TRANSFER_SRC_BIT)};
+}
+
+void AllocationManager::checkSceneAssetAdmission(SceneAssetBytes request,
+    bool replacingSceneTextures, VkDeviceSize releasingGeometryBytes) {
+  request.residentBytes -= (std::min)(request.residentBytes, releasingGeometryBytes);
+  // Only a full SceneManager texture reset grants this credit. Persistent
+  // resources, detached buffers, and arenas are still charged.
+  if (replacingSceneTextures) {
+    for (const auto& texture : textureAllocations_) {
+      if (texture.lifetime == TextureAllocationLifetime::Scene)
+        request.residentBytes -= (std::min)(request.residentBytes, texture.residentBytes);
+    }
+  }
+  assetBudget_.check(request);
+}
+
+std::vector<AllocationManager::SceneTextureAsset> AllocationManager::sceneTextureAssets() const {
+  std::vector<SceneTextureAsset> assets;
+  for (const auto& texture : textureAllocations_) {
+    if (texture.lifetime == TextureAllocationLifetime::Scene && texture.image) {
+      assets.push_back({texture.incarnation, texture.residentBytes,
+                        texture.batchGroup && texture.batchGroup == activeTextureBatchGroup_});
+    }
+  }
+  return assets;
+}
+
 BufferSlice AllocationManager::uploadVertices(
     std::span<const container::geometry::Vertex> vertices) {
-  if (vertices.empty()) return {};
-  const UploadOperation operation(*this);
-  VkDeviceSize bufferSize = sizeof(container::geometry::Vertex) * vertices.size();
-
-  EnsureArenaCapacity(
-      vertexArena_, *memoryManager_, bufferSize,
-      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-      VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
-
-  StagingBuffer stagingBuffer(*memoryManager_, bufferSize);
-  stagingBuffer.upload({reinterpret_cast<const std::byte*>(vertices.data()),
-                        static_cast<size_t>(bufferSize)});
-
-  BufferSlice slice =
-      vertexArena_->allocate(bufferSize, alignof(container::geometry::Vertex));
-
-  copyBuffer(stagingBuffer.buffer().buffer, slice.buffer, bufferSize, 0,
-             slice.offset);
-
-  return slice;
+  return uploadGeometry(std::as_bytes(vertices), vertexArena_,
+      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, alignof(container::geometry::Vertex));
 }
 
 BufferSlice AllocationManager::uploadIndices(
     std::span<const uint32_t> indices) {
-  if (indices.empty()) return {};
+  return uploadGeometry(std::as_bytes(indices), indexArena_,
+      VK_BUFFER_USAGE_INDEX_BUFFER_BIT, alignof(uint32_t));
+}
+
+BufferSlice AllocationManager::uploadGeometry(std::span<const std::byte> bytes,
+    std::unique_ptr<BufferArena>& arena, VkBufferUsageFlags usage,
+    VkDeviceSize alignment) {
+  if (bytes.empty()) return {};
   const UploadOperation operation(*this);
-  VkDeviceSize bufferSize = sizeof(uint32_t) * indices.size();
-
-  EnsureArenaCapacity(
-      indexArena_, *memoryManager_, bufferSize,
-      VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
-      VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
-      VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
-
-  StagingBuffer stagingBuffer(*memoryManager_, bufferSize);
-  stagingBuffer.upload({reinterpret_cast<const std::byte*>(indices.data()),
-                        static_cast<size_t>(bufferSize)});
-
-  VkDeviceSize alignment = std::max<VkDeviceSize>(sizeof(uint32_t), 4);
-  BufferSlice slice = indexArena_->allocate(bufferSize, alignment);
-
-  copyBuffer(stagingBuffer.buffer().buffer, slice.buffer, bufferSize, 0,
-             slice.offset);
-
+  const VkDeviceSize size = bytes.size();
+  const auto destinationUsage = usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
+  const auto replacementSize = !arena || arena->remainingSize() < size
+      ? arenaAllocationSize(arena.get(), size, config_.assetMemoryBytes != 0) : 0u;
+  assetBudget_.check({memoryManager_->bufferAllocationBytes(replacementSize, destinationUsage),
+                      memoryManager_->bufferAllocationBytes(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)});
+  StagingBuffer staging(*memoryManager_, size);
+  staging.upload(bytes);
+  std::unique_ptr<BufferArena> replacement;
+  if (replacementSize) {
+    replacement = std::make_unique<BufferArena>(*memoryManager_, replacementSize,
+        destinationUsage, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+        VMA_ALLOCATION_CREATE_DEDICATED_MEMORY_BIT);
+  }
+  auto& target = replacement ? *replacement : *arena;
+  const auto slice = target.allocate(size, alignment);
+  copyBuffer(staging.buffer().buffer, slice.buffer, size, 0, slice.offset);
+  if (replacement)
+    arena = std::move(replacement);
   return slice;
 }
 
@@ -577,9 +624,6 @@ AllocationManager::createTexture2DArrayFromRgbaPixels(
   container::material::TextureArrayResource resource{};
   resource.name = textureName;
 
-  StagingBuffer stagingBuffer(*memoryManager_, imageSize);
-  stagingBuffer.upload(rgbaPixels.first(static_cast<size_t>(imageSize)));
-
   VkImageCreateInfo imageInfo{};
   imageInfo.sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO;
   imageInfo.imageType = VK_IMAGE_TYPE_2D;
@@ -593,6 +637,14 @@ AllocationManager::createTexture2DArrayFromRgbaPixels(
       VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
   imageInfo.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
   imageInfo.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+
+  const auto residentBytes = lifetime == TextureAllocationLifetime::Scene
+      ? textureAllocationBytes(imageInfo) : 0u;
+  assetBudget_.check({residentBytes, memoryManager_->bufferAllocationBytes(
+      imageSize, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)});
+  auto budget = assetBudget_.reserve({residentBytes, 0});
+  StagingBuffer stagingBuffer(*memoryManager_, imageSize);
+  stagingBuffer.upload(rgbaPixels.first(static_cast<size_t>(imageSize)));
 
   VmaAllocationCreateInfo allocInfo{};
   allocInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
@@ -617,7 +669,9 @@ AllocationManager::createTexture2DArrayFromRgbaPixels(
     imageView = createImageView(image, format, VK_IMAGE_VIEW_TYPE_2D_ARRAY,
                                 layerCount);
 
-    (void)registerTextureAllocation({image, imageView, allocation, lifetime, batchGroup});
+    (void)registerTextureAllocation({.image = image, .imageView = imageView,
+        .allocation = allocation, .lifetime = lifetime, .batchGroup = batchGroup,
+        .budget = std::move(budget), .residentBytes = residentBytes});
     registeredTexture = true;
   } catch (...) {
     if (imageView != VK_NULL_HANDLE) {

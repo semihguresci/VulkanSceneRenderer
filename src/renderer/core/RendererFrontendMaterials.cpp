@@ -806,7 +806,8 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
       .materialCount=asset.materialCount,.instanceCount=asset.instanceCount,.triangleBatches=asset.triangleBatches,.bounds=asset.bounds,
       .geometryRevision=futureGeometry,.materialRevision=materialRevision,.instanceRevision=futureObject,
       .displayName=activePrimaryModelPath_.empty()?"Primary mesh scene":activePrimaryModelPath_,
-      .triangleBatchesAuthoritative=asset.triangleBatchesAuthoritative};
+      .triangleBatchesAuthoritative=asset.triangleBatchesAuthoritative,
+      .geometryAssetId=routing?routing->geometryAssetId():controller.geometryAssetId()};
   const auto providerInput=buildSceneProviderSyncInput(&mesh);
   SceneProviderSynchronizer providers;container::scene::SceneProviderRegistry registry;providers.sync(registry,providerInput);
 
@@ -821,15 +822,19 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
     const bool wants=ray->supported() && (gi || ray->settings().mode!=RayShadowMode::Raster);
     std::vector<DrawCommand> meshDraws(opaque.begin(),opaque.end());if(gi) meshDraws.insert(meshDraws.end(),transparent.begin(),transparent.end());
     std::vector<RaySceneProviderSource> sources;
-    if(mesh.available && wants) sources.push_back({{"primary-mesh-scene"},futureGeometry,vertices,indices,objectData,meshDraws});
+    if(mesh.available && wants)
+      sources.push_back({.provider={"primary-mesh-scene"}, .geometryRevision=futureGeometry,
+          .vertices=vertices, .indices=indices, .objects=objectData, .draws=meshDraws,
+          .assetId=providerInput.mesh.geometryAssetId});
     std::vector<DrawCommand> bimDraws;
     if(subs_.bimManager && subs_.bimManager->hasScene() && wants) {
       auto filter=currentBimDrawFilter();filter.drawBudgetEnabled=false;filter.drawBudgetMaxObjects=0;
       const auto add=[&](const auto& draws){for(const auto& draw:draws) if(subs_.bimManager->objectMatchesFilter(draw.objectIndex,filter) &&
           bimObjectVisibleByLayer(draw.objectIndex)) bimDraws.push_back(draw);};
       add(subs_.bimManager->opaqueDrawCommands());if(gi) add(subs_.bimManager->transparentDrawCommands());
-      sources.push_back({{"auxiliary-bim-scene"},subs_.bimManager->geometryRevision(),subs_.bimManager->vertices(),
-          subs_.bimManager->indices(),subs_.bimManager->objectData(),bimDraws});
+      sources.push_back({.provider={"auxiliary-bim-scene"}, .geometryRevision=subs_.bimManager->geometryRevision(),
+          .vertices=subs_.bimManager->vertices(), .indices=subs_.bimManager->indices(), .objects=subs_.bimManager->objectData(),
+          .draws=bimDraws, .assetId=providerInput.bim.geometryAssetId});
     }
     bool compatible=true;
     for(const auto& source:sources) for(const auto& draw:source.draws) for(uint32_t i=0;i<draw.instanceCount;++i) {

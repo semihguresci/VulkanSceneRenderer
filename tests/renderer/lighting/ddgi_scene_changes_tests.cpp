@@ -62,6 +62,27 @@ TEST(DdgiSceneChanges, MaterialAndGeometryRevisionsRefreshWithoutTransformChange
   EXPECT_EQ(dirty[0].maximum.x, 1);
   EXPECT_EQ(dirty[1].maximum.x, 5);
 }
+TEST(DdgiSceneChanges, ReplacementAssetDirtiesBoundsWithARestartedGeometryRevision) {
+  Fixture f;
+  DdgiSceneChangeTracker tracker;
+  auto sources = std::array{f.source()};
+  sources[0].assetId = container::scene::SceneAssetId::mint();
+  ASSERT_EQ(tracker.update(sources).size(), 1u);
+
+  // Identical authored geometry in a different buffer stays clean.
+  auto relocatedVertices = f.vertices;
+  sources[0].vertices = relocatedVertices;
+  EXPECT_TRUE(tracker.update(sources).empty());
+
+  // Reuse the same storage and local revision for a newly published asset.
+  relocatedVertices[1].position.x = 5;
+  sources[0].assetId = container::scene::SceneAssetId::mint();
+  const auto dirty = tracker.update(sources);
+  ASSERT_EQ(dirty.size(), 2u);
+  EXPECT_EQ(dirty[0].maximum.x, 1);
+  EXPECT_EQ(dirty[1].maximum.x, 5);
+  EXPECT_TRUE(tracker.update(sources).empty());
+}
 TEST(DdgiSceneChanges, DistinctProvidersAndDuplicateDrawsRemainDistinctObjects) {
   Fixture f; DdgiSceneChangeTracker tracker;
   f.draws.push_back(f.draws.front());

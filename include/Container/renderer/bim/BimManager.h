@@ -615,6 +615,7 @@ public:
       const std::function<void(std::string_view)> &progress = {},
       const std::function<void(std::string_view)> &profileStage = {});
   [[nodiscard]] const auto& openVdbOptions() const { return openVdbOptions_; }
+  void checkPreparedSceneBudget(const PreparedScene&, bool replacingSceneTextures) const;
   void loadPreparedScene(PreparedScene &&prepared,
                          container::scene::SceneManager &sceneManager);
   // Commit/unload checkpoints run on the calling render thread. The callback
@@ -658,6 +659,9 @@ public:
   }
   [[nodiscard]] std::span<const uint32_t> indices() const { return indices_; }
   [[nodiscard]] uint64_t geometryRevision() const { return geometryRevision_; }
+  [[nodiscard]] container::scene::SceneAssetId geometryAssetId() const noexcept {
+    return geometryAssetId_;
+  }
   // Advances on clear and after complete metadata installation, including
   // replacements that reuse metadata storage or geometry revision values.
   [[nodiscard]] uint64_t metadataRevision() const {
@@ -1016,6 +1020,7 @@ private:
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
   uint64_t geometryRevision_{0};
+  container::scene::SceneAssetId geometryAssetId_{};
   glm::vec3 temporalRootTranslation_{0};
   uint64_t nextTemporalObjectId_{1};
   std::vector<container::gpu::ObjectData> objectData_{};

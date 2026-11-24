@@ -766,6 +766,40 @@ TEST(RayExtraction, CacheClearAndEmptySceneChangesKeepOldSnapshotsAlive) {
   EXPECT_NO_THROW(validateRayScene({views, populated.instances.instances}));
 }
 
+TEST(RayExtraction, IssuedAssetIdentitySurvivesRelocationAndRejectsReusedStorage) {
+  const auto originalVertices = surfaceTestVertices();
+  auto relocatedVertices = originalVertices;
+  const std::vector<uint32_t> indices{0, 1, 2};
+  const std::vector<container::gpu::ObjectData> objects(1);
+  const std::vector<DrawCommand> draws{{0, 0, 3}};
+  std::array providers{
+      RaySceneProviderSource{{"mesh"}, 1, originalVertices, indices, objects, draws}};
+  auto &provider = providers.front();
+  const auto originalAsset = container::scene::SceneAssetId::mint();
+  provider.assetId = originalAsset;
+  RaySceneExtractionCache cache;
+  const auto original = cache.update(providers);
+
+  // Relocating the same immutable version must not rebuild its compact copy.
+  provider.vertices = relocatedVertices;
+  EXPECT_EQ(cache.update(providers).geometry, original.geometry);
+
+  // A different version can occupy this exact arena with the same draw ranges
+  // and a local revision that has restarted at one.
+  relocatedVertices[0].position.z = 2.f;
+  const auto replacementAsset = container::scene::SceneAssetId::mint();
+  provider.assetId = replacementAsset;
+  EXPECT_THROW(extractRaySceneInstances(*original.geometry, providers),
+               std::invalid_argument);
+  const auto replacement = cache.update(providers);
+  ASSERT_NE(replacement.geometry, original.geometry);
+  ASSERT_EQ(replacement.geometry->geometry.size(), 1u);
+  EXPECT_EQ(original.geometry->geometry[0].storageIdentity.assetId, originalAsset);
+  EXPECT_EQ(original.geometry->geometry[0].vertices[0].position.z, 0.f);
+  EXPECT_EQ(replacement.geometry->geometry[0].storageIdentity.assetId, replacementAsset);
+  EXPECT_EQ(replacement.geometry->geometry[0].vertices[0].position.z, 2.f);
+}
+
 TEST(RayShadows, BudgetsAreFiniteAndInvalidModesPreserveRasterFallback) {
   auto settings = sanitizeRayShadowSettings(
       {static_cast<RayShadowMode>(9), 999, 999, true, 99});

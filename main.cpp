@@ -307,6 +307,8 @@ void printCommandLineHelp() {
   --width N --height N          Window dimensions
   --borderless                  Remove the window frame and title bar
   --texture-memory-mb N         Decoded glTF texture budget [1,16384] MiB (1024)
+  --asset-memory-mb N           GPU scene asset memory cap in MiB (0 uses existing limits)
+  --asset-upload-mb N           Scene asset upload staging cap in MiB (0 uses existing limits)
   --render-technique NAME       Render technique
   --path-spp N                 Reference samples per frame [1,64] (1)
   --path-target-ms F           Adapt samples to a reference GPU pass budget [0.1,1000] ms
@@ -885,6 +887,12 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     if (parseExtendedPreviewOption(arg,i))continue;
     if (parseVolumeOption(arg, i)) continue;
     if (parseReferencePathOption(arg, i)) continue;
+    if (arg == "--asset-memory-mb" || arg == "--asset-upload-mb") {
+      auto& bytes = arg == "--asset-memory-mb" ? config.assetMemoryBytes
+                                             : config.assetUploadBytes;
+      bytes = uint64_t{parseUint(requireValue(argc, argv, i, arg), arg)} * 1024 * 1024;
+      continue;
+    }
     if (arg == "--capture-data") {
       config.screenshotSceneData = true;
       continue;

@@ -116,3 +116,48 @@ application's packaged `models` directory must contain the validation scenes.
 The legacy and lifecycle suites also use the buildingSMART samples.
 Asynchronous GI may use its reported serialized fallback
 on devices without a suitable compute queue.
+
+## Scene asset residency
+
+Use `--asset-memory-mb 512` to cap resident vertex and index allocations and
+sampled scene textures. Use `--asset-upload-mb 128` to bound concurrent staging
+buffers. A zero value leaves that limit unset. The renderer accounts for Vulkan
+allocation sizes, including overlapping buffer arenas during growth and
+allocations still retained by a frame or an edit. Render targets and derived
+acceleration structures have their own allocation and timing telemetry.
+
+glTF, BIM and USD use the same asset ID namespace as uploaded scene textures.
+A geometry replacement publishes a new ID. In-place animation advances the
+geometry revision of the existing asset. Texture IDs identify uploaded images
+across sampler aliases. Ray caches key on the geometry asset ID and revision.
+Submitted frames retain their acceleration structures until readers retire.
+
+Reload checks prepared geometry and glTF texture allocations before replacing
+the live scene. BIM material textures that exceed the remaining budget use the
+existing material fallback. Optional BIM markers and section overlays can be
+omitted when their buffers exceed the available budget. A bounded unload
+releases the primary geometry arenas and retains the small diagnostic geometry
+needed by the viewport. Capture telemetry under `assetResidency` records limits,
+live allocations, peaks, rejections, and the current provider and texture IDs.
+
+```powershell
+$env:CONTAINER_RUN_GPU_SCENE_ASSET_BUDGET = '1'
+ctest --test-dir out/build/windows-release --output-on-failure -R '^scene_asset_budget_gpu_regression$'
+```
+
+On the RTX 2080 SUPER with driver 610.88, the Release test passed 24 captures
+using Khronos synchronization validation 1.4.363.1. The 2 MiB caps independently
+rejected oversized BIM and glTF geometry and a glTF texture. Each rejection
+preserved the previous pixels, asset IDs and acceleration generation. Accepted
+glTF, BIM and USD replacements rebuilt the ray scene, and unload retired it.
+The uncapped run loaded the same oversized assets with ray queries disabled.
+[Before and after captures](images/asset-residency/load-admission.png)
+
+| Run | Peak resident bytes | Peak staging bytes | Rejected loads |
+| --- | ---: | ---: | ---: |
+| 2 MiB resident limit | 92,000 | 131,072 | 3 |
+| 2 MiB staging limit | 91,856 | 131,072 | 3 |
+| Uncapped raster | 21,925,168 | 17,136,432 | 0 |
+
+The small ray-query fixtures used 58,112 bytes for acceleration structures.
+Their settled ray shadow trace passes took 0.265–0.280 ms.

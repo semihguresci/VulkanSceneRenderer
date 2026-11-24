@@ -68,6 +68,9 @@ struct AppConfig {
   // Aggregate decoded glTF image payloads per load; per-image limits remain
   // independent, and GPU mip/storage allocations can require additional memory.
   uint32_t textureMemoryMiB{container::material::kDefaultGltfTextureMemoryMiB};
+  // Optional renderer-owned scene asset residency and staging caps in bytes.
+  uint64_t assetMemoryBytes{};
+  uint64_t assetUploadBytes{};
   bool enableValidationLayers{false};
   bool enableRayQueries{true};
   bool experimentalOpacityMicromaps{false};

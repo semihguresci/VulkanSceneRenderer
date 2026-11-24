@@ -22,6 +22,7 @@ struct MeshSceneProviderSyncInput {
   uint64_t instanceRevision{0};
   std::string displayName{};
   bool triangleBatchesAuthoritative{false};
+  container::scene::SceneAssetId geometryAssetId{};
 };
 
 struct BimSceneProviderSyncInput {
@@ -42,6 +43,7 @@ struct BimSceneProviderSyncInput {
   uint64_t materialRevision{0};
   uint64_t instanceRevision{0};
   std::string displayName{};
+  container::scene::SceneAssetId geometryAssetId{};
 };
 
 struct GaussianSplatSceneProviderSyncInput {
@@ -118,6 +120,7 @@ class SceneProviderSynchronizer {
             .triangleBatches = input.triangleBatches,
             .bounds = input.bounds,
             .triangleBatchesAuthoritative = input.triangleBatchesAuthoritative,
+            .geometryAssetId = input.geometryAssetId,
         },
         container::scene::SceneProviderRevision{
             .geometry = geometryRevision,
@@ -159,6 +162,7 @@ class SceneProviderSynchronizer {
                 input.nativeCurveTransparentRangeCount,
             .triangleBatches = input.triangleBatches,
             .bounds = input.bounds,
+            .geometryAssetId = input.geometryAssetId,
         },
         container::scene::SceneProviderRevision{
             .geometry = geometryRevision,

@@ -1672,6 +1672,7 @@ void BimManager::clear() {
   objectBufferCapacity_ = 0;
   vertexSlice_ = {};
   indexSlice_ = {};
+  geometryAssetId_ = {};
   vertices_.clear();
   indices_.clear();
   objectData_.clear();
@@ -1799,6 +1800,25 @@ void BimManager::clearSectionPlaneVisualGeometry(const RetireOverlayReaders& ret
   sectionPlaneVisualGeometrySignature_ = 0u;
 }
 
+namespace {
+bool uploadBimOverlayGeometry(container::gpu::AllocationManager& allocations,
+    std::span<const container::geometry::Vertex> vertices,
+    std::span<const uint32_t> indices, container::gpu::AllocatedBuffer& vertexBuffer,
+    container::gpu::AllocatedBuffer& indexBuffer) {
+  try {
+    allocations.checkSceneAssetAdmission(allocations.geometryAssetBytes(
+        vertices.size_bytes(), indices.size_bytes(), false));
+    vertexBuffer = allocations.uploadBuffer(std::as_bytes(vertices), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    indexBuffer = allocations.uploadBuffer(std::as_bytes(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    return true;
+  } catch (const container::gpu::SceneAssetBudgetExceeded&) {
+    allocations.destroyBuffer(vertexBuffer);
+    allocations.destroyBuffer(indexBuffer);
+    return false;
+  }
+}
+} // namespace
+
 bool BimManager::rebuildCoordinationMarkerGeometry(
     const BimCoordinationOverlayResult &overlay,
     const RetireOverlayReaders& retireReaders, float markerRadius) {
@@ -1901,14 +1921,11 @@ bool BimManager::rebuildCoordinationMarkerGeometry(
       sizeof(container::geometry::Vertex) * coordinationMarkerVertices_.size());
   const VkDeviceSize indexBufferSize = static_cast<VkDeviceSize>(
       sizeof(uint32_t) * coordinationMarkerIndices_.size());
-  coordinationMarkerVertexBuffer_ = allocationManager_.uploadBuffer(
-      {reinterpret_cast<const std::byte *>(coordinationMarkerVertices_.data()),
-       static_cast<size_t>(vertexBufferSize)},
-      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-  coordinationMarkerIndexBuffer_ = allocationManager_.uploadBuffer(
-      {reinterpret_cast<const std::byte *>(coordinationMarkerIndices_.data()),
-       static_cast<size_t>(indexBufferSize)},
-      VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+  if (!uploadBimOverlayGeometry(allocationManager_, coordinationMarkerVertices_,
+      coordinationMarkerIndices_, coordinationMarkerVertexBuffer_, coordinationMarkerIndexBuffer_)) {
+    clearCoordinationMarkerGeometry(retireReaders);
+    return false;
+  }
   coordinationMarkerDrawData_.vertexSlice = container::gpu::BufferSlice{
       coordinationMarkerVertexBuffer_.buffer, 0, vertexBufferSize};
   coordinationMarkerDrawData_.indexSlice = container::gpu::BufferSlice{
@@ -2017,14 +2034,11 @@ bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
       sizeof(container::geometry::Vertex) * sectionPlaneVisualVertices_.size());
   const VkDeviceSize indexBufferSize = static_cast<VkDeviceSize>(
       sizeof(uint32_t) * sectionPlaneVisualIndices_.size());
-  sectionPlaneVisualVertexBuffer_ = allocationManager_.uploadBuffer(
-      {reinterpret_cast<const std::byte *>(sectionPlaneVisualVertices_.data()),
-       static_cast<size_t>(vertexBufferSize)},
-      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-  sectionPlaneVisualIndexBuffer_ = allocationManager_.uploadBuffer(
-      {reinterpret_cast<const std::byte *>(sectionPlaneVisualIndices_.data()),
-       static_cast<size_t>(indexBufferSize)},
-      VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+  if (!uploadBimOverlayGeometry(allocationManager_, sectionPlaneVisualVertices_,
+      sectionPlaneVisualIndices_, sectionPlaneVisualVertexBuffer_, sectionPlaneVisualIndexBuffer_)) {
+    clearSectionPlaneVisualGeometry(retireReaders);
+    return false;
+  }
   sectionPlaneVisualDrawData_.vertexSlice = container::gpu::BufferSlice{
       sectionPlaneVisualVertexBuffer_.buffer, 0, vertexBufferSize};
   sectionPlaneVisualDrawData_.indexSlice = container::gpu::BufferSlice{
@@ -2255,14 +2269,11 @@ bool BimManager::rebuildSectionClipCapGeometry(
       sizeof(container::geometry::Vertex) * sectionClipCapVertices_.size());
   const VkDeviceSize indexBufferSize = static_cast<VkDeviceSize>(
       sizeof(uint32_t) * sectionClipCapIndices_.size());
-  sectionClipCapVertexBuffer_ = allocationManager_.uploadBuffer(
-      {reinterpret_cast<const std::byte *>(sectionClipCapVertices_.data()),
-       static_cast<size_t>(vertexBufferSize)},
-      VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
-  sectionClipCapIndexBuffer_ = allocationManager_.uploadBuffer(
-      {reinterpret_cast<const std::byte *>(sectionClipCapIndices_.data()),
-       static_cast<size_t>(indexBufferSize)},
-      VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+  if (!uploadBimOverlayGeometry(allocationManager_, sectionClipCapVertices_,
+      sectionClipCapIndices_, sectionClipCapVertexBuffer_, sectionClipCapIndexBuffer_)) {
+    clearSectionClipCapGeometry(retireReaders);
+    return false;
+  }
   sectionClipCapDrawData_.vertexSlice = container::gpu::BufferSlice{
       sectionClipCapVertexBuffer_.buffer, 0, vertexBufferSize};
   sectionClipCapDrawData_.indexSlice = container::gpu::BufferSlice{
@@ -3178,8 +3189,38 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   return prepared;
 }
 
+void BimManager::checkPreparedSceneBudget(const PreparedScene& prepared,
+    bool replacingSceneTextures) const {
+  if (!prepared.drawData)
+    throw std::invalid_argument("BIM asset admission requires prepared draw data");
+  const auto limits = allocationManager_.sceneAssetBudget().limits;
+  if (!limits.residentBytes && !limits.uploadBytes)
+    return;
+  auto request = allocationManager_.geometryAssetBytes(
+      std::as_bytes(std::span(prepared.uploadVertices)).size(),
+      std::as_bytes(std::span(prepared.uploadIndices)).size(), false);
+  const auto drawCount = prepared.drawData->opaque.size() +
+      prepared.drawData->transparent.size() + 2; // Both floor-plan elevations.
+  const auto uploadBytes = (std::max)({
+      prepared.meshletClusters.size() * sizeof(BimMeshletGpuCluster),
+      drawCount * sizeof(BimMeshletGpuObjectLod),
+      drawCount * sizeof(BimMeshletResidencyEntry),
+      drawCount * sizeof(decltype(visibilityFilterMetadata_)::value_type)});
+  request.uploadBytes = (std::max)(request.uploadBytes,
+      allocationManager_.memoryManager()->bufferAllocationBytes(
+          uploadBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
+  const auto releasingGeometryBytes = vertexBuffer_.allocation_info.size +
+      indexBuffer_.allocation_info.size + sectionClipCapVertexBuffer_.allocation_info.size +
+      sectionClipCapIndexBuffer_.allocation_info.size + coordinationMarkerVertexBuffer_.allocation_info.size +
+      coordinationMarkerIndexBuffer_.allocation_info.size + sectionPlaneVisualVertexBuffer_.allocation_info.size +
+      sectionPlaneVisualIndexBuffer_.allocation_info.size;
+  allocationManager_.checkSceneAssetAdmission(request, replacingSceneTextures,
+                                               releasingGeometryBytes);
+}
+
 void BimManager::loadPreparedScene(PreparedScene &&prepared,
                                     container::scene::SceneManager &sceneManager) {
+  checkPreparedSceneBudget(prepared, false);
   clear();
   loadPreparedModel(prepared.model, prepared.assetPath, prepared.format,
                     sceneManager, &prepared);
@@ -3190,8 +3231,8 @@ void BimManager::loadPreparedScene(PreparedScene &&prepared,
 void BimManager::loadModel(const std::string &path, float importScale,
                            container::scene::SceneManager &sceneManager,
     std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions) {
-  clear();
   if (path.empty()) {
+    clear();
     return;
   }
 
@@ -3199,6 +3240,14 @@ void BimManager::loadModel(const std::string &path, float importScale,
   container::log::ContainerLogger::instance().renderer()->info(
       "Loading BIM model: {}", container::util::pathToUtf8(resolvedPath));
   const std::string extension = lowerAscii(resolvedPath.extension().string());
+  const auto limits = allocationManager_.sceneAssetBudget().limits;
+  if ((limits.residentBytes || limits.uploadBytes) &&
+      extension != ".gltf" && extension != ".glb") {
+    auto prepared = prepareScene(path, importScale, std::move(openVdbOptions));
+    loadPreparedScene(std::move(prepared), sceneManager);
+    return;
+  }
+  clear();
   if (extension == ".bim") {
     loadDotBim(resolvedPath, importScale, sceneManager);
   } else if (extension == ".ifc") {
@@ -4005,12 +4054,16 @@ void BimManager::loadGltfFallback(
 void BimManager::uploadGeometry(
     std::span<const container::geometry::Vertex> vertices,
     std::span<const uint32_t> indices) {
+  if (geometryRevision_ == std::numeric_limits<uint64_t>::max())
+    throw std::overflow_error("BIM geometry revision exhausted");
   ++geometryRevision_;
+  geometryAssetId_ = {};
   vertices_.clear();
   indices_.clear();
   if (vertices.empty() || indices.empty()) {
     return;
   }
+  const auto assetId = container::scene::SceneAssetId::mint();
 
   if (loadProgressCallback_) {
     const auto copyWithProgress = [this](auto &destination, auto source) {
@@ -4047,6 +4100,7 @@ void BimManager::uploadGeometry(
 
   vertexSlice_ = {vertexBuffer_.buffer, 0, vertexBufferSize};
   indexSlice_ = {indexBuffer_.buffer, 0, indexBufferSize};
+  geometryAssetId_ = assetId;
 }
 
 void BimManager::destroyMeshletResidencyBuffers() {

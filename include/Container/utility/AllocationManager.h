@@ -42,6 +42,8 @@ struct TextureAllocation {
   uint32_t imageLeaseCount{};
   bool aggregateRetained{};
   bool individuallyManaged{};
+  SceneAssetBudget::Reservation budget;
+  VkDeviceSize residentBytes{};
 };
 
 class AllocationManager {
@@ -116,8 +118,25 @@ class AllocationManager {
   BufferSlice uploadVertices(std::span<const geometry::Vertex> vertices);
   BufferSlice uploadIndices(std::span<const uint32_t> indices);
   // Caller must retire all GPU readers before reusing scene geometry storage.
-  void resetGeometryAllocations();
+  void resetGeometryAllocations(bool releaseStorage = false);
   [[nodiscard]] VkDeviceSize geometryArenaCapacityBytes() const;
+  [[nodiscard]] VkDeviceSize geometryArenaAllocationBytes() const;
+  [[nodiscard]] SceneAssetBudget::Snapshot sceneAssetBudget() const noexcept {
+    return assetBudget_.snapshot();
+  }
+  [[nodiscard]] SceneAssetBytes textureAssetBytes(
+      const container::material::TextureImageData&,
+      std::span<const uint32_t> queueFamilies = {}) const;
+  void checkSceneAssetAdmission(SceneAssetBytes request,
+      bool replacingSceneTextures = false, VkDeviceSize releasingGeometryBytes = 0);
+  struct SceneTextureAsset {
+    uint64_t id{};
+    VkDeviceSize residentBytes{};
+    bool staged{};
+  };
+  [[nodiscard]] std::vector<SceneTextureAsset> sceneTextureAssets() const;
+  [[nodiscard]] SceneAssetBytes geometryAssetBytes(VkDeviceSize vertexBytes,
+      VkDeviceSize indexBytes, bool reusePrimaryArenas) const;
   AllocatedBuffer uploadBuffer(std::span<const std::byte> bytes,
                                VkBufferUsageFlags usage);
   // Records detached resource preparation on the graphics queue and waits for
@@ -230,6 +249,8 @@ class AllocationManager {
 
   void copyBuffer(VkBuffer srcBuffer, VkBuffer dstBuffer, VkDeviceSize size,
                   VkDeviceSize srcOffset = 0, VkDeviceSize dstOffset = 0);
+  [[nodiscard]] BufferSlice uploadGeometry(std::span<const std::byte>,
+      std::unique_ptr<BufferArena>&, VkBufferUsageFlags, VkDeviceSize alignment);
 
   void transitionImageLayout(VkImage image, VkImageLayout oldLayout,
                              VkImageLayout newLayout,
@@ -249,6 +270,7 @@ class AllocationManager {
 
   [[nodiscard]] uint64_t textureAllocationGroup(
       TextureAllocationLifetime lifetime) const;
+  [[nodiscard]] VkDeviceSize textureAllocationBytes(const VkImageCreateInfo&) const;
   [[nodiscard]] TextureAllocationIdentity registerTextureAllocation(TextureAllocation allocation);
   void destroyTextureAllocation(TextureAllocation& allocation) noexcept;
   void retireTextureAllocationGroup(uint64_t group, bool committed) noexcept;
@@ -264,6 +286,7 @@ class AllocationManager {
   VkCommandPool commandPool_{VK_NULL_HANDLE};
   app::AppConfig config_{};
 
+  SceneAssetBudget assetBudget_;
   std::unique_ptr<VulkanMemoryManager> memoryManager_;
   std::unique_ptr<BufferArena> vertexArena_;
   std::unique_ptr<BufferArena> indexArena_;
@@ -272,7 +295,6 @@ class AllocationManager {
   std::shared_ptr<TextureBatchControl> textureBatchControl_;
   uint64_t activeTextureBatchGroup_{};
   uint64_t nextTextureBatchGroup_{1};
-  uint64_t nextTextureAllocationIncarnation_{1};
   bool textureRetirementInProgress_{};
   uint32_t activeUploadOperations_{};
   std::function<void(bool)> loadProgress_;

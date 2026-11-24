@@ -4,10 +4,12 @@
 #include <cstdint>
 #include <memory>
 #include <span>
+#include <unordered_map>
 #include <utility>
 
 #include "Container/common/CommonVMA.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/utility/SceneAssetBudget.h"
 
 namespace container::gpu {
 
@@ -56,7 +58,8 @@ class VulkanMemoryManager {
  public:
   VulkanMemoryManager(VkInstance instance, VkPhysicalDevice physical_device,
                       VkDevice device,
-                      uint32_t vulkan_api_version = VK_API_VERSION_1_4);
+                      uint32_t vulkan_api_version = VK_API_VERSION_1_4,
+                      SceneAssetBudget* assetBudget = nullptr);
   ~VulkanMemoryManager();
 
   VulkanMemoryManager(const VulkanMemoryManager&) = delete;
@@ -73,12 +76,20 @@ class VulkanMemoryManager {
   void destroyBuffer(AllocatedBuffer& buffer);
 
   [[nodiscard]] VmaAllocator allocator() const noexcept { return allocator_; }
+  [[nodiscard]] VkDeviceSize bufferAllocationBytes(VkDeviceSize size,
+      VkBufferUsageFlags usage) const;
 
  private:
+  friend class StagingBuffer;
+  [[nodiscard]] AllocatedBuffer allocateBuffer(const VkBufferCreateInfo&,
+      VmaMemoryUsage, VmaAllocationCreateFlags, bool staging);
+  [[nodiscard]] VkDeviceSize bufferAllocationBytes(const VkBufferCreateInfo&) const;
   void cleanup();
 
   VmaAllocator allocator_{nullptr};
   VkDevice device_{VK_NULL_HANDLE};
+  SceneAssetBudget* assetBudget_{nullptr};
+  std::unordered_map<VmaAllocation, SceneAssetBudget::Reservation> assetBuffers_;
 };
 
 class BufferArena {

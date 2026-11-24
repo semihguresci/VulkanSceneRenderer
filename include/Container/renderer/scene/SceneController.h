@@ -4,11 +4,13 @@
 #include "Container/common/CommonMath.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/renderer/scene/GltfDeformationScene.h"
+#include "Container/scene/SceneAssetIdentity.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <span>
@@ -115,6 +117,7 @@ class SceneController {
     [[nodiscard]] std::span<const container::geometry::Vertex> gpuBindVertices() const noexcept;
     // Prospective live keys, valid while canExchangeGeneration remains true.
     [[nodiscard]] uint64_t geometryRevision() const noexcept;
+    [[nodiscard]] container::scene::SceneAssetId geometryAssetId() const noexcept;
     [[nodiscard]] uint64_t objectDataRevision() const noexcept;
     [[nodiscard]] uint64_t ownedBytes() const noexcept;
     [[nodiscard]] container::ecs::World& world();
@@ -196,6 +199,7 @@ class SceneController {
     [[nodiscard]] uint64_t candidateGraphRevision() const noexcept;
     [[nodiscard]] bool geometryChanged() const noexcept;
     [[nodiscard]] uint64_t geometryRevision() const noexcept;
+    [[nodiscard]] container::scene::SceneAssetId geometryAssetId() const noexcept;
     [[nodiscard]] const GltfDeformationScene* deformationScene() const noexcept;
     [[nodiscard]] std::span<const container::geometry::Vertex> geometryVertices() const noexcept;
     [[nodiscard]] std::span<const uint32_t> geometryIndices() const noexcept;
@@ -258,6 +262,9 @@ class SceneController {
   [[nodiscard]] std::span<const container::geometry::Vertex> geometryVertices() const;
   [[nodiscard]] std::span<const uint32_t> geometryIndices() const;
   [[nodiscard]] uint64_t geometryRevision() const { return geometryRevision_; }
+  [[nodiscard]] container::scene::SceneAssetId geometryAssetId() const noexcept {
+    return geometryAssetId_;
+  }
   // Complete GPU bind stream, including the diagnostic tail. Geometry accessors
   // above expose the evaluated scene only, for CPU rays, bounds and picking.
   [[nodiscard]] std::span<const container::geometry::Vertex> gpuBindVertices() const {
@@ -317,7 +324,8 @@ class SceneController {
       uint32_t&                               outRootNode,
       uint32_t&                               outSelectedMeshNode,
       uint32_t&                               outCubeNode,
-      container::geometry::GltfLoadResult*      prepared = nullptr);
+      container::geometry::GltfLoadResult*      prepared = nullptr,
+      const std::function<void()>& beforeCommit = {});
 
   [[nodiscard]] uint32_t pickRenderableNode(
       const container::gpu::CameraData& cameraData,
@@ -468,6 +476,7 @@ class SceneController {
   size_t generationSceneVertexCount_{},generationSceneIndexCount_{};
   uint64_t deformationSourceGeometryRevision_{std::numeric_limits<uint64_t>::max()};
   uint64_t geometryRevision_{0};
+  container::scene::SceneAssetId geometryAssetId_{};
   bool deformationTopologyPending_{true};
 
   std::vector<container::gpu::ObjectData>   objectData_;

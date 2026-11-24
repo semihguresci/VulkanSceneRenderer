@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Container/geometry/Vertex.h"
+#include "Container/scene/SceneAssetIdentity.h"
 #include "Container/scene/SceneProvider.h"
 
 #include <cstdint>
@@ -14,12 +15,12 @@ namespace container::geometry::gltf { struct GltfOpacityMicromapAttachment; }
 
 namespace container::renderer {
 
-// Source buffers distinguish a replacement provider whose geometry revision
-// restarts. Keep this identity local to each provider so unrelated providers
-// remain eligible for BLAS reuse. Direct backend callers may leave it zero
-// when their revisions already uniquely identify all geometry changes.
+// An issued asset ID distinguishes replacement content even when the source
+// allocator reuses addresses and the provider's revision restarts. Untagged
+// sources use their backing addresses as a compatibility key.
 struct RaySceneStorageIdentity {
   uintptr_t vertices{0}, indices{0};
+  container::scene::SceneAssetId assetId{};
   bool operator==(const RaySceneStorageIdentity &) const = default;
 };
 
