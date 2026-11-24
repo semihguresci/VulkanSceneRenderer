@@ -2,6 +2,7 @@
 #include "Container/renderer/lighting/SkySettings.h"
 #include "Container/renderer/effects/DisplayGrade.h"
 #include "Container/renderer/effects/OpenVdbVolumeSettings.h"
+#include "Container/renderer/effects/VolumetricFogSettings.h"
 #include "Container/renderer/lighting/DdgiSettings.h"
 #include "Container/renderer/lighting/DdgiBimRoomPlan.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
@@ -1264,6 +1265,14 @@ public:
     rayShadowSupported_ = supported;
     rayShadowStatus_ = std::move(status);
   }
+  void setVolumetricFogState(const container::renderer::VolumetricFogSettings &settings,
+                            std::string status) {
+    volumetricFogSettings_ = settings;
+    volumetricFogStatus_ = std::move(status);
+  }
+  [[nodiscard]] const container::renderer::VolumetricFogSettings &volumetricFogSettings() const {
+    return volumetricFogSettings_;
+  }
   void setDdgiState(const container::renderer::DdgiSettings &settings,
                     GuiDdgiRuntimeState runtime);
   [[nodiscard]] const container::renderer::DdgiSettings &ddgiSettings() const {
@@ -1555,6 +1564,8 @@ private:
   container::renderer::RayShadowSettings rayShadowSettings_{};
   bool rayShadowSupported_{false};
   std::string rayShadowStatus_{};
+  container::renderer::VolumetricFogSettings volumetricFogSettings_{};
+  std::string volumetricFogStatus_{};
   container::renderer::DdgiSettings ddgiSettings_{};
   GuiDdgiRuntimeState ddgiRuntime_{};
   container::renderer::DdgiProbeVolumeDesc ddgiVolumeDraft_{};

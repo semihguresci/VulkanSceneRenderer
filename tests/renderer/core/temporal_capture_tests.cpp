@@ -11,6 +11,26 @@ namespace {
 using container::temporal::CaptureSequence;
 using nlohmann::json;
 
+TEST(TemporalCapture, VolumetricFogModesAreTypedAndOneShot) {
+  using Mode = container::renderer::VolumetricFogMode;
+  const auto input = json::parse(R"({"schemaVersion":1,"frames":6,"events":[
+    {"frame":2,"volumetricFogMode":"low"},
+    {"frame":4,"volumetricFogMode":"froxels"},
+    {"frame":6,"volumetricFogMode":"off"}
+  ]})");
+  const CaptureSequence sequence(input);
+  EXPECT_FALSE(sequence.sample(1).event.volumetricFogMode);
+  EXPECT_EQ(sequence.sample(2).event.volumetricFogMode, Mode::Low);
+  EXPECT_FALSE(sequence.sample(3).event.volumetricFogMode);
+  EXPECT_EQ(sequence.sample(4).event.volumetricFogMode, Mode::Froxels);
+  EXPECT_EQ(sequence.sample(6).event.volumetricFogMode, Mode::Off);
+  for (const auto& invalid : json::array({"unknown", 5, nullptr})) {
+    auto rejected = input;
+    rejected["events"][0]["volumetricFogMode"] = invalid;
+    EXPECT_THROW((void)CaptureSequence(rejected), std::invalid_argument);
+  }
+}
+
 TEST(TemporalCapture, DdgiRoomPlanActionsHaveStrictAndOneShotInputs) {
   using Action = container::temporal::CaptureDdgiRoomPlan::Action;
   const auto input = json::parse(R"({"schemaVersion":1,"frames":5,"events":[

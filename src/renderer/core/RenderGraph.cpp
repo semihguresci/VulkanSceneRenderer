@@ -1589,6 +1589,9 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mixPointer(params.services.volumetricFogPass);
   mix(static_cast<uint32_t>(params.volumetricFog.settings.mode));
   mixFloat(params.volumetricFog.settings.density);
+  mixFloat(params.volumetricFog.settings.albedo);
+  mixFloat(params.volumetricFog.settings.anisotropy);
+  mixFloat(params.volumetricFog.settings.distance);
   // The auxiliary pass is fully created before publication and replaced when
   // its depth/extent changes. Its identity invalidates a cached NotNeeded plan.
   mixPointer(params.services.pbrAuxiliaryPass);

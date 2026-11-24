@@ -35,6 +35,10 @@ struct FogFrameData
 [[vk::binding(1, 1)]] StructuredBuffer<PointLightData> pointLights;
 [[vk::binding(2, 1)]] StructuredBuffer<AreaLightData> areaLights;
 
+static const uint kFogTransmittance = 3u;
+static const uint kFogScattering = 4u;
+static const uint kFogFroxels = 5u;
+
 // Reuse the same raster-atlas visibility as the sparse-volume route. These
 // helpers avoid surface-normal bias and use a four-tap reverse-Z comparison.
 #define camera fog.cameraData
@@ -276,29 +280,82 @@ struct FogColumns
 {
     uint2 lo;
     uint2 hi;
-    float2 weights;
+    float4 weights;
 };
 
-float3 FoggedColor(float3 source, float viewDepth, float distancePerViewDepth, FogColumns columns)
+float FogColumnDepth(uint2 column)
+{
+    float2 center = (float2(column) + 0.5.xx) * float2(fog.viewport.xy) / float2(fog.grid.xy);
+    uint2 pixel = min(uint2(center), fog.viewport.xy - 1u);
+    float depth = sceneDepth.Load(int3(pixel, 0));
+    if (!(depth > 0.0 && depth <= 1.0)) return fog.medium.w;
+
+    float viewDepth;
+    if (fog.temporal.z > 0.5)
+    {
+        // Orthographic reverse-Z varies linearly with view depth and is 1 at the near plane.
+        float depthPerViewUnit = -dot(fog.cameraData.viewProj[2].xyz, fog.cameraData.cameraForward.xyz);
+        viewDepth = fog.temporal.y + (1.0 - depth) / depthPerViewUnit;
+    }
+    else
+    {
+        // Perspective clip W is view depth. The fourth inverse VP row gives its reciprocal
+        // from NDC Z alone, including for infinite-far glTF lenses. Jitter only moves XY.
+        float2 inverseDepth = fog.cameraData.inverseViewProj[3].zw;
+        viewDepth = 1.0 / mad(depth, inverseDepth.x, inverseDepth.y);
+    }
+    return isfinite(viewDepth) && viewDepth >= 0.0 ? min(viewDepth, fog.medium.w) : fog.medium.w;
+}
+
+float4 FogOpaqueWeights(FogColumns columns, float viewDepth)
+{
+    uint slice = min(uint(FogSliceCoordinate(viewDepth)), fog.grid.z - 1u);
+    float sliceThickness = FogSliceDepth(float(slice + 1u)) - FogSliceDepth(float(slice));
+    float4 depths = float4(FogColumnDepth(columns.lo),
+                           FogColumnDepth(uint2(columns.hi.x, columns.lo.y)),
+                           FogColumnDepth(uint2(columns.lo.x, columns.hi.y)),
+                           FogColumnDepth(columns.hi));
+    // Keep within-slice filtering and reject depths separated by two or
+    // more slices' worth of distance. At sub-froxel geometry with no
+    // compatible tap, still integrate to the pixel's exact stop depth.
+    float4 weights = columns.weights * (1.0.xxxx -
+        smoothstep(sliceThickness, 2.0 * sliceThickness, abs(depths - viewDepth)));
+    float total = dot(weights, 1.0.xxxx);
+    return total > 1e-5 ? weights / total : columns.weights;
+}
+
+float3 FroxelGridColor(float2 uv, float viewDepth)
+{
+    float2 gridPosition = uv * float2(fog.grid.xy);
+    float2 edgePixels = abs(gridPosition - round(gridPosition)) *
+        float2(fog.viewport.xy) / float2(fog.grid.xy);
+    float edge = 1.0 - smoothstep(0.35, 1.15, min(edgePixels.x, edgePixels.y));
+    uint slice = min(uint(FogSliceCoordinate(viewDepth)), fog.grid.z - 1u);
+    float sliceFraction = float(slice) / float(fog.grid.z - 1u);
+    float3 band = lerp(float3(0.035, 0.12, 0.24), float3(0.36, 0.16, 0.035), sliceFraction);
+    band *= (slice & 1u) == 0u ? 0.7 : 1.0;
+    return lerp(band, float3(0.05, 0.65, 0.85), edge);
+}
+
+float3 FoggedColor(float3 source, float viewDepth, float distancePerViewDepth,
+                  FogColumns columns, float4 weights)
 {
     float opticalDepth = fog.medium.x * viewDepth * distancePerViewDepth;
     float transmittance = exp(-opticalDepth);
-    if (fog.viewport.z == 3u) return transmittance.xxx;
+    if (fog.viewport.z == kFogTransmittance) return transmittance.xxx;
     uint z = min(uint(FogSliceCoordinate(viewDepth)), fog.grid.z - 1u);
     float partialStep = max(viewDepth - FogSliceDepth(float(z)), 0.0);
     uint2 lo = columns.lo, hi = columns.hi;
-    float2 w = columns.weights;
-    float4 a = lerp(PartialFog(lo, z, viewDepth, partialStep),
-                    PartialFog(uint2(hi.x, lo.y), z, viewDepth, partialStep), w.x);
-    float4 b = lerp(PartialFog(uint2(lo.x, hi.y), z, viewDepth, partialStep),
-                    PartialFog(hi, z, viewDepth, partialStep), w.x);
-    float4 integrated = lerp(a, b, w.y);
+    float4 integrated = PartialFog(lo, z, viewDepth, partialStep) * weights.x +
+        PartialFog(uint2(hi.x, lo.y), z, viewDepth, partialStep) * weights.y +
+        PartialFog(uint2(lo.x, hi.y), z, viewDepth, partialStep) * weights.z +
+        PartialFog(hi, z, viewDepth, partialStep) * weights.w;
     float3 scatter = integrated.rgb;
     // Rescale the sampled scattering profile by the pixel ray's opacity.
     // This anchors uniform lighting to Beer-Lambert without another march.
     if (fog.temporal.z <= 0.5 && integrated.a > 0.0)
         scatter *= FogOpacity(opticalDepth, transmittance) / integrated.a;
-    return fog.viewport.z == 4u ? scatter : source * transmittance + scatter;
+    return fog.viewport.z == kFogScattering ? scatter : source * transmittance + scatter;
 }
 
 [shader("compute")]
@@ -313,10 +370,19 @@ void compositeFog(uint3 id : SV_DispatchThreadID)
     FogColumns columns;
     columns.lo = uint2(coordinate);
     columns.hi = min(columns.lo + 1u, fog.grid.xy - 1u);
-    columns.weights = frac(coordinate);
+    float2 weight = frac(coordinate);
+    float2 remaining = 1.0.xx - weight;
+    columns.weights = float4(remaining.x * remaining.y, weight.x * remaining.y,
+                             remaining.x * weight.y, weight.x * weight.y);
     float4 source = sceneColor[id.xy];
     float viewDepth = FogViewDepth(uv, sceneDepth.Load(int3(id.xy, 0)));
-    source.rgb = FoggedColor(source.rgb, viewDepth, ray.distancePerViewDepth, columns);
+    if (fog.viewport.z == kFogFroxels)
+        source.rgb = FroxelGridColor(uv, viewDepth);
+    else
+    {
+        float4 weights = fog.viewport.z == kFogTransmittance ? columns.weights : FogOpaqueWeights(columns, viewDepth);
+        source.rgb = FoggedColor(source.rgb, viewDepth, ray.distancePerViewDepth, columns, weights);
+    }
     sceneColor[id.xy] = source;
 
     if (fog.temporal.w == 0.0 || id.x >= oitMetadata.viewportWidth || id.y >= oitMetadata.viewportHeight)
@@ -329,7 +395,10 @@ void compositeFog(uint3 id : SV_DispatchThreadID)
     {
         TransparentNode node = oitNodes[current];
         float nodeDepth = FogViewDepth(uv, node.depth);
-        node.color.rgb = FoggedColor(node.color.rgb, nodeDepth, ray.distancePerViewDepth, columns);
+        // Opaque depths do not identify a surface in the transparent list.
+        // Keep this layer's own depth and the unmodified spatial weights.
+        node.color.rgb = fog.viewport.z == kFogFroxels ? FroxelGridColor(uv, nodeDepth) :
+            FoggedColor(node.color.rgb, nodeDepth, ray.distancePerViewDepth, columns, columns.weights);
         oitNodes[current].color = node.color;
         current = node.next;
     }
