@@ -105,6 +105,7 @@ TEST(SceneProviderMaterialReferences,BorrowedViewsWithLongIdsAndNamesMatchWithou
 TEST(SceneProviderMaterialReferences,RevisionBatchStorageAndIdentityChangesRejectWithoutAllocation) {
   MeshSceneProvider provider({std::string(2048,'i')},std::string(4096,'n'));
   MeshSceneAsset asset;asset.primitiveCount=1;asset.materialCount=5;asset.instanceCount=1;
+  asset.geometryAssetId=container::scene::SceneAssetId::mint();
   asset.triangleBatches={{0,3,4,false,false,1}};provider.update(asset,{1,2,3});
   const auto before=provider.snapshot();
   const auto matches=[&] {
@@ -118,6 +119,10 @@ TEST(SceneProviderMaterialReferences,RevisionBatchStorageAndIdentityChangesRejec
     provider.update(asset,revision);EXPECT_FALSE(matches());
   }
   provider.update(asset,{1,2,3});EXPECT_TRUE(matches());
+  auto differentIncarnation=asset;
+  differentIncarnation.geometryAssetId=container::scene::SceneAssetId::mint();
+  provider.update(differentIncarnation,{1,2,3});
+  EXPECT_FALSE(matches()); // Equal revisions and batch storage, different geometry owner.
   auto replacement=asset;replacement.triangleBatches={{0,3,4,false,false,1}};
   provider.update(replacement,{1,2,3});EXPECT_FALSE(matches()); // Equal IDs, different immutable publication.
   provider.update(asset,{1,2,3},std::string(4096,'x'));EXPECT_FALSE(matches());
@@ -1274,13 +1279,14 @@ TEST(SceneProviderSynchronizerTests, SharesTopologyThroughRepeatedExtraction) {
 TEST(SceneProviderSynchronizerTests, RetainedFramesSurviveReplacementWithSameRevisions) {
   SceneProviderSyncInput input{.mesh = {
       .available = true, .primitiveCount = 1, .instanceCount = 1,
-      .triangleBatches = {{.firstIndex = 3, .indexCount = 6}}, .geometryRevision = 1}};
+      .triangleBatches = {{.firstIndex = 3, .indexCount = 6}}, .geometryRevision = 1,
+      .geometryAssetId = container::scene::SceneAssetId::mint()}};
   SceneProviderSynchronizer synchronizer;
   SceneProviderRegistry registry;
   synchronizer.sync(registry, input);
   const auto oldFrame = extractProviderSceneFrameInputs(registry);
   input.mesh.triangleBatches = {{.firstIndex = 9, .indexCount = 12, .transparent = true}};
-  input.mesh.instanceRevision = 2;
+  input.mesh.geometryAssetId = container::scene::SceneAssetId::mint();
   synchronizer.sync(registry, input);
   const auto newFrame = extractProviderSceneFrameInputs(registry);
   EXPECT_EQ(oldFrame.snapshots.front().triangleBatches.front().firstIndex, 3u);
@@ -1289,6 +1295,20 @@ TEST(SceneProviderSynchronizerTests, RetainedFramesSurviveReplacementWithSameRev
   EXPECT_TRUE(newFrame.rayTracingBuildInputs.front().triangleBatches.front().transparent);
   EXPECT_NE(newFrame.snapshots.front().triangleBatches.data(),
             oldFrame.snapshots.front().triangleBatches.data());
+  EXPECT_EQ(newFrame.snapshots.front().revision.geometry,
+            oldFrame.snapshots.front().revision.geometry);
+  EXPECT_NE(newFrame.snapshots.front().geometryAssetId,
+            oldFrame.snapshots.front().geometryAssetId);
+  EXPECT_EQ(newFrame.snapshots.front().geometryAssetId, input.mesh.geometryAssetId);
+
+  input.mesh.available = false;
+  input.bim = {.available = true, .elementCount = 1, .meshPrimitiveCount = 1,
+               .geometryRevision = 1, .geometryAssetId = container::scene::SceneAssetId::mint()};
+  synchronizer.sync(registry, input);
+  const auto auxiliary = registry.snapshots();
+  ASSERT_EQ(auxiliary.size(), 1u);
+  EXPECT_EQ(auxiliary.front().geometryAssetId, input.bim.geometryAssetId);
+  EXPECT_NE(auxiliary.front().geometryAssetId, newFrame.snapshots.front().geometryAssetId);
 }
 
 TEST(RenderExtractionGuardrails, ProviderContractsStayBackendNeutral) {

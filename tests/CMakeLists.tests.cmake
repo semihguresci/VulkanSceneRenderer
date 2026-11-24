@@ -515,6 +515,10 @@ add_custom_test(async_model_preparation_tests
 
 # ── CPU-only tests (no shaders needed) ───────────────────────────────────────
 
+add_custom_test(scene_asset_budget_tests
+    ${CMAKE_SOURCE_DIR}/tests/utility/scene_asset_budget_tests.cpp "" ${TEST_RESULTS_DIR})
+set_tests_properties(scene_asset_budget_tests PROPERTIES LABELS "cpu;scene;assets")
+
 add_custom_test(queue_family_selection_tests
     ${CMAKE_SOURCE_DIR}/tests/utility/queue_family_selection_tests.cpp "" ${TEST_RESULTS_DIR}
     Dep_VulkanCore)
@@ -1129,6 +1133,14 @@ add_test(NAME gui_model_cancellation_gpu_regression
             --output "${TEST_RESULTS_DIR}/gui-model-cancellation")
 set_tests_properties(gui_model_cancellation_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 TIMEOUT 600 LABELS "requires-vulkan;requires-display;visual-regression")
+
+add_test(NAME scene_asset_budget_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/scene_asset_budget_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/scene-asset-budget" --managed-output --require-opt-in)
+set_tests_properties(scene_asset_budget_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 950
+    LABELS "requires-vulkan;requires-display;ray-query;scene;assets;visual-regression")
 
 add_test(NAME gui_model_loading_harness_tests
     COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover

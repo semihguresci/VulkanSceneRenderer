@@ -217,7 +217,9 @@ protected:
 
   void update(uint32_t image, bool emptyProviders = false) {
     const std::array providers{RaySceneProviderSource{
-        {"mesh"}, revision, vertices, indices, objects, draws}};
+        .provider = {"mesh"}, .geometryRevision = revision,
+        .vertices = vertices, .indices = indices, .objects = objects,
+        .draws = draws, .assetId = assetId}};
     manager->update(image, camera, frame, *sets[0], *sets[1],
                     emptyProviders ? std::span<const RaySceneProviderSource>{}
                                    : std::span<const RaySceneProviderSource>(providers),
@@ -323,6 +325,7 @@ protected:
   std::vector<ObjectData> objects;
   std::vector<DrawCommand> draws;
   uint64_t revision{1};
+  container::scene::SceneAssetId assetId{};
 };
 
 class OptionalSurfaceFailure : public RayShadowSurfaceGpu,
@@ -423,5 +426,33 @@ TEST_F(RayShadowSurfaceGpu, EmptySceneRetiresCompactGenerationsAndReloads) {
 
 TEST_F(RayShadowSurfaceGpu, EmptySceneRetiresSurfaceGenerationsAndReloads) {
   verifyUnloadAndReload(true);
+}
+
+TEST_F(RayShadowSurfaceGpu, ReplacementAssetInvalidatesRayHistoryWithSameArenaAndRevision) {
+  assetId = container::scene::SceneAssetId::mint();
+  ASSERT_NO_THROW(build(0));
+  const auto original = manager->surfaceBindings(0);
+  const auto originalMotion = manager->surfaceMotionSnapshot(0);
+  ASSERT_TRUE(original);
+  ASSERT_TRUE(originalMotion.lifetime);
+  const auto previousGeneration = manager->sceneGeneration();
+  const auto previousRevision = manager->sceneRevision();
+
+  for (auto &vertex : vertices)
+    vertex.position.z -= 1.f;
+  assetId = container::scene::SceneAssetId::mint();
+  ASSERT_NO_THROW(build(1));
+  const auto replacement = manager->surfaceBindings(1);
+  const auto replacementMotion = manager->surfaceMotionSnapshot(1);
+  ASSERT_TRUE(replacement);
+  ASSERT_NE(manager->buildStats(), nullptr);
+  EXPECT_EQ(manager->buildStats()->blasBuilt, 1u);
+  EXPECT_EQ(manager->buildStats()->blasReused, 0u);
+  EXPECT_EQ(manager->sceneGeneration(), previousGeneration + 1);
+  EXPECT_NE(manager->sceneRevision(), previousRevision);
+  EXPECT_NE(replacementMotion.topology, originalMotion.topology);
+  EXPECT_NE(replacementMotion.lifetime, originalMotion.lifetime);
+  EXPECT_NE(replacement.tlas, original.tlas);
+  EXPECT_EQ(manager->surfaceBindings(0).tlas, original.tlas);
 }
 } // namespace

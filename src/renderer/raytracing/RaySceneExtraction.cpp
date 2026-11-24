@@ -133,10 +133,10 @@ uint64_t geometrySignature(std::span<const RaySceneProviderSource> providers,
     value(provider.geometryRevision);
     value(provider.vertices.size());
     value(provider.indices.size());
-    // A replacement provider may restart its revision counter. Its source
-    // storage identity must not accidentally reuse the previous compact copy.
-    value(reinterpret_cast<uintptr_t>(provider.vertices.data()));
-    value(reinterpret_cast<uintptr_t>(provider.indices.data()));
+    const auto storage = provider.storageIdentity();
+    value(storage.assetId.value());
+    value(storage.vertices);
+    value(storage.indices);
     value(provider.opacityMicromaps.size());
     for (const auto& candidate : provider.opacityMicromaps) {
       value(candidate.firstIndex);
@@ -286,9 +286,7 @@ extractRayScene(std::span<const RaySceneProviderSource> providers,
         geometry.id = id;
         geometry.revision = provider.geometryRevision;
         geometry.opacityMicromap = opacityMicromap(provider, id);
-        geometry.storageIdentity = {
-            reinterpret_cast<uintptr_t>(provider.vertices.data()),
-            reinterpret_cast<uintptr_t>(provider.indices.data())};
+        geometry.storageIdentity = provider.storageIdentity();
         geometry.firstTriangle = static_cast<uint32_t>(scene.triangles.size());
         geometry.indexOrderHash = 14695981039346656037ull;
         std::unordered_map<uint32_t, uint32_t> remap;
@@ -346,15 +344,13 @@ extractRaySceneInstances(const ExtractedRayScene &geometry,
   std::set<std::string> identities;
   for (const auto &provider : providers) {
     validateProvider(provider, identities);
+    const auto storage = provider.storageIdentity();
     for (const auto &draw : provider.draws) {
       if (draw.indexCount == 0 || draw.instanceCount == 0)
         continue;
       validateDraw(provider, draw);
       const auto found =
           ranges.find({provider.provider.value, geometryId(draw)});
-      const RaySceneStorageIdentity storage{
-          reinterpret_cast<uintptr_t>(provider.vertices.data()),
-          reinterpret_cast<uintptr_t>(provider.indices.data())};
       if (found == ranges.end() ||
           geometry.geometry[found->second].revision !=
               provider.geometryRevision ||

@@ -13,8 +13,12 @@ namespace container::gpu {
 StagingBuffer::StagingBuffer(VulkanMemoryManager& manager, VkDeviceSize size,
                              VmaAllocationCreateFlags allocation_flags)
     : manager_(&manager), size_(size) {
-  buffer_ = manager_->createBuffer(size_, VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
-                                   VMA_MEMORY_USAGE_AUTO, allocation_flags);
+  VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  info.size = size_;
+  info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  buffer_ = manager_->allocateBuffer(info, VMA_MEMORY_USAGE_AUTO,
+                                     allocation_flags, true);
 
   mapped_data_ = buffer_.allocation_info.pMappedData;
 }
@@ -94,8 +98,9 @@ void StagingBuffer::upload(std::span<const std::byte> bytes) {
 VulkanMemoryManager::VulkanMemoryManager(VkInstance instance,
                                          VkPhysicalDevice physical_device,
                                          VkDevice device,
-                                         uint32_t vulkan_api_version)
-    : device_(device) {
+                                         uint32_t vulkan_api_version,
+                                         SceneAssetBudget* assetBudget)
+    : device_(device), assetBudget_(assetBudget) {
   VmaVulkanFunctions vulkanFunctions{};
   vulkanFunctions.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
   vulkanFunctions.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
@@ -119,7 +124,9 @@ VulkanMemoryManager::VulkanMemoryManager(VkInstance instance,
 VulkanMemoryManager::~VulkanMemoryManager() { cleanup(); }
 
 VulkanMemoryManager::VulkanMemoryManager(VulkanMemoryManager&& other) noexcept
-    : allocator_(other.allocator_), device_(other.device_) {
+    : allocator_(other.allocator_), device_(other.device_),
+      assetBudget_(std::exchange(other.assetBudget_, nullptr)),
+      assetBuffers_(std::move(other.assetBuffers_)) {
   other.allocator_ = VK_NULL_HANDLE;
   other.device_ = VK_NULL_HANDLE;
 }
@@ -130,6 +137,8 @@ VulkanMemoryManager& VulkanMemoryManager::operator=(
     cleanup();
     allocator_ = other.allocator_;
     device_ = other.device_;
+    assetBudget_ = std::exchange(other.assetBudget_, nullptr);
+    assetBuffers_ = std::move(other.assetBuffers_);
     other.allocator_ = VK_NULL_HANDLE;
     other.device_ = VK_NULL_HANDLE;
   }
@@ -151,7 +160,37 @@ AllocatedBuffer VulkanMemoryManager::createBuffer(
     bufferInfo.queueFamilyIndexCount = static_cast<uint32_t>(queue_families.size());
     bufferInfo.pQueueFamilyIndices = queue_families.data();
   }
+  return allocateBuffer(bufferInfo, memory_usage, allocation_flags, false);
+}
 
+VkDeviceSize VulkanMemoryManager::bufferAllocationBytes(
+    VkDeviceSize size, VkBufferUsageFlags usage) const {
+  if (size == 0)
+    return 0;
+  VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+  info.size = size;
+  info.usage = usage;
+  info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
+  return bufferAllocationBytes(info);
+}
+
+VkDeviceSize VulkanMemoryManager::bufferAllocationBytes(const VkBufferCreateInfo& info) const {
+  VkDeviceBufferMemoryRequirements query{VK_STRUCTURE_TYPE_DEVICE_BUFFER_MEMORY_REQUIREMENTS};
+  query.pCreateInfo = &info;
+  VkMemoryRequirements2 requirements{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+  vkGetDeviceBufferMemoryRequirements(device_, &query, &requirements);
+  return requirements.memoryRequirements.size;
+}
+
+AllocatedBuffer VulkanMemoryManager::allocateBuffer(const VkBufferCreateInfo& bufferInfo,
+    VmaMemoryUsage memory_usage, VmaAllocationCreateFlags allocation_flags, bool staging) {
+  const bool sceneGeometry = (bufferInfo.usage &
+      (VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT)) != 0;
+  SceneAssetBudget::Reservation budget;
+  if (assetBudget_ && (staging || sceneGeometry)) {
+    const auto bytes = bufferAllocationBytes(bufferInfo);
+    budget = assetBudget_->reserve({sceneGeometry ? bytes : 0, staging ? bytes : 0});
+  }
   VmaAllocationCreateInfo allocInfo{};
   allocInfo.usage = memory_usage;
   allocInfo.flags = allocation_flags;
@@ -163,6 +202,14 @@ AllocatedBuffer VulkanMemoryManager::createBuffer(
                       &buffer.allocation_info) != VK_SUCCESS) {
     throw std::runtime_error("Failed to allocate Vulkan buffer");
   }
+  if (assetBudget_ && (staging || sceneGeometry)) {
+    try {
+      assetBuffers_.emplace(buffer.allocation, std::move(budget));
+    } catch (...) {
+      vmaDestroyBuffer(allocator_, buffer.buffer, buffer.allocation);
+      throw;
+    }
+  }
 
   return buffer;
 }
@@ -170,6 +217,7 @@ AllocatedBuffer VulkanMemoryManager::createBuffer(
 void VulkanMemoryManager::destroyBuffer(AllocatedBuffer& buffer) {
   if (allocator_ && buffer.buffer && buffer.allocation) {
     vmaDestroyBuffer(allocator_, buffer.buffer, buffer.allocation);
+    assetBuffers_.erase(buffer.allocation);
   }
   buffer = {};
 }
@@ -179,6 +227,8 @@ void VulkanMemoryManager::cleanup() {
     vmaDestroyAllocator(allocator_);
     allocator_ = VK_NULL_HANDLE;
   }
+  assetBuffers_.clear();
+  assetBudget_ = nullptr;
   device_ = VK_NULL_HANDLE;
 }
 

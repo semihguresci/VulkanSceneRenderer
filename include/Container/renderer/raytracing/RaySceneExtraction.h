@@ -34,6 +34,16 @@ struct RaySceneProviderSource {
   uint64_t gpuTransformRevision{};
   // Sorted, unique draw ranges whose current material matches baked coverage.
   std::span<const RayOpacityMicromapRange> opacityMicromaps{};
+  // Stable across storage relocation and mutable geometry revisions. A newly
+  // published asset gets a new ID even when a provider reuses its arena.
+  container::scene::SceneAssetId assetId{};
+
+  [[nodiscard]] RaySceneStorageIdentity storageIdentity() const noexcept {
+    if (assetId)
+      return {.assetId = assetId};
+    return {.vertices = reinterpret_cast<uintptr_t>(vertices.data()),
+            .indices = reinterpret_cast<uintptr_t>(indices.data())};
+  }
 };
 
 // UV0/UV1 and COLOR_0 alpha at each corner. Matches ray_scene_data.slang.

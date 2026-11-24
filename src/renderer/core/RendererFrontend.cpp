@@ -3703,6 +3703,32 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   json["dlss"] = upscaleTelemetry(UpscaleBackend::Dlss, temporal.dlssActive());
   if (const auto bytes = temporal.dlssAllocatedBytes())
     json["dlss"]["sdkAllocatedBytes"] = *bytes;
+  const auto assetBudget = svc_.allocationManager.sceneAssetBudget();
+  const auto assetBytes = [](container::gpu::SceneAssetBytes bytes) {
+    return nlohmann::json{{"residentBytes", bytes.residentBytes},
+                          {"uploadBytes", bytes.uploadBytes}};
+  };
+  nlohmann::json assetProviders = nlohmann::json::array();
+  if (subs_.sceneProviderRegistry) {
+    for (const auto& provider : subs_.sceneProviderRegistry->snapshots()) {
+      if (provider.geometryAssetId)
+        assetProviders.push_back({{"id", provider.id.value},
+            {"geometryAssetId", provider.geometryAssetId.value()},
+            {"geometryRevision", provider.revision.geometry},
+            {"residency", "resident"}});
+    }
+  }
+  nlohmann::json textureAssets = nlohmann::json::array();
+  for (const auto& asset : svc_.allocationManager.sceneTextureAssets()) {
+    textureAssets.push_back({{"id", asset.id}, {"revision", 1},
+        {"residentBytes", asset.residentBytes},
+        {"residency", asset.staged ? "staged" : "resident"}});
+  }
+  json["assetResidency"] = {{"limits", assetBytes(assetBudget.limits)},
+      {"used", assetBytes(assetBudget.used)}, {"peak", assetBytes(assetBudget.peak)},
+      {"rejectedReservations", assetBudget.rejectedReservations},
+      {"preparing", modelLoad_ && modelLoad_->request && !modelLoad_->committing},
+      {"providers", std::move(assetProviders)}, {"textures", std::move(textureAssets)}};
   if (referencePathActive()) {
     const auto* path = subs_.referencePathTracePass.get();
     const auto lens = path ? path->effectiveLens() : std::nullopt;
@@ -5502,7 +5528,6 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                                         float importScale) {
   if (!subs_.sceneController || !subs_.sceneManager)
     return false;
-  deactivateRenderSetup();
   finishEditGestures();
 
   ensureObjectBuffers();
@@ -5513,7 +5538,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                                 ? container::gpu::AllocatedBuffer{}
                                 : buffers_.cameras.front();
   const uint64_t previousGraphIdentity = sceneGraph_.identity();
-  auto reloadPrimary = [&](const std::string &modelPath, float scale) {
+  auto reloadPrimary = [&](const std::string &modelPath, float scale,
+                           bool* commitStarted = nullptr) {
     auto *prepared = modelLoad_ && modelLoad_->committing && modelLoad_->ready &&
                              modelLoad_->request && modelLoad_->request->path == modelPath &&
                              modelLoad_->ready->gltf
@@ -5522,7 +5548,12 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
         modelPath, scale, buffers_.objects.front(),
         buffers_.objectCapacities.front(),
         cameraBuffer, sceneState_.indexType, sceneState_.rootNode,
-        sceneState_.selectedMeshNode, sceneState_.cubeNode, prepared);
+        sceneState_.selectedMeshNode, sceneState_.cubeNode, prepared,
+        [this, commitStarted] {
+          deactivateRenderSetup();
+          if (commitStarted)
+            *commitStarted = true;
+        });
   };
   auto refreshSceneState = [&](bool replacedModel) {
     // reloadPrimary can replace the first object buffer before
@@ -5604,8 +5635,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                                 previousOpenVdbOptions,svc_.config.vdbModelOptions));
         prepared = &*localPrepared;
       }
-      retiredPreviousScene = true;
-      if (!reloadPrimary("", 1.0f))
+      subs_.bimManager->checkPreparedSceneBudget(*prepared, true);
+      if (!reloadPrimary("", 1.0f, &retiredPreviousScene))
         throw std::runtime_error("Failed to clear the primary scene");
       subs_.bimManager->loadPreparedScene(std::move(*prepared), *subs_.sceneManager);
     } catch (const std::exception &error) {
@@ -8295,12 +8326,13 @@ void RendererFrontend::fitDdgiToActiveScene(uint32_t maxProbes) {
     meshDraws = subs_.sceneController->opaqueDrawCommands();
     const auto &transparent = subs_.sceneController->transparentDrawCommands();
     meshDraws.insert(meshDraws.end(), transparent.begin(), transparent.end());
-    sources.push_back({{"mesh-fit"},
-                       subs_.sceneController->geometryRevision(),
-                       subs_.sceneController->geometryVertices(),
-                       subs_.sceneController->geometryIndices(),
-                       subs_.sceneController->objectData(),
-                       meshDraws});
+    sources.push_back({.provider = {"mesh-fit"},
+                       .geometryRevision = subs_.sceneController->geometryRevision(),
+                       .vertices = subs_.sceneController->geometryVertices(),
+                       .indices = subs_.sceneController->geometryIndices(),
+                       .objects = subs_.sceneController->objectData(),
+                       .draws = meshDraws,
+                       .assetId = subs_.sceneController->geometryAssetId()});
   }
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     auto filter = currentBimDrawFilter();
@@ -8314,12 +8346,13 @@ void RendererFrontend::fitDdgiToActiveScene(uint32_t maxProbes) {
     };
     append(subs_.bimManager->opaqueDrawCommands());
     append(subs_.bimManager->transparentDrawCommands());
-    sources.push_back({{"bim-fit"},
-                       subs_.bimManager->geometryRevision(),
-                       subs_.bimManager->vertices(),
-                       subs_.bimManager->indices(),
-                       subs_.bimManager->objectData(),
-                       bimDraws});
+    sources.push_back({.provider = {"bim-fit"},
+                       .geometryRevision = subs_.bimManager->geometryRevision(),
+                       .vertices = subs_.bimManager->vertices(),
+                       .indices = subs_.bimManager->indices(),
+                       .objects = subs_.bimManager->objectData(),
+                       .draws = bimDraws,
+                       .assetId = subs_.bimManager->geometryAssetId()});
   }
   const auto bounds = computeDdgiSceneBounds(sources);
   if (!bounds.valid)
@@ -8410,9 +8443,11 @@ void RendererFrontend::fitDdgiDetailToSelection(uint32_t maxProbes, std::string_
     };
     append(subs_.bimManager->opaqueDrawCommands());
     append(subs_.bimManager->transparentDrawCommands());
-    sources.push_back({{"bim-detail"}, subs_.bimManager->geometryRevision(),
-        subs_.bimManager->vertices(), subs_.bimManager->indices(),
-        subs_.bimManager->objectData(), draws});
+    sources.push_back({.provider = {"bim-detail"},
+        .geometryRevision = subs_.bimManager->geometryRevision(),
+        .vertices = subs_.bimManager->vertices(), .indices = subs_.bimManager->indices(),
+        .objects = subs_.bimManager->objectData(), .draws = draws,
+        .assetId = subs_.bimManager->geometryAssetId()});
   } else if (meshNode != invalid && subs_.sceneController && subs_.sceneManager) {
     std::vector<uint32_t> nodes{meshNode};
     std::vector<DrawCommand> selected;
@@ -8423,9 +8458,11 @@ void RendererFrontend::fitDdgiDetailToSelection(uint32_t maxProbes, std::string_
       subs_.sceneController->collectDrawCommandsForNode(nodes[index], selected);
       draws.insert(draws.end(), selected.begin(), selected.end());
     }
-    sources.push_back({{"mesh-detail"}, subs_.sceneController->geometryRevision(),
-        subs_.sceneController->geometryVertices(), subs_.sceneController->geometryIndices(),
-        subs_.sceneController->objectData(), draws});
+    sources.push_back({.provider = {"mesh-detail"},
+        .geometryRevision = subs_.sceneController->geometryRevision(),
+        .vertices = subs_.sceneController->geometryVertices(), .indices = subs_.sceneController->geometryIndices(),
+        .objects = subs_.sceneController->objectData(), .draws = draws,
+        .assetId = subs_.sceneController->geometryAssetId()});
   }
   const auto bounds = computeDdgiSceneBounds(sources);
   if (!bounds.valid)
@@ -10359,13 +10396,15 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         (surfaceScene ||
          subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
       sources.push_back(
-          {meshProvider.front()->snapshot().id,
-           subs_.sceneController->geometryRevision(),
-           subs_.sceneController->geometryVertices(), subs_.sceneController->geometryIndices(),
-           subs_.sceneController->objectData(),
-           surfaceScene ? std::span<const DrawCommand>(meshRayDraws)
+          {.provider = meshProvider.front()->snapshot().id,
+           .geometryRevision = subs_.sceneController->geometryRevision(),
+           .vertices = subs_.sceneController->geometryVertices(),
+           .indices = subs_.sceneController->geometryIndices(),
+           .objects = subs_.sceneController->objectData(),
+           .draws = surfaceScene ? std::span<const DrawCommand>(meshRayDraws)
                    : std::span<const DrawCommand>(
-                         subs_.sceneController->opaqueDrawCommands())});
+                         subs_.sceneController->opaqueDrawCommands()),
+           .assetId = subs_.sceneController->geometryAssetId()});
       auto& primary = sources.back();
       // Forward MSAA uses the TLAS to prove raster receiver identity. The
       // proof must see every masked triangle, even those removed by a map.
@@ -10403,11 +10442,13 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       const auto bimProvider = subs_.sceneProviderRegistry->providersForKind(
           container::scene::SceneProviderKind::Bim);
       if (!bimProvider.empty())
-        sources.push_back({bimProvider.front()->snapshot().id,
-                           subs_.bimManager->geometryRevision(),
-                           subs_.bimManager->vertices(),
-                           subs_.bimManager->indices(),
-                           subs_.bimManager->objectData(), bimDraws});
+        sources.push_back({.provider = bimProvider.front()->snapshot().id,
+                           .geometryRevision = subs_.bimManager->geometryRevision(),
+                           .vertices = subs_.bimManager->vertices(),
+                           .indices = subs_.bimManager->indices(),
+                           .objects = subs_.bimManager->objectData(),
+                           .draws = bimDraws,
+                           .assetId = subs_.bimManager->geometryAssetId()});
     }
     bool rayGeometryCompatible = true;
     for (const auto &source : sources)
@@ -10632,6 +10673,8 @@ SceneProviderSyncInput RendererFrontend::buildSceneProviderSyncInput(const MeshS
         .displayName = sceneProviderDisplayName(activePrimaryModelPath_,
                                                 "Primary mesh scene"),
         .triangleBatchesAuthoritative = meshAsset.triangleBatchesAuthoritative,
+        .geometryAssetId = subs_.sceneController ? subs_.sceneController->geometryAssetId()
+                                                 : container::scene::SceneAssetId{},
     };
   } else {
     meshProviderAssetCache_.clear();
@@ -10667,6 +10710,7 @@ SceneProviderSyncInput RendererFrontend::buildSceneProviderSyncInput(const MeshS
         .instanceRevision = objectRevision,
         .displayName =
             sceneProviderDisplayName(activeAuxiliaryModelPath_, "BIM scene"),
+        .geometryAssetId = subs_.bimManager->geometryAssetId(),
     };
   }
 

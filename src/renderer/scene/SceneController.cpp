@@ -332,6 +332,7 @@ struct SceneController::PreparedGeneration::State {
   std::vector<uint32_t> gpuBindIndices_;
   size_t generationSceneVertexCount_{},generationSceneIndexCount_{};
   uint64_t deformationSourceGeometryRevision_{std::numeric_limits<uint64_t>::max()},geometryRevision_{};
+  container::scene::SceneAssetId geometryAssetId_{};
   bool deformationTopologyPending_{true};
   std::vector<ObjectData> objectData_;
   std::vector<DrawCommand> opaqueDrawCommands_,transparentDrawCommands_;
@@ -352,6 +353,7 @@ struct SceneController::PreparedGeneration::State {
 struct SceneController::PreparedMaterialRouting::State {
   const SceneController* owner{};
   uint64_t graph{},candidateGraph{},sceneEpoch{},sourceGeometry{},sourceMaterial{},geometry{},objects{},upload{};
+  container::scene::SceneAssetId geometryAssetId_{};
   container::scene::MaterialBindingCommand bindings;
   container::scene::MaterialBindingSide bindingTarget{container::scene::MaterialBindingSide::After};
   bool bindingAware{},consumed{};
@@ -431,6 +433,9 @@ bool SceneController::PreparedMaterialRouting::geometryChanged() const noexcept 
 uint64_t SceneController::PreparedMaterialRouting::geometryRevision() const noexcept {
   return state_?state_->geometry+uint64_t(geometryChanged()):0;
 }
+container::scene::SceneAssetId SceneController::PreparedMaterialRouting::geometryAssetId() const noexcept {
+  return state_ ? state_->geometryAssetId_ : container::scene::SceneAssetId{};
+}
 const GltfDeformationScene* SceneController::PreparedMaterialRouting::deformationScene() const noexcept {
   return geometryChanged()?state_->normalFrames.scene.get():nullptr;
 }
@@ -505,6 +510,9 @@ std::span<const container::geometry::Vertex> SceneController::PreparedGeneration
   return state_?std::span<const container::geometry::Vertex>(state_->gpuBindVertices_):std::span<const container::geometry::Vertex>{};
 }
 uint64_t SceneController::PreparedGeneration::geometryRevision() const noexcept { return state_ && state_->owner?state_->owner->geometryRevision_+1:0; }
+container::scene::SceneAssetId SceneController::PreparedGeneration::geometryAssetId() const noexcept {
+  return state_ ? state_->geometryAssetId_ : container::scene::SceneAssetId{};
+}
 uint64_t SceneController::PreparedGeneration::objectDataRevision() const noexcept { return state_ && state_->owner?state_->owner->objectDataRevision_+1:0; }
 uint64_t SceneController::PreparedGeneration::ownedBytes() const noexcept {return state_?state_->cpuBytes:0;}
 container::ecs::World& SceneController::PreparedGeneration::world() {
@@ -731,6 +739,7 @@ void SceneController::swapGenerationState(PreparedGeneration::State& state) noex
   SCENE_EXCHANGE(gpuBindVertices_); SCENE_EXCHANGE(gpuBindIndices_);
   SCENE_EXCHANGE(generationSceneVertexCount_); SCENE_EXCHANGE(generationSceneIndexCount_);
   SCENE_EXCHANGE(deformationSourceGeometryRevision_); SCENE_EXCHANGE(geometryRevision_); SCENE_EXCHANGE(deformationTopologyPending_);
+  SCENE_EXCHANGE(geometryAssetId_);
   SCENE_EXCHANGE(objectData_); SCENE_EXCHANGE(opaqueDrawCommands_); SCENE_EXCHANGE(transparentDrawCommands_);
   SCENE_EXCHANGE(opaqueSingleSidedDrawCommands_); SCENE_EXCHANGE(opaqueWindingFlippedDrawCommands_); SCENE_EXCHANGE(opaqueDoubleSidedDrawCommands_);
   SCENE_EXCHANGE(transparentSingleSidedDrawCommands_); SCENE_EXCHANGE(transparentWindingFlippedDrawCommands_); SCENE_EXCHANGE(transparentDoubleSidedDrawCommands_);
@@ -1007,6 +1016,7 @@ SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting
   }
   state.sourceGeometry=sceneManager_.geometryRevision();state.sourceMaterial=sceneManager_.materialRevision();
   state.geometry=geometryRevision_;state.objects=objectDataRevision_;state.upload=objectBufferUploadRevision_;
+  state.geometryAssetId_=geometryAssetId_;
   state.frameBindings=planNormalFrameBindings(materials,bindings);
   if(state.frameBindings!=normalFrameBindings_) {
     if(geometryRevision_==UINT64_MAX) fail("geometry revision exhausted");
@@ -1019,6 +1029,8 @@ SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting
     const auto indices=scene?scene->indices():std::span<const uint32_t>(sceneManager_.indices());
     state.sceneVertexCount=vertices.size();
     state.sceneIndexCount=indices.size();
+    state.geometryAssetId_=vertices.empty() || indices.empty()
+        ? container::scene::SceneAssetId{} : container::scene::SceneAssetId::mint();
     const auto geometryBytes=add(multiply(vertices.size(),sizeof(container::geometry::Vertex)),multiply(indices.size(),sizeof(uint32_t)));
     if(geometryBytes>GraphPoseGenerationLimits{}.maxGpuBytes-gpu) fail("normal frame vertex and index storage exceeds its GPU budget");
     buildSceneBindStreams(vertices,indices,state.bindVertices,state.bindIndices);
@@ -1143,6 +1155,7 @@ void SceneController::exchangeMaterialRouting(PreparedMaterialRouting& prepared,
   ownedMaterialObjectBuffers_.swap(state.buffers);
   if(state.geometryBuffers) {
     ownedGenerationBuffers_.swap(state.geometryBuffers);
+    std::swap(geometryAssetId_, state.geometryAssetId_);
     deformationScene_.swap(state.normalFrames.scene);
     normalFrameRenderPrimitives_.swap(state.normalFrames.renderPrimitives);
     normalFrameBindings_.swap(state.frameBindings);
@@ -1315,8 +1328,15 @@ void SceneController::rebuildDeformationBindStreams() {
 }
 
 GltfDeformationSceneUpdate SceneController::updateDeformation(bool resetHistory) {
+  if (geometryRevision_ == std::numeric_limits<uint64_t>::max())
+    throw std::overflow_error("scene geometry revision exhausted");
   const auto sourceRevision=sceneManager_.geometryRevision();
   const bool sourceChanged=sourceRevision!=deformationSourceGeometryRevision_;
+  auto sourceAssetId = geometryAssetId_;
+  if (sourceChanged) {
+    sourceAssetId = sceneManager_.vertices().empty() || sceneManager_.indices().empty()
+        ? container::scene::SceneAssetId{} : container::scene::SceneAssetId::mint();
+  }
   bool framesChanged=false;
   if(sourceChanged || normalFrameGraphRevision_!=sceneGraph_.revision() ||
       normalFrameMaterialRevision_!=sceneManager_.materialRevision()) {
@@ -1345,6 +1365,7 @@ GltfDeformationSceneUpdate SceneController::updateDeformation(bool resetHistory)
     invalidateObjectDataCache();
   }
   deformationSourceGeometryRevision_=sourceRevision;
+  geometryAssetId_=sourceAssetId;
   result.geometryChanged|=sourceChanged || framesChanged;
   result.topologyChanged=deformationTopologyPending_;
   result.historyReset|=resetHistory || sourceChanged || framesChanged;
@@ -2179,15 +2200,28 @@ bool SceneController::reloadSceneModel(
     uint32_t&                               outRootNode,
     uint32_t&                               outSelectedMeshNode,
     uint32_t&                               outCubeNode,
-    container::geometry::GltfLoadResult*      prepared) {
+    container::geometry::GltfLoadResult*      prepared,
+    const std::function<void()>& beforeCommit) {
   if (vkDeviceWaitIdle(device_->device()) != VK_SUCCESS)
     throw std::runtime_error("Failed to retire GPU readers before replacing the scene");
   const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
       cameraBuffer};
+  const bool boundedUnload = path.empty() && config_.assetMemoryBytes != 0;
+  auto releasingGeometryBytes =
+      boundedUnload ? allocationManager_.geometryArenaAllocationBytes() : VkDeviceSize{0};
+  if (boundedUnload && ownedGenerationBuffers_) {
+    for (const auto bytes : {ownedGenerationBuffers_->vertices.allocation_info.size,
+                             ownedGenerationBuffers_->indices.allocation_info.size}) {
+      if (bytes > (std::numeric_limits<VkDeviceSize>::max)() - releasingGeometryBytes)
+        throw container::gpu::SceneAssetBudgetExceeded("Scene geometry release bytes overflow");
+      releasingGeometryBytes += bytes;
+    }
+  }
   const uint64_t previousGeometryRevision = sceneManager_.geometryRevision();
   const bool result =
       sceneManager_.reloadModel(path, importScale, cameraBuffers, objectBuffer,
-                               prepared);
+                               prepared, !ownedGenerationBuffers_ && !boundedUnload,
+                               beforeCommit, releasingGeometryBytes);
   if (!result && sceneManager_.geometryRevision() == previousGeometryRevision) {
     if (guiManager_)
       guiManager_->setStatusMessage("Failed to load model: " + path);
@@ -2198,9 +2232,17 @@ bool SceneController::reloadSceneModel(
   ensureObjectBufferCapacity(allocationManager_, objectBuffer,
                              objectBufferCapacity,
                              sceneGraph_.renderableNodes().size());
-  // The device-idle wait above retired all previous geometry readers. Reuse
-  // the arenas from offset zero rather than growing them on every model load.
-  allocationManager_.resetGeometryAllocations();
+  // The device-idle wait retired the prior readers. Reuse the arenas on
+  // replacement, or return their backing storage on a bounded unload.
+  if (result && boundedUnload && ownedGenerationBuffers_) {
+    allocationManager_.destroyBuffer(ownedGenerationBuffers_->indices);
+    allocationManager_.destroyBuffer(ownedGenerationBuffers_->vertices);
+    vertexSlice_ = {};
+    indexSlice_ = {};
+    diagCubeVertexSlice_ = {};
+    diagCubeIndexSlice_ = {};
+  }
+  allocationManager_.resetGeometryAllocations(result && boundedUnload);
   createGeometryBuffers();
   if (guiManager_) {
     guiManager_->setStatusMessage(

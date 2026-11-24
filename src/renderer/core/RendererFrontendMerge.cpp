@@ -450,7 +450,8 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
       .bounds=meshAsset.bounds,.geometryRevision=controller.geometryRevision(),
       .materialRevision=futureMaterial,.instanceRevision=controller.objectDataRevision(),
       .displayName=activePrimaryModelPath_.empty()?"Primary mesh scene":activePrimaryModelPath_,
-      .triangleBatchesAuthoritative=meshAsset.triangleBatchesAuthoritative};
+      .triangleBatchesAuthoritative=meshAsset.triangleBatchesAuthoritative,
+      .geometryAssetId=controller.geometryAssetId()};
   auto providerInput=buildSceneProviderSyncInput(&preparedMesh);
   SceneProviderSynchronizer providers;
   container::scene::SceneProviderRegistry registry;
@@ -466,14 +467,14 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
     std::vector<DrawCommand> meshDraws(controller.opaqueDrawCommands().begin(),controller.opaqueDrawCommands().end());
     if(gi) meshDraws.insert(meshDraws.end(),controller.transparentDrawCommands().begin(),controller.transparentDrawCommands().end());
     std::vector<RaySceneProviderSource> sources;
-    // Static live views use SceneManager storage; its addresses survive the
-    // asset exchange. Match those exact extraction keys before publication.
+    // Match the live vertex stream when extracting the prospective geometry.
     const auto rayVertices=deformed?controller.geometryVertices():std::span<const container::geometry::Vertex>(manager.vertices());
     const auto rayIndices=deformed?controller.geometryIndices():std::span<const uint32_t>(manager.indices());
     const bool wantsRayScene=ray->supported() && (gi || ray->settings().mode!=RayShadowMode::Raster);
     if(providerInput.mesh.available && wantsRayScene)
-      sources.push_back({{"primary-mesh-scene"},controller.geometryRevision(),rayVertices,
-          rayIndices,controller.objectData(),meshDraws});
+      sources.push_back({.provider={"primary-mesh-scene"}, .geometryRevision=controller.geometryRevision(),
+          .vertices=rayVertices, .indices=rayIndices, .objects=controller.objectData(), .draws=meshDraws,
+          .assetId=providerInput.mesh.geometryAssetId});
     std::vector<DrawCommand> bimDraws;
     if(subs_.bimManager && subs_.bimManager->hasScene() && wantsRayScene) {
       auto filter=currentBimDrawFilter(); filter.drawBudgetEnabled=false; filter.drawBudgetMaxObjects=0;
@@ -484,8 +485,9 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
       };
       add(subs_.bimManager->opaqueDrawCommands());
       if(gi) add(subs_.bimManager->transparentDrawCommands());
-      sources.push_back({{"auxiliary-bim-scene"},subs_.bimManager->geometryRevision(),subs_.bimManager->vertices(),
-          subs_.bimManager->indices(),subs_.bimManager->objectData(),bimDraws});
+      sources.push_back({.provider={"auxiliary-bim-scene"}, .geometryRevision=subs_.bimManager->geometryRevision(),
+          .vertices=subs_.bimManager->vertices(), .indices=subs_.bimManager->indices(), .objects=subs_.bimManager->objectData(),
+          .draws=bimDraws, .assetId=providerInput.bim.geometryAssetId});
     }
     bool compatible=true;
     for(const auto& source:sources) for(const auto& draw:source.draws)

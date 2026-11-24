@@ -730,10 +730,10 @@ void RayShadowManager::update(
     sceneHash = hashValue(sceneHash, source.geometryRevision);
     sceneHash = hashValue(sceneHash, source.vertices.size());
     sceneHash = hashValue(sceneHash, source.indices.size());
-    sceneHash = hashValue(sceneHash,
-                          reinterpret_cast<uintptr_t>(source.vertices.data()));
-    sceneHash = hashValue(sceneHash,
-                          reinterpret_cast<uintptr_t>(source.indices.data()));
+    const auto storage = source.storageIdentity();
+    sceneHash = hashValue(sceneHash, storage.assetId.value());
+    sceneHash = hashValue(sceneHash, storage.vertices);
+    sceneHash = hashValue(sceneHash, storage.indices);
     sceneHash = hashValue(sceneHash, source.opacityMicromaps.size());
     for (const auto& candidate : source.opacityMicromaps) {
       sceneHash = hashValue(sceneHash, candidate.firstIndex);
@@ -900,6 +900,9 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
         topology = hashValue(topology, entry.provider.value.size());
         for (const char byte : entry.provider.value)
           topology = hashValue(topology, byte);
+        // Preserve motion across revisions of the same asset, but never
+        // reconstruct an old hit against a replacement asset's triangles.
+        topology = hashValue(topology, entry.storageIdentity.assetId.value());
         topology = hashValue(topology, entry.id);
         topology = hashValue(topology, entry.indexOrderHash);
       }

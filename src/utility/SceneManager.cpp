@@ -12,6 +12,7 @@
 #include <map>
 #include <optional>
 #include <print>
+#include <set>
 #include <stdexcept>
 #include <string_view>
 #include <utility>
@@ -215,6 +216,79 @@ SceneGraph prepareCompleteHierarchy(const tinygltf::Model& source,
   const auto activation=PlanGltfSceneActivation(catalog,graph,selected,activeObjectLimit);
   graph.setActiveRoots(activation.runtimeRoots);
   return graph;
+}
+
+struct SceneGeometryCounts {
+  uint64_t vertices{};
+  uint64_t indices{};
+  bool hasDeformationInstances{};
+
+  void add(uint64_t addedVertices, uint64_t addedIndices) {
+    if (addedVertices > UINT32_MAX - vertices ||
+        addedIndices > UINT32_MAX - indices)
+      throw container::gpu::SceneAssetBudgetExceeded(
+          "Scene geometry exceeds 32-bit indexing before upload");
+    vertices += addedVertices;
+    indices += addedIndices;
+  }
+
+  void add(const container::geometry::Model& model) {
+    add(model.vertices().size(), model.indices().size());
+  }
+};
+
+SceneGeometryCounts gltfReloadGeometryCounts(
+    const container::geometry::GltfLoadResult& incoming, const SceneGraph& graph) {
+  SceneGeometryCounts counts;
+  counts.add(incoming.model);
+  if (!incoming.deformation)
+    return counts;
+
+  // The initial loader keeps the authored primitive table in runtime order
+  // and uses the original materials' normal UVs. Like GltfDeformationScene,
+  // count one extra stream per active mesh owner and deforming primitive.
+  const auto& data = *incoming.deformation;
+  std::set<std::pair<uint32_t, uint32_t>> instances;
+  for (const auto id : graph.renderableNodes()) {
+    const auto& node = *graph.getNode(id);
+    if (node.primitiveIndex >= data.primitives.size())
+      continue;
+    const auto& primitive = data.primitives[node.primitiveIndex];
+    if (!primitive.hasMorphing() && !primitive.hasSkinning())
+      continue;
+    const auto* owner = graph.getNode(node.meshOwnerGraphNode);
+    if (!owner || owner->sourceNodeIndex < 0 ||
+        size_t(owner->sourceNodeIndex) >= data.nodes.size())
+      throw std::invalid_argument("Deforming scene primitive has no source mesh owner");
+    const auto& source = data.nodes[size_t(owner->sourceNodeIndex)];
+    if (source.sourceMesh < 0 || size_t(source.sourceMesh) != primitive.sourceMesh ||
+        (source.skin >= 0 && !primitive.hasSkinning()))
+      throw std::invalid_argument("Deforming scene primitive differs from its source mesh owner");
+    if ((!primitive.hasMorphing() && source.skin < 0) ||
+        !instances.emplace(node.meshOwnerGraphNode, node.primitiveIndex).second)
+      continue;
+    const auto corners = incoming.model.primitiveRanges().at(node.primitiveIndex).indexCount;
+    const bool cornerExpanded = primitive.hasMorphing() &&
+        (!primitive.authoredBaseNormal || !primitive.authoredBaseTangent);
+    counts.add(cornerExpanded ? corners : primitive.bindVertices.size(), corners);
+    counts.hasDeformationInstances = true;
+  }
+  return counts;
+}
+
+void accumulateSceneAssetBytes(container::gpu::SceneAssetBytes& total,
+                               container::gpu::SceneAssetBytes next) {
+  if (next.residentBytes > (std::numeric_limits<uint64_t>::max)() -
+                               total.residentBytes)
+    throw container::gpu::SceneAssetBudgetExceeded("Scene asset byte count overflow");
+  total.residentBytes += next.residentBytes;
+  total.uploadBytes = (std::max)(total.uploadBytes, next.uploadBytes);
+}
+
+container::material::TextureImageData sceneTextureFallbackImage() {
+  constexpr auto white = std::byte{255};
+  return {.format = VK_FORMAT_R8G8B8A8_UNORM,
+          .mips = {{1, 1, {white, white, white, white}}}};
 }
 
 std::vector<int> activeSceneRootNodes(const tinygltf::Model& model) {
@@ -1882,26 +1956,48 @@ bool SceneManager::reloadModel(
     float importScale,
     std::span<const container::gpu::AllocatedBuffer> cameraBuffers,
     const container::gpu::AllocatedBuffer& objectBuffer,
-    container::geometry::GltfLoadResult* prepared) {
+    container::geometry::GltfLoadResult* prepared,
+    bool reusePrimaryArenas,
+    const std::function<void()>& beforeCommit,
+    VkDeviceSize releasingGeometryBytes) {
   const std::string previousModelPath = config_.modelPath;
   const float previousImportScale = config_.importScale;
   const int previousScene = static_cast<int>(selectedScene_);
   // The command-line override belongs to the startup asset. A replacement
   // file selects its own authored default.
   constexpr int replacementScene = -1;
-  // Decode and check the incoming sampler budget before retiring live assets.
+  // Check the incoming textures, samplers and geometry before retiring live assets.
   // Rejected loads must leave runtime edits and auxiliary registrations intact.
   std::optional<container::geometry::GltfLoadResult> locallyPrepared;
   std::optional<container::material::PreparedGltfTextures> incomingTextures;
   const bool experimental = config_.experimentalGltfMaterials;
   try {
+    const auto limits = allocationManager_->sceneAssetBudget().limits;
+    const bool checkAssetBudget = limits.residentBytes || limits.uploadBytes;
+    SceneGeometryCounts geometry;
+    container::gpu::SceneAssetBytes textures{};
     std::vector<container::material::MaterialSamplerKey> incomingSamplerKeys;
     if (isDefaultSceneRequest(path)) {
+      // The separate default-scene files share their uploaded images through
+      // TextureManager even when they provide different sampler policies.
+      std::set<std::string> incomingImageKeys;
       for (const auto entry : container::app::kDefaultSceneModelRelativePaths) {
-        if (isProceduralSphereEntry(entry)) continue;
+        if (isProceduralSphereEntry(entry)) {
+          if (checkAssetBudget)
+            geometry.add(container::geometry::Model::MakeSphere());
+          continue;
+        }
         const auto incoming = prepareDefaultSceneGltfAsset(resolveSceneAssetPath(entry), experimental);
-        (void)container::material::PrepareGltfTextures(incoming.gltfModel,
+        const auto preparedTextures = container::material::PrepareGltfTextures(incoming.gltfModel,
             allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB), experimental);
+        if (checkAssetBudget) {
+          geometry.add(incoming.model);
+          for (const auto& image : preparedTextures.images) {
+            if (incomingImageKeys.insert(image.contentKey).second)
+              accumulateSceneAssetBytes(textures,
+                  allocationManager_->textureAssetBytes(image.image, materialQueueFamilies()));
+          }
+        }
         const auto keys = container::material::CollectGltfMaterialSamplerKeys(incoming.gltfModel);
         incomingSamplerKeys.insert(incomingSamplerKeys.end(), keys.begin(), keys.end());
       }
@@ -1914,21 +2010,66 @@ bool SceneManager::reloadModel(
       incomingSamplerKeys = container::material::CollectGltfMaterialSamplerKeys(prepared->gltfModel);
       (void)container::geometry::gltf::ParseMaterialVariants(prepared->gltfModel);
       const std::vector<uint32_t> preflightMaterials(prepared->model.primitiveRanges().size(),0);
-      (void)prepareCompleteHierarchy(prepared->gltfModel,prepared->instancing,preflightMaterials,
-          importScaleTransform(importScale),1,prepared->model.meshes().size(),config_.maxSceneObjects,replacementScene);
+      {
+        const auto hierarchy=prepareCompleteHierarchy(prepared->gltfModel,prepared->instancing,preflightMaterials,
+            importScaleTransform(importScale),1,prepared->model.meshes().size(),config_.maxSceneObjects,replacementScene);
+        if (checkAssetBudget)
+          geometry = gltfReloadGeometryCounts(*prepared, hierarchy);
+      }
       incomingTextures = container::material::PrepareGltfTextures(prepared->gltfModel,
           allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB), experimental);
       if(container::material::CountPreparedGltfTextureResources(*incomingTextures)>textureDescriptorCapacity_)
         throw std::runtime_error("Incoming glTF textures exceed the scene image descriptor capacity");
+      if (checkAssetBudget) {
+        for (const auto& image : incomingTextures->images)
+          accumulateSceneAssetBytes(textures,
+              allocationManager_->textureAssetBytes(image.image, materialQueueFamilies()));
+      }
     }
     // Replacement uses a fresh table (plus the default policy), rather than
     // charging incoming assets for policies belonging only to the old scene.
     (void)container::material::PlanMaterialSamplerSlots(
         incomingSamplerKeys, materialSamplerDescriptorCapacity_);
+    if (checkAssetBudget) {
+      // The diagnostic cube is part of every primary bind stream, even with no
+      // primary model. Its six quad faces match the procedural cube layout.
+      geometry.add(container::geometry::Model::MakeCube());
+      accumulateSceneAssetBytes(textures, allocationManager_->textureAssetBytes(
+          sceneTextureFallbackImage(), materialQueueFamilies()));
+      auto total = textures;
+      const auto vertexBytes = geometry.vertices * sizeof(container::geometry::Vertex);
+      accumulateSceneAssetBytes(total, allocationManager_->geometryAssetBytes(
+          vertexBytes,
+          geometry.indices * sizeof(uint32_t), reusePrimaryArenas));
+      if (geometry.hasDeformationInstances && !descriptorSets_.empty()) {
+        // The compute deformation pass writes current and previous copies of
+        // the entire packed vertex stream for each swapchain image.
+        VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
+        if (deviceWrapper_->enabledVulkan12Features().bufferDeviceAddress)
+          usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
+        if (deviceWrapper_->rayQueriesEnabled())
+          usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+        const uint64_t outputBytes =
+            allocationManager_->memoryManager()->bufferAllocationBytes(vertexBytes, usage);
+        const uint64_t outputs = uint64_t(descriptorSets_.size()) * 2;
+        if (outputBytes > (std::numeric_limits<uint64_t>::max)() / outputs)
+          throw container::gpu::SceneAssetBudgetExceeded("Scene deformation output bytes overflow");
+        accumulateSceneAssetBytes(total, {.residentBytes = outputBytes * outputs});
+      }
+      // Retiring idle geometry on unload grants credit only for the later
+      // mesh upload. Scene texture publication completes while it is live.
+      if (releasingGeometryBytes)
+        allocationManager_->checkSceneAssetAdmission(textures, resetTextureAllocationsOnReset_);
+      allocationManager_->checkSceneAssetAdmission(
+          total, resetTextureAllocationsOnReset_, releasingGeometryBytes);
+    }
   } catch (const std::exception& error) {
     std::println(stderr, "glTF load failed: {}", error.what());
     return false;
   }
+  if (beforeCommit)
+    beforeCommit();
   auto resetForLoad = [this]() {
     resetLoadedAssets();
     loadMaterialXMaterial();
@@ -3117,9 +3258,8 @@ void SceneManager::ensureTextureSamplingFallback() {
   // alive; raw matching handles never grant this ownership.
   auto fallback=std::make_shared<TextureSamplingFallback>();
   auto batch=allocationManager_->beginTextureAllocationBatch();
-  constexpr std::array rgba{std::byte{255},std::byte{255},std::byte{255},std::byte{255}};
-  fallback->resource=allocationManager_->createTextureFromRgbaPixels(
-      "__private_scene_texture_fallback",rgba,1,1,VK_FORMAT_R8G8B8A8_UNORM,materialQueueFamilies());
+  fallback->resource=allocationManager_->createTextureFromImageData(
+      "__private_scene_texture_fallback",sceneTextureFallbackImage(),materialQueueFamilies());
   fallback->resource.samplerIndex=0;
   fallback->lease=batch.commit();
   textureSamplingFallback_=std::move(fallback);

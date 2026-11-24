@@ -24,6 +24,33 @@ bool canBlit(VkPhysicalDevice device, VkFormat format) {
       VK_FORMAT_FEATURE_BLIT_DST_BIT | VK_FORMAT_FEATURE_SAMPLED_IMAGE_FILTER_LINEAR_BIT;
   return (properties.optimalTilingFeatures & needed) == needed;
 }
+
+TextureUploadPlan textureUploadPlan(VkPhysicalDevice device,
+    const container::material::TextureImageData& image) {
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(device, &properties);
+  return PlanTextureImageUpload(image, properties.limits.maxImageDimension2D,
+      canBlit(device, image.format), 256ull * 1024 * 1024,
+      std::max<VkDeviceSize>(4, properties.limits.optimalBufferCopyOffsetAlignment));
+}
+
+VkImageCreateInfo textureImageInfo(const container::material::TextureImageData& image,
+    const TextureUploadPlan& plan, std::span<const uint32_t> queueFamilies = {}) {
+  VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  info.imageType = VK_IMAGE_TYPE_2D;
+  info.format = image.format;
+  info.extent = plan.extent;
+  info.mipLevels = plan.allocatedMipLevels;
+  info.arrayLayers = 1;
+  info.samples = VK_SAMPLE_COUNT_1_BIT;
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  info.sharingMode = queueFamilies.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT;
+  info.queueFamilyIndexCount = static_cast<uint32_t>(queueFamilies.size());
+  info.pQueueFamilyIndices = queueFamilies.data();
+  info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+  return info;
+}
+
 void barrier(VkCommandBuffer command, VkImage image, VkImageLayout before,
              VkImageLayout after, uint32_t first, uint32_t count,
              VkAccessFlags sourceAccess, VkAccessFlags destinationAccess,
@@ -39,6 +66,22 @@ void barrier(VkCommandBuffer command, VkImage image, VkImageLayout before,
                        0, nullptr, 1, &transition);
 }
 } // namespace
+
+VkDeviceSize AllocationManager::textureAllocationBytes(const VkImageCreateInfo& info) const {
+  VkDeviceImageMemoryRequirements query{VK_STRUCTURE_TYPE_DEVICE_IMAGE_MEMORY_REQUIREMENTS};
+  query.pCreateInfo = &info;
+  VkMemoryRequirements2 requirements{VK_STRUCTURE_TYPE_MEMORY_REQUIREMENTS_2};
+  vkGetDeviceImageMemoryRequirements(device_, &query, &requirements);
+  return requirements.memoryRequirements.size;
+}
+
+SceneAssetBytes AllocationManager::textureAssetBytes(
+    const container::material::TextureImageData& image,
+    std::span<const uint32_t> queueFamilies) const {
+  const auto plan = textureUploadPlan(physicalDevice_, image);
+  return {textureAllocationBytes(textureImageInfo(image, plan, queueFamilies)),
+          memoryManager_->bufferAllocationBytes(plan.stagingBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)};
+}
 
 container::material::TextureDecodeOptions AllocationManager::textureDecodeOptions(
     bool isSrgb, bool strictKhrBasisu) const {
@@ -87,11 +130,12 @@ container::material::TextureResource AllocationManager::createTextureFromImageDa
   const auto profile = textureDecodeOptions(false);
   if (std::ranges::find(profile.allowedFormats, imageData.format) == profile.allowedFormats.end())
     throw std::runtime_error("texture format is not enabled and filterable on this device: " + textureName);
-  VkPhysicalDeviceProperties properties{};
-  vkGetPhysicalDeviceProperties(physicalDevice_, &properties);
-  const auto plan = PlanTextureImageUpload(imageData, properties.limits.maxImageDimension2D,
-      canBlit(physicalDevice_, imageData.format), 256ull * 1024 * 1024,
-      std::max<VkDeviceSize>(4, properties.limits.optimalBufferCopyOffsetAlignment));
+  const auto plan = textureUploadPlan(physicalDevice_, imageData);
+  const auto info = textureImageInfo(imageData, plan, queueFamilies);
+  const auto residentBytes = textureAllocationBytes(info);
+  assetBudget_.check({residentBytes, memoryManager_->bufferAllocationBytes(
+      plan.stagingBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)});
+  auto budget = assetBudget_.reserve({residentBytes, 0});
   StagingBuffer staging(*memoryManager_, plan.stagingBytes);
   auto* destination = static_cast<std::byte*>(staging.data());
   for (size_t level = 0; level < imageData.mips.size(); ++level)
@@ -100,15 +144,6 @@ container::material::TextureResource AllocationManager::createTextureFromImageDa
   if (vmaFlushAllocation(memoryManager_->allocator(), staging.buffer().allocation, 0, VK_WHOLE_SIZE) != VK_SUCCESS)
     throw std::runtime_error("failed to flush texture staging bytes: " + textureName);
 
-  VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
-  info.imageType = VK_IMAGE_TYPE_2D; info.format = imageData.format;
-  info.extent = plan.extent; info.mipLevels = plan.allocatedMipLevels;
-  info.arrayLayers = 1; info.samples = VK_SAMPLE_COUNT_1_BIT;
-  info.tiling = VK_IMAGE_TILING_OPTIMAL;
-  info.sharingMode = queueFamilies.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT;
-  info.queueFamilyIndexCount = static_cast<uint32_t>(queueFamilies.size());
-  info.pQueueFamilyIndices = queueFamilies.data();
-  info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   VmaAllocationCreateInfo allocationInfo{};
   allocationInfo.usage = VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE;
   VkImage image{}; VmaAllocation allocation{}; VkImageView view{};
@@ -155,8 +190,10 @@ container::material::TextureResource AllocationManager::createTextureFromImageDa
     viewInfo.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, plan.allocatedMipLevels, 0, 1};
     if (createVulkanImageView(device_, &viewInfo, nullptr, &view) != VK_SUCCESS)
       throw std::runtime_error("failed to create typed texture view: " + textureName);
-    resource.allocationIdentity=registerTextureAllocation({image, view, allocation,
-                               TextureAllocationLifetime::Scene, batchGroup});
+    resource.allocationIdentity = registerTextureAllocation({.image = image,
+        .imageView = view, .allocation = allocation,
+        .lifetime = TextureAllocationLifetime::Scene, .batchGroup = batchGroup,
+        .budget = std::move(budget), .residentBytes = residentBytes});
   } catch (...) {
     if (view) destroyVulkanImageView(device_, view, nullptr);
     vmaDestroyImage(memoryManager_->allocator(), image, allocation);

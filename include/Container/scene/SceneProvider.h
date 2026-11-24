@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/scene/SceneAssetIdentity.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
@@ -107,6 +109,7 @@ struct MeshSceneAsset {
   // An empty complete binding view means no mesh draw, even when retained
   // imported geometry still exists. Legacy count-only providers may omit it.
   bool triangleBatchesAuthoritative{false};
+  SceneAssetId geometryAssetId{};
 };
 
 struct BimSceneAsset {
@@ -122,6 +125,7 @@ struct BimSceneAsset {
   std::size_t nativeCurveTransparentRangeCount{0};
   ImmutableSceneTriangleBatches triangleBatches{};
   SceneProviderBounds bounds{};
+  SceneAssetId geometryAssetId{};
 };
 
 struct GaussianSplatSceneAsset {
@@ -160,6 +164,7 @@ struct SceneProviderSnapshot {
   uint32_t fieldCount{0};
   bool hasOccupancyData{false};
   bool triangleBatchesAuthoritative{false};
+  SceneAssetId geometryAssetId{};
 };
 
 // Borrowed for a synchronous final publication guard. Strings and immutable
@@ -172,6 +177,7 @@ struct SceneProviderMaterialReferenceView {
   std::size_t elementCount{},primitiveCount{},materialCount{},instanceCount{};
   std::size_t nativePointRangeCount{},nativeCurveRangeCount{};
   bool triangleBatchesAuthoritative{},complete{};
+  SceneAssetId geometryAssetId{};
 };
 
 [[nodiscard]] inline bool SceneProviderMaterialReferenceViewMatches(
@@ -179,6 +185,7 @@ struct SceneProviderMaterialReferenceView {
   return current.complete && current.kind==before.kind && current.id==before.id.value && current.displayName==before.displayName &&
       current.revision.geometry==before.revision.geometry && current.revision.materials==before.revision.materials &&
       current.revision.instances==before.revision.instances && current.elementCount==before.elementCount &&
+      current.geometryAssetId==before.geometryAssetId &&
       current.primitiveCount==before.primitiveCount && current.materialCount==before.materialCount &&
       current.instanceCount==before.instanceCount && current.nativePointRangeCount==before.nativePointRangeCount &&
       current.nativeCurveRangeCount==before.nativeCurveRangeCount &&
@@ -232,6 +239,7 @@ public:
         .transparentBatchCount = transparent,
         .triangleBatches = asset_.triangleBatches,
         .triangleBatchesAuthoritative = complete,
+        .geometryAssetId = asset_.geometryAssetId,
     };
   }
 
@@ -242,7 +250,8 @@ public:
     return SceneProviderMaterialReferenceView{.kind=SceneProviderKind::Mesh,.id=id_.value,.displayName=displayName_,
         .revision=revision_,.triangleBatches=asset_.triangleBatches.view(),.elementCount=asset_.primitiveCount,
         .primitiveCount=asset_.primitiveCount,.materialCount=asset_.materialCount,.instanceCount=asset_.instanceCount,
-        .triangleBatchesAuthoritative=authoritative,.complete=authoritative || asset_.primitiveCount==0};
+        .triangleBatchesAuthoritative=authoritative,.complete=authoritative || asset_.primitiveCount==0,
+        .geometryAssetId=asset_.geometryAssetId};
   }
 
 private:
@@ -288,6 +297,7 @@ public:
         .nativeCurveOpaqueRangeCount = asset_.nativeCurveOpaqueRangeCount,
         .nativeCurveTransparentRangeCount =
             asset_.nativeCurveTransparentRangeCount,
+        .geometryAssetId = asset_.geometryAssetId,
     };
   }
 
@@ -297,7 +307,8 @@ public:
     return SceneProviderMaterialReferenceView{.kind=SceneProviderKind::Bim,.id=id_.value,.displayName=displayName_,
         .revision=revision_,.triangleBatches=asset_.triangleBatches.view(),.elementCount=asset_.elementCount,
         .primitiveCount=asset_.meshPrimitiveCount,.instanceCount=asset_.elementCount,
-        .nativePointRangeCount=asset_.nativePointRangeCount,.nativeCurveRangeCount=asset_.nativeCurveRangeCount,.complete=true};
+        .nativePointRangeCount=asset_.nativePointRangeCount,.nativeCurveRangeCount=asset_.nativeCurveRangeCount,.complete=true,
+        .geometryAssetId=asset_.geometryAssetId};
   }
 
 private:

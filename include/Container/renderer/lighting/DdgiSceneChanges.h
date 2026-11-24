@@ -18,11 +18,12 @@ private:
   struct Object {
     glm::mat4 model{1};
     glm::uvec4 info{};
+    container::scene::SceneAssetId assetId{};
     uint64_t geometry{}, material{}, topology{};
     std::optional<DdgiDirtyRegion> bounds;
     bool sameContent(const Object &other) const {
-      return model == other.model && info == other.info && geometry == other.geometry &&
-             material == other.material && topology == other.topology;
+      return model == other.model && info == other.info && assetId == other.assetId &&
+             geometry == other.geometry && material == other.material && topology == other.topology;
     }
   };
   std::map<std::pair<std::string, uint32_t>, Object> previous_;
