@@ -159,6 +159,12 @@ struct RendererFrontend::ModelLoadState {
 
 namespace {
 
+nlohmann::json captureBuildMetadata() {
+  return {{"revision", CONTAINER_GIT_REVISION},
+          {"configuration", CONTAINER_BUILD_CONFIG},
+          {"compiler", CONTAINER_BUILD_COMPILER}};
+}
+
 nlohmann::json referenceGroundMetadata(const ReferenceGroundSettings& ground) {
   nlohmann::json metadata{{"mode", referenceGroundModeName(ground.mode)}};
   if (ground.mode != ReferenceGroundMode::Off)
@@ -3580,6 +3586,13 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
                      {"pipelineReady", pipelineReady}}}};
 }
 
+nlohmann::json RendererFrontend::captureSceneRevisions() const {
+  return {{"graph", sceneGraph_.revision()},
+          {"geometry", subs_.sceneController->geometryRevision()},
+          {"objectData", subs_.sceneController->objectDataRevision()},
+          {"material", subs_.sceneManager->materialRevision()}};
+}
+
 nlohmann::json RendererFrontend::captureTelemetry() const {
   const auto &temporal = *subs_.temporalManager;
   const auto &settings = temporal.settings();
@@ -3611,9 +3624,8 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
       {"driverVersion", gpu.driverVersion},
       {"vulkanApiVersion", gpu.apiVersion},
       {"storageBufferRangeLimit", gpu.limits.maxStorageBufferRange},
-      {"build", {{"revision", CONTAINER_GIT_REVISION},
-                 {"configuration", CONTAINER_BUILD_CONFIG},
-                 {"compiler", CONTAINER_BUILD_COMPILER}}},
+      {"build", captureBuildMetadata()},
+      {"sceneRevisions", captureSceneRevisions()},
       {"validationEnabled", svc_.config.enableValidationLayers},
       {"technique", std::string(subs_.activeTechnique->name())},
       {"hierarchyTransforms", {{"enabled", gpuHierarchyEnabled_}, {"active", gpuHierarchyPrepared_},
@@ -3702,6 +3714,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
     json["referencePath"] = {{"active", path != nullptr}, {"status", referenceStatus_},
         {"display", referencePathDisplayName(referencePathDisplay())},
         {"attemptedSamples", path ? path->attemptedSamples() : 0},
+        {"contentRevision", path ? path->submittedContentRevision() : 0},
         {"historyResets", path ? path->historyResets() : 0},
         {"allocatedBytes", path ? path->allocatedBytes() : 0},
         {"diagnosticEpoch", referenceDiagnosticEpoch_},
@@ -7365,6 +7378,8 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
   nlohmann::json metadata{{"schemaVersion", 1},
                           {"width", readback.extent.width}, {"height", readback.extent.height},
                           {"colorSpace", screenshot_.sceneLinear ? "linear-sRGB" : "sRGB"},
+                          {"build", captureBuildMetadata()},
+                          {"sceneRevisions", captureSceneRevisions()},
                           {"includesUi", !screenshot_.sceneLinear && !screenshot_.viewportOnly && subs_.guiManager != nullptr}};
   appendBimFloorPlanTelemetry(metadata, &params);
   if (metadata.contains("bim")) {
@@ -7378,6 +7393,7 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
     const bool optix = referenceCapture->optixSelected();
     metadata["referencePath"] = {
         {"attemptedSamplesPerPixel", referenceCapture->attemptedSamples()},
+        {"contentRevision", referenceCapture->submittedContentRevision()},
         {"sampleLimit", svc_.config.pathSampleLimit},
         {"sampleLimitReached", referenceCapture->attemptedSamples() >= svc_.config.pathSampleLimit},
         {"samplesPerFrame", svc_.config.pathSamplesPerFrame},

@@ -112,6 +112,7 @@ class ReferencePathTracePass {
   void invalidateHistory() noexcept;
   [[nodiscard]] uint32_t attemptedSamples() const;
   [[nodiscard]] uint32_t lastSubmittedSamples() const;
+  [[nodiscard]] uint64_t submittedContentRevision() const;
   [[nodiscard]] std::optional<ReferencePathLensSettings> effectiveLens() const;
   [[nodiscard]] float effectiveFireflyClamp() const;
   [[nodiscard]] ReferenceGroundSettings effectiveGround() const;

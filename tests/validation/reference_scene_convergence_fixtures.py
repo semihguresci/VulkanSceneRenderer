@@ -19,14 +19,23 @@ import numpy as np
 from gltf_accessor_runtime_regression import Asset
 
 NAMES = ("cornell", "area", "blocker", "roughness", "interior")
+MIRROR = "mirror"
+MIRROR_CAMERA_Z = 2.
+MIRROR_HALF = (1.5, 1.1)
+MIRROR_EMITTER_Z = 3.
+MIRROR_PATCHES = (
+    ("warm-emitter", (-.83, .29), (.30, .28), (.85, .21, .06)),
+    ("cool-emitter", (.82, -.39), (.28, .32), (.09, .44, .72)),
+)
 DOWN = [-math.sqrt(.5), 0., 0., math.sqrt(.5)]
 ROUGHNESSES = (.1, .25, .5, .8)
-EXPECTED_LIGHTS = dict(cornell=1, area=2, blocker=1, roughness=1, interior=2)
+EXPECTED_LIGHTS = dict(cornell=1, area=2, blocker=1, roughness=1, interior=2, mirror=0)
 REQUIRED = dict(
     cornell=("room-back", "room-left", "room-right", "room-floor", "room-ceiling", "tall-box", "short-box"),
     area=("front-receiver",), blocker=("front-receiver", "penumbra-blocker"),
     roughness=("metal-sphere-0", "metal-sphere-1", "metal-sphere-2", "metal-sphere-3", "floor", "backdrop"),
-    interior=("room-floor", "room-back", "partition-left", "partition-right", "doorway-lintel", "table-top", "table-leg", "bench"))
+    interior=("room-floor", "room-back", "partition-left", "partition-right", "doorway-lintel", "table-top", "table-leg", "bench"),
+    mirror=("mirror-plane", *(patch[0] for patch in MIRROR_PATCHES)))
 
 
 def require(value, message):
@@ -44,10 +53,13 @@ class Builder:
         self.model["extensionsUsed"] = ["KHR_lights_punctual"]
         self.model["extensions"] = dict(KHR_lights_punctual=dict(lights=[]))
 
-    def material(self, name, color, metallic=0., roughness=.7):
+    def material(self, name, color, metallic=0., roughness=.7, *, emission=None):
         result = len(self.model["materials"])
-        self.model["materials"].append(dict(name=name, pbrMetallicRoughness=dict(
-            baseColorFactor=[*color, 1.], metallicFactor=metallic, roughnessFactor=roughness)))
+        material = dict(name=name, pbrMetallicRoughness=dict(
+            baseColorFactor=[*color, 1.], metallicFactor=metallic, roughnessFactor=roughness))
+        if emission is not None:
+            material["emissiveFactor"] = list(emission)
+        self.model["materials"].append(material)
         return result
 
     def primitive(self, name, positions, normals, indices, material):
@@ -125,7 +137,7 @@ class Builder:
 def generate(output: Path) -> dict:
     output=Path(output).resolve(); output.mkdir(parents=True,exist_ok=True)
     result={}
-    for name in NAMES:
+    for name in (*NAMES, MIRROR):
         path=output/f"{name}.gltf"
         if path.exists(): raise FileExistsError(path)
         b=Builder(name)
@@ -159,7 +171,7 @@ def generate(output: Path) -> dict:
             b.light("highlight-rect",(-.35,1.,1.25),size=(.9,.45),intensity=12.)
             camera=[0.,.25,4.]; target=[0.,.05,0.]
             description="Four smooth gold spheres with roughness .1/.25/.5/.8 and spatially varying highlights."
-        else:
+        elif name=="interior":
             b.room((1.55,1.1,1.5),white)
             # A partition crosses the room, leaving a real central doorway.
             b.box("partition-left",(-1.02,-.05,-.35),(.53,1.05,.07),wood)
@@ -174,6 +186,15 @@ def generate(output: Path) -> dict:
             b.light("ceiling-back",(.45,1.08,-.95),down=True,size=(.6,.45),intensity=10.)
             camera=[.2,.12,4.6]; target=[0.,-.12,-.15]
             description="Open-front interior with partition doorway, table, four legs, bench, cabinet and two ceiling emitters."
+        else:
+            del b.model["extensionsUsed"], b.model["extensions"]
+            mirror = b.material("ideal-white-metal", (1., 1., 1.), metallic=1., roughness=0.)
+            b.quad("mirror-plane", (0, 0, 0), (MIRROR_HALF[0], 0, 0), (0, MIRROR_HALF[1], 0), mirror)
+            for label, (x, y), (half_x, half_y), emission in MIRROR_PATCHES:
+                emitter = b.material(label, (0., 0., 0.), metallic=1., roughness=0., emission=emission)
+                b.quad(label, (x, y, MIRROR_EMITTER_Z), (-half_x, 0, 0), (0, half_y, 0), emitter)
+            camera=[0.,0.,MIRROR_CAMERA_Z]; target=[0.,0.,0.]
+            description="Planar ideal metal reflects two colored emissive patches behind the camera into a black surround."
         b.asset.write(path)
         result[name]=dict(path=str(path),cameraPosition=camera,cameraTarget=target,cameraFov=45,
                           expectedAreaLights=EXPECTED_LIGHTS[name],description=description)
@@ -183,11 +204,12 @@ def generate(output: Path) -> dict:
 
 def validate(path: Path, name: str) -> dict:
     """Independently decode serialized geometry; reject corrupt or weakened fixtures."""
-    require(name in NAMES,"Unknown convergence fixture")
+    require(name in EXPECTED_LIGHTS,"Unknown convergence fixture")
     path=Path(path).resolve(); model=json.loads(path.read_text(encoding="utf-8"))
     require(model.get("asset",{}).get("version")=="2.0","Expected glTF 2.0")
     require(model.get("extras",{}).get("referenceConvergenceFixture")==name,"Fixture identity mismatch")
-    require(set(model.get("extensionsUsed",[]))=={"KHR_lights_punctual"},"Unexpected material/runtime extension")
+    expected_extensions = set() if name==MIRROR else {"KHR_lights_punctual"}
+    require(set(model.get("extensionsUsed",[]))==expected_extensions,"Unexpected material/runtime extension")
     require(not any(model.get(key) for key in ("textures","images","animations","skins")),"Fixture must stay texture/animation/layer free")
     buffers=[]
     for row in model["buffers"]:
@@ -220,6 +242,7 @@ def validate(path: Path, name: str) -> dict:
     require(len(rootnodes)==len(model["nodes"]) and len(set(rootnodes))==len(rootnodes),"All fixture nodes must be active roots")
     require(all(not node.get("children") for node in model["nodes"]),"Unexpected scene hierarchy")
     semantics=[]; positions=[]; triangle_count=0; mesh_nodes=[]; sphere_materials=[]; geometry={}
+    mirror_surfaces={}
     for node in model["nodes"]:
         if "mesh" not in node: continue
         require(not any(key in node for key in ("matrix","translation","rotation","scale")),"Geometry must use explicit world coordinates")
@@ -242,6 +265,8 @@ def validate(path: Path, name: str) -> dict:
                 mr=materials[primitive["material"]]["pbrMetallicRoughness"]
                 require(mr["metallicFactor"]==1 and np.all(np.ptp(n,axis=0)>1.9),"Roughness objects must be smooth metal spheres")
                 sphere_materials.append(mr["roughnessFactor"])
+            if name==MIRROR:
+                mirror_surfaces[semantic]=(p, n, index, materials[primitive["material"]])
             positions.append(p); triangle_count+=len(index)
             geometry[semantic]=(p,index)
     require(len(mesh_nodes)==len(model["meshes"])==len(set(mesh_nodes)),"Every mesh must be used exactly once")
@@ -265,7 +290,25 @@ def validate(path: Path, name: str) -> dict:
     extents=np.ptp(all_positions,axis=0)
     require(np.max(np.abs(all_positions))<5 and np.count_nonzero(extents>0)>=(2 if name=="area" else 3),"Unbounded or flattened scene")
     if name=="roughness": require(sorted(sphere_materials)==list(ROUGHNESSES),"Missing authored roughness class")
-    lights=model["extensions"]["KHR_lights_punctual"]["lights"]
+    if name==MIRROR:
+        expected_surfaces = [
+            ("mirror-plane", (0., 0.), MIRROR_HALF, 0., 1., (0., 0., 0.)),
+            *((label, center, half, MIRROR_EMITTER_Z, -1., emission)
+                for label, center, half, emission in MIRROR_PATCHES),
+        ]
+        require(set(mirror_surfaces)==set(REQUIRED[MIRROR]), "Unexpected geometry in mirror witness")
+        for label, (x, y), (half_x, half_y), z, normal_z, emission in expected_surfaces:
+            p, normal, indices, material = mirror_surfaces[label]
+            corners = [(x + dx*half_x, y + dy*half_y, z) for dx, dy in ((-1,-1), (1,-1), (1,1), (-1,1))]
+            # Vertices are serialized in winding order, independently of the unordered world-space corners.
+            np.testing.assert_allclose(sorted(map(tuple, p)), sorted(corners), rtol=0, atol=1e-6)
+            np.testing.assert_array_equal(normal, np.broadcast_to([0.,0.,normal_z], (4,3)))
+            np.testing.assert_array_equal(indices, [[0,1,2], [0,2,3]])
+            mr = material["pbrMetallicRoughness"]
+            require(mr["metallicFactor"]==1. and mr["roughnessFactor"]==0., "Mirror witness surfaces must be exact delta metals")
+            require(mr["baseColorFactor"]==[float(normal_z>0)]*3+[1.], "Unexpected mirror witness base color")
+            require(tuple(material.get("emissiveFactor", [0.,0.,0.]))==emission, "Mirror witness emission differs from oracle")
+    lights=model.get("extensions", {}).get("KHR_lights_punctual", {}).get("lights", [])
     require(len(lights)==EXPECTED_LIGHTS[name],"Incorrect area-light count")
     light_nodes=[node for node in model["nodes"] if "KHR_lights_punctual" in node.get("extensions",{})]
     require(sorted(node["extensions"]["KHR_lights_punctual"]["light"] for node in light_nodes)==list(range(len(lights))),"Light instances must be one-to-one")
@@ -281,7 +324,7 @@ def validate(path: Path, name: str) -> dict:
         shapes.append(area["shape"])
     if name=="area": require(sorted(shapes)==["disk","rect"],"Area scene must cover both emitter shapes")
     return dict(name=name,path=str(path),sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
-        primitiveCount=len(semantics),triangleCount=triangle_count,areaLightCount=len(lights),
+        primitiveCount=len(semantics),triangleCount=triangle_count,vertexCount=sum(len(p) for p in positions),areaLightCount=len(lights),
         closedBoxes=boxes,
         boundsMin=all_positions.min(axis=0).tolist(),boundsMax=all_positions.max(axis=0).tolist(),
         roughnessClasses=sorted(sphere_materials),geometryValidated=True)
@@ -293,11 +336,12 @@ def self_check(output: Path) -> dict:
     positive={name:validate(row["path"],name) for name,row in fixtures.items()}
     original=json.loads(Path(fixtures["roughness"]["path"]).read_text(encoding="utf-8"))
     negatives=[]
-    def reject(label,mutate):
-        model=copy.deepcopy(original); mutate(model); path=output/f"bad-{label}.gltf"
+    def reject(label,mutate,scene="roughness"):
+        model=copy.deepcopy(original) if scene=="roughness" else json.loads(Path(fixtures[scene]["path"]).read_text(encoding="utf-8"))
+        mutate(model); path=output/f"bad-{label}.gltf"
         path.write_text(json.dumps(model),encoding="utf-8")
-        try: validate(path,"roughness")
-        except (ValueError,KeyError,IndexError,TypeError,struct.error): negatives.append(label)
+        try: validate(path,scene)
+        except (ValueError,KeyError,IndexError,TypeError,struct.error,AssertionError): negatives.append(label)
         else: raise AssertionError("Corrupt fixture accepted: "+label)
     reject("truncated-buffer",lambda m:m["buffers"][0].update(byteLength=m["buffers"][0]["byteLength"]+1))
     reject("accessor-range",lambda m:m["accessors"][0].update(count=1000000))
@@ -310,6 +354,8 @@ def self_check(output: Path) -> dict:
     reject("inactive-mesh",lambda m:m["scenes"][0]["nodes"].pop(0))
     reject("light-count",lambda m:m["extensions"]["KHR_lights_punctual"]["lights"].append(copy.deepcopy(m["extensions"]["KHR_lights_punctual"]["lights"][0])))
     reject("light-direction",lambda m:m["nodes"][-1].update(rotation=DOWN))
+    reject("mirror-roughness",lambda m:m["materials"][-3]["pbrMetallicRoughness"].update(roughnessFactor=.045),MIRROR)
+    reject("mirror-emission",lambda m:m["materials"][-1].update(emissiveFactor=[0.,0.,0.]),MIRROR)
     def corrupt_geometry(m,kind):
         a=m["accessors"][0 if kind=="position" else 1 if kind=="normal" else 3]
         v=m["bufferViews"][a["bufferView"]]; payload=bytearray(base64.b64decode(m["buffers"][0]["uri"].split(",",1)[1]))

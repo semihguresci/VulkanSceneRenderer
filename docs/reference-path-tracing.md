@@ -4,8 +4,9 @@ The progressive Vulkan reference backend is available in the application
 viewport through the Rendering Engine selector. It supports the material/light
 subset documented below and reports unsupported paths separately from raw
 radiance. Sample counts, a standard-error view, deterministic raw EXR checkpoints
-and optional display denoising are implemented. Scene convergence and raster
-calibration acceptance is tracked separately from those features.
+and optional display denoising are implemented. The
+[reference calibration workflow](reference-calibration.md) compares independent
+sample series with matched forward and deferred raster captures.
 
 ## Application use and presentation
 

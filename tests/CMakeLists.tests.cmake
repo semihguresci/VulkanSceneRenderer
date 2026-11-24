@@ -890,6 +890,17 @@ set_tests_properties(reference_material_parity_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 800
     LABELS "requires-vulkan;requires-display;ray-query;path-tracing;material;visual-regression")
 
+if(Python3_Interpreter_FOUND)
+    add_test(NAME reference_scene_convergence_gpu_regression
+        COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/reference_scene_convergence_runtime_regression.py"
+                --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+                --layer-manifest "${VK_KHRONOS_VALIDATION_JSON}"
+                --output "${TEST_RESULTS_DIR}/reference-convergence" --ctest)
+    set_tests_properties(reference_scene_convergence_gpu_regression PROPERTIES
+        SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 5400
+        LABELS "requires-vulkan;requires-display;ray-query;path-tracing;visual-regression")
+endif()
+
 set_tests_properties(ray_shadow_surface_gpu_tests PROPERTIES
     LABELS "requires-vulkan;requires-display;ray-query;ddgi")
 
