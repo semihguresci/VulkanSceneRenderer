@@ -81,6 +81,7 @@ private:
   mutable const void *gpuCullSourceCacheData_{nullptr};
   mutable size_t gpuCullSourceCacheSize_{0};
   mutable uint64_t gpuCullSourceCacheObjectRevision_{0};
+  mutable uint64_t gpuCullSourceCacheDrawRevision_{0};
   mutable ShadowGpuCullSourceSummary gpuCullSourceCache_{};
   mutable bool gpuCullSourceCacheValid_{false};
 };

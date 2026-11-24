@@ -1142,6 +1142,14 @@ set_tests_properties(scene_asset_budget_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 950
     LABELS "requires-vulkan;requires-display;ray-query;scene;assets;visual-regression")
 
+add_test(NAME geometry_lod_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/geometry_lod_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/geometry-lod" --managed-output --require-opt-in)
+set_tests_properties(geometry_lod_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1800
+    LABELS "requires-vulkan;requires-display;scene;assets;visual-regression")
+
 add_test(NAME gui_model_loading_harness_tests
     COMMAND "${Python3_EXECUTABLE}" -B -m unittest discover
             -s "${TEST_VALIDATION_DIR}" -p "test_gui_model_loading_regression.py")
@@ -1915,6 +1923,10 @@ if(ENABLE_GLTF_DRACO AND ENABLE_GLTF_MESHOPT)
         RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 endif()
 
+add_custom_test(geometry_lod_tests
+    ${TEST_GEOMETRY_DIR}/geometry_lod_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
 add_custom_test(gltf_accessor_tests
     ${TEST_GEOMETRY_DIR}/gltf_accessor_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry

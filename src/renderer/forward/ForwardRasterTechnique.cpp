@@ -1283,7 +1283,9 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         .imageIndex = p.runtime.imageIndex, .cameraBuffer = camera->buffer,
         .cameraBufferSize = camera->size, .objectBuffer = p.scene.objectBuffer,
         .objectBufferSize = p.scene.objectBufferSize,
-        .drawSourceRevision = p.scene.objectDataRevision}));
+        .drawSourceRevision = p.draws.sourceRevision != 0u
+                                  ? p.draws.sourceRevision
+                                  : p.scene.objectDataRevision}));
   });
   graph.setPassResourceAccess(RenderPassId::FrustumCull,
       {RenderResourceId::SceneGeometry, RenderResourceId::CameraBuffer, RenderResourceId::ObjectBuffer},

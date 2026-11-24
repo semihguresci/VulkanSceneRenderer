@@ -34,6 +34,7 @@ struct BimFrameMeshDrawLists {
   const std::vector<DrawCommand> *transparentWindingFlippedDrawCommands{
       nullptr};
   const std::vector<DrawCommand> *transparentDoubleSidedDrawCommands{nullptr};
+  uint64_t sourceRevision{};
 };
 
 struct BimFrameDrawRoutingInputs {

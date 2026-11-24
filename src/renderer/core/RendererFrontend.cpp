@@ -1544,7 +1544,8 @@ void RendererFrontend::initialize() {
         container::util::executableDirectory());
     subs_.bimManager->loadModel(svc_.config.bimModelPath,
                                 svc_.config.bimImportScale,
-                                *subs_.sceneManager, svc_.config.vdbModelOptions);
+                                *subs_.sceneManager, svc_.config.vdbModelOptions,
+                                svc_.config.geometryLodErrorPixels > 0.0f);
     activeAuxiliaryModelPath_ = svc_.config.bimModelPath;
     activeAuxiliaryImportScale_ = svc_.config.bimImportScale;
   }
@@ -4225,7 +4226,16 @@ void RendererFrontend::writeCaptureTelemetry(
        subs_.referencePathTracePass->attemptedSamples() != *referenceSampleTarget))
     throw std::runtime_error("Reference accumulation changed before checkpoint telemetry");
   auto json = captureTelemetry();
+  writePrimaryGeometryLodTelemetry(json);
   if (comfyUi_) json["comfyUi"] = comfyUiCaptureTelemetry();
+  if (subs_.bimManager && subs_.bimManager->hasScene()) {
+    const auto lod = subs_.bimManager->geometryLodStats(currentBimDrawFilter());
+    json["geometryLod"]["bim"] = {{"baseTriangles", lod.baseTriangles},
+                                  {"triangles", lod.triangles},
+                                  {"extraIndexBytes", lod.extraIndexBytes},
+                                  {"levels", lod.levels},
+                                  {"opaqueCompactionReady", lod.opaqueCompactionReady}};
+  }
   if (depthProbe) {
     auto &probe = json["depthProbe"];
     probe["pixel"] = {depthProbe->x, depthProbe->y};
@@ -4258,6 +4268,9 @@ void RendererFrontend::writeCaptureTelemetry(
       interaction["cpu"] = routes(cpuHit.hit ? cpuHit.nodeIndex : container::scene::SceneGraph::kInvalidNode);
       interaction["gpu"] = nullptr;
       interaction["rawGpuId"] = nullptr;
+      if (subs_.bimManager && subs_.bimManager->hasScene()) {
+        interaction["bim"] = nullptr;
+      }
       uint32_t pickId = container::gpu::kPickIdNone;
       if (samplePickIdAtCursor(depthProbe->x, depthProbe->y, pickId)) {
         const auto target = decodeGpuPickId(pickId);
@@ -4266,6 +4279,14 @@ void RendererFrontend::writeCaptureTelemetry(
             : container::scene::SceneGraph::kInvalidNode;
         interaction["gpu"] = routes(node);
         interaction["rawGpuId"] = pickId;
+        if (target.kind == GpuPickTargetKind::Bim && subs_.bimManager) {
+          if (const auto metadata = subs_.bimManager->metadataForObject(target.objectIndex)) {
+            interaction["bim"] = {{"objectIndex", metadata->objectIndex},
+                                   {"guid", metadata->guid},
+                                   {"sourceId", metadata->sourceId},
+                                   {"materialIndex", metadata->materialIndex}};
+          }
+        }
       }
     }
   }
@@ -5551,9 +5572,10 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
         sceneState_.selectedMeshNode, sceneState_.cubeNode, prepared,
         [this, commitStarted] {
           deactivateRenderSetup();
+          clearPrimaryGeometryLods();
           if (commitStarted)
             *commitStarted = true;
-        });
+        }, primaryGeometryLods_.buffer.allocation_info.size);
   };
   auto refreshSceneState = [&](bool replacedModel) {
     // reloadPrimary can replace the first object buffer before
@@ -5632,10 +5654,12 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
             ? modelLoad_->request->openVdbOptions : nullptr;
         localPrepared = BimManager::prepareScene(path, importScale,
             vdbOptionsForReload(path,requestedOptions,previousAuxiliaryPath,
-                                previousOpenVdbOptions,svc_.config.vdbModelOptions));
+                                previousOpenVdbOptions,svc_.config.vdbModelOptions),
+            {}, {}, {}, svc_.config.geometryLodErrorPixels > 0.0f);
         prepared = &*localPrepared;
       }
-      subs_.bimManager->checkPreparedSceneBudget(*prepared, true);
+      subs_.bimManager->checkPreparedSceneBudget(
+          *prepared, true, primaryGeometryLods_.buffer.allocation_info.size);
       if (!reloadPrimary("", 1.0f, &retiredPreviousScene))
         throw std::runtime_error("Failed to clear the primary scene");
       subs_.bimManager->loadPreparedScene(std::move(*prepared), *subs_.sceneManager);
@@ -5653,7 +5677,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
           try {
             subs_.bimManager->loadModel(previousAuxiliaryPath,
                                         previousAuxiliaryScale,
-                                      *subs_.sceneManager, previousOpenVdbOptions);
+                                      *subs_.sceneManager, previousOpenVdbOptions,
+                                      svc_.config.geometryLodErrorPixels > 0.0f);
           } catch (const std::exception &restoreError) {
             container::log::ContainerLogger::instance().renderer()->error(
                 "Failed to restore auxiliary model '{}': {}",
@@ -5709,7 +5734,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
     try {
       subs_.bimManager->loadModel(activeAuxiliaryModelPath_,
                                   activeAuxiliaryImportScale_,
-                                  *subs_.sceneManager, previousOpenVdbOptions);
+                                  *subs_.sceneManager, previousOpenVdbOptions,
+                                  svc_.config.geometryLodErrorPixels > 0.0f);
     } catch (const std::exception &error) {
       container::log::ContainerLogger::instance().renderer()->error(
           "Failed to restore auxiliary model '{}': {}",
@@ -5780,11 +5806,13 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
                                     openVdbOptions = action.openVdbOptions,
                                     merge = action.merge.has_value(),
                                     linked = svc_.config.experimentalGltfLinkedAssets && !remote,
+                                    generateGeometryLods = svc_.config.geometryLodErrorPixels > 0.0f,
                                     micromaps = svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !remote,
                                     experimental = svc_.config.experimentalGltfMaterials, remote](std::stop_token stop) {
         auto prepared = std::make_unique<ModelLoadState::Prepared>();
         if (isAuxiliaryRenderModelPath(path))
-          prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions, stop);
+          prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions, stop,
+                                                   {}, {}, generateGeometryLods);
         else
           prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
               merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
@@ -6032,6 +6060,7 @@ void RendererFrontend::shutdown() {
     return;
 
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
+  clearPrimaryGeometryLods();
   // Preview maps may own the previous cubemaps and use the environment manager
   // to free them, so release them before tearing that manager down.
   renderSetupPreview_.reset();
@@ -9776,6 +9805,29 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   p.draws.selectedDrawCommands = &selectedDrawCommands_;
   p.scene.objectData = &subs_.sceneController->objectData();
   p.scene.objectDataRevision = subs_.sceneController->objectDataRevision();
+  const bool rasterTechnique = p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster ||
+                               p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster;
+  const auto* gui = subs_.guiManager.get();
+  const bool exactGeometry = captureSectionPlane_.has_value() ||
+      (captureBimAnnotations_ && (captureBimAnnotations_->hiddenLines ||
+                                  captureBimAnnotations_->technicalLines.has_value())) ||
+      (gui && (gui->sectionPlaneState().enabled || gui->bimBoxClipState().enabled ||
+               gui->wireframeSettings().enabled || gui->appliedBimElevationStyle() ==
+                   container::ui::BimElevationTechnicalStyle::HiddenLine));
+  const float rasterLodError = rasterTechnique && !referencePathActive() && !exactGeometry
+      ? svc_.config.geometryLodErrorPixels : 0.0f;
+  geometry::GeometryLodView lodView{};
+  if (rasterLodError > 0.0f) {
+    const auto extent = svc_.swapChainManager.extent();
+    const auto* camera = subs_.cameraController ? subs_.cameraController->camera() : nullptr;
+    if (camera && extent.width && extent.height) {
+      lodView = {gltfAnimationCamera_ ? gltfAnimationCamera_->view : camera->viewMatrix(),
+                 gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
+                     camera->projectionMatrix(static_cast<float>(extent.width) / extent.height),
+                 {extent.width, extent.height}};
+    }
+  }
+  applyPrimaryGeometryLods(p, lodView, rasterLodError);
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     const BimDrawFilter bimFilter = currentBimDrawFilter();
     BimMeshletResidencySettings residencySettings{};
@@ -9837,7 +9889,11 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         bimRouting.nativeCurveDrawsUseGpuVisibility;
     p.bim.nativeCurveStrokeDrawsUseGpuVisibility =
         bimRouting.nativeCurveStrokeDrawsUseGpuVisibility;
-    assignFrameDrawLists(p.bim.draws, bimRouting.meshDraws);
+    const auto meshDraws = subs_.bimManager->renderGeometryLods(
+        bimRouting.meshDraws, imageIndex, lodView, rasterLodError,
+        selectedBimObjectIndex_);
+    assignFrameDrawLists(p.bim.draws, meshDraws);
+    p.bim.draws.sourceRevision = meshDraws.sourceRevision;
     if (bimLayers.pointCloudVisible) {
       if (bimRouting.pointPlaceholderDraws != nullptr) {
         assignFrameDrawLists(p.bim.pointDraws,

@@ -1575,6 +1575,8 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mix(params.runtime.sceneExtent.height);
   mix(params.scene.objectDataRevision);
   mix(params.bim.scene.objectDataRevision);
+  mix(params.draws.sourceRevision);
+  mix(params.bim.draws.sourceRevision);
   mixPointer(params.registries.resourceBindings);
   mixPointer(params.registries.pipelineHandles);
   mixPointer(params.registries.pipelineLayouts);

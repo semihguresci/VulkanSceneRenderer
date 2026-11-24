@@ -547,6 +547,35 @@ TEST(RenderGraphTests, PrepareFrameIsIdempotentForSameFrameSignature) {
   EXPECT_EQ(readinessCalls, 2);
 }
 
+TEST(RenderGraphTests, PrepareFrameRefreshesInPlaceGeometryDrawRanges) {
+  RenderGraph graph;
+  std::vector<container::renderer::DrawCommand> scene{{.indexCount = 96u}};
+  std::vector<container::renderer::DrawCommand> bim{{.indexCount = 72u}};
+  std::vector<uint32_t> observedIndexCounts;
+  graph.addPass(RenderPassId::DepthPrepass, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::DepthPrepass, {}, {}, {}));
+  ASSERT_TRUE(graph.setPassReadiness(
+      RenderPassId::DepthPrepass, [&](const FrameRecordParams& params) {
+        observedIndexCounts.push_back(params.draws.opaqueDrawCommands->front().indexCount);
+        observedIndexCounts.push_back(params.bim.draws.opaqueDrawCommands->front().indexCount);
+        return RenderPassReadiness{};
+      }));
+  FrameRecordParams params{};
+  params.draws.opaqueDrawCommands = &scene;
+  params.bim.draws.opaqueDrawCommands = &bim;
+
+  graph.prepareFrame(params);
+  scene.front().indexCount = 48u;
+  ++params.draws.sourceRevision;
+  graph.prepareFrame(params);
+  bim.front().indexCount = 36u;
+  ++params.bim.draws.sourceRevision;
+  graph.prepareFrame(params);
+  graph.prepareFrame(params);
+
+  EXPECT_EQ(observedIndexCounts, (std::vector<uint32_t>{96u, 72u, 48u, 72u, 48u, 36u}));
+}
+
 TEST(RenderGraphTests, PrepareFrameRebuildsWhenAuxiliaryPbrServiceIsPublishedOrReplaced) {
   RenderGraph graph;
   int readinessCalls = 0;

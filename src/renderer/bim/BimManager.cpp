@@ -2,6 +2,7 @@
 
 #include "Container/common/VulkanObjects.h"
 #include "Container/geometry/DotBimLoader.h"
+#include "Container/geometry/GeometryLod.h"
 #include "Container/geometry/GltfModelLoader.h"
 #include "Container/geometry/IfcTessellatedLoader.h"
 #include "Container/geometry/IfcxLoader.h"
@@ -9,6 +10,7 @@
 #include "Container/geometry/UsdLoader.h"
 #include "Container/renderer/bim/BimDrawCompactionPlanner.h"
 #include "Container/renderer/bim/BimDrawFilterState.h"
+#include "Container/renderer/bim/BimFrameDrawRoutingPlanner.h"
 #include "Container/renderer/bim/BimMetadataCatalog.h"
 #include "Container/renderer/bim/BimMetadataIndex.h"
 #include "Container/renderer/bim/BimStatisticsCache.h"
@@ -447,6 +449,61 @@ constexpr uint32_t kInvalidMaterialIndex = std::numeric_limits<uint32_t>::max();
 bool isValidMaterialIndex(uint32_t index,
                           const container::geometry::dotbim::Model &model) {
   return index != kInvalidMaterialIndex && index < model.materials.size();
+}
+
+void appendGeometryLods(BimManager::PreparedScene &prepared,
+                        std::stop_token stop,
+                        const std::function<void(std::string_view)> &progress) {
+  using geometry::TriangleLodWeldPolicy;
+  const auto &model = prepared.model;
+  std::unordered_map<uint32_t, TriangleLodWeldPolicy> meshPolicies;
+  for (const auto &element : model.elements) {
+    container::util::checkModelImportCancellation(stop);
+    if (element.geometryKind != geometry::dotbim::GeometryKind::Mesh) {
+      continue;
+    }
+    const auto policy = meshPolicies.try_emplace(
+        element.meshId, TriangleLodWeldPolicy::IgnoreGeneratedTangents).first;
+    if (!isValidMaterialIndex(element.materialIndex, model)) {
+      continue;
+    }
+    const auto &material = model.materials[element.materialIndex];
+    const auto &textures = material.texturePaths;
+    if (!textures.normal.empty() || !textures.clearcoatNormal.empty() ||
+        material.pbr.normalTextureIndex != kInvalidMaterialIndex ||
+        material.pbr.clearcoatNormalTextureIndex != kInvalidMaterialIndex ||
+        material.pbr.heightTextureIndex != kInvalidMaterialIndex ||
+        material.pbr.anisotropyStrength != 0.0f) {
+      policy->second = TriangleLodWeldPolicy::PreserveAttributes;
+    }
+  }
+
+  if (progress && !meshPolicies.empty()) {
+    progress("Generating BIM mesh levels of detail");
+  }
+  for (const auto &range : model.meshRanges) {
+    container::util::checkModelImportCancellation(stop);
+    const auto policy = meshPolicies.find(range.meshId);
+    if (policy == meshPolicies.end() || range.firstIndex > model.indices.size() ||
+        range.indexCount > model.indices.size() - range.firstIndex) {
+      continue;
+    }
+    const auto source = std::span(model.indices).subspan(range.firstIndex, range.indexCount);
+    const auto levels = geometry::buildTriangleLods(model.vertices, source, stop, policy->second);
+    for (const auto &level : levels) {
+      constexpr auto maxIndex = std::numeric_limits<uint32_t>::max();
+      if (prepared.uploadIndices.size() > maxIndex ||
+          level.indices.size() > maxIndex - prepared.uploadIndices.size()) {
+        return;
+      }
+      prepared.geometryLodRanges[range.meshId].push_back({
+          static_cast<uint32_t>(prepared.uploadIndices.size()),
+          static_cast<uint32_t>(level.indices.size()),
+          level.maxError});
+      prepared.uploadIndices.insert(prepared.uploadIndices.end(),
+                                    level.indices.begin(), level.indices.end());
+    }
+  }
 }
 
 bool sameVisibilityFilterSettings(const BimVisibilityFilterPushConstants &lhs,
@@ -1675,6 +1732,12 @@ void BimManager::clear() {
   geometryAssetId_ = {};
   vertices_.clear();
   indices_.clear();
+  geometryLodRanges_.clear();
+  selectedGeometryLods_.clear();
+  for (auto &frame : visibilityFrames_) {
+    frame.geometryLodDraws.clear();
+    frame.hasCoarseGeometryLods = false;
+  }
   objectData_.clear();
   runtimeObjectTransforms_.clear();
   temporalRootTranslation_ = glm::vec3(0);
@@ -3105,7 +3168,8 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
                                                    float importScale,
     std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions,
     std::stop_token stop, const std::function<void(std::string_view)> &progress,
-    const std::function<void(std::string_view)> &profileStage) {
+    const std::function<void(std::string_view)> &profileStage,
+    bool generateGeometryLods) {
   container::util::checkModelImportCancellation(stop);
   if (profileStage)
     profileStage("parse");
@@ -3184,21 +3248,25 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   appendFloorPlanOverlays(prepared.model, prepared.uploadVertices,
                           prepared.uploadIndices, prepared.floorPlanGround,
                           prepared.floorPlanSourceElevation, stop, progress);
+  prepared.sourceIndexCount = prepared.uploadIndices.size();
+  if (generateGeometryLods && extension != ".vdb") {
+    if (profileStage) {
+      profileStage("geometryLods");
+    }
+    appendGeometryLods(prepared, stop, progress);
+  }
   prepared.drawData = prepareDrawData(prepared.model, stop, progress, profileStage);
   container::util::checkModelImportCancellation(stop);
   return prepared;
 }
 
-void BimManager::checkPreparedSceneBudget(const PreparedScene& prepared,
-    bool replacingSceneTextures) const {
+void BimManager::checkPreparedSceneBudget(PreparedScene& prepared,
+    bool replacingSceneTextures, VkDeviceSize releasingPrimaryLodBytes) const {
   if (!prepared.drawData)
     throw std::invalid_argument("BIM asset admission requires prepared draw data");
   const auto limits = allocationManager_.sceneAssetBudget().limits;
   if (!limits.residentBytes && !limits.uploadBytes)
     return;
-  auto request = allocationManager_.geometryAssetBytes(
-      std::as_bytes(std::span(prepared.uploadVertices)).size(),
-      std::as_bytes(std::span(prepared.uploadIndices)).size(), false);
   const auto drawCount = prepared.drawData->opaque.size() +
       prepared.drawData->transparent.size() + 2; // Both floor-plan elevations.
   const auto uploadBytes = (std::max)({
@@ -3206,16 +3274,39 @@ void BimManager::checkPreparedSceneBudget(const PreparedScene& prepared,
       drawCount * sizeof(BimMeshletGpuObjectLod),
       drawCount * sizeof(BimMeshletResidencyEntry),
       drawCount * sizeof(decltype(visibilityFilterMetadata_)::value_type)});
-  request.uploadBytes = (std::max)(request.uploadBytes,
-      allocationManager_.memoryManager()->bufferAllocationBytes(
-          uploadBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT));
-  const auto releasingGeometryBytes = vertexBuffer_.allocation_info.size +
-      indexBuffer_.allocation_info.size + sectionClipCapVertexBuffer_.allocation_info.size +
-      sectionClipCapIndexBuffer_.allocation_info.size + coordinationMarkerVertexBuffer_.allocation_info.size +
-      coordinationMarkerIndexBuffer_.allocation_info.size + sectionPlaneVisualVertexBuffer_.allocation_info.size +
-      sectionPlaneVisualIndexBuffer_.allocation_info.size;
-  allocationManager_.checkSceneAssetAdmission(request, replacingSceneTextures,
-                                               releasingGeometryBytes);
+  const auto metadataStagingBytes = allocationManager_.memoryManager()
+      ->bufferAllocationBytes(uploadBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+  auto releasingGeometryBytes = releasingPrimaryLodBytes;
+  for (const auto *buffer : {&vertexBuffer_, &indexBuffer_,
+                             &sectionClipCapVertexBuffer_, &sectionClipCapIndexBuffer_,
+                             &coordinationMarkerVertexBuffer_, &coordinationMarkerIndexBuffer_,
+                             &sectionPlaneVisualVertexBuffer_, &sectionPlaneVisualIndexBuffer_}) {
+    const auto bytes = buffer->allocation_info.size;
+    if (bytes > (std::numeric_limits<VkDeviceSize>::max)() - releasingGeometryBytes) {
+      throw gpu::SceneAssetBudgetExceeded("BIM geometry admission release bytes overflow");
+    }
+    releasingGeometryBytes += bytes;
+  }
+  const auto checkIndexCount = [&](size_t indexCount) {
+    auto request = allocationManager_.geometryAssetBytes(
+        std::span(prepared.uploadVertices).size_bytes(),
+        indexCount * sizeof(uint32_t), false);
+    request.uploadBytes = (std::max)(request.uploadBytes, metadataStagingBytes);
+    allocationManager_.checkSceneAssetAdmission(request, replacingSceneTextures,
+                                                 releasingGeometryBytes);
+  };
+  try {
+    checkIndexCount(prepared.uploadIndices.size());
+  } catch (const gpu::SceneAssetBudgetExceeded &) {
+    if (prepared.geometryLodRanges.empty()) {
+      throw;
+    }
+    checkIndexCount(prepared.sourceIndexCount);
+    prepared.uploadIndices.resize(prepared.sourceIndexCount);
+    prepared.geometryLodRanges.clear();
+    container::log::ContainerLogger::instance().renderer()->info(
+        "Discarding generated BIM raster LODs to fit the scene asset budget");
+  }
 }
 
 void BimManager::loadPreparedScene(PreparedScene &&prepared,
@@ -3230,7 +3321,8 @@ void BimManager::loadPreparedScene(PreparedScene &&prepared,
 
 void BimManager::loadModel(const std::string &path, float importScale,
                            container::scene::SceneManager &sceneManager,
-    std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions) {
+    std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions,
+    bool generateGeometryLods) {
   if (path.empty()) {
     clear();
     return;
@@ -3241,9 +3333,10 @@ void BimManager::loadModel(const std::string &path, float importScale,
       "Loading BIM model: {}", container::util::pathToUtf8(resolvedPath));
   const std::string extension = lowerAscii(resolvedPath.extension().string());
   const auto limits = allocationManager_.sceneAssetBudget().limits;
-  if ((limits.residentBytes || limits.uploadBytes) &&
+  if ((limits.residentBytes || limits.uploadBytes || generateGeometryLods) &&
       extension != ".gltf" && extension != ".glb") {
-    auto prepared = prepareScene(path, importScale, std::move(openVdbOptions));
+    auto prepared = prepareScene(path, importScale, std::move(openVdbOptions),
+                                 {}, {}, {}, generateGeometryLods);
     loadPreparedScene(std::move(prepared), sceneManager);
     return;
   }
@@ -3397,8 +3490,12 @@ void BimManager::loadPreparedModel(
   uploadGeometry(prepared ? std::span<const container::geometry::Vertex>(prepared->uploadVertices)
                           : std::span<const container::geometry::Vertex>(localUploadVertices),
                  prepared ? std::span<const uint32_t>(prepared->uploadIndices)
-                          : std::span<const uint32_t>(localUploadIndices));
+                          : std::span<const uint32_t>(localUploadIndices),
+                 prepared ? std::optional{prepared->sourceIndexCount} : std::nullopt);
   logStage("geometry upload");
+  if (prepared) {
+    geometryLodRanges_ = std::move(prepared->geometryLodRanges);
+  }
   auto localDrawData = prepared ? nullptr : prepareDrawData(model, {},
       [this](std::string_view stage) { notifyLoadProgress(stage); });
   auto &drawData = prepared ? *prepared->drawData : *localDrawData;
@@ -4053,7 +4150,8 @@ void BimManager::loadGltfFallback(
 
 void BimManager::uploadGeometry(
     std::span<const container::geometry::Vertex> vertices,
-    std::span<const uint32_t> indices) {
+    std::span<const uint32_t> indices,
+    std::optional<size_t> sourceIndexCount) {
   if (geometryRevision_ == std::numeric_limits<uint64_t>::max())
     throw std::overflow_error("BIM geometry revision exhausted");
   ++geometryRevision_;
@@ -4064,6 +4162,9 @@ void BimManager::uploadGeometry(
     return;
   }
   const auto assetId = container::scene::SceneAssetId::mint();
+  // CPU queries and ray geometry consume the original topology. The raster
+  // index buffer also includes generated ranges after the source indices.
+  const auto sourceIndices = indices.first(sourceIndexCount.value_or(indices.size()));
 
   if (loadProgressCallback_) {
     const auto copyWithProgress = [this](auto &destination, auto source) {
@@ -4077,10 +4178,10 @@ void BimManager::uploadGeometry(
       }
     };
     copyWithProgress(vertices_, vertices);
-    copyWithProgress(indices_, indices);
+    copyWithProgress(indices_, sourceIndices);
   } else {
     vertices_.assign(vertices.begin(), vertices.end());
-    indices_.assign(indices.begin(), indices.end());
+    indices_.assign(sourceIndices.begin(), sourceIndices.end());
   }
 
   const VkDeviceSize vertexBufferSize = static_cast<VkDeviceSize>(
@@ -4926,8 +5027,179 @@ void BimManager::writeDrawCompactionDescriptorSet(
   slot.stats.dispatchPending = slot.dispatchPending;
 }
 
+BimFrameMeshDrawLists BimManager::renderGeometryLods(
+    const BimFrameMeshDrawLists &source, uint32_t imageIndex,
+    const geometry::GeometryLodView &view, float pixelLimit,
+    uint32_t selectedObjectIndex) {
+  if (imageIndex >= visibilityFrames_.size()) {
+    selectedGeometryLods_.clear();
+    return source;
+  }
+  auto &frame = visibilityFrames_[imageIndex];
+  frame.hasCoarseGeometryLods = false;
+  if (geometryLodRanges_.empty() || !(pixelLimit > 0.0f)) {
+    selectedGeometryLods_.clear();
+    return source;
+  }
+
+  selectedGeometryLods_.resize(objectLodMetadata_.size());
+  const auto selectedMetadata = metadataForObject(selectedObjectIndex);
+  bool selectionChanged = false;
+  for (const auto &object : objectLodMetadata_) {
+    if (object.geometryKind != BimGeometryKind::Mesh) {
+      continue;
+    }
+    const auto levels = geometryLodRanges_.find(object.meshId);
+    if (levels == geometryLodRanges_.end()) {
+      continue;
+    }
+    uint32_t &selectedLevel = selectedGeometryLods_[object.objectIndex];
+    const auto &objectMetadata = elementMetadata_[object.objectIndex];
+    const auto &objectData = objectData_[object.objectIndex];
+    const bool selectedProduct = selectedMetadata &&
+        selectedMetadata->productIdentityId == objectMetadata.productIdentityId;
+    const auto bounds = runtimeObjectTransforms_.boundsForObject(
+        object.objectIndex, objectMetadata.bounds, temporalRootTranslation_);
+    const uint32_t nextLevel = selectedProduct || !bounds.valid
+        ? 0u
+        : geometry::selectGeometryLod(
+              levels->second, view, glm::vec4(bounds.center, bounds.radius),
+              objectData.model, pixelLimit, selectedLevel);
+    selectionChanged |= selectedLevel != nextLevel;
+    selectedLevel = nextLevel;
+    frame.hasCoarseGeometryLods |= selectedLevel > 0u;
+  }
+  if (selectionChanged) {
+    ++geometryLodSelectionRevision_;
+  }
+  if (!frame.hasCoarseGeometryLods) {
+    return source;
+  }
+
+  auto &draws = frame.geometryLodDraws;
+  const auto remap = [&](const std::vector<DrawCommand> *commands,
+                         std::vector<DrawCommand> &output, bool allowMerge)
+      -> const std::vector<DrawCommand> * {
+    if (commands == nullptr || commands->empty()) {
+      return commands;
+    }
+    output.clear();
+    output.reserve(commands->size());
+    for (const DrawCommand &command : *commands) {
+      const uint32_t instanceCount = std::max(command.instanceCount, 1u);
+      for (uint32_t instance = 0; instance < instanceCount; ++instance) {
+        const uint32_t objectIndex = command.objectIndex + instance;
+        uint32_t firstIndex = command.firstIndex;
+        uint32_t indexCount = command.indexCount;
+        if (objectIndex < selectedGeometryLods_.size() &&
+            selectedGeometryLods_[objectIndex] > 0u) {
+          const auto &base = objectDrawCommands_[objectDrawCommandOffsets_[objectIndex]];
+          if (base.firstIndex == firstIndex && base.indexCount == indexCount) {
+            const auto &object = objectLodMetadata_[objectIndex];
+            const auto &levels = geometryLodRanges_.at(object.meshId);
+            const auto &range = levels[selectedGeometryLods_[objectIndex] - 1u];
+            firstIndex = range.firstIndex;
+            indexCount = range.indexCount;
+          }
+        }
+        appendDrawCommand(output, objectIndex, firstIndex, indexCount, allowMerge);
+      }
+    }
+    return &output;
+  };
+
+  return {
+      .opaqueDrawCommands = remap(source.opaqueDrawCommands, draws.opaqueDrawCommands, false),
+      .opaqueSingleSidedDrawCommands = remap(source.opaqueSingleSidedDrawCommands,
+                                            draws.opaqueSingleSidedDrawCommands, true),
+      .opaqueWindingFlippedDrawCommands = remap(source.opaqueWindingFlippedDrawCommands,
+                                               draws.opaqueWindingFlippedDrawCommands, true),
+      .opaqueDoubleSidedDrawCommands = remap(source.opaqueDoubleSidedDrawCommands,
+                                            draws.opaqueDoubleSidedDrawCommands, true),
+      .transparentDrawCommands = remap(source.transparentDrawCommands,
+                                       draws.transparentDrawCommands, false),
+      .transparentSingleSidedDrawCommands = remap(source.transparentSingleSidedDrawCommands,
+                                                 draws.transparentSingleSidedDrawCommands, false),
+      .transparentWindingFlippedDrawCommands = remap(source.transparentWindingFlippedDrawCommands,
+                                                    draws.transparentWindingFlippedDrawCommands, false),
+      .transparentDoubleSidedDrawCommands = remap(source.transparentDoubleSidedDrawCommands,
+                                                 draws.transparentDoubleSidedDrawCommands, false),
+      .sourceRevision = geometryLodSelectionRevision_,
+  };
+}
+
+bool BimManager::hasCoarseGeometryLodSelections(uint32_t imageIndex) const noexcept {
+  return imageIndex < visibilityFrames_.size() &&
+         visibilityFrames_[imageIndex].hasCoarseGeometryLods;
+}
+
+std::optional<BimGeometryLodDrawInfo>
+BimManager::geometryLodDrawInfo(uint32_t objectIndex) const {
+  if (objectIndex >= objectLodMetadata_.size() ||
+      objectLodMetadata_[objectIndex].geometryKind != BimGeometryKind::Mesh) {
+    return std::nullopt;
+  }
+  const auto &base = objectDrawCommands_[objectDrawCommandOffsets_[objectIndex]];
+  BimGeometryLodDrawInfo info{.levelCount = 1u,
+                             .sourceFirstIndex = base.firstIndex,
+                             .sourceIndexCount = base.indexCount,
+                             .firstIndex = base.firstIndex,
+                             .indexCount = base.indexCount};
+  const auto levels = geometryLodRanges_.find(objectLodMetadata_[objectIndex].meshId);
+  if (levels != geometryLodRanges_.end()) {
+    info.levelCount += static_cast<uint32_t>(levels->second.size());
+    if (objectIndex < selectedGeometryLods_.size()) {
+      info.level = selectedGeometryLods_[objectIndex];
+    }
+    if (info.level > 0u) {
+      const auto &range = levels->second[info.level - 1u];
+      info.firstIndex = range.firstIndex;
+      info.indexCount = range.indexCount;
+    }
+  }
+  return info;
+}
+
+BimGeometryLodStats BimManager::geometryLodStats(const BimDrawFilter &filter) {
+  BimGeometryLodStats stats{};
+  const VkDeviceSize sourceBytes = indices().size_bytes();
+  if (indexSlice_.size > sourceBytes) {
+    stats.extraIndexBytes = indexSlice_.size - sourceBytes;
+  }
+  stats.opaqueCompactionReady = filter.active() && !filter.requiresCpuFiltering() &&
+      (drawCompactionReady(BimDrawCompactionSlot::OpaqueSingleSided) ||
+       drawCompactionReady(BimDrawCompactionSlot::OpaqueWindingFlipped) ||
+       drawCompactionReady(BimDrawCompactionSlot::OpaqueDoubleSided));
+  const auto *filtered = filter.active() ? &filteredDrawLists(filter) : nullptr;
+  const auto accumulate = [this, &stats](std::span<const DrawCommand> commands) {
+    for (const auto &command : commands) {
+      const uint32_t instanceCount = std::max(command.instanceCount, 1u);
+      for (uint32_t instance = 0; instance < instanceCount; ++instance) {
+        const auto info = geometryLodDrawInfo(command.objectIndex + instance);
+        uint32_t level = 0u;
+        uint32_t indexCount = command.indexCount;
+        if (info && info->sourceFirstIndex == command.firstIndex &&
+            info->sourceIndexCount == command.indexCount) {
+          if (stats.levels.size() < info->levelCount) {
+            stats.levels.resize(info->levelCount);
+          }
+          level = info->level;
+          indexCount = info->indexCount;
+        }
+        stats.baseTriangles += command.indexCount / 3u;
+        stats.triangles += indexCount / 3u;
+        ++stats.levels[level];
+      }
+    }
+  };
+  accumulate(filtered ? filtered->opaqueDrawCommands : opaqueDrawCommands_);
+  accumulate(filtered ? filtered->transparentDrawCommands : transparentDrawCommands_);
+  return stats;
+}
+
 void BimManager::prepareDrawCompaction(
-    BimDrawCompactionSlot slotId, const std::vector<DrawCommand> &commands) {
+    BimDrawCompactionSlot slotId, const std::vector<DrawCommand> &commands,
+    bool dynamicSource) {
   BimDrawCompactionSlotResources &slot =
       visibilityFrame().draws[drawCompactionSlotIndex(slotId)];
   if (!drawCompactionSupported() || commands.empty() ||
@@ -4945,7 +5217,7 @@ void BimManager::prepareDrawCompaction(
   }
 
   const bool sourceUnchanged =
-      slot.inputSourceData == commands.data() &&
+      !dynamicSource && slot.inputSourceData == commands.data() &&
       slot.inputSourceSize == commands.size() &&
       slot.inputSourceRevision == geometryRevision_ &&
       slot.stats.inputDrawCount == commands.size() &&

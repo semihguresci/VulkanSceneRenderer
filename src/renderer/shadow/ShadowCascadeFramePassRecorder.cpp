@@ -139,7 +139,8 @@ ShadowCascadeFramePassRecorder::gpuCullSourceSummary(
   if (gpuCullSourceCacheValid_ &&
       gpuCullSourceCacheData_ == static_cast<const void *>(commands) &&
       gpuCullSourceCacheSize_ == sourceSize &&
-      gpuCullSourceCacheObjectRevision_ == params.scene.objectDataRevision) {
+      gpuCullSourceCacheObjectRevision_ == params.scene.objectDataRevision &&
+      gpuCullSourceCacheDrawRevision_ == params.draws.sourceRevision) {
     return gpuCullSourceCache_;
   }
 
@@ -147,6 +148,7 @@ ShadowCascadeFramePassRecorder::gpuCullSourceSummary(
   gpuCullSourceCacheData_ = static_cast<const void *>(commands);
   gpuCullSourceCacheSize_ = sourceSize;
   gpuCullSourceCacheObjectRevision_ = params.scene.objectDataRevision;
+  gpuCullSourceCacheDrawRevision_ = params.draws.sourceRevision;
   gpuCullSourceCacheValid_ = true;
   return gpuCullSourceCache_;
 }
