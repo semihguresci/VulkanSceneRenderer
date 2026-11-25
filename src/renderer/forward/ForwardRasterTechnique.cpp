@@ -4,6 +4,7 @@
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/bim/BimLightingOverlayRecorder.h"
+#include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/culling/GpuCullManager.h"
@@ -1387,8 +1388,11 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     auto* culling = p.services.gpuCullManager;
     const auto depth = forwardRasterImageView(p, ForwardRasterImageId::DepthSamplingView);
     const auto sampler = p.sampler(kForwardRasterTechnique, "depth-cull-sampler");
+    const bool bimFrustum = p.services.bimManager &&
+        p.services.bimManager->viewportFrustumReady(p.runtime.imageIndex);
     if (culling == nullptr || !culling->isReady() || depth == VK_NULL_HANDLE ||
-        sampler == VK_NULL_HANDLE || !culling->frustumDrawsValid(p.runtime.imageIndex)) return;
+        sampler == VK_NULL_HANDLE ||
+        (!culling->frustumDrawsValid(p.runtime.imageIndex) && !bimFrustum)) return;
     const auto* binding = forwardRasterImageBinding(p, ForwardRasterImageId::DepthSamplingView);
     const auto extent = binding->extent;
     culling->ensureHiZImage(p.runtime.imageIndex, extent.width, extent.height);
@@ -1401,8 +1405,14 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     auto* culling = p.services.gpuCullManager;
     const auto* camera = forwardRasterBufferBinding(p, ForwardRasterBufferId::Camera);
     const auto* draws = p.draws.opaqueSingleSidedDrawCommands;
-    if (culling == nullptr || !culling->hizGeneratedThisFrame(p.runtime.imageIndex) ||
-        !culling->canRecordOcclusionCull(p.runtime.imageIndex) || camera == nullptr ||
+    if (!culling || !culling->hizGeneratedThisFrame(p.runtime.imageIndex)) {
+      return;
+    }
+    if (p.services.bimManager) {
+      p.services.bimManager->recordViewportOcclusionCull(
+          cmd, p.runtime.imageIndex, culling->hiZFullView(p.runtime.imageIndex));
+    }
+    if (!culling->canRecordOcclusionCull(p.runtime.imageIndex) || camera == nullptr ||
         draws == nullptr || draws->empty()) return;
     culling->dispatchOcclusionCull(cmd, p.runtime.imageIndex, camera->buffer,
         camera->size, static_cast<uint32_t>(draws->size()));

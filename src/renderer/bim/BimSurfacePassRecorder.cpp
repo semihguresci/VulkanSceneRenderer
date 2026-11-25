@@ -107,17 +107,24 @@ void bindBimSurfaceGeometry(VkCommandBuffer cmd,
 
 [[nodiscard]] bool drawGpuCompacted(
     VkCommandBuffer cmd, const BimSurfaceDrawRoute &route, VkPipeline pipeline,
-    const BimSurfacePassRecordInputs &inputs) {
-  if (!route.gpuCompactionAllowed || inputs.bimManager == nullptr ||
-      !inputs.bimManager->drawCompactionReady(route.gpuSlot) ||
-      pipeline == VK_NULL_HANDLE) {
+    const BimSurfacePassRecordInputs &inputs, BimSurfacePassSourceKind source) {
+  if (!inputs.bimManager || pipeline == VK_NULL_HANDLE) {
+    return false;
+  }
+  auto slot = route.gpuSlot;
+  const auto viewportSlot = source == BimSurfacePassSourceKind::Mesh
+      ? bimViewportCompactionSlot(slot) : std::nullopt;
+  if (viewportSlot && hasDrawCommands(route.cpuCommands) &&
+      inputs.bimManager->drawCompactionReady(*viewportSlot)) {
+    slot = *viewportSlot;
+  } else if (!route.gpuCompactionAllowed || !inputs.bimManager->drawCompactionReady(slot)) {
     return false;
   }
 
   container::gpu::BindlessPushConstants pc = inputs.pushConstants;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
   pushSceneObjectIndex(cmd, inputs.pipelineLayout, pc, kIndirectObjectIndex);
-  inputs.bimManager->drawCompacted(route.gpuSlot, cmd);
+  inputs.bimManager->drawCompacted(slot, cmd);
   return true;
 }
 
@@ -146,7 +153,7 @@ bool recordBimSurfacePassCommands(VkCommandBuffer cmd,
       const VkPipeline pipeline = pipelineForBimSurfaceRoute(
           route, inputs.singleSidedPipeline, inputs.windingFlippedPipeline,
           inputs.doubleSidedPipeline);
-      if (drawGpuCompacted(cmd, route, pipeline, inputs)) {
+      if (drawGpuCompacted(cmd, route, pipeline, inputs, sourcePlan.source)) {
         recorded = true;
         continue;
       }

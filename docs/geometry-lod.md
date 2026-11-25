@@ -13,13 +13,14 @@ simplified geometry at shorter viewing distances.
 ## Import and storage
 
 The renderer simplifies each eligible primitive or mesh range independently and
-keeps the original vertex buffer and material assignment. It generates glTF
-levels on the first eligible raster frame for a geometry revision, then caches
-an index buffer containing the source and simplified ranges. BIM/USD generation
+keeps the original vertex buffer and material assignment. The first eligible
+primary raster frame starts glTF LOD preparation for a geometry revision.
+With streaming enabled, source draws remain active while a worker generates the
+levels and the renderer stages the optional index buffer. BIM/USD generation
 runs during model preparation and appends the simplified ranges to its geometry
 upload. Both paths use the scene asset residency and upload budgets. A budget
-that fits only the source geometry can retain the source draws. Windows
-packages use the existing executable and rendering assets.
+that fits only the source geometry can retain the source draws.
+[Geometry streaming](geometry-streaming.md)
 
 The simplifier collapses interior edges onto existing vertices in a deterministic
 order using accumulated endpoint displacement. Open boundaries, nonmanifold
@@ -31,9 +32,9 @@ The importer can ignore generated tangent differences for ranges whose materials
 do not use them. Each level targets one-half or one-quarter of the source
 triangles and is published only when it removes at least one-fifth of the
 preceding level's triangles. Eligible ranges contain 96 to 131,072 source
-triangles. Malformed and unsuitable ranges keep their original detail. The
-first-frame glTF preparation also bounds total generation work and the size of
-the optional index allocation.
+triangles. Malformed and unsuitable ranges keep their original detail. Primary
+glTF preparation also bounds the snapshot size, total generation work, and the
+size of the optional index allocation.
 
 ## Per-frame selection
 

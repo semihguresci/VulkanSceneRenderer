@@ -389,20 +389,26 @@ def check_lifecycle_mode(telemetry, mode, loaded):
             require(gi["enabled"] is False and gi["active"] is False, "Disabled GI became active on reload")
 
 
+def model_upload_publications(telemetry):
+    return telemetry.get("geometryStreaming", {}).get("reload", {}).get("publications", 0)
+
+
 def check_model_request_progress(samples, expected_requests, *, successful_frames):
     """Prove queued imports and GPU commits keep servicing the application.
 
-    Simulation frames settle GUI actions before sampling. These cumulative
-    counters cover the additional rendered preparation/progress frames, rather
-    than allowing a synchronous stall to pass solely because it eventually
-    produced the right scene and image.
+    Capture actions normally settle before sampling. Synchronous actions must
+    submit progress views. A streamed publication must retire its staged copies
+    and pump window events while the capture timeline waits for the result.
+    Pending-upload viewport continuity is checked separately.
     """
     require(sorted(samples) == sorted(expected_requests), "Missing model request progress samples")
     previous = None
+    previous_publications = 0
     first_request = True
     counters = ("requests", "completed", "preparationFrames", "progressFrames", "eventPumps")
     for frame in sorted(samples):
-        state = samples[frame]["gui"].get("modelLoading")
+        telemetry = samples[frame]
+        state = telemetry["gui"].get("modelLoading")
         require(isinstance(state, dict), f"Missing model loading telemetry at {frame}")
         require(state.get("pending") is False, f"Model request is still pending at capture {frame}")
         for key in counters:
@@ -414,17 +420,42 @@ def check_model_request_progress(samples, expected_requests, *, successful_frame
         count = expected_requests[frame]
         require(state["requests"] == count and state["completed"] == count,
                 f"Model request did not finish exactly once at {frame}: {state}")
+        publications = model_upload_publications(telemetry)
+        require(type(publications) is int and previous_publications <= publications <= count,
+                f"Invalid or regressing streamed publication counter at {frame}")
+        streamed = publications > previous_publications
+        if streamed:
+            require(publications == previous_publications + 1 and frame in successful_frames,
+                    f"Unexpected staged model publication at {frame}")
         if count and first_request:
-            require(state["preparationFrames"] > 0,
+            require(streamed or state["preparationFrames"] > 0,
                     f"First model load blocked rendering during preparation at {frame}")
             first_request = False
         if frame in successful_frames:
             require(previous is not None, "Successful model action has no previous progress sample")
-            require(state["progressFrames"] > previous["progressFrames"],
-                    f"Successful model load/unload did not render a progress frame at {frame}")
+            if streamed:
+                streaming = telemetry["geometryStreaming"]
+                upload = streaming["reload"]
+                total = upload.get("totalBytes")
+                chunks = upload.get("submittedChunks")
+                copy_limit = streaming.get("chunkCapBytes")
+                max_copy = upload.get("maxBytesPerTick")
+                require(streaming.get("enabled") is True and upload.get("state") == "idle" and
+                        upload.get("requestId") == count and type(total) is int and total > 0 and
+                        upload.get("submittedBytes") == upload.get("completedBytes") == total and
+                        type(chunks) is int and chunks > 0 and type(copy_limit) is int and
+                        type(max_copy) is int and 0 < max_copy <= copy_limit and
+                        chunks * max_copy >= total,
+                        f"Staged model publication did not complete bounded geometry copies at {frame}: {upload}")
+                require(state["progressFrames"] == previous["progressFrames"],
+                        f"Staged model publication drew a loading-only progress frame at {frame}")
+            else:
+                require(state["progressFrames"] > previous["progressFrames"],
+                        f"Successful model load/unload did not render a progress frame at {frame}")
             require(state["eventPumps"] > previous["eventPumps"],
                     f"Successful model load/unload did not pump window events at {frame}")
         previous = state
+        previous_publications = publications
 
 
 def check_lifecycle(record, cornell, wall, bim, *, image_checks=True):
@@ -460,9 +491,16 @@ def check_lifecycle(record, cornell, wall, bim, *, image_checks=True):
             "Repeated unload changed the empty scene")
     initial_capacity = samples[8]["telemetry"]["scene"]["geometryArenaCapacityBytes"]
     require(initial_capacity > 0, "Loaded glTF has no geometry arena capacity")
-    for frame in (92, 104):
-        require(samples[frame]["telemetry"]["scene"]["geometryArenaCapacityBytes"] == initial_capacity,
-                f"Repeated glTF load grew geometry arena capacity at {frame}")
+    repeated = [samples[frame]["telemetry"] for frame in (80, 92, 104)]
+    capacities = [telemetry["scene"]["geometryArenaCapacityBytes"] for telemetry in repeated[1:]]
+    streamed = [model_upload_publications(a) < model_upload_publications(b)
+                for a, b in zip(repeated, repeated[1:])]
+    if any(streamed):
+        require(all(streamed) and capacities[0] == capacities[1] <= initial_capacity,
+                f"Repeated streamed glTF loads did not retain stable geometry arena capacity: {capacities}")
+    else:
+        require(capacities == [initial_capacity, initial_capacity],
+                f"Repeated glTF load grew geometry arena capacity or failed to reuse it: {capacities}")
     for frame in (72, 80, 144):
         require(samples[frame]["telemetry"]["scene"]["geometryArenaCapacityBytes"] <= initial_capacity,
                 f"Unload grew geometry arena capacity at {frame}")

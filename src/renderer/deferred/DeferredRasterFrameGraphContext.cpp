@@ -211,7 +211,12 @@ void DeferredRasterFrameGraphContext::beforePrepareFrame(
 
 void DeferredRasterFrameGraphContext::afterPrepareFrame(
     const FrameRecordParams &p, const RenderGraph &) const {
-  prepareBimFrameGpuVisibility(p.services.bimManager, p.bim, p.runtime.imageIndex);
+  const bool viewportCulling =
+      (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster ||
+       p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster) &&
+      !p.debug.debugFreezeCulling && !p.debug.fullWireframe();
+  prepareBimFrameGpuVisibility(p.services.bimManager, p.bim, p.runtime.imageIndex,
+                               viewportCulling);
   shadowCascadeFramePassRecorder_.prepareFrame(p,
                                                shadowCascadeFramePassContext(p));
 }

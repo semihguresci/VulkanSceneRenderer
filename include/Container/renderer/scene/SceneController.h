@@ -13,7 +13,9 @@
 #include <functional>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -28,6 +30,7 @@ class World;
 
 namespace container::gpu {
 class AllocationManager;
+class GeometryUploadResult;
 class PipelineManager;
 class VulkanDevice;
 }  // namespace container::gpu
@@ -248,6 +251,12 @@ class SceneController {
 
   // Uploads scene + diagnostic-cube vertices/indices into a shared GPU arena.
   void createGeometryBuffers();
+  struct RigidGeometryUploadSource {
+    std::vector<container::geometry::Vertex> vertices;
+    std::vector<uint32_t> indices;
+  };
+  [[nodiscard]] static std::optional<RigidGeometryUploadSource> prepareRigidGeometryUpload(
+      const container::geometry::GltfLoadResult& prepared, std::stop_token stop);
   // Called after adding a primitive instance, which may share geometry already
   // published in the current buffers.
   void refreshPrimitiveGeometryBuffers();
@@ -255,7 +264,8 @@ class SceneController {
   // CPU reconciliation only. Topology changes remain pending until
   // createGeometryBuffers publishes matching bind/index/diagnostic streams.
   // Caller retires GPU readers before uploading a changed layout.
-  GltfDeformationSceneUpdate updateDeformation(bool resetHistory = false);
+  GltfDeformationSceneUpdate updateDeformation(bool resetHistory = false,
+      RigidGeometryUploadSource* preparedRigid = nullptr);
   [[nodiscard]] const GltfDeformationScene* deformationScene() const {
     return deformationScene_.get();
   }
@@ -329,7 +339,9 @@ class SceneController {
       uint32_t&                               outCubeNode,
       container::geometry::GltfLoadResult*      prepared = nullptr,
       const std::function<void()>& beforeCommit = {},
-      VkDeviceSize releasingOptionalGeometry = 0);
+      VkDeviceSize releasingOptionalGeometry = 0,
+      container::gpu::GeometryUploadResult* uploadedGeometry = nullptr,
+      RigidGeometryUploadSource* preparedRigid = nullptr);
 
   [[nodiscard]] uint32_t pickRenderableNode(
       const container::gpu::CameraData& cameraData,
@@ -445,6 +457,8 @@ class SceneController {
   [[nodiscard]] GltfDeformationSceneUpdate updateConfiguredDeformation(
       GltfDeformationScene*, std::span<const uint32_t> renderPrimitives, bool resetHistory) const;
   void rebuildDeformationBindStreams();
+  void publishGeometryBuffers(container::gpu::GeometryUploadResult* uploadedGeometry,
+                              RigidGeometryUploadSource* preparedRigid);
   void invalidateObjectDataCache();
   void refreshObjectDataCache(bool showDiagCube);
   [[nodiscard]] SceneNodePickHit pickRenderableNodeHitForDraws(

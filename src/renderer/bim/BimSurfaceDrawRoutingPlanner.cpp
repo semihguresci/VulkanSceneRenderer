@@ -80,6 +80,19 @@ singleSidedCommands(BimSurfaceDrawKind kind, const BimSurfaceDrawLists &draws) {
 
 } // namespace
 
+std::optional<BimDrawCompactionSlot> bimViewportCompactionSlot(BimDrawCompactionSlot slot) {
+  switch (slot) {
+  case BimDrawCompactionSlot::OpaqueSingleSided:
+    return BimDrawCompactionSlot::ViewportOpaqueSingleSided;
+  case BimDrawCompactionSlot::OpaqueWindingFlipped:
+    return BimDrawCompactionSlot::ViewportOpaqueWindingFlipped;
+  case BimDrawCompactionSlot::OpaqueDoubleSided:
+    return BimDrawCompactionSlot::ViewportOpaqueDoubleSided;
+  default:
+    return std::nullopt;
+  }
+}
+
 bool hasBimSurfaceOpaqueDrawCommands(const BimSurfaceDrawLists &draws) {
   return hasDrawCommands(draws.opaqueDrawCommands) ||
          hasSplitOpaqueDrawCommands(draws);

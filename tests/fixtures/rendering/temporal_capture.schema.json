@@ -44,6 +44,7 @@
       "guiUnload": {"type": "boolean", "description": "Queue Unload model through the Scene Controls request path"},
       "merge": {"$ref": "#/$defs/mergeRequest"},
       "guiWaitForLoad": {"type": "boolean", "default": true, "description": "Set false to render the pending GUI model request without settling it; requires a GUI model action"},
+      "guiWaitForUploadChunks": {"type": "integer", "minimum": 1, "maximum": 4294967295, "description": "Wait for this many bounded geometry copies while the replacement GUI model is still unpublished"},
       "bimHiddenObject": {"type": "integer", "minimum": 0, "maximum": 4294967295},
       "bimSelectedObject": {"type": "integer", "minimum": 0, "maximum": 4294967295, "description": "Select a BIM object through the browser/viewport selection path"},
       "bimLodBias": {"type": "integer", "minimum": -8, "maximum": 8},
@@ -144,11 +145,17 @@
                         {"required": ["fsr", "dlss"]}]}, "allOf": [{
       "if": {"required": ["guiWaitForLoad"], "properties": {"guiWaitForLoad": {"const": false}}},
       "then": {"anyOf": [
+        {"required": ["guiWaitForUploadChunks"]},
         {"required": ["guiReload"], "properties": {"guiReload": {"type": "string", "minLength": 1}}},
         {"required": ["guiSampleModel"], "properties": {"guiSampleModel": {"type": "string", "minLength": 1}}},
         {"required": ["guiUnload"], "properties": {"guiUnload": {"const": true}}},
         {"required": ["merge"]}
       ]}
+    }, {
+      "if": {"required": ["guiWaitForUploadChunks"]},
+      "then": {"not": {"anyOf": [{"required": ["guiWaitForLoad"], "properties": {"guiWaitForLoad": {"const": true}}},
+                                   {"required": ["guiUnload"], "properties": {"guiUnload": {"const": true}}},
+                                   {"required": ["merge"]}]}}
     },
       {"if": {"required": ["expectMaterialTextureFailure"]}, "then": {"required": ["materialTextureEdit"]}},
       {"if": {"required": ["expectMaterialRetirementFailure"]}, "then": {"required": ["materialRetirement"]}},

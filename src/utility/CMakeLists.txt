@@ -48,6 +48,7 @@ target_link_libraries(VulkanSceneRenderer_vulkan_device PRIVATE
 add_library(VulkanSceneRenderer_gpu_resource
     AllocationManager.cpp
     AllocationManagerTextures.cpp
+    GeometryUploadBatch.cpp
     VulkanMemoryManager.cpp
     TextureManager.cpp
     MaterialSamplerKey.cpp

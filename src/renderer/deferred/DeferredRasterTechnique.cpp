@@ -3,6 +3,8 @@
 #include "Container/renderer/lighting/DdgiManager.h"
 #include "Container/renderer/temporal/TemporalManager.h"
 
+#include "Container/renderer/bim/BimFrameGpuVisibilityRecorder.h"
+#include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/culling/GpuCullManager.h"
 #include "Container/renderer/deferred/DeferredRasterBimSurfacePassRecorder.h"
@@ -1471,9 +1473,15 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   graph.addPass(RenderPassId::OcclusionCull, [deferred](
                                                  VkCommandBuffer cmd,
                                                  const FrameRecordParams &p) {
-    if (deferred->gpuCullManager() &&
-        deferred->gpuCullManager()->occlusionCullResourcesReady(
-            p.runtime.imageIndex) &&
+    auto *culling = deferred->gpuCullManager();
+    if (!culling || !culling->hizGeneratedThisFrame(p.runtime.imageIndex)) {
+      return;
+    }
+    if (p.services.bimManager) {
+      p.services.bimManager->recordViewportOcclusionCull(
+          cmd, p.runtime.imageIndex, culling->hiZFullView(p.runtime.imageIndex));
+    }
+    if (culling->occlusionCullResourcesReady(p.runtime.imageIndex) &&
         p.draws.opaqueSingleSidedDrawCommands &&
         !p.draws.opaqueSingleSidedDrawCommands->empty()) {
       deferred->gpuCullManager()->dispatchOcclusionCull(
@@ -1890,6 +1898,13 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
 
   graph.setPassReadiness(
       RenderPassId::FrustumCull, [deferred](const FrameRecordParams &p) {
+        const bool bimViewport = p.services.bimManager && hasBimViewportCullSources(p.bim) &&
+            !p.debug.fullWireframe() && !p.debug.debugFreezeCulling &&
+            p.services.bimManager->meshletResidencyStats().computeReady &&
+            deferredRasterCameraBufferReady(p) && p.bim.scene.objectBuffer != VK_NULL_HANDLE;
+        if (bimViewport) {
+          return renderPassReady();
+        }
         const uint32_t sourceDrawCount =
             p.draws.opaqueSingleSidedDrawCommands != nullptr
                 ? static_cast<uint32_t>(
@@ -1969,10 +1984,14 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
 
   graph.setPassReadiness(
       RenderPassId::OcclusionCull, [deferred](const FrameRecordParams &p) {
-        if (!deferred->gpuCullManager() ||
-            !deferred->gpuCullManager()->occlusionCullResourcesReady(
-                p.runtime.imageIndex) ||
-            !hasDrawCommands(p.draws.opaqueSingleSidedDrawCommands)) {
+        const auto *culling = deferred->gpuCullManager();
+        if (!culling || !culling->isReady()) {
+          return renderPassNotNeeded();
+        }
+        const bool primary = hasDrawCommands(p.draws.opaqueSingleSidedDrawCommands) &&
+            culling->occlusionCullResourcesReady(p.runtime.imageIndex);
+        const bool bim = p.services.bimManager && hasBimViewportCullSources(p.bim);
+        if (!primary && !bim) {
           return renderPassNotNeeded();
         }
         return renderPassReady();

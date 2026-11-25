@@ -1,4 +1,5 @@
 #include "draw_indirect_common.slang"
+#include "bim_residency_flags_common.slang"
 
 struct BimMeshletResidencyEntry
 {
@@ -16,8 +17,6 @@ struct BimDrawCompactionPushConstants
     uint flags;
 };
 
-static const uint BIM_MESHLET_RESIDENT = 1u;
-
 [[vk::push_constant]]
 ConstantBuffer<BimDrawCompactionPushConstants> pc;
 
@@ -33,7 +32,10 @@ bool objectIsResident(uint objectIndex)
     {
         return false;
     }
-    return (uResidency[objectIndex].flags & BIM_MESHLET_RESIDENT) != 0u &&
+    // Viewport sources refer to published geometry. A mesh without cluster
+    // metadata still has a canonical draw and must pass the spatial test.
+    const uint requiredFlags = pc.flags == 0u ? BIM_MESHLET_RESIDENT : pc.flags;
+    return (uResidency[objectIndex].flags & requiredFlags) == requiredFlags &&
            uVisibilityMask[objectIndex] != 0u;
 }
 

@@ -113,6 +113,7 @@
 #include "Container/utility/Camera.h"
 #include "Container/utility/DebugMessengerExt.h"
 #include "Container/utility/FrameSyncManager.h"
+#include "Container/utility/GeometryUploadBatch.h"
 #include "Container/utility/GuiManager.h"
 #include "Container/utility/InputManager.h"
 #include "Container/utility/Logger.h"
@@ -137,6 +138,16 @@ struct RendererFrontend::ModelLoadState {
   struct Prepared {
     std::optional<container::geometry::GltfLoadResult> gltf;
     std::optional<BimManager::PreparedScene> bim;
+    std::optional<SceneController::RigidGeometryUploadSource> rigidGeometry;
+  };
+  struct UploadMetrics {
+    VkDeviceSize totalBytes{};
+    VkDeviceSize submittedBytes{};
+    VkDeviceSize completedBytes{};
+    VkDeviceSize maxBytesPerTick{};
+    VkDeviceSize peakStagingBytes{};
+    uint64_t submittedChunks{};
+    float maxServiceMs{};
   };
   struct MergeDestination {
     uint64_t graphIdentity;
@@ -150,6 +161,10 @@ struct RendererFrontend::ModelLoadState {
   bool queuedRemote{false};
   bool remote{false};
   std::unique_ptr<Prepared> ready;
+  std::unique_ptr<gpu::GeometryUploadBatch> geometryUpload;
+  std::optional<gpu::GeometryUploadResult> uploadedGeometry;
+  UploadMetrics uploadMetrics{};
+  uint64_t uploadPublications{}, uploadCancellations{};
   bool committing{false};
   std::exception_ptr presentationFailure;
   uint64_t requests{0}, completed{0}, cancelled{0}, preparationFrames{0}, progressFrames{0}, eventPumps{0};
@@ -3027,7 +3042,9 @@ void RendererFrontend::applyTemporalCapture(
       modelLoad_->queued=std::move(request);
     }
   }
-  if (event.guiWaitForLoad &&
+  if (event.guiWaitForUploadChunks)
+    waitForModelUploadChunks(*event.guiWaitForUploadChunks);
+  else if (event.guiWaitForLoad &&
       (!event.guiReload.empty() || !event.guiSampleModel.empty() || event.guiUnload || event.merge))
     settlePendingModelLoads();
   if(event.materialEdit && !materialTerminal && !authorMaterial(*event.materialEdit))
@@ -4183,6 +4200,34 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"preparationFrames", modelLoad_ ? modelLoad_->preparationFrames : 0u},
         {"progressFrames", modelLoad_ ? modelLoad_->progressFrames : 0u},
         {"eventPumps", modelLoad_ ? modelLoad_->eventPumps : 0u}};
+  const auto upload = modelLoad_ ? modelLoad_->uploadMetrics : ModelLoadState::UploadMetrics{};
+  const auto gpuUploadState = modelLoad_ && modelLoad_->geometryUpload
+      ? modelLoad_->geometryUpload->state() : gpu::GeometryUploadState::Idle;
+  const char* uploadState = "idle";
+  switch (gpuUploadState) {
+    case gpu::GeometryUploadState::Uploading: uploadState = "uploading"; break;
+    case gpu::GeometryUploadState::Retiring: uploadState = "retiring"; break;
+    case gpu::GeometryUploadState::Ready: uploadState = "ready"; break;
+    case gpu::GeometryUploadState::Idle:
+      if (modelLoad_ && modelLoad_->request) uploadState = "preparing";
+      break;
+  }
+  json["geometryStreaming"] = {
+      {"enabled", svc_.config.geometryUploadChunkKiB != 0},
+      {"chunkCapBytes", VkDeviceSize(svc_.config.geometryUploadChunkKiB) * 1024u},
+      {"reload", {{"state", uploadState}, {"requestId", modelLoad_ ? modelLoad_->requests : 0u},
+                  {"totalBytes", upload.totalBytes}, {"submittedBytes", upload.submittedBytes},
+                  {"completedBytes", upload.completedBytes}, {"submittedChunks", upload.submittedChunks},
+                  {"maxBytesPerTick", upload.maxBytesPerTick}, {"peakStagingBytes", upload.peakStagingBytes},
+                  {"maxServiceMs", upload.maxServiceMs},
+                  {"cancellations", modelLoad_ ? modelLoad_->uploadCancellations : 0u},
+                  {"publications", modelLoad_ ? modelLoad_->uploadPublications : 0u}}}};
+  if (subs_.gpuCullManager) {
+    const auto& cull = subs_.gpuCullManager->cullStats();
+    json["rasterCulling"] = {{"inputCount", cull.totalInputCount},
+                             {"frustumPassedCount", cull.frustumPassedCount},
+                             {"occlusionPassedCount", cull.occlusionPassedCount}};
+  }
   const auto& camera = buffers_.cameraData;
   json["camera"] = {{"position", {camera.cameraWorldPosition.x, camera.cameraWorldPosition.y, camera.cameraWorldPosition.z}},
                      {"jitterUv", {camera.jitterUv.x, camera.jitterUv.y, camera.jitterUv.z, camera.jitterUv.w}}};
@@ -4234,7 +4279,9 @@ void RendererFrontend::writeCaptureTelemetry(
                                   {"triangles", lod.triangles},
                                   {"extraIndexBytes", lod.extraIndexBytes},
                                   {"levels", lod.levels},
-                                  {"opaqueCompactionReady", lod.opaqueCompactionReady}};
+                                  {"opaqueCompactionReady", lod.opaqueCompactionReady},
+                                  {"viewportFrustumReady", lod.viewportFrustumReady},
+                                  {"viewportOcclusionReady", lod.viewportOcclusionReady}};
   }
   if (depthProbe) {
     auto &probe = json["depthProbe"];
@@ -5565,6 +5612,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                              modelLoad_->request && modelLoad_->request->path == modelPath &&
                              modelLoad_->ready->gltf
                          ? &*modelLoad_->ready->gltf : nullptr;
+    auto* streamed = prepared && modelLoad_->uploadedGeometry ? &*modelLoad_->uploadedGeometry : nullptr;
+    auto* bindSource = streamed && modelLoad_->ready->rigidGeometry ? &*modelLoad_->ready->rigidGeometry : nullptr;
     return subs_.sceneController->reloadSceneModel(
         modelPath, scale, buffers_.objects.front(),
         buffers_.objectCapacities.front(),
@@ -5575,7 +5624,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
           clearPrimaryGeometryLods();
           if (commitStarted)
             *commitStarted = true;
-        }, primaryGeometryLods_.buffer.allocation_info.size);
+        }, primaryGeometryLods_.buffer.allocation_info.size, streamed, bindSource);
   };
   auto refreshSceneState = [&](bool replacedModel) {
     // reloadPrimary can replace the first object buffer before
@@ -5637,7 +5686,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
           container::util::executableDirectory());
       if (modelLoad_ && modelLoad_->committing)
         subs_.bimManager->setLoadProgressCallback([this](std::string_view stage) {
-          pumpModelLoadProgress(stage);
+          pumpModelLoadProgress(stage, !modelLoad_->uploadedGeometry);
         });
     }
 
@@ -5658,11 +5707,13 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
             {}, {}, {}, svc_.config.geometryLodErrorPixels > 0.0f);
         prepared = &*localPrepared;
       }
+      auto* stagedGeometry = !localPrepared && modelLoad_->uploadedGeometry
+          ? &*modelLoad_->uploadedGeometry : nullptr;
       subs_.bimManager->checkPreparedSceneBudget(
-          *prepared, true, primaryGeometryLods_.buffer.allocation_info.size);
+          *prepared, true, primaryGeometryLods_.buffer.allocation_info.size, stagedGeometry);
       if (!reloadPrimary("", 1.0f, &retiredPreviousScene))
         throw std::runtime_error("Failed to clear the primary scene");
-      subs_.bimManager->loadPreparedScene(std::move(*prepared), *subs_.sceneManager);
+      subs_.bimManager->loadPreparedScene(std::move(*prepared), *subs_.sceneManager, stagedGeometry);
     } catch (const std::exception &error) {
       const std::string loadError = error.what();
       container::log::ContainerLogger::instance().renderer()->error(
@@ -5755,6 +5806,10 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
   return result;
 }
 
+bool RendererFrontend::modelLoadPending() const noexcept {
+  return modelLoad_ && (modelLoad_->request || modelLoad_->queued);
+}
+
 void RendererFrontend::processPendingGuiModelLoadRequest() {
   auto queuedRequest=subs_.guiManager?subs_.guiManager->consumeModelLoadRequest()
       : std::optional<container::ui::ModelLoadRequest>{};
@@ -5779,6 +5834,14 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
       ++modelLoad_->completed;
     }
     modelLoad_->worker.cancel();
+    if (modelLoad_->geometryUpload) {
+      const auto uploadState = modelLoad_->geometryUpload->state();
+      if (uploadState == gpu::GeometryUploadState::Uploading || uploadState == gpu::GeometryUploadState::Ready)
+        ++modelLoad_->uploadCancellations;
+      modelLoad_->geometryUpload->cancel();
+    }
+    modelLoad_->uploadedGeometry.reset();
+    modelLoad_->uploadMetrics = {};
     if (modelLoad_->ready) modelLoad_->worker.discard(std::move(modelLoad_->ready));
     modelLoad_->request = std::move(queuedRequest);
     modelLoad_->mergeDestination.reset();
@@ -5807,24 +5870,36 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
                                     merge = action.merge.has_value(),
                                     linked = svc_.config.experimentalGltfLinkedAssets && !remote,
                                     generateGeometryLods = svc_.config.geometryLodErrorPixels > 0.0f,
+                                    streamGeometry = svc_.config.geometryUploadChunkKiB != 0,
                                     micromaps = svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !remote,
                                     experimental = svc_.config.experimentalGltfMaterials, remote](std::stop_token stop) {
         auto prepared = std::make_unique<ModelLoadState::Prepared>();
         if (isAuxiliaryRenderModelPath(path))
           prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions, stop,
                                                    {}, {}, generateGeometryLods);
-        else
+        else {
           prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
               merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
               linked, remote, experimental, micromaps && !merge, merge, stop);
+          if (streamGeometry && !merge)
+            prepared->rigidGeometry = SceneController::prepareRigidGeometryUpload(*prepared->gltf, stop);
+        }
         return prepared;
       });
       // Keep at least the request frame interactive, even for tiny models.
       return;
     }
   }
-  if (!modelLoad_ || !modelLoad_->request) return;
+  if (!modelLoad_) return;
   auto &state = *modelLoad_;
+  if (state.geometryUpload && state.geometryUpload->state() == gpu::GeometryUploadState::Retiring)
+    (void)state.geometryUpload->tick(0);
+  if (!state.request) return;
+  struct RecordServiceTime {
+    float& maximum;
+    TelemetryClock::time_point start{TelemetryClock::now()};
+    ~RecordServiceTime() { maximum = std::max(maximum, elapsedMilliseconds(start)); }
+  } serviceTime{state.uploadMetrics.maxServiceMs};
   const auto request = *state.request;
   const std::string statusLabel = request.label.empty() ? request.path : request.label;
   try {
@@ -5844,15 +5919,68 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
         std::rethrow_exception(*error);
       state.ready = std::move(std::get<std::unique_ptr<ModelLoadState::Prepared>>(completion->outcome));
     }
+    if (svc_.config.geometryUploadChunkKiB && (state.ready->rigidGeometry || state.ready->bim)) {
+      if (!state.geometryUpload) {
+        const auto& device = *svc_.ctx.deviceWrapper;
+        state.geometryUpload = std::make_unique<gpu::GeometryUploadBatch>(
+            *svc_.allocationManager.memoryManager(), device.device(), device.graphicsQueue(),
+            device.queueFamilyIndices().graphicsFamily.value());
+      }
+      auto& upload = *state.geometryUpload;
+      if (upload.state() == gpu::GeometryUploadState::Retiring)
+        return;
+      if (upload.state() == gpu::GeometryUploadState::Idle) {
+        if (!retirePrimaryGeometryLodUploadForModelLoad())
+          return;
+        VkDeviceSize chunkBytes = VkDeviceSize(svc_.config.geometryUploadChunkKiB) * 1024u;
+        const auto budget = svc_.allocationManager.sceneAssetBudget().limits.uploadBytes;
+        if (budget)
+          chunkBytes = std::min(chunkBytes, budget);
+        if (const auto& source = state.ready->rigidGeometry) {
+          const std::array sources{
+              gpu::GeometryUploadSource{std::as_bytes(std::span(source->vertices)),
+                  VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT},
+              gpu::GeometryUploadSource{std::as_bytes(std::span(source->indices)),
+                  VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT},
+          };
+          upload.begin(sources, chunkBytes);
+        } else {
+          auto& bim = *state.ready->bim;
+          try {
+            upload.begin(bim.geometryUploadSources(), chunkBytes);
+          } catch (const gpu::SceneAssetBudgetExceeded&) {
+            if (!bim.discardGeometryLods()) throw;
+            upload.begin(bim.geometryUploadSources(), chunkBytes);
+          }
+        }
+        state.stage = "Streaming model geometry";
+        if (subs_.guiManager)
+          subs_.guiManager->setStatusMessage(state.stage + " for " + statusLabel);
+      }
+      const auto submitted = upload.tick();
+      const auto progress = upload.progress();
+      auto& metrics = state.uploadMetrics;
+      metrics.totalBytes = progress.totalBytes;
+      metrics.submittedBytes = progress.submittedBytes;
+      metrics.completedBytes = progress.completedBytes;
+      metrics.maxBytesPerTick = std::max(metrics.maxBytesPerTick, submitted);
+      metrics.peakStagingBytes = std::max(metrics.peakStagingBytes, progress.stagingBytes);
+      if (submitted)
+        ++metrics.submittedChunks;
+      if (!upload.ready())
+        return;
+      state.uploadedGeometry.emplace(upload.takeReady());
+    }
     state.committing = true;
     state.lastProgressFrame = {};
-    pumpModelLoadProgress(request.unload ? "Releasing scene resources" : "Installing prepared model");
+    pumpModelLoadProgress(request.unload ? "Releasing scene resources" : "Installing prepared model",
+                          !state.uploadedGeometry);
     svc_.allocationManager.setLoadProgressCallback([this](bool render) {
-      pumpModelLoadProgress(modelLoad_->stage, render);
+      pumpModelLoadProgress(modelLoad_->stage, render && !modelLoad_->uploadedGeometry);
     });
     if (subs_.bimManager)
       subs_.bimManager->setLoadProgressCallback([this](std::string_view stage) {
-        pumpModelLoadProgress(stage);
+        pumpModelLoadProgress(stage, !modelLoad_->uploadedGeometry);
       });
     bool success{};
     if (request.merge) {
@@ -5873,6 +6001,8 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
       if (success && subs_.guiManager) subs_.guiManager->setStatusMessage("Merged model: "+statusLabel);
     } else success=reloadSceneModel(request.unload ? "" : request.path,
         request.unload ? 1.0f : request.importScale);
+    if (success && state.uploadedGeometry)
+      ++state.uploadPublications;
     if (state.remote) mcpModelStatus_ = success ? "Loaded" : "Model import failed";
     if (success && request.unload && subs_.guiManager)
       subs_.guiManager->setStatusMessage("Unloaded models.");
@@ -5892,6 +6022,8 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
   svc_.allocationManager.setLoadProgressCallback({});
   if (subs_.bimManager) subs_.bimManager->setLoadProgressCallback({});
   state.committing = false;
+  if (state.geometryUpload) state.geometryUpload->cancel();
+  state.uploadedGeometry.reset();
   if (state.ready) state.worker.discard(std::move(state.ready));
   state.request.reset();
   state.mergeDestination.reset();
@@ -5906,7 +6038,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
 void RendererFrontend::settlePendingModelLoads() {
   processPendingGuiModelLoadRequest();
   while (modelLoad_ && modelLoad_->request) {
-    pumpModelLoadProgress("Reading and preparing model");
+    pumpModelLoadProgress(modelLoad_->stage, svc_.config.geometryUploadChunkKiB == 0);
     processPendingGuiModelLoadRequest();
     if (modelLoad_->request) std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
@@ -5929,6 +6061,22 @@ void RendererFrontend::settlePendingModelLoads() {
                                std::to_string(vdbPlayback_->frameIndex()));
     std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
+}
+
+void RendererFrontend::waitForModelUploadChunks(uint32_t chunkCount) {
+  if (!svc_.config.geometryUploadChunkKiB)
+    throw std::runtime_error("Capture upload checkpoint requires geometry streaming");
+  processPendingGuiModelLoadRequest();
+  const auto deadline = TelemetryClock::now() + std::chrono::seconds(30);
+  while (modelLoad_ && modelLoad_->request && modelLoad_->uploadMetrics.submittedChunks < chunkCount) {
+    pumpModelLoadProgress(modelLoad_->stage, false);
+    if (TelemetryClock::now() >= deadline)
+      throw std::runtime_error("Capture timed out waiting for staged geometry copies");
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    processPendingGuiModelLoadRequest();
+  }
+  if (!modelLoad_ || !modelLoad_->request)
+    throw std::runtime_error("Geometry upload checkpoint requires a pending model with more geometry to copy");
 }
 
 void RendererFrontend::pumpModelLoadProgress(std::string_view stage, bool render) {
@@ -6060,7 +6208,7 @@ void RendererFrontend::shutdown() {
     return;
 
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
-  clearPrimaryGeometryLods();
+  shutdownPrimaryGeometryLods();
   // Preview maps may own the previous cubemaps and use the environment manager
   // to free them, so release them before tearing that manager down.
   renderSetupPreview_.reset();

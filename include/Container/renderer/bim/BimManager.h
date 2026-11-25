@@ -17,6 +17,7 @@
 #include "Container/renderer/bim/BimSemanticColorMode.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/scene/SceneProvider.h"
+#include "Container/utility/GeometryUploadBatch.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
@@ -79,6 +80,8 @@ struct BimGeometryLodStats {
   VkDeviceSize extraIndexBytes{};
   std::vector<uint64_t> levels{0u};
   bool opaqueCompactionReady{};
+  bool viewportFrustumReady{};
+  bool viewportOcclusionReady{};
 };
 
 struct BimPickHit {
@@ -451,8 +454,16 @@ enum class BimDrawCompactionSlot : uint32_t {
   NativeCurveTransparent = 9,
   NativeCurveStrokeOpaque = 10,
   NativeCurveStrokeTransparent = 11,
-  Count = 12,
+  ViewportOpaqueSingleSided = 12,
+  ViewportOpaqueWindingFlipped = 13,
+  ViewportOpaqueDoubleSided = 14,
+  Count = 15,
 };
+
+[[nodiscard]] inline constexpr bool isBimViewportCompactionSlot(BimDrawCompactionSlot slot) {
+  return slot >= BimDrawCompactionSlot::ViewportOpaqueSingleSided &&
+         slot < BimDrawCompactionSlot::Count;
+}
 
 inline constexpr size_t kBimDrawCompactionSlotCount =
     static_cast<size_t>(BimDrawCompactionSlot::Count);
@@ -611,6 +622,9 @@ public:
 
     [[nodiscard]] BimMetadataTableView metadata() const noexcept;
     [[nodiscard]] const BimRelationshipGraph &relationships() const;
+    // The upload batch must finish or release these views before the arrays move.
+    [[nodiscard]] std::array<gpu::GeometryUploadSource, 2> geometryUploadSources() const;
+    [[nodiscard]] bool discardGeometryLods();
 
     container::geometry::dotbim::Model model;
     std::filesystem::path assetPath;
@@ -640,15 +654,22 @@ public:
   [[nodiscard]] const auto& openVdbOptions() const { return openVdbOptions_; }
   // Optional raster ranges may be dropped when the source geometry fits alone.
   void checkPreparedSceneBudget(PreparedScene&, bool replacingSceneTextures,
-                                VkDeviceSize releasingPrimaryLodBytes = 0) const;
+                                VkDeviceSize releasingPrimaryLodBytes = 0,
+                                const gpu::GeometryUploadResult* stagedGeometry = nullptr) const;
   void loadPreparedScene(PreparedScene &&prepared,
-                         container::scene::SceneManager &sceneManager);
+                         container::scene::SceneManager &sceneManager,
+                         gpu::GeometryUploadResult* stagedGeometry = nullptr);
   // Commit/unload checkpoints run on the calling render thread. The callback
   // may present a standalone progress frame, but must not reenter scene APIs.
   void setLoadProgressCallback(std::function<void(std::string_view)> callback);
   void clear();
   void createMeshletResidencyResources(const std::filesystem::path &shaderDir);
   void beginVisibilityFrame(uint32_t imageIndex);
+  [[nodiscard]] bool beginViewportCulling(bool requested);
+  [[nodiscard]] bool viewportFrustumReady(uint32_t imageIndex) const;
+  [[nodiscard]] bool viewportOcclusionReady(uint32_t imageIndex) const;
+  void recordViewportOcclusionCull(VkCommandBuffer cmd, uint32_t imageIndex,
+                                    VkImageView depthPyramid);
   void
   updateMeshletResidencySettings(const BimMeshletResidencySettings &settings);
   void updateVisibilityFilterSettings(const BimDrawFilter &filter, uint32_t imageIndex);
@@ -973,7 +994,9 @@ private:
                          const std::filesystem::path &path,
                          std::string_view format,
                          container::scene::SceneManager &sceneManager,
-                         PreparedScene *prepared = nullptr);
+                         PreparedScene *prepared = nullptr,
+                         gpu::GeometryUploadResult* stagedGeometry = nullptr);
+  void adoptPreparedGeometry(PreparedScene&, gpu::GeometryUploadResult&);
   [[nodiscard]] static std::unique_ptr<PreparedDrawData> prepareDrawData(
       const container::geometry::dotbim::Model &model, std::stop_token stop,
       const std::function<void(std::string_view)> &progress = {},
@@ -1002,6 +1025,9 @@ private:
                                      VkBuffer objectBuffer = VK_NULL_HANDLE,
                                      VkDeviceSize objectBufferSize = 0);
   void destroyMeshletResidencyComputeResources();
+  void createViewportOcclusionResources(const std::filesystem::path &shaderDir);
+  void destroyViewportOcclusionResources();
+  void recordDrawCompactionUpdate(VkCommandBuffer cmd, bool viewportOcclusion);
   void createVisibilityFilterResources(const std::filesystem::path &shaderDir);
   void destroyVisibilityFilterComputeResources();
   void writeVisibilityFilterDescriptorSet();
@@ -1098,6 +1124,9 @@ private:
   VkDescriptorSetLayout meshletResidencySetLayout_{VK_NULL_HANDLE};
   VkPipelineLayout meshletResidencyPipelineLayout_{VK_NULL_HANDLE};
   container::gpu::ComputePipeline meshletResidencyPipeline_{};
+  VkDescriptorSetLayout viewportOcclusionSetLayout_{VK_NULL_HANDLE};
+  VkPipelineLayout viewportOcclusionPipelineLayout_{VK_NULL_HANDLE};
+  container::gpu::ComputePipeline viewportOcclusionPipeline_{};
   BimMeshletResidencySettings meshletResidencySettings_{};
   bool meshletResidencyDispatchPending_{false};
   uint64_t meshletResidencyRevision_{};
@@ -1114,10 +1143,14 @@ private:
   struct VisibilityFrame {
     VkDescriptorSet residencySet{};
     VkDescriptorSet filterSet{};
+    VkDescriptorSet viewportOcclusionSet{};
     std::array<VkDescriptorSet, kBimDrawCompactionSlotCount> drawSets{};
     std::array<BimDrawCompactionSlotResources, kBimDrawCompactionSlotCount> draws{};
     BimGeometryDrawLists geometryLodDraws{};
     bool hasCoarseGeometryLods{};
+    bool viewportCullingRequested{};
+    bool viewportFrustumCurrent{};
+    bool viewportOcclusionCurrent{};
     container::gpu::AllocatedBuffer mask{};
     VkBuffer camera{};
     VkBuffer objects{};

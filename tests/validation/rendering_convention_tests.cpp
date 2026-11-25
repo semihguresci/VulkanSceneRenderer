@@ -1069,6 +1069,13 @@ TEST(RenderingConventionTests, PerspectiveViewMatrixIgnoresCameraScale) {
 }
 
 TEST(RenderingConventionTests, FrustumPlaneExtractionUsesSlangRowIndexing) {
+  const std::string helper = readRepoTextFile("shaders/frustum_sphere_common.slang");
+  const std::string primary = readRepoTextFile("shaders/frustum_cull.slang");
+  const std::string bim = readRepoTextFile("shaders/bim_meshlet_residency.slang");
+  EXPECT_TRUE(contains(primary, "#include \"frustum_sphere_common.slang\""));
+  EXPECT_TRUE(contains(bim, "#include \"frustum_sphere_common.slang\""));
+  EXPECT_TRUE(contains(helper, "vp[3][0] - vp[2][0]"));
+  EXPECT_TRUE(contains(helper, "vp[3][1] + vp[1][1]"));
   const glm::mat4 view = container::math::lookAt(glm::vec3(3.0f, 2.0f, 5.0f),
                                                  glm::vec3(0.0f, 0.0f, 0.0f),
                                                  glm::vec3(0.0f, 1.0f, 0.0f));

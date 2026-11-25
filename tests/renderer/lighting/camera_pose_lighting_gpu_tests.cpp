@@ -3,12 +3,14 @@
 #include <Container/ecs/World.h>
 #include <Container/renderer/bim/BimManager.h>
 #include <Container/renderer/lighting/LightingManager.h>
+#include <Container/renderer/scene/SceneController.h>
 #include <fstream>
 
 namespace container::renderer {
 struct BimVisibilityGpuTestAccess {
-  static const auto& opaqueDraws(const BimManager& bim, uint32_t image) {
-    return bim.visibilityFrames_.at(image).draws[static_cast<size_t>(BimDrawCompactionSlot::OpaqueSingleSided)];
+  static const auto& opaqueDraws(const BimManager& bim, uint32_t image,
+                                 BimDrawCompactionSlot slot) {
+    return bim.visibilityFrames_.at(image).draws[static_cast<size_t>(slot)];
   }
 };
 }
@@ -204,8 +206,9 @@ TEST_F(BimCompactionGpu, KeepsImageOutputsAndPausedResidency) {
       vk::CommandBufferAllocateInfo(*pool, vk::CommandBufferLevel::ePrimary, 2));
   const std::vector<DrawCommand> draws{{.objectIndex = 0, .indexCount = 3},
                                        {.objectIndex = 1, .indexCount = 3}};
-  const auto readDraws = [&](const vk::raii::CommandBuffer& cmd, uint32_t image, size_t result) {
-    const auto& slot = BimVisibilityGpuTestAccess::opaqueDraws(bim, image);
+  const auto readDraws = [&](const vk::raii::CommandBuffer& cmd, uint32_t image, size_t result,
+                             BimDrawCompactionSlot drawSlot = BimDrawCompactionSlot::OpaqueSingleSided) {
+    const auto& slot = BimVisibilityGpuTestAccess::opaqueDraws(bim, image, drawSlot);
     const vk::MemoryBarrier2 toCopy(vk::PipelineStageFlagBits2::eComputeShader | vk::PipelineStageFlagBits2::eClear,
         vk::AccessFlagBits2::eShaderWrite | vk::AccessFlagBits2::eTransferWrite,
         vk::PipelineStageFlagBits2::eCopy, vk::AccessFlagBits2::eTransferRead);
@@ -283,6 +286,34 @@ TEST_F(BimCompactionGpu, KeepsImageOutputsAndPausedResidency) {
   submit(both);
   check(4, 1, 1);
   check(5, 1, 0);
+
+  // One merged input covers two objects. Keep the instance in clip space and
+  // reject the translated instance while preserving the source geometry range.
+  const CameraData camera{.viewProj = glm::mat4(1.0f)};
+  SceneController::writeToBuffer(*allocation, cameras[0], &camera, sizeof(camera));
+  bim.updateMeshletResidencySettings(forceResident);
+  bim.updateVisibilityFilterSettings({}, 0);
+  ASSERT_TRUE(bim.beginViewportCulling(true));
+  constexpr auto viewportSlot = BimDrawCompactionSlot::ViewportOpaqueSingleSided;
+  const std::vector<DrawCommand> merged{{.objectIndex = 0, .indexCount = 3, .instanceCount = 2}};
+  bim.prepareDrawCompaction(viewportSlot, merged);
+  auto& cmd = commands[0];
+  cmd.reset();
+  cmd.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+  bim.recordMeshletResidencyUpdate(*cmd, cameras[0].buffer, sizeof(CameraData),
+                                  bim.objectBuffer(0), bim.objectBufferSize());
+  bim.recordVisibilityFilterUpdate(*cmd);
+  bim.recordDrawCompactionUpdate(*cmd);
+  EXPECT_TRUE(bim.viewportFrustumReady(0));
+  EXPECT_FALSE(bim.viewportOcclusionReady(0));
+  readDraws(cmd, 0, 0, viewportSlot);
+  cmd.end();
+  const std::array viewportCommands{*cmd};
+  submit(viewportCommands);
+  check(0, 1, 0);
+
+  EXPECT_FALSE(bim.beginViewportCulling(false));
+  EXPECT_FALSE(bim.drawCompactionReady(viewportSlot, 0));
 }
 
 TEST_F(CameraPoseLightingGpu, CandidateLightsBoundsAndMappedFramesAreIsolatedThenCommitInExactProspectivePhase) {

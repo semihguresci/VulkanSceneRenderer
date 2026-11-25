@@ -62,6 +62,25 @@ def synthetic_record(mode="raster"):
     return {"mode": mode, "technique": "deferred-raster", "samples": samples}
 
 
+def synthetic_streaming_record():
+    record = synthetic_record()
+    for sample in record["samples"]:
+        frame, telemetry = sample["frame"], sample["telemetry"]
+        state = telemetry["gui"]["modelLoading"]
+        state["preparationFrames"] = 0
+        state["progressFrames"] = sum(unload <= frame for unload in (72, 80, 144))
+        if frame >= 92:
+            telemetry["scene"]["geometryArenaCapacityBytes"] = 0
+        telemetry["geometryStreaming"] = {
+            "enabled": True, "chunkCapBytes": 512,
+            "reload": {"publications": sum(load <= frame for load in (20, 32, 92, 104, 132)),
+                       "requestId": state["requests"], "state": "idle", "totalBytes": 768,
+                       "submittedBytes": 768, "completedBytes": 768, "submittedChunks": 2,
+                       "maxBytesPerTick": 512},
+        }
+    return record
+
+
 def synthetic_asynchronous_record():
     ordinary = synthetic_record()["samples"]
     record = {"mode": "raster", "technique": "deferred-raster", "samples": []}
@@ -184,6 +203,28 @@ class GuiModelLifecycleHarnessTests(unittest.TestCase):
             state["progressFrames"] = before["progressFrames"]
             with self.subTest(frame=frame), self.assertRaisesRegex(AssertionError, "progress frame"):
                 gui.check_lifecycle(record, CORNELL, WALL, BIM, image_checks=False)
+
+    def test_streamed_load_retires_copies_without_a_loading_only_frame(self):
+        record = synthetic_streaming_record()
+        self.assertEqual(gui.check_lifecycle(record, CORNELL, WALL, BIM, image_checks=False), {})
+        # The synchronous unload must retain its progress-view check in a
+        # run that also contains streamed publications.
+        unload = record["samples"][FRAMES.index(72)]["telemetry"]["gui"]["modelLoading"]
+        unload["progressFrames"] = 0
+        with self.assertRaisesRegex(AssertionError, "load/unload did not render a progress frame"):
+            gui.check_lifecycle(record, CORNELL, WALL, BIM, image_checks=False)
+
+    def test_streamed_lifecycle_rejects_early_publication_and_unbounded_copies(self):
+        for key, value in (("completedBytes", 256), ("submittedChunks", 1), ("maxBytesPerTick", 768),
+                           ("requestId", 0), ("state", "uploading")):
+            record = synthetic_streaming_record()
+            record["samples"][1]["telemetry"]["geometryStreaming"]["reload"][key] = value
+            with self.subTest(key=key), self.assertRaisesRegex(AssertionError, "bounded geometry copies"):
+                gui.check_lifecycle(record, CORNELL, WALL, BIM, image_checks=False)
+        record = synthetic_streaming_record()
+        record["samples"][1]["telemetry"]["gui"]["modelLoading"]["progressFrames"] = 1
+        with self.assertRaisesRegex(AssertionError, "loading-only progress frame"):
+            gui.check_lifecycle(record, CORNELL, WALL, BIM, image_checks=False)
 
     def test_every_successful_load_and_unload_requires_window_event_pump(self):
         for frame in (20, 32, 72, 80, 92, 104, 132, 144):

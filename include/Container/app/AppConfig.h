@@ -146,6 +146,7 @@ struct AppConfig {
   bool experimentalGltfLinkedAssets{false};
   bool experimentalGltfMaterials{false};
   float geometryLodErrorPixels{0.0f};
+  uint32_t geometryUploadChunkKiB{1024};
   double gltfAnimationTime{0};
   double gltfAnimationSpeed{1};
   bool gltfAnimationPlaying{true};

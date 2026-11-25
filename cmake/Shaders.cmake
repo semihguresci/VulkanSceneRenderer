@@ -76,6 +76,8 @@ set(SLANG_INCLUDE_SHADER_NAMES
     openvdb_transparency.slang
     openvdb_sparse.slang
     draw_indirect_common.slang
+    frustum_sphere_common.slang
+    bim_residency_flags_common.slang
     occlusion_sphere_common.slang
     oit_resolve_common.slang
     temporal_common.slang
@@ -116,6 +118,7 @@ set(SLANG_COMPUTE_SHADER_NAMES
     bim_meshlet_residency.slang
     bim_visibility_filter.slang
     bim_draw_compact.slang
+    bim_viewport_occlusion.slang
     bloom_downsample.slang
     bloom_upsample.slang
     exposure_histogram.slang

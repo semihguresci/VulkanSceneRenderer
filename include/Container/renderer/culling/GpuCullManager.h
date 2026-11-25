@@ -159,6 +159,10 @@ class GpuCullManager {
     return imageIndex < hizFrames_.size() ? hizFrames_[imageIndex].image
                                          : VK_NULL_HANDLE;
   }
+  [[nodiscard]] VkImageView hiZFullView(uint32_t imageIndex) const {
+    return imageIndex < hizFrames_.size() ? hizFrames_[imageIndex].fullView
+                                         : VK_NULL_HANDLE;
+  }
   [[nodiscard]] bool occlusionDrawsValid(uint32_t imageIndex) const {
     return imageIndex < occlusionDrawsValid_.size() &&
            occlusionDrawsValid_[imageIndex];

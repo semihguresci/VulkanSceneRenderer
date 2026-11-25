@@ -236,6 +236,7 @@ public:
   bool reloadSceneModel(const std::string &path, float importScale = 1.0f);
   // Deterministic captures settle requests while continuing event/UI processing.
   void settlePendingModelLoads();
+  void waitForModelUploadChunks(uint32_t chunkCount);
 
   // Shutdown: wait idle and release all Vulkan resources in dependency order.
   void shutdown();
@@ -849,6 +850,10 @@ private:
       uint32_t primitive{UINT32_MAX};
       uint32_t level{0};
     };
+    struct Streaming;
+    struct StreamingDeleter {
+      void operator()(Streaming*) const noexcept;
+    };
     scene::SceneAssetId asset;
     uint64_t geometryRevision{};
     container::gpu::AllocatedBuffer buffer;
@@ -856,13 +861,19 @@ private:
     std::vector<Primitive> ranges;
     std::vector<Choice> choices;
     std::array<std::vector<DrawCommand>, 10> drawLists;
+    std::unique_ptr<Streaming, StreamingDeleter> streaming;
     uint64_t drawRevision{};
+    bool attempted{false};
     bool active{false};
   } primaryGeometryLods_;
   void applyPrimaryGeometryLods(FrameRecordParams& frame,
                                const geometry::GeometryLodView& view,
                                float pixelLimit);
+  void updatePrimaryGeometryLodStreaming(bool allowWork);
   void clearPrimaryGeometryLods();
+  void shutdownPrimaryGeometryLods();
+  [[nodiscard]] bool retirePrimaryGeometryLodUploadForModelLoad();
+  [[nodiscard]] bool modelLoadPending() const noexcept;
   void writePrimaryGeometryLodTelemetry(nlohmann::json& json) const;
   std::string activePrimaryModelPath_{};
   container::app::SceneLightingDefaults sceneLightingDefaults_{};

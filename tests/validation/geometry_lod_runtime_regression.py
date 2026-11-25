@@ -113,7 +113,7 @@ def write_fixtures(directory):
     return fixtures
 
 
-def write_sequence(path, cycles, *, bim_checkpoints=False):
+def write_sequence(path, cycles, *, bim_checkpoints=False, warmup_frames=0):
     # Match in/out distances, with enough samples within the transition band to
     # observe path dependence in the actual draw ranges. Each stop settles both
     # render frames in flight before either panel is picked.
@@ -121,12 +121,14 @@ def write_sequence(path, cycles, *, bim_checkpoints=False):
     stops = ([('out', distance) for distance in distances] +
              [('in', distance) for distance in reversed(distances)])
     samples, cameras = [], []
+    if warmup_frames:
+        cameras.append(dict(frame=1, position=[0, 0, distances[0]], target=[0, 0, 0]))
     # The startup selection outline can cover adjacent meshes when each panel
     # occupies a few pixels. Clear it before sampling coverage and materials.
     events = [dict(frame=2, viewportPointer={"action": "select", "pixel": [1, 1]})]
     for cycle in range(cycles):
         for stop, (direction, distance) in enumerate(stops):
-            first = 5 * (cycle * len(stops) + stop) + 1
+            first = warmup_frames + 5 * (cycle * len(stops) + stop) + 1
             cameras += [dict(frame=frame, position=[0, 0, distance], target=[0, 0, 0])
                         for frame in (first, first + 4)]
             for panel in range(2):
@@ -431,8 +433,14 @@ def main():
         for provider in args.provider or fixtures:
             control_sequence = output / f"{provider}-control.sequence.json"
             active_sequence = output / f"{provider}-active.sequence.json"
-            control_samples = write_sequence(control_sequence, 1, bim_checkpoints=provider != "gltf")
-            active_samples = write_sequence(active_sequence, 2, bim_checkpoints=provider != "gltf")
+            # Give primary geometry's background worker and bounded index upload
+            # time to publish before either matched sweep starts. Near samples
+            # still require the full-detail selection and a resident LOD buffer.
+            warmup = 20 if provider == "gltf" else 0
+            control_samples = write_sequence(control_sequence, 1, bim_checkpoints=provider != "gltf",
+                                             warmup_frames=warmup)
+            active_samples = write_sequence(active_sequence, 2, bim_checkpoints=provider != "gltf",
+                                            warmup_frames=warmup)
             for technique in args.technique or TECHNIQUES:
                 name = f"{provider}-{technique}"
                 control = capture(renderer, output / f"{name}-full", fixtures[provider], technique,
