@@ -283,6 +283,7 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
   FsrUpscaler missing(*physical, *device, container::util::executableDirectory() / "no-fsr-sdk");
   EXPECT_FALSE(missing.prepare(settings));
   EXPECT_FALSE(missing.available());
+  EXPECT_FALSE(missing.gpuMemoryUsage());
 
   constexpr auto inputs = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
   FsrUpscalerFrame frame{};
@@ -296,6 +297,13 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
   ASSERT_TRUE(outputFormat == VK_FORMAT_R16G16B16A16_SFLOAT || outputFormat == VK_FORMAT_R32G32B32A32_SFLOAT);
   const VkDeviceSize outputBytes = VkDeviceSize(settings.displayExtent.width) * settings.displayExtent.height *
       (outputFormat == VK_FORMAT_R32G32B32A32_SFLOAT ? 16u : 8u);
+  if (outputFormat == VK_FORMAT_R32G32B32A32_SFLOAT) {
+    const auto usage = upscaler->gpuMemoryUsage();
+    ASSERT_TRUE(usage);
+    // The pinned analytical context has two private display-sized RGBA32F histories.
+    EXPECT_GE(usage->allocatedBytes, 2 * outputBytes);
+    EXPECT_LE(usage->aliasableBytes, usage->allocatedBytes);
+  }
   frame.output = image(outputFormat, settings.displayExtent,
       VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
   ASSERT_FALSE(::testing::Test::HasFailure());
@@ -393,6 +401,7 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
   EXPECT_FLOAT_EQ(upscaler->lastSubmittedInputs()->frameTimeMs, lastCommitted->frameTimeMs);
   command.reset();
   EXPECT_FALSE(upscaler->available());
+  EXPECT_FALSE(upscaler->gpuMemoryUsage());
   ASSERT_TRUE(upscaler->prepare(settings)) << upscaler->status();
   EXPECT_FALSE(upscaler->lastSubmittedInputs());
   EXPECT_EQ(upscaler->outputFormat(), outputFormat);

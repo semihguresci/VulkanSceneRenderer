@@ -48,6 +48,11 @@ struct FsrDispatchInputs {
   float preExposure{};
 };
 
+struct FsrGpuMemoryUsage {
+  uint64_t allocatedBytes{};
+  uint64_t aliasableBytes{};
+};
+
 enum class FsrDispatchResult {
   Recorded,
   Unavailable,
@@ -70,6 +75,7 @@ public:
   // Query after prepare: the pinned analytical shaders require RGBA32F output;
   // automatic ML providers and the inactive/default profile use RGBA16F.
   [[nodiscard]] VkFormat outputFormat() const noexcept;
+  [[nodiscard]] std::optional<FsrGpuMemoryUsage> gpuMemoryUsage() const noexcept;
   [[nodiscard]] std::string_view status() const noexcept { return status_; }
 
   // Retire queued work before changing settings or recovering a discarded

@@ -49,6 +49,9 @@ public:
   [[nodiscard]] std::optional<FsrDispatchInputs> fsrLastSubmittedInputs() const {
     return fsrActive() ? fsr_->lastSubmittedInputs() : std::nullopt;
   }
+  [[nodiscard]] std::optional<FsrGpuMemoryUsage> fsrGpuMemoryUsage() const {
+    return fsr_ ? fsr_->gpuMemoryUsage() : std::nullopt;
+  }
   [[nodiscard]] std::optional<uint64_t> dlssAllocatedBytes() const {
     return dlss_ ? dlss_->allocatedBytes() : std::nullopt;
   }

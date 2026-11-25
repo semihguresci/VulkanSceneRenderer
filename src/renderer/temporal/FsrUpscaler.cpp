@@ -237,6 +237,20 @@ VkFormat FsrUpscaler::outputFormat() const noexcept {
   return VK_FORMAT_R16G16B16A16_SFLOAT;
 }
 
+std::optional<FsrGpuMemoryUsage> FsrUpscaler::gpuMemoryUsage() const noexcept {
+#if CONTAINER_HAS_FSR_UPSCALER
+  if (!available()) return std::nullopt;
+  FfxApiEffectMemoryUsage usage{};
+  ffxQueryDescUpscaleGetGPUMemoryUsage query{
+      {FFX_API_QUERY_DESC_TYPE_UPSCALE_GPU_MEMORY_USAGE}, &usage};
+  // Some providers return success with an empty report for this query.
+  if (backend_->queryContext(&query.header) == FFX_API_RETURN_OK &&
+      usage.totalUsageInBytes > 0 && usage.aliasableUsageInBytes <= usage.totalUsageInBytes)
+    return FsrGpuMemoryUsage{usage.totalUsageInBytes, usage.aliasableUsageInBytes};
+#endif
+  return std::nullopt;
+}
+
 bool FsrUpscaler::prepare(const FsrUpscalerSettings& settings) {
 #if CONTAINER_HAS_FSR_UPSCALER
   if (available() && sameSettings(settings_, settings)) return true;
