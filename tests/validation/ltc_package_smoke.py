@@ -34,7 +34,7 @@ def sha256(path):
 
 
 def runtime_hashes(root):
-    files = [root / "VulkanSceneRenderer.exe", *root.glob("*.dll"),
+    files = [*root.glob("*.exe"), *root.glob("*.dll"),
              *(root / "spv_shaders").glob("*.spv"),
              *(root / "materials/ltc").glob("*")]
     return {path.relative_to(root).as_posix(): sha256(path)

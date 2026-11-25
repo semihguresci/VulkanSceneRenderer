@@ -356,14 +356,126 @@ sample from four through 16 frames after arrival.
 The fixture timings are validation-enabled. Memory covers the engine's
 temporal images. Detailed per-frame values are in the suite's `results.json`.
 
+## Representative-scene benchmark
+
+The benchmark runs Native, native TAA, FSR Quality, Balanced and Performance
+on three original assets. Set `$sponza`, `$chess` and `$tekla` to the paths of
+`Sponza.gltf`, `ABeautifulGame.gltf` and `TeklaHouse.ifcx`, respectively. Keep
+each glTF's external buffers and images beside the model. The runner hashes
+these inputs and records exact commands, camera tracks, telemetries and PNGs.
+[Sponza](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/8f492390ddc7a2ae221a1369ef560589cf8c70fb/Models/Sponza) ·
+[A Beautiful Game](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/8f492390ddc7a2ae221a1369ef560589cf8c70fb/Models/ABeautifulGame) ·
+[Tekla House](https://github.com/buildingSMART/IFC5-development/tree/1a63082ada967c683cfacee2005f8f749c8e1b79/examples/Tekla%20House)
+
+```powershell
+python -B tests/validation/fsr_quality_performance_benchmark.py `
+  --renderer build/fsr/VulkanSceneRenderer.exe --output build/fsr-verification/benchmark `
+  --sponza $sponza --gltf $chess --bim $tekla
+
+python -B tests/validation/fsr_quality_performance_benchmark.py `
+  --renderer build/fsr/VulkanSceneRenderer.exe --output build/fsr-verification/benchmark-validation `
+  --sponza $sponza --gltf $chess --bim $tekla --extent 1920x1080 --warmup 12 --samples 8 `
+  --validation-manifest $manifest
+```
+
+The primary run uses 1920 × 1080 and 2560 × 1440 output, deferred raster,
+1× MSAA and the same serialized graphics policy in every mode. It uses a
+fixed timestep, manual exposure, a warm-up at the initial view and a small
+camera move. Raw PNGs bracket 32 uncaptured submissions. The profiler measures
+GPU graphics command buffer duration with retired timestamps matched by
+submission ID. These are GPU frame costs at the chosen settings. The separate
+validation run enables Vulkan synchronization validation.
+
+The report compares each reconstructed view against its same-frame native
+control using 8-bit RGB mean absolute error and PSNR. It records device-local
+engine allocations from VMA and GPU memory reported by the active SDK context
+as separate quantities. The SDK's aliasable bytes are a subset of its total.
+Engine temporal images are already included in VMA. Optional NVML readings
+capture device-wide usage, which also includes the desktop and other GPU
+clients.
+
+The RTX 2080 SUPER with driver 610.88 completed 30 timed cases on FSR SDK
+2.4.0 with the analytical 3.1.6 provider. All 15 mode and scene combinations
+at 1080p also passed Vulkan synchronization validation with layer 1.4.363.1.
+The loaded scenes contained 103 Sponza render objects, 49 A Beautiful Game
+objects and 8,790 Tekla IFCX objects. `results.json` keeps the 60 matched
+PNGs' hashes and telemetry paths, the renderer and source asset identities,
+and the underlying timing and image measures.
+
+GPU graphics duration in milliseconds is shown as median / p95 over 32
+retired submissions per case. At 1440p, Quality reduced GPU time from 7.98
+to 6.08 ms in Sponza and from 7.65 to 6.44 ms in A Beautiful Game. On Tekla
+it took 12.87 ms compared with 10.87 ms for Native and 13.28 ms for TAA.
+Tekla's 1440p Quality capture recorded about 1.50 ms in velocity and 1.63 ms
+in temporal resolve.
+
+| Scene | Display | Native | TAA | Quality | Balanced | Performance |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Sponza | 1920 × 1080 | 4.74 / 5.19 | 5.52 / 6.03 | 3.90 / 4.30 | 3.42 / 3.84 | 2.90 / 3.68 |
+| Sponza | 2560 × 1440 | 7.98 / 8.62 | 9.62 / 10.09 | 6.08 / 6.83 | 5.20 / 5.97 | 4.33 / 5.08 |
+| A Beautiful Game | 1920 × 1080 | 5.15 / 5.56 | 5.76 / 6.44 | 4.71 / 5.16 | 4.37 / 4.79 | 4.04 / 4.08 |
+| A Beautiful Game | 2560 × 1440 | 7.65 / 8.27 | 8.92 / 9.79 | 6.44 / 7.04 | 5.76 / 6.31 | 5.14 / 5.74 |
+| Tekla IFCX | 1920 × 1080 | 9.81 / 10.11 | 11.87 / 12.25 | 11.55 / 11.90 | 11.32 / 11.67 | 11.09 / 11.28 |
+| Tekla IFCX | 2560 × 1440 | 10.87 / 11.17 | 13.28 / 13.83 | 12.87 / 13.18 | 12.44 / 12.81 | 11.95 / 12.25 |
+
+Allocated memory in MiB is shown as device-local engine / FSR SDK at the
+terminal capture. The device-wide NVML readings for the timed run ranged
+from 4.19 to 6.79 GiB on the 8 GiB adapter.
+
+| Scene | Display | Native | TAA | Quality | Balanced | Performance |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Sponza | 1920 × 1080 | 2781 / — | 3100 / — | 2421 / 159 | 2272 / 138 | 2182 / 129 |
+| Sponza | 2560 × 1440 | 3628 / — | 4195 / — | 2993 / 283 | 2752 / 250 | 2520 / 218 |
+| A Beautiful Game | 1920 × 1080 | 3162 / — | 3481 / — | 2802 / 159 | 2653 / 138 | 2563 / 129 |
+| A Beautiful Game | 2560 × 1440 | 4009 / — | 4576 / — | 3374 / 283 | 3133 / 250 | 2901 / 218 |
+| Tekla IFCX | 1920 × 1080 | 2480 / — | 2799 / — | 2120 / 159 | 1971 / 138 | 1881 / 129 |
+| Tekla IFCX | 2560 × 1440 | 3327 / — | 3894 / — | 2692 / 283 | 2451 / 250 | 2220 / 218 |
+
+Terminal PNG comparison against the matching Native view is shown as
+mean absolute error in 8-bit channel levels / PSNR in dB.
+
+| Scene | Display | TAA | Quality | Balanced | Performance |
+| --- | --- | ---: | ---: | ---: | ---: |
+| Sponza | 1920 × 1080 | 2.18 / 32.9 | 4.00 / 29.4 | 4.64 / 28.4 | 5.55 / 27.2 |
+| Sponza | 2560 × 1440 | 1.98 / 33.7 | 3.73 / 29.9 | 4.34 / 28.9 | 5.26 / 27.7 |
+| A Beautiful Game | 1920 × 1080 | 0.53 / 40.8 | 0.65 / 38.2 | 0.75 / 37.3 | 0.88 / 36.1 |
+| A Beautiful Game | 2560 × 1440 | 0.48 / 41.7 | 0.58 / 39.3 | 0.66 / 38.3 | 0.77 / 37.2 |
+| Tekla IFCX | 1920 × 1080 | 0.37 / 39.6 | 1.13 / 37.5 | 1.43 / 36.4 | 1.83 / 35.0 |
+| Tekla IFCX | 2560 × 1440 | 0.29 / 40.8 | 0.63 / 39.5 | 0.87 / 38.7 | 1.24 / 37.4 |
+
+The paired viewport PNGs show the terminal camera pose in *A Beautiful Game*.
+The MaterialX Project at ASWF created the model and Ed Mackey converted it
+to glTF. [Source and attribution](https://github.com/KhronosGroup/glTF-Sample-Assets/tree/8f492390ddc7a2ae221a1369ef560589cf8c70fb/Models/ABeautifulGame) ·
+[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)
+
+| Native at 1920 × 1080 | FSR Quality at 1280 × 720, reconstructed to 1920 × 1080 |
+| --- | --- |
+| ![Native A Beautiful Game benchmark frame](images/fsr/chess-benchmark-native.png) | ![FSR Quality A Beautiful Game benchmark frame](images/fsr/chess-benchmark-quality.png) |
+
+### Extracted Windows packages
+
+Build a Release ZIP with the pinned FSR SDK and a separate ZIP with
+`ENABLE_FSR_UPSCALING=OFF`. Use distinct package output directories so each
+archive has its own `SHA256SUMS.txt` receipt. Set `$enabledZip` and `$sdkOffZip`
+to the archives. [Windows packaging instructions](build-and-test.md#windows-release-package)
+
+```powershell
+python -B tests/validation/fsr_windows_package_smoke.py `
+  --archive $enabledZip --sdk-off-archive $sdkOffZip --output build/fsr-verification/packages
+```
+
+The smoke test verifies the archive and staged runtime hashes, including
+the renderer, shaders, runtime DLLs and FSR notices. The app launches from
+an unrelated working directory with an OS-only `PATH`, using the installed
+driver and MSVC redistributable. It exercises Native and FSR Quality on both
+raster paths. A second extraction with the upscaler DLL absent and the SDK-off
+ZIP each verify pixel-exact native fallback against their native controls.
+
 ## Remaining work
 
-- Benchmark representative Sponza, glTF and BIM models and qualify the
-  extracted Windows package on another machine in
-  [#304](https://github.com/semihguresci/VulkanSceneRenderer/issues/304).
 - Qualify AMD ML and other SDK-selected providers on supported devices.
   Verify the native fallback on a device missing the required features and
-  account for AMD-owned context allocations separately from engine images.
+  repeat the extracted package smoke on a clean Windows machine.
 - The CMake gate checks Windows and 64-bit pointer width. Native Windows
   ARM64 and ARM64EC builds need an explicit target architecture check before
   enabling the packaged x64 runtime.

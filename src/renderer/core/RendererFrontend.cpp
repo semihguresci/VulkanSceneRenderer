@@ -3745,6 +3745,9 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   fsrTelemetry["motionVectorScale"] = fsrInputs ? nlohmann::json(fsrInputs->motionVectorScale) : nullptr;
   fsrTelemetry["jitterPixels"] = fsrInputs ? nlohmann::json(fsrInputs->jitterPixels) : nullptr;
   fsrTelemetry["preExposure"] = fsrInputs ? nlohmann::json(fsrInputs->preExposure) : nullptr;
+  const auto fsrMemory = temporal.fsrGpuMemoryUsage();
+  fsrTelemetry["sdkAllocatedBytes"] = fsrMemory ? nlohmann::json(fsrMemory->allocatedBytes) : nullptr;
+  fsrTelemetry["sdkAliasableBytes"] = fsrMemory ? nlohmann::json(fsrMemory->aliasableBytes) : nullptr;
   json["dlss"] = upscaleTelemetry(UpscaleBackend::Dlss, temporal.dlssActive());
   if (const auto bytes = temporal.dlssAllocatedBytes())
     json["dlss"]["sdkAllocatedBytes"] = *bytes;
