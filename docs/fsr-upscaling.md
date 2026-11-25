@@ -235,11 +235,69 @@ camera, lighting and scene state in each capture.
 | --- | --- |
 | ![Native capture of the motion and transparency fixture](images/fsr/sdk-2.4.0-native.png) | ![FSR Quality capture of the same fixture](images/fsr/sdk-2.4.0-quality.png) |
 
+## Resize and swapchain regression
+
+The resize suite exercises forward and deferred raster at 640 × 360,
+731 × 409 and 576 × 416. It captures the first usable submission and a
+settled frame after changes to the display extent, FSR mode, MSAA and WSI
+state. It checks the display and render extents, presentation-aspect camera,
+temporal history, graphics pass activity and Vulkan validation. At both
+resized extents, each FSR mode must match the same-size native image more
+closely than a vertically flipped image. The suite also checks native
+rendering through an orthographic viewport resize and restores FSR on return
+to perspective.
+
+```powershell
+python -B tests/validation/fsr_upscaling_runtime_regression.py `
+  --renderer build/fsr/VulkanSceneRenderer.exe --output build/fsr-verification/resize `
+  --suite resize --validation-manifest $manifest
+```
+
+Add `--resize-format bgra8-unorm` where that format is supported and the
+initial swapchain uses a different format. A format-only change rebuilds the
+presentation pipelines. When the swapchain image count and extent stay the
+same, it keeps the existing FSR history. An optional `--resize-reference`
+run checks that a hardware ray-traced viewport renders at native extent and
+that FSR returns on switching back to raster.
+
+The window captures compare the opaque Scene Controls title across Native,
+Quality and Performance at the same display extent. The paired viewport-only
+PNGs check that the title comes from presentation composition. Separately,
+two glTF cases enable extended PBR for the first time with FSR active, through
+a material edit and a scene merge. Both then resize and switch modes while
+the auxiliary pass remains active. Before the fix, starting either transaction
+issued `VUID-VkRenderingInfo-pNext-06079` and `06080` because the auxiliary
+render area used the display extent with a smaller scene depth attachment.
+Both transactions now create the auxiliary targets at the scene render extent.
+
+On the RTX 2080 SUPER, analytical FSR 3.1.6 passed 91 captures with
+synchronization validation enabled. The format-only BGRA8 sRGB to UNORM
+transition preserved the FSR epoch in both raster paths. At the resized
+extents, aligned images differed from native by at most 2.958 mean absolute
+RGB levels on the 0–255 scale. Vertically flipped controls differed by at
+least 29.455. All 198 opaque title pixels matched their native controls in
+each of the three UI comparisons.
+
+| Display and mode | Render extent | Median deferred graphics time | Median forward graphics time | Engine temporal images |
+| --- | --- | ---: | ---: | ---: |
+| 640 × 360 Native | 640 × 360 | 17.173 ms | 20.197 ms | 0 bytes |
+| 640 × 360 Quality | 426 × 240 | 6.669 ms | 7.174 ms | 27,377,664 bytes |
+| 731 × 409 Balanced | 430 × 240 | 6.978 ms | 7.543 ms | 33,619,968 bytes |
+| 576 × 416 Performance | 288 × 208 | 5.020 ms | 4.963 ms | 24,625,152 bytes |
+
+These medians use matched, retired GPU timestamps from the settled part of
+each phase. The output `results.json` records both sample points, validation
+layer identity, resolve timing and VMA allocation counts. Engine temporal
+image bytes exclude AMD-owned context memory.
+
+The before and after viewport PNGs use the same fixed camera in FSR Quality.
+
+| Before resize, 640 × 360 display | After resize, 731 × 409 display |
+| --- | --- |
+| ![FSR Quality at 426 × 240 render resolution](images/fsr/resize-before.png) | ![FSR Quality at 487 × 272 render resolution](images/fsr/resize-after.png) |
+
 ## Remaining work
 
-- Complete the resize, reload, viewport/UI and blocked-profile matrix in
-  [#302](https://github.com/semihguresci/VulkanSceneRenderer/issues/302),
-  including orthographic and reference rendering.
 - Expand motion, transparency, shading-change, exposure and ghosting coverage
   in [#303](https://github.com/semihguresci/VulkanSceneRenderer/issues/303).
 - Benchmark representative Sponza, glTF and BIM models and qualify the
