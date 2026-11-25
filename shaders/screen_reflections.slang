@@ -47,6 +47,7 @@ static const float kMaxDistance = 40.0;
 static const float kMaxRoughness = 0.55;
 
 #if SCREEN_REFLECTION_RAY_QUERY
+#include "depth_normal_common.slang"
 #include "screen_reflections_ray_common.slang"
 #endif
 
@@ -521,7 +522,14 @@ void computeMain(uint3 id : SV_DispatchThreadID)
             ReflectionRayHit rayHit = {};
             float remainingConfidence = roughnessWeight - hit.confidence;
             if (remainingConfidence > 0.0)
-                rayHit = traceFallbackReflection(world, normal, direction, roughness);
+            {
+                // The normal map steers the ray, but it can bend the direction
+                // below the actual surface and cause a hit on the receiver.
+                float3 geometricNormal = ReconstructDepthGeometricNormal(id.xy, settings.extent,
+                    world, normal, sceneDepth, camera.inverseViewProj);
+                if (dot(geometricNormal, direction) > 0.0)
+                    rayHit = traceFallbackReflection(world, geometricNormal, direction, roughness);
+            }
             fallbackConfidence = remainingConfidence * saturate(rayHit.confidence);
             fallbackDistance = rayHit.distance;
             fallbackMaterial = rayHit.materialIndex;

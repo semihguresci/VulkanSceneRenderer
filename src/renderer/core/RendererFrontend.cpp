@@ -10636,7 +10636,10 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
                          ddgiCompatible && hasSceneContent;
     const bool reflectionScene = hasSceneContent && giCompatible && p.services.screenReflectionPass &&
         p.services.screenReflectionPass->wantsRayScene(p);
-    const bool surfaceScene = giScene || referencePathActive() || reflectionScene;
+    // Reflections query opaque and alpha-masked surfaces. Consumers that
+    // transport through transparent geometry request those draws separately.
+    const bool includeTransparentRayDraws = giScene || referencePathActive();
+    const bool surfaceScene = includeTransparentRayDraws || reflectionScene;
     subs_.rayShadowManager->requestSurfaceScene(
         surfaceScene, subs_.ddgiManager
                      ? subs_.ddgiManager->settings().surfaceBudgetBytes
@@ -10648,7 +10651,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         container::scene::SceneProviderKind::Mesh);
     std::vector<DrawCommand> meshRayDraws;
     std::vector<RayOpacityMicromapRange> opacityMicromaps;
-    if (surfaceScene) {
+    if (includeTransparentRayDraws) {
       meshRayDraws = subs_.sceneController->opaqueDrawCommands();
       const auto &transparent =
           subs_.sceneController->transparentDrawCommands();
@@ -10664,7 +10667,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
            .vertices = subs_.sceneController->geometryVertices(),
            .indices = subs_.sceneController->geometryIndices(),
            .objects = subs_.sceneController->objectData(),
-           .draws = surfaceScene ? std::span<const DrawCommand>(meshRayDraws)
+           .draws = includeTransparentRayDraws ? std::span<const DrawCommand>(meshRayDraws)
                    : std::span<const DrawCommand>(
                          subs_.sceneController->opaqueDrawCommands()),
            .assetId = subs_.sceneController->geometryAssetId()});
@@ -10697,7 +10700,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
             bimObjectVisibleByLayer(draw.objectIndex))
           bimDraws.push_back(draw);
-      if (surfaceScene)
+      if (includeTransparentRayDraws)
         for (const auto &draw : subs_.bimManager->transparentDrawCommands())
           if (subs_.bimManager->objectMatchesFilter(draw.objectIndex, filter) &&
               bimObjectVisibleByLayer(draw.objectIndex))

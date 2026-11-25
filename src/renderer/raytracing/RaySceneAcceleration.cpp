@@ -365,6 +365,11 @@ RaySceneAcceleration::RaySceneAcceleration(
   vkGetPhysicalDeviceProperties2(device_.physicalDevice(), &properties);
 }
 
+std::string_view RaySceneAcceleration::buildLimitFailure(const RaySceneInput &input) const noexcept {
+  return raySceneBuildLimitFailure(input, properties_.maxInstanceCount,
+                                   properties_.maxPrimitiveCount);
+}
+
 std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
     const vk::raii::CommandBuffer &command, const RaySceneInput &input,
     const std::shared_ptr<const RaySceneGeneration> &previous) const {
@@ -378,11 +383,8 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
       throw std::invalid_argument("GPU ray instance producer belongs to another device");
     input.gpuTransforms->producer->validate(*input.gpuTransforms,input.instances);
   }
-  if (input.instances.size() > properties_.maxInstanceCount)
-    throw std::invalid_argument("ray scene exceeds device instance limit");
-  for (const auto &geometry : input.geometries)
-    if (geometry.indices.size() / 3 > properties_.maxPrimitiveCount)
-      throw std::invalid_argument("ray scene exceeds device primitive limit");
+  if (const auto reason = buildLimitFailure(input); !reason.empty())
+    throw std::invalid_argument(std::string(reason));
   if (previous && previous->impl_->device != &device_.raii())
     throw std::invalid_argument(
         "ray scene generation belongs to another device");

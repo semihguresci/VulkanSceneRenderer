@@ -5,8 +5,22 @@
 #include "Container/utility/VulkanMemoryManager.h"
 
 #include <memory>
+#include <string_view>
 
 namespace container::renderer {
+
+// A BLAS is built for each geometry and one TLAS contains all instances.
+// This check assumes a validated host snapshot and does not allocate GPU resources.
+[[nodiscard]] constexpr std::string_view raySceneBuildLimitFailure(
+    const RaySceneInput &input, uint64_t maxInstanceCount,
+    uint64_t maxPrimitiveCount) noexcept {
+  if (input.instances.size() > maxInstanceCount)
+    return "ray scene exceeds device instance limit";
+  for (const auto &geometry : input.geometries)
+    if (geometry.indices.size() / 3 > maxPrimitiveCount)
+      return "ray scene exceeds device primitive limit";
+  return {};
+}
 
 struct RaySceneBuildStats {
   uint32_t blasBuilt{0};
@@ -52,6 +66,7 @@ public:
   RaySceneAcceleration(const container::gpu::VulkanDevice &device,
                        container::gpu::VulkanMemoryManager &memory);
   [[nodiscard]] bool supported() const { return device_.rayQueriesEnabled(); }
+  [[nodiscard]] std::string_view buildLimitFailure(const RaySceneInput &input) const noexcept;
 
   // Record outside rendering on the graphics queue. A previous generation may
   // be reused only after its builds were submitted on that same queue. Returned

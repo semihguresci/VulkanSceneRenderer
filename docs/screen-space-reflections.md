@@ -167,18 +167,27 @@ the ray spends only the remaining blend weight. A ray miss keeps the original
 IBL in that weight. A compatible device can build the shared scene even with
 raster shadows selected. Without an available ray shader or ray scene, the
 screen-only pipeline remains active. Screenshot telemetry records whether the
-ray mode was requested, available, and active.
+ray mode was requested, available, and active. Scene preparation checks the
+device's instance and primitive limits before recording acceleration-structure
+commands.
 
 The fallback evaluates glTF base color, vertex color, normal and material
-textures, unlit and emissive radiance, and a single metallic-roughness lobe.
+textures, unlit and emissive radiance, and a single specular lobe. It uses
+the raster tangent orientation on double-sided back faces and converts
+specular-glossiness inputs to perceptual roughness. The receiver's shading
+normal steers the ray. Its depth-derived geometric normal offsets the origin
+and checks that the ray leaves the surface.
 It uses one reflected ray per eligible pixel. Lit hits sample the existing IBL
 and shadow one directional light, up to four or eight punctual lights, and up
 to two or four area lights in low or high mode. Area lights use their centers
 for this visibility estimate. Directional shadow tests use the 40 m range.
-Alpha masks and section clipping apply to both hit and shadow queries.
-Blended and refractive geometry remains in the transparent pass. Additional
-surface lobes, recursive reflections, and volumetric transport use their
-existing rendering routes.
+Alpha masks use the material cutoff, including equality, with coverage sampled
+from base-mip textures at the transformed UV set. Section and box clipping
+apply to hit and shadow queries. The reflection-only scene contains opaque
+and masked draws. Blended and transmissive draws stay in the transparent pass,
+and the ray skips them if another transport consumer needs them in the shared
+scene. Additional surface lobes, recursive reflections, and volumetric transport
+use their existing rendering routes.
 
 The pass owns an RGBA16F opaque snapshot per swapchain image when enabled.
 Screenshot telemetry reports actual reflection allocation bytes, depth
@@ -196,6 +205,35 @@ occluder, alpha cutout, and directional shadow. The full 19-capture Vulkan
 validation run also verified pixel-identical fallback with ray queries
 disabled. The captures and timings are recorded in
 `out/feature-parity/screen-reflections-ray-native/results.json`.
+
+### Ray policy validation
+
+The source view uses blue for ray-query confidence. A tilted shading normal
+previously made a two-sided mirror hit itself about 2 mm from the origin.
+The same receiver now reports zero ray confidence across the 5×5 test patch.
+
+| Receiver self-hit | Ray rejected below the surface |
+| --- | --- |
+| ![Blue ray confidence from a tilted mirror hitting itself](images/screen-space-reflections/ray-self-before.png) | ![Source view with zero ray confidence on the same mirror](images/screen-space-reflections/ray-self-after.png) |
+
+The blended-pane fixture now builds the same two instances as the clear
+fixture. Its acceleration-structure allocation dropped from 9,984 bytes to
+7,168 bytes. In the clear 480×360 off-screen fixture on an RTX 2080 SUPER,
+the median High hybrid pass over 24 frames went from 0.168 ms to 0.178 ms
+under synchronization validation. Reflection resources used 12,298,752
+bytes, and the shared ray build used 7,168 bytes of acceleration storage,
+1,280 bytes of input storage, and 5,632 bytes of scratch.
+
+Use `--ray-policy` in place of `--marcher` on a ray-query-capable device to
+check transformed alpha masks, transparent pass-through, section clipping,
+self-hit rejection, and lit off-screen materials. The optional
+`--missing-ray-renderer` takes a copy of the same runtime with its ray
+reflection shader removed and compares the raster output.
+
+In the lit fixtures, the glossy specular-glossiness card returned about
+2.25 times the reflected radiance of the rough card. The tangent-space
+normal-map fixtures gave identical off-screen radiance for the front and
+double-sided back views under the same light.
 
 The history run passed 57 captures across 28 Vulkan processes. The thin red
 target fell from a mean red value of 190 to 47 on the first frame after
