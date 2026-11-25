@@ -64,3 +64,5 @@ operating system file cache and the existing BIM metadata cache stay unmanaged.
 Add `--validation-manifest PATH` to run Vulkan synchronization validation, or
 `--no-ray-query` to exercise raster capability fallback. Use `--plan-only` to
 prepare the commands and check inputs without launching the renderer.
+Increase `--warmup` if a timed view arrives before its derived LODs or texture
+uploads settle. The Windows chess run used 900 warm-up frames at 640 × 360.

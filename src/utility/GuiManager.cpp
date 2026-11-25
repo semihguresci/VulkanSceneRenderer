@@ -9946,6 +9946,8 @@ void GuiManager::drawAssetStreamingOverlay(
   constexpr ImU32 colorCoarse = IM_COL32(162, 200, 255, 255);
   constexpr ImU32 colorLowest = IM_COL32(210, 183, 255, 255);
   constexpr ImU32 colorWaiting = IM_COL32(255, 208, 129, 255);
+  std::vector<ImVec4> markerRects;
+  markerRects.reserve(markers.size());
   for (const auto& marker : markers) {
     const auto label = (textures ? "Mip " : "LOD ") + std::to_string(marker.level);
     const auto size = ImGui::CalcTextSize(label.c_str());
@@ -9953,6 +9955,15 @@ void GuiManager::drawAssetStreamingOverlay(
                        viewport->Pos.y + marker.uv.y * viewport->Size.y);
     const ImVec2 topLeft(point.x - size.x * 0.5f - 5.0f, point.y - size.y * 0.5f - 3.0f);
     const ImVec2 bottomRight(topLeft.x + size.x + 10.0f, topLeft.y + size.y + 6.0f);
+    // Centres in adjacent grid cells can still be closer than the label width.
+    constexpr float spacing = 3.0f;
+    const auto overlaps = [&](const ImVec4& rect) {
+      return topLeft.x < rect.z + spacing && bottomRight.x + spacing > rect.x &&
+             topLeft.y < rect.w + spacing && bottomRight.y + spacing > rect.y;
+    };
+    if (std::ranges::any_of(markerRects, overlaps))
+      continue;
+    markerRects.emplace_back(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y);
     const auto color = marker.waitingForDetail ? colorWaiting
         : marker.level == 0 ? colorFine : marker.level == 1 ? colorCoarse : colorLowest;
     overlay->AddRectFilled(topLeft, bottomRight, background, 4.0f);
@@ -9961,7 +9972,7 @@ void GuiManager::drawAssetStreamingOverlay(
   }
   const char* legend = textures ? "Texture residency   |   Amber: finer mip requested"
                                 : "Geometry LOD   |   0 full detail   1 reduced   2 coarse";
-  if (markers.empty())
+  if (markerRects.empty())
     legend = textures ? "Texture residency   |   No streamed textures in view"
                       : "Geometry LOD   |   No mesh bounds in view";
   const auto size = ImGui::CalcTextSize(legend);
