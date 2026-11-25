@@ -1448,6 +1448,20 @@ add_custom_test(volumetric_fog_settings_tests
 set_tests_properties(volumetric_fog_settings_tests PROPERTIES
     TIMEOUT 60 LABELS "cpu;lighting")
 
+add_custom_test(screen_reflection_settings_tests
+    ${TEST_RENDERER_DIR}/effects/screen_reflection_settings_tests.cpp "" ${TEST_RESULTS_DIR})
+set_tests_properties(screen_reflection_settings_tests PROPERTIES
+    TIMEOUT 60 LABELS "cpu;lighting")
+
+add_test(NAME screen_reflections_marcher_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/screen_reflections_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/screen-reflections-marcher"
+            --marcher --managed-output --require-opt-in)
+set_tests_properties(screen_reflections_marcher_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
+    LABELS "requires-vulkan;requires-display;lighting;visual-regression")
+
 add_test(NAME volumetric_fog_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/volumetric_fog_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"

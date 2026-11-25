@@ -4274,6 +4274,10 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
     json["screenReflections"] = {
         {"mode", static_cast<uint32_t>(svc_.config.screenReflections)},
         {"allocationBytes", subs_.screenReflectionPass ? subs_.screenReflectionPass->allocationBytes() : 0},
+        {"depthPyramidMipLevels", subs_.screenReflectionPass ? subs_.screenReflectionPass->depthPyramidMipLevels() : 0},
+        {"depthPyramidAllocationBytes",
+            subs_.screenReflectionPass ? subs_.screenReflectionPass->depthPyramidAllocationBytes() : 0},
+        {"depthPyramidUsed", subs_.screenReflectionPass && subs_.screenReflectionPass->depthPyramidUsed()},
         {"rayFallbackRequested", svc_.config.screenReflectionRayFallback},
         {"rayFallbackAvailable", subs_.screenReflectionPass && subs_.screenReflectionPass->rayFallbackAvailable()},
         {"historyAvailable", subs_.screenReflectionPass && subs_.screenReflectionPass->historyAvailable()},

@@ -28,13 +28,14 @@
 [[vk::binding(2, 3)]] Texture2D<float> sceneDepth;
 [[vk::binding(8, 3)]] Texture2D<uint4> previousReflection;
 [[vk::binding(9, 3)]] [[vk::image_format("rgba32ui")]] RWTexture2D<uint4> currentReflection;
+[[vk::binding(10, 3)]] Texture2D<float2> depthIntervals;
 
 struct ScreenReflectionConstants
 {
     uint2 extent;
     uint maxSteps;
     uint debugView;
-    uint4 history; // save, reproject, reserved, reserved
+    uint4 history; // save, reproject, virtual depth mip count (zero uses the linear trace), reserved
 #if SCREEN_REFLECTION_RAY_QUERY
     uint4 rayLimits;
     float4 sectionPlane;
@@ -54,7 +55,22 @@ struct ReflectionHit
     int2 pixel;
     float distance;
     float confidence;
+    uint reason;
 };
+
+static const uint kReflectionHit = 0u;
+static const uint kReflectionIneligible = 1u;
+static const uint kReflectionInvalidRay = 2u;
+static const uint kReflectionScreenExit = 3u;
+static const uint kReflectionNoDepth = 4u;
+static const uint kReflectionThickness = 5u;
+static const uint kReflectionBackFace = 6u;
+static const uint kReflectionBudget = 7u;
+
+float3 reflectionReasonColor(uint reason)
+{
+    return float3(reason & 1u, (reason >> 1u) & 1u, (reason >> 2u) & 1u);
+}
 
 float2 reflectionPixelUv(int2 pixel)
 {
@@ -183,9 +199,208 @@ float reflectionRayDistance(float fraction, float startW, float endW, float limi
     return limit * endWeight / (startWeight + endWeight);
 }
 
-ReflectionHit traceScreenReflection(float3 origin, float3 direction)
+struct ProjectedReflectionRay
+{
+    float3 origin;
+    float3 direction;
+    float2 startPixel;
+    float2 delta;
+    float2 clipW;
+    float2 reverseDepth;
+    float startDepth;
+    float depthSlope;
+    float limit;
+};
+
+float traceDistance(ProjectedReflectionRay ray, float fraction)
+{
+    return reflectionRayDistance(fraction, ray.clipW.x, ray.clipW.y, ray.limit);
+}
+
+float traceShiftedDepth(ProjectedReflectionRay ray, float fraction, float2 clipOffset, float fallback)
+{
+    float inverseW = lerp(1.0 / ray.clipW.x, 1.0 / ray.clipW.y, fraction);
+    float shiftedW = 1.0 + clipOffset.y * inverseW;
+    if (shiftedW <= 1e-7)
+        return fallback;
+    return (lerp(ray.reverseDepth.x, ray.reverseDepth.y, fraction) + clipOffset.x * inverseW) / shiftedW;
+}
+
+bool testReflectionHit(ProjectedReflectionRay ray, int2 pixel, float reverseDepth,
+    float fraction, float2 cellInterval, bool boundToCell, inout ReflectionHit hit)
+{
+    float3 surface;
+    if (reverseDepth <= 0.0 || reverseDepth > 1.0 || !isfinite(reverseDepth) ||
+        !TryReconstructWorldPosition(reflectionPixelUv(pixel), reverseDepth, camera.inverseViewProj, surface))
+        return false;
+
+    float t = traceDistance(ray, fraction);
+    float surfaceDepth = reflectionViewDepth(surface);
+    float thickness = 0.024 + min(surfaceDepth, 40.0) * 0.0025;
+    // Check the continuous ray against the pixel's depth plane. At mip 0 the
+    // cell interval bounds the closest approach to that plane.
+    if (abs(ray.depthSlope) > 1e-4)
+    {
+        float intersection = (surfaceDepth - ray.startDepth) / ray.depthSlope;
+        if (boundToCell)
+        {
+            t = clamp(intersection, traceDistance(ray, cellInterval.x), traceDistance(ray, cellInterval.y));
+        }
+        else if (intersection > thickness && intersection < ray.limit)
+        {
+            float4 projected = mul(camera.viewProj, float4(ray.origin + ray.direction * intersection, 1.0));
+            float2 projectedPixel = temporalSceneNdcToUv(projected.xy / projected.w) * settings.extent;
+            if (all(abs(projectedPixel - (float2(pixel) + 0.5)) < 0.85))
+                t = intersection;
+        }
+    }
+    float offset = ray.startDepth + t * ray.depthSlope - surfaceDepth;
+    if (offset < -thickness * 0.25 || offset > thickness || t <= thickness)
+    {
+        if (hit.reason != kReflectionBackFace)
+            hit.reason = kReflectionThickness;
+        return false;
+    }
+    if (dot(reflectionNormal(pixel), ray.direction) >= -0.015)
+    {
+        hit.reason = kReflectionBackFace;
+        return false;
+    }
+
+    float2 uv = reflectionPixelUv(pixel);
+    float2 edge = min(uv, 1.0 - uv);
+    hit.pixel = pixel;
+    hit.distance = t;
+    hit.confidence = smoothstep(0.0, 0.045, min(edge.x, edge.y)) *
+        (1.0 - smoothstep(0.70, 1.0, t / kMaxDistance));
+    hit.reason = kReflectionHit;
+    return true;
+}
+
+ReflectionHit traceLinearReflection(ProjectedReflectionRay ray, float span, uint exitReason)
 {
     ReflectionHit hit = {};
+    hit.reason = exitReason;
+    // A full pixel stride catches narrow geometry at close range. On longer
+    // projections the fixed ray budget caps the total texture fetch count.
+    float stride = max(1.0, span / float(settings.maxSteps));
+    for (uint step = 0; step < settings.maxSteps; ++step)
+    {
+        float at = 1.5 + float(step) * stride;
+        if (at > span)
+            return hit;
+        float fraction = at / span;
+        int2 pixel = int2(floor(ray.startPixel + ray.delta * fraction));
+        if (any(pixel < 0) || any(pixel >= int2(settings.extent)))
+            return hit;
+        if (testReflectionHit(ray, pixel, sceneDepth.Load(int3(pixel, 0)), fraction, 0.0.xx, false, hit))
+            return hit;
+    }
+    if (1.5 + float(settings.maxSteps) * stride <= span)
+        hit.reason = kReflectionBudget;
+    return hit;
+}
+
+ReflectionHit traceHiZReflection(ProjectedReflectionRay ray, float span, float roughness, uint exitReason)
+{
+    ReflectionHit hit = {};
+    hit.reason = exitReason;
+    float roughnessFraction = smoothstep(0.12, kMaxRoughness, roughness);
+    uint budget = uint(ceil(float(settings.maxSteps) * lerp(1.0, 0.55, roughnessFraction)));
+    // Reserve most visits for descent and final hit checks. A fixed 16-pixel
+    // seed cannot cross a long, empty reflection at higher resolutions.
+    uint spanMip = uint(ceil(log2(max(1.0, 4.0 * span / float(budget)))));
+    uint maxMip = min(settings.history.z - 1u, max(spanMip, 4u + uint(2.0 * roughnessFraction)));
+    // Start at the receiver's native pixels to avoid descending through the
+    // whole pyramid just to leave the surface that emitted the ray.
+    uint mip = 0u;
+    float fraction = 1.5 / span;
+    float parentExit = 0.0;
+    bool leftReceiver = false;
+    uint advancedCells = 0u;
+    // Keep a separate bound on refinement and on leaving the biased emitter.
+    // Neither should consume the interval budget for tracing the reflection.
+    uint visitLimit = budget + 2u * maxMip;
+    // A tiny ownership probe selects the next cell on a shared edge. The
+    // actual interval still begins at the boundary for depth and hit tests.
+    float fractionEpsilon = 0.001 / span;
+    // The maximum rear tolerance is .024 + 40 * .0025 m, and the front
+    // tolerance is one quarter of that. Move the respective ray endpoints
+    // into those tolerances before rejecting a cell's full depth interval.
+    float2 depthDirection = mul(camera.viewProj, float4(camera.cameraForward.xyz, 0.0)).zw;
+    for (uint visit = 0u; visit < visitLimit && advancedCells < budget && fraction < 1.0; ++visit)
+    {
+        uint mipWidth = settings.extent.x;
+        uint mipHeight = settings.extent.y;
+        if (mip != 0u)
+        {
+            uint mipCount;
+            depthIntervals.GetDimensions(mip - 1u, mipWidth, mipHeight, mipCount);
+        }
+        float2 mipSize = float2(mipWidth, mipHeight);
+        float2 probe = ray.startPixel + ray.delta * min(fraction + fractionEpsilon, 1.0);
+        int2 cell = int2(floor(probe * mipSize / float2(settings.extent)));
+        if (any(cell < 0) || any(cell >= int2(mipWidth, mipHeight)))
+            return hit;
+
+        float2 boundary = (float2(cell) + step(0.0.xx, ray.delta)) * float2(settings.extent) / mipSize;
+        float2 exitAt = float2(
+            abs(ray.delta.x) > 1e-6 ? (boundary.x - ray.startPixel.x) / ray.delta.x : 1.0,
+            abs(ray.delta.y) > 1e-6 ? (boundary.y - ray.startPixel.y) / ray.delta.y : 1.0);
+        float exitFraction = min(1.0, min(exitAt.x, exitAt.y));
+        if (exitFraction <= fraction)
+        {
+            fraction += fractionEpsilon;
+            ++advancedCells;
+            continue;
+        }
+
+        float2 depth;
+        if (mip == 0u)
+        {
+            float leaf = sceneDepth.Load(int3(cell, 0));
+            depth = isfinite(leaf) && leaf > 0.0 && leaf <= 1.0 ? leaf.xx : float2(0.0, 1.0);
+        }
+        else
+            depth = depthIntervals.Load(int3(cell, mip - 1u));
+
+        float farFraction = ray.depthSlope >= 0.0 ? exitFraction : fraction;
+        float nearFraction = ray.depthSlope >= 0.0 ? fraction : exitFraction;
+        float deepest = traceShiftedDepth(ray, farFraction, depthDirection * 0.031, 0.0);
+        float closest = traceShiftedDepth(ray, nearFraction, depthDirection * -0.124, 1.0);
+        if (depth.x > 0.0 && deepest <= depth.x + 1e-6 && closest >= depth.y - 1e-6)
+        {
+            if (mip > 0u)
+            {
+                parentExit = exitFraction;
+                --mip;
+                continue;
+            }
+            if (testReflectionHit(ray, cell, depth.x, (fraction + exitFraction) * 0.5,
+                float2(fraction, exitFraction), true, hit))
+                return hit;
+        }
+        else
+            leftReceiver = true;
+        fraction = exitFraction;
+        if (leftReceiver)
+        {
+            ++advancedCells;
+            // This ray interval was already selected for descent. Visit its
+            // remaining child cells before testing a coarser interval again.
+            if (fraction >= parentExit)
+                mip = min(mip + 1u, maxMip);
+        }
+    }
+    if (fraction < 1.0)
+        hit.reason = kReflectionBudget;
+    return hit;
+}
+
+ReflectionHit traceScreenReflection(float3 origin, float3 direction, float roughness)
+{
+    ReflectionHit hit = {};
+    hit.reason = kReflectionInvalidRay;
     float4 start = mul(camera.viewProj, float4(origin, 1.0));
     float4 end = mul(camera.viewProj, float4(origin + direction * kMaxDistance, 1.0));
     if (!all(isfinite(start)) || !all(isfinite(end)) || start.w <= 1e-5)
@@ -202,62 +417,21 @@ ReflectionHit traceScreenReflection(float3 origin, float3 direction)
 
     // Scene draws use a negative-height viewport. Convert both endpoints to
     // pixel coordinates before stepping along the dominant screen axis.
-    float2 startPixel = temporalSceneNdcToUv(start.xy / start.w) * settings.extent;
-    float2 endPixel = temporalSceneNdcToUv(end.xy / end.w) * settings.extent;
-    float2 delta = endPixel - startPixel;
+    float3 startNdc = start.xyz / start.w;
+    float3 endNdc = end.xyz / end.w;
+    float2 startPixel = temporalSceneNdcToUv(startNdc.xy) * settings.extent;
+    float2 delta = temporalSceneNdcToUv(endNdc.xy) * settings.extent - startPixel;
     float span = max(abs(delta.x), abs(delta.y));
-    if (span < 2.0)
+    if (!isfinite(span) || span < 2.0)
         return hit;
 
-    float limit = kMaxDistance * clipFraction * 0.9999;
-    float startDepth = reflectionViewDepth(origin);
-    float depthSlope = dot(direction, camera.cameraForward.xyz);
-    // A full pixel stride catches narrow geometry at close range. On longer
-    // projections the fixed ray budget caps the total texture fetch count.
-    float stride = max(1.0, span / float(settings.maxSteps));
-    for (uint step = 0; step < settings.maxSteps; ++step)
-    {
-        float at = 1.5 + float(step) * stride;
-        if (at > span)
-            break;
-        float fraction = at / span;
-        int2 pixel = int2(floor(lerp(startPixel, endPixel, fraction)));
-        if (any(pixel < 0) || any(pixel >= int2(settings.extent)))
-            break;
-        float3 surface;
-        if (!reflectionPosition(pixel, surface))
-            continue;
-        float t = reflectionRayDistance(fraction, start.w, end.w, limit);
-        float surfaceDepth = reflectionViewDepth(surface);
-        float thickness = 0.024 + min(surfaceDepth, 40.0) * 0.0025;
-        // Check the continuous intersection with the sampled pixel's depth
-        // plane. Point tests alone miss near geometry between ray samples.
-        if (abs(depthSlope) > 1e-4)
-        {
-            float intersection = (surfaceDepth - startDepth) / depthSlope;
-            if (intersection > thickness && intersection < limit)
-            {
-                float4 projected = mul(camera.viewProj, float4(origin + direction * intersection, 1.0));
-                float2 projectedPixel = temporalSceneNdcToUv(projected.xy / projected.w) * settings.extent;
-                if (all(abs(projectedPixel - (float2(pixel) + 0.5)) < 0.85))
-                    t = intersection;
-            }
-        }
-        float offset = startDepth + t * depthSlope - surfaceDepth;
-        if (offset < -thickness * 0.25 || offset > thickness || t <= thickness)
-            continue;
-        if (dot(reflectionNormal(pixel), direction) >= -0.015)
-            continue;
-
-        float2 uv = reflectionPixelUv(pixel);
-        float2 edge = min(uv, 1.0 - uv);
-        hit.pixel = pixel;
-        hit.distance = t;
-        hit.confidence = smoothstep(0.0, 0.045, min(edge.x, edge.y)) *
-            (1.0 - smoothstep(0.70, 1.0, t / kMaxDistance));
-        return hit;
-    }
-    return hit;
+    ProjectedReflectionRay ray = {origin, direction, startPixel, delta, float2(start.w, end.w),
+        float2(startNdc.z, endNdc.z), reflectionViewDepth(origin), dot(direction, camera.cameraForward.xyz),
+        kMaxDistance * clipFraction * 0.9999};
+    uint exitReason = clipFraction < 1.0 ? kReflectionScreenExit : kReflectionNoDepth;
+    if (settings.history.z == 0u)
+        return traceLinearReflection(ray, span, exitReason);
+    return traceHiZReflection(ray, span, roughness, exitReason);
 }
 
 float3 roughReflectionColor(ReflectionHit hit, float roughness)
@@ -300,6 +474,8 @@ void computeMain(uint3 id : SV_DispatchThreadID)
     int2 pixel = int2(id.xy);
     float4 base = opaqueColor.Load(int3(pixel, 0));
     float4 result = settings.debugView != 0 ? float4(0.0, 0.0, 0.0, base.a) : base;
+    if (settings.debugView == 6u)
+        result.rgb = reflectionReasonColor(kReflectionIneligible);
     uint4 stored = uint4(0);
     float3 world;
     float4 albedo = albedoImage.Load(int3(pixel, 0));
@@ -324,7 +500,16 @@ void computeMain(uint3 id : SV_DispatchThreadID)
         // input contains distance-dependent eye-path in-scattering.
         if (layers.transmissionFactor <= 0.0 && lights.aerialGeometry.w <= 0.0 && dot(normal, direction) > 0.0)
         {
-            ReflectionHit hit = traceScreenReflection(world + normal * 0.008, direction);
+            ReflectionHit hit = traceScreenReflection(world + normal * 0.008, direction, roughness);
+            if (settings.debugView == 5u || settings.debugView == 6u)
+            {
+                if (settings.debugView == 5u && hit.reason == kReflectionHit)
+                    result.rgb = float3(reflectionPixelUv(hit.pixel), hit.distance);
+                if (settings.debugView == 6u)
+                    result.rgb = reflectionReasonColor(hit.reason);
+                sceneColor[pixel] = result;
+                return;
+            }
             float roughnessWeight = 1.0 - smoothstep(0.30, kMaxRoughness, roughness);
             float fallbackConfidence = 0.0;
             float fallbackDistance = 0.0;

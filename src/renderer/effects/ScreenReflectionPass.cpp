@@ -6,9 +6,12 @@
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/Logger.h"
 #include "Container/utility/PipelineManager.h"
+#include "Container/utility/SceneData.h"
 #include "Container/utility/VulkanDevice.h"
 
+#include <algorithm>
 #include <array>
+#include <bit>
 #include <optional>
 #include <stdexcept>
 #include <utility>
@@ -18,6 +21,8 @@ namespace container::renderer {
 namespace {
 constexpr auto kColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr auto kHistoryFormat = VK_FORMAT_R32G32B32A32_UINT;
+constexpr auto kDepthIntervalFormat = VK_FORMAT_R32G32_SFLOAT;
+constexpr auto kDepthIntervalUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
 constexpr VkDeviceSize kHistoryBudget = 128 * 1024 * 1024;
 constexpr VkImageSubresourceRange kColorRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 constexpr VkImageSubresourceLayers kColorLayers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -38,7 +43,8 @@ static_assert(sizeof(ReflectionRayConstants) == 64);
 void imageBarrier(VkCommandBuffer command, VkImage image,
                   VkImageLayout oldLayout, VkImageLayout newLayout,
                   VkPipelineStageFlags2 sourceStage, VkAccessFlags2 sourceAccess,
-                  VkPipelineStageFlags2 destinationStage, VkAccessFlags2 destinationAccess) {
+                  VkPipelineStageFlags2 destinationStage, VkAccessFlags2 destinationAccess,
+                  VkImageSubresourceRange range = kColorRange) {
   VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
   barrier.srcStageMask = sourceStage;
   barrier.srcAccessMask = sourceAccess;
@@ -49,7 +55,7 @@ void imageBarrier(VkCommandBuffer command, VkImage image,
   barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
   barrier.image = image;
-  barrier.subresourceRange = kColorRange;
+  barrier.subresourceRange = range;
   VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   dependency.imageMemoryBarrierCount = 1;
   dependency.pImageMemoryBarriers = &barrier;
@@ -67,6 +73,9 @@ struct ScreenReflectionPass::Impl {
 
   struct ImageSlot {
     Image opaqueCopy;
+    Image depthIntervals;
+    std::vector<VkImageView> depthIntervalViews;
+    std::vector<VkDescriptorSet> depthIntervalSets;
     VkImage sceneColor{VK_NULL_HANDLE};
     std::array<VkDescriptorSet, 2> descriptors{};
     std::array<VkDescriptorSet, 2> rayDescriptors{};
@@ -75,6 +84,7 @@ struct ScreenReflectionPass::Impl {
   struct History {
     FrameScreenReflectionHistory revisions;
     std::shared_ptr<const void> shader;
+    std::shared_ptr<const void> depthPyramidShader;
     ScreenReflectionMode mode{};
     uint32_t index{};
     bool reprojected{};
@@ -91,6 +101,12 @@ struct ScreenReflectionPass::Impl {
   VkDescriptorPool rayPool{VK_NULL_HANDLE};
   VkPipelineLayout rayPipelineLayout{VK_NULL_HANDLE};
   gpu::ComputePipeline rayPipeline;
+  VkDescriptorSetLayout depthPyramidSetLayout{VK_NULL_HANDLE};
+  VkDescriptorPool depthPyramidPool{VK_NULL_HANDLE};
+  VkPipelineLayout depthPyramidPipelineLayout{VK_NULL_HANDLE};
+  gpu::ComputePipeline depthPyramidPipeline;
+  uint32_t depthPyramidLevels{};
+  bool depthPyramidSubmitted{};
   bool rayActive{};
   bool fullHistory{};
   bool historyInitialized{};
@@ -111,6 +127,7 @@ struct ScreenReflectionPass::Impl {
     pipelines.destroyPipelineLayout(pipelineLayout);
     pipelines.destroyDescriptorPool(pool);
     pipelines.destroyDescriptorSetLayout(setLayout);
+    destroyDepthPyramid();
     for (auto& slot : images) destroyImage(slot.opaqueCopy);
     for (auto& image : history) destroyImage(image);
   }
@@ -131,6 +148,23 @@ struct ScreenReflectionPass::Impl {
     rayActive = false;
   }
 
+  void destroyDepthPyramid() noexcept {
+    pipelines.destroyPipeline(depthPyramidPipeline);
+    pipelines.destroyPipelineLayout(depthPyramidPipelineLayout);
+    pipelines.destroyDescriptorPool(depthPyramidPool);
+    pipelines.destroyDescriptorSetLayout(depthPyramidSetLayout);
+    for (auto& slot : images) {
+      slot.depthIntervalSets.clear();
+      for (const auto mip : slot.depthIntervalViews) {
+        if (mip) destroyVulkanImageView(device->device(), mip, nullptr);
+      }
+      slot.depthIntervalViews.clear();
+      destroyImage(slot.depthIntervals);
+    }
+    depthPyramidLevels = 0;
+    depthPyramidSubmitted = false;
+  }
+
   VkDescriptorSet createImageDescriptors(const ImageSlot& slot, const FrameResources& frame,
                                         VkDescriptorSetLayout layout, VkDescriptorPool descriptorPool,
                                         uint32_t historyIndex) {
@@ -142,7 +176,7 @@ struct ScreenReflectionPass::Impl {
     if (vkAllocateDescriptorSets(device->device(), &set, &descriptors) != VK_SUCCESS)
       throw std::runtime_error("could not allocate screen reflection descriptors");
 
-    const std::array<VkDescriptorImageInfo, 5> resources{{
+    const std::array<VkDescriptorImageInfo, 6> resources{{
         {{}, slot.opaqueCopy.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {{}, frame.sceneColor.view, VK_IMAGE_LAYOUT_GENERAL},
         // Lighting samples depth while stencil is writable. After lighting,
@@ -150,8 +184,11 @@ struct ScreenReflectionPass::Impl {
         {{}, frame.depthSamplingView, VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
         {{}, history[1u - historyIndex].view, VK_IMAGE_LAYOUT_GENERAL},
         {{}, history[historyIndex].view, VK_IMAGE_LAYOUT_GENERAL},
+        {{}, slot.depthIntervals.view ? slot.depthIntervals.view : frame.depthSamplingView,
+         slot.depthIntervals.view ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
+                                : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
     }};
-    constexpr std::array<uint32_t, 5> bindings{0, 1, 2, 8, 9};
+    constexpr std::array<uint32_t, 6> bindings{0, 1, 2, 8, 9, 10};
     std::array<VkWriteDescriptorSet, bindings.size()> writes{};
     for (uint32_t i = 0; i < writes.size(); ++i) {
       auto& write = writes[i];
@@ -168,12 +205,14 @@ struct ScreenReflectionPass::Impl {
     return descriptors;
   }
 
-  void createImage(Image& target, VkExtent2D size, VkFormat format, VkImageUsageFlags usage) {
+  void createImage(Image& target, VkExtent2D size, VkFormat format, VkImageUsageFlags usage,
+                   uint32_t levels = 1) {
     VkImageCreateInfo image{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     image.imageType = VK_IMAGE_TYPE_2D;
     image.format = format;
     image.extent = {size.width, size.height, 1};
-    image.mipLevels = image.arrayLayers = 1;
+    image.mipLevels = levels;
+    image.arrayLayers = 1;
     image.samples = VK_SAMPLE_COUNT_1_BIT;
     image.tiling = VK_IMAGE_TILING_OPTIMAL;
     image.usage = usage;
@@ -191,9 +230,116 @@ struct ScreenReflectionPass::Impl {
     view.image = target.handle;
     view.viewType = VK_IMAGE_VIEW_TYPE_2D;
     view.format = format;
-    view.subresourceRange = kColorRange;
+    view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
     if (createVulkanImageView(device->device(), &view, nullptr, &target.view) != VK_SUCCESS)
       throw std::runtime_error("could not create reflection image view");
+  }
+
+  void createDepthPyramid(const std::filesystem::path& shaderRoot,
+                          const FrameResourceManager& frames) {
+    const auto virtualLevels = static_cast<uint32_t>(std::bit_width(std::max(extent.width, extent.height)));
+    if (virtualLevels < 2 || !device->enabledFeatures().shaderStorageImageExtendedFormats) return;
+
+    // Mip zero is the existing native depth attachment. Store intervals only
+    // for coarser mips, starting at physical mip zero of this half-size image.
+    const uint32_t levels = virtualLevels - 1;
+    const VkExtent2D firstMip{std::max(extent.width >> 1u, 1u), std::max(extent.height >> 1u, 1u)};
+    VkImageFormatProperties format{};
+    if (vkGetPhysicalDeviceImageFormatProperties(device->physicalDevice(), kDepthIntervalFormat,
+            VK_IMAGE_TYPE_2D, VK_IMAGE_TILING_OPTIMAL, kDepthIntervalUsage, 0, &format) != VK_SUCCESS ||
+        firstMip.width > format.maxExtent.width || firstMip.height > format.maxExtent.height ||
+        levels > format.maxMipLevels) {
+      return;
+    }
+
+    const std::vector<VkDescriptorSetLayoutBinding> bindings{
+        {0, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+        {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+    depthPyramidSetLayout = pipelines.createDescriptorSetLayout(
+        bindings, std::vector<VkDescriptorBindingFlags>(bindings.size()));
+    depthPyramidPipelineLayout = pipelines.createPipelineLayout({depthPyramidSetLayout},
+        {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(gpu::HiZPushConstants)}});
+    depthPyramidPipeline = pipelines.createComputePipeline(
+        shaderRoot / "spv_shaders/screen_reflections_hiz.comp.spv", depthPyramidPipelineLayout,
+        "screen-reflections-hiz");
+    const auto setCount = static_cast<uint32_t>(images.size()) * levels;
+    depthPyramidPool = pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, setCount},
+        {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, setCount}}, setCount);
+    const std::vector<VkDescriptorSetLayout> layouts(levels, depthPyramidSetLayout);
+    for (size_t image = 0; image < images.size(); ++image) {
+      auto& slot = images[image];
+      createImage(slot.depthIntervals, firstMip, kDepthIntervalFormat, kDepthIntervalUsage, levels);
+      slot.depthIntervalViews.resize(levels);
+      slot.depthIntervalSets.resize(levels);
+      VkDescriptorSetAllocateInfo allocation{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+      allocation.descriptorPool = depthPyramidPool;
+      allocation.descriptorSetCount = levels;
+      allocation.pSetLayouts = layouts.data();
+      if (vkAllocateDescriptorSets(device->device(), &allocation, slot.depthIntervalSets.data()) != VK_SUCCESS)
+        throw std::runtime_error("could not allocate reflection depth mip descriptors");
+
+      VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+      view.image = slot.depthIntervals.handle;
+      view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+      view.format = kDepthIntervalFormat;
+      for (uint32_t mip = 0; mip < levels; ++mip) {
+        view.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1};
+        if (createVulkanImageView(device->device(), &view, nullptr, &slot.depthIntervalViews[mip]) != VK_SUCCESS)
+          throw std::runtime_error("could not create reflection depth mip view");
+        const VkDescriptorImageInfo source{{}, mip == 0 ? frames.frame(static_cast<uint32_t>(image))->depthSamplingView
+                                                        : slot.depthIntervalViews[mip - 1],
+            mip == 0 ? VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL};
+        const VkDescriptorImageInfo target{{}, slot.depthIntervalViews[mip], VK_IMAGE_LAYOUT_GENERAL};
+        const auto set = slot.depthIntervalSets[mip];
+        const std::array writes{
+            VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 0, 0, 1,
+                                 VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &source},
+            VkWriteDescriptorSet{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 2, 0, 1,
+                                 VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, &target}};
+        vkUpdateDescriptorSets(device->device(), static_cast<uint32_t>(writes.size()), writes.data(), 0, nullptr);
+      }
+    }
+    for (const auto& slot : images) {
+      const VkDescriptorImageInfo info{{}, slot.depthIntervals.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+      for (const auto set : slot.descriptors) {
+        const VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, nullptr, set, 10, 0, 1,
+                                         VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, &info};
+        vkUpdateDescriptorSets(device->device(), 1, &write, 0, nullptr);
+      }
+    }
+    depthPyramidLevels = virtualLevels;
+  }
+
+  void recordDepthPyramid(VkCommandBuffer command, const ImageSlot& slot) const {
+    if (depthPyramidLevels == 0) return;
+    constexpr auto compute = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+    constexpr auto read = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+    constexpr auto write = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
+    const uint32_t levels = depthPyramidLevels - 1;
+    const VkImageSubresourceRange mipRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, levels, 0, 1};
+    // Every mip is rebuilt from this frame's opaque depth before any tracing.
+    imageBarrier(command, slot.depthIntervals.handle, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
+                 compute, read, compute, write, mipRange);
+    vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, depthPyramidPipeline);
+    VkExtent2D source = extent;
+    for (uint32_t mip = 0; mip < levels; ++mip) {
+      const uint32_t virtualMip = mip + 1;
+      const VkExtent2D target{std::max(extent.width >> virtualMip, 1u),
+                              std::max(extent.height >> virtualMip, 1u)};
+      const gpu::HiZPushConstants constants{source.width, source.height, virtualMip, 0};
+      vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, depthPyramidPipelineLayout,
+                              0, 1, &slot.depthIntervalSets[mip], 0, nullptr);
+      vkCmdPushConstants(command, depthPyramidPipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT,
+                         0, sizeof(constants), &constants);
+      vkCmdDispatch(command, (target.width + 7) / 8, (target.height + 7) / 8, 1);
+      if (mip + 1 < levels) {
+        imageBarrier(command, slot.depthIntervals.handle, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
+                     compute, write, compute, read, {VK_IMAGE_ASPECT_COLOR_BIT, mip, 1, 0, 1});
+      }
+      source = target;
+    }
+    imageBarrier(command, slot.depthIntervals.handle, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                 compute, write | read, compute, read, mipRange);
   }
 
   void createHistory(bool enabled) {
@@ -240,7 +386,7 @@ struct ScreenReflectionPass::Impl {
     rayPipeline = pipelines.createComputePipeline(shaderRoot / "spv_shaders/screen_reflections_ray.comp.spv",
                                                   rayPipelineLayout, "screen-reflections-ray");
     const auto count = static_cast<uint32_t>(images.size()) * 2u;
-    rayPool = pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 3},
+    rayPool = pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 4},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, count * 2}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, count},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count * 4}}, count);
     for (uint32_t image = 0; image < images.size(); ++image)
@@ -289,7 +435,8 @@ void ScreenReflectionPass::createResources(const std::filesystem::path& shaderRo
       {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {8, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-      {9, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+      {9, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
   state.setLayout = state.pipelines.createDescriptorSetLayout(bindings, std::vector<VkDescriptorBindingFlags>(bindings.size()));
   state.pipelineLayout = state.pipelines.createPipelineLayout({frames.lightingLayout(),
       lightLayout, sceneLayout, state.setLayout},
@@ -299,11 +446,18 @@ void ScreenReflectionPass::createResources(const std::filesystem::path& shaderRo
       "screen-reflections");
   const auto count = static_cast<uint32_t>(frames.frameCount());
   state.createHistory(enableHistory);
-  state.pool = state.pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 6},
+  state.pool = state.pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 8},
       {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, count * 4}}, count * 2);
   state.images.resize(count);
   for (uint32_t image = 0; image < count; ++image)
     state.createSlot(state.images[image], *frames.frame(image));
+  try {
+    state.createDepthPyramid(shaderRoot, frames);
+  } catch (const std::exception& error) {
+    state.destroyDepthPyramid();
+    log::ContainerLogger::instance().renderer()->warn(
+        "Screen reflection depth pyramid unavailable: {}", error.what());
+  }
   if (!requestRayFallback || !state.device->rayQueriesEnabled()) return;
   VkPhysicalDeviceProperties properties{};
   vkGetPhysicalDeviceProperties(state.device->physicalDevice(), &properties);
@@ -331,12 +485,20 @@ bool ScreenReflectionPass::ready(const FrameRecordParams& frame) const {
 
 bool ScreenReflectionPass::wantsRayScene(const FrameRecordParams& frame) const {
   return rayFallbackAvailable() && frame.debug.screenReflections != ScreenReflectionMode::Off &&
+      !screenReflectionModeIsTraceDiagnostic(frame.debug.screenReflections) &&
       frame.runtime.activeTechnique == RenderTechniqueId::DeferredRaster && frame.debug.displayMode == 0;
 }
 
 bool ScreenReflectionPass::rayFallbackAvailable() const { return static_cast<bool>(impl_->rayPipeline); }
 bool ScreenReflectionPass::rayFallbackActive() const { return impl_->rayActive; }
 VkDeviceSize ScreenReflectionPass::allocationBytes() const { return impl_->bytes; }
+VkDeviceSize ScreenReflectionPass::depthPyramidAllocationBytes() const {
+  VkDeviceSize result = 0;
+  for (const auto& slot : impl_->images) result += slot.depthIntervals.bytes;
+  return result;
+}
+uint32_t ScreenReflectionPass::depthPyramidMipLevels() const { return impl_->depthPyramidLevels; }
+bool ScreenReflectionPass::depthPyramidUsed() const { return impl_->depthPyramidSubmitted; }
 bool ScreenReflectionPass::historyAvailable() const { return impl_->fullHistory; }
 bool ScreenReflectionPass::historyReprojected() const {
   return impl_->previous && impl_->previous->reprojected;
@@ -347,15 +509,17 @@ void ScreenReflectionPass::record(VkCommandBuffer command, const FrameRecordPara
   auto& state = *impl_;
   const auto& slot = state.images[frame.runtime.imageIndex];
   const auto mode = frame.debug.screenReflections;
-  const auto rayScene = rayFallbackAvailable() && frame.services.rayShadowManager
+  const auto rayScene = wantsRayScene(frame) && frame.services.rayShadowManager
       ? frame.services.rayShadowManager->surfaceBindings(frame.runtime.imageIndex) : RaySurfaceGpuBindings{};
   state.rayActive = static_cast<bool>(rayScene);
   const auto layout = state.rayActive ? state.rayPipelineLayout : state.pipelineLayout;
   const auto& pipeline = state.rayActive ? state.rayPipeline : state.pipeline;
   const bool saveHistory = state.fullHistory && screenReflectionModeUsesHistory(mode);
   const auto shader = pipeline.contentIdentity();
+  const auto depthPyramidShader = state.depthPyramidPipeline.contentIdentity();
   const bool reproject = saveHistory && state.previous && state.previous->mode == mode &&
-      state.previous->revisions == frame.reflectionHistory && state.previous->shader == shader;
+      state.previous->revisions == frame.reflectionHistory && state.previous->shader == shader &&
+      state.previous->depthPyramidShader == depthPyramidShader;
   const uint32_t index = state.previous ? 1u - state.previous->index : 0u;
   const auto descriptors = state.rayActive ? slot.rayDescriptors[index] : slot.descriptors[index];
   if (state.rayActive) state.bindRayScene(descriptors, rayScene);
@@ -399,6 +563,7 @@ void ScreenReflectionPass::record(VkCommandBuffer command, const FrameRecordPara
   dependency.memoryBarrierCount = 1;
   dependency.pMemoryBarriers = &gbuffer;
   vkCmdPipelineBarrier2(command, &dependency);
+  state.recordDepthPyramid(command, slot);
 
   vkCmdBindPipeline(command, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
   const std::array sets{deferredRasterDescriptorSet(frame, DeferredRasterDescriptorSetId::FrameLighting),
@@ -408,10 +573,8 @@ void ScreenReflectionPass::record(VkCommandBuffer command, const FrameRecordPara
   vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0,
       static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
   const ReflectionConstants constants{state.extent.width, state.extent.height,
-      mode == ScreenReflectionMode::Low ? 24u : 72u,
-      mode == ScreenReflectionMode::Confidence ? 1u : mode == ScreenReflectionMode::Distance ? 2u :
-      mode == ScreenReflectionMode::Source ? 3u : mode == ScreenReflectionMode::History ? 4u : 0u,
-      {saveHistory ? 1u : 0u, reproject ? 1u : 0u, 0u, 0u}};
+      screenReflectionStepLimit(mode), screenReflectionDebugView(mode),
+      {saveHistory ? 1u : 0u, reproject ? 1u : 0u, state.depthPyramidLevels, 0u}};
   if (state.rayActive) {
     const auto* clip = frame.pushConstants.bindless;
     const ReflectionRayConstants rayConstants{constants,
@@ -428,12 +591,14 @@ void ScreenReflectionPass::record(VkCommandBuffer command, const FrameRecordPara
       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
       VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
   state.recorded = true;
-  state.pending = saveHistory ? std::optional{Impl::History{frame.reflectionHistory, shader, mode, index, reproject}}
-                              : std::nullopt;
+  state.pending = saveHistory
+      ? std::optional{Impl::History{frame.reflectionHistory, shader, depthPyramidShader, mode, index, reproject}}
+      : std::nullopt;
 }
 
 void ScreenReflectionPass::onSubmitted(bool recorded) noexcept {
   auto& state = *impl_;
+  state.depthPyramidSubmitted = recorded && state.recorded && state.depthPyramidLevels > 0;
   if (recorded && state.recorded) {
     state.historyInitialized = true;
     state.previous = std::move(state.pending);

@@ -356,7 +356,8 @@ void printCommandLineHelp() {
   --no-ray-shadow-denoise        Disable ray shadow denoising
   --no-ray-query                Disable optional ray queries
   --experimental-opacity-micromaps Enable authored glTF micromaps on compatible ray-query devices
-  --screen-reflections MODE         off, low, high, confidence, distance, source, or history (deferred raster)
+  --screen-reflections MODE         off, low, high, confidence, distance, source, history,
+                                  hit-uv, or miss-reason (deferred raster)
   --screen-reflections-ray-query   Trace off-screen reflection misses on ray-query devices
   --volumetric-fog MODE            off, low, high, transmittance, scattering, or froxels
   --fog-density N                 Fog extinction density in inverse scene units
@@ -866,7 +867,10 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       else if (mode == "distance") config.screenReflections = Mode::Distance;
       else if (mode == "source") config.screenReflections = Mode::Source;
       else if (mode == "history") config.screenReflections = Mode::History;
-      else throw std::invalid_argument("--screen-reflections expects off, low, high, confidence, distance, source, or history");
+      else if (mode == "hit-uv") config.screenReflections = Mode::HitUv;
+      else if (mode == "miss-reason") config.screenReflections = Mode::MissReason;
+      else throw std::invalid_argument(
+          "--screen-reflections expects off, low, high, confidence, distance, source, history, hit-uv, or miss-reason");
     } else if (arg == "--screen-reflections-ray-query") {
       config.screenReflectionRayFallback = true;
     } else if (arg == "--volumetric-fog") {

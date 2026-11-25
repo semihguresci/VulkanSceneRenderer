@@ -317,6 +317,7 @@ $requiredFiles = @(
     'spv_shaders/temporal_resolve.comp.spv',
     'spv_shaders/screen_reflections.comp.spv',
     'spv_shaders/screen_reflections_ray.comp.spv',
+    'spv_shaders/screen_reflections_hiz.comp.spv',
     'spv_shaders/volumetric_fog_inject.comp.spv',
     'spv_shaders/volumetric_fog_integrate.comp.spv',
     'spv_shaders/volumetric_fog_composite.comp.spv',

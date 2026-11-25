@@ -46,7 +46,7 @@ foreach(shader IN ITEMS deferred_directional point_light tiled_lighting wirefram
     file(WRITE "${TEST_WORK_DIR}/fixture/shaders/${shader}.slang"
         "void vertMain() {}\nvoid fragMain() {}\n")
 endforeach()
-foreach(shader IN ITEMS screen_reflections volumetric_fog)
+foreach(shader IN ITEMS screen_reflections hiz_generate volumetric_fog)
     file(WRITE "${TEST_WORK_DIR}/fixture/shaders/${shader}.slang" "void computeMain() {}\n")
 endforeach()
 foreach(shader IN ITEMS scene_texture_sampling camera_projection light_edit lighting_scratch)
@@ -241,6 +241,8 @@ set(expected_outputs
         tile_light_cull.comp.spv
         screen_reflections.comp.spv
         screen_reflections_ray.comp.spv
+        hiz_generate.comp.spv
+        screen_reflections_hiz.comp.spv
         volumetric_fog_inject.comp.spv
         volumetric_fog_integrate.comp.spv
         volumetric_fog_composite.comp.spv
@@ -278,6 +280,15 @@ expect_output_invocations(1 ${expected_outputs})
 
 file(STRINGS "${invocation_log}" invocations)
 foreach(invocation IN LISTS invocations)
+    string(FIND "${invocation}" "hiz_generate.slang" hiz_source)
+    if(NOT hiz_source EQUAL -1)
+        string(FIND "${invocation}" "screen_reflections_hiz.comp.spv" reflection_hiz_output)
+        string(FIND "${invocation}" "-DHIZ_REFLECTION_NEAREST=1" reflection_hiz_define)
+        if((reflection_hiz_output EQUAL -1 AND NOT reflection_hiz_define EQUAL -1) OR
+           (NOT reflection_hiz_output EQUAL -1 AND reflection_hiz_define EQUAL -1))
+            message(FATAL_ERROR "Unexpected reflection Hi-Z variant flags: ${invocation}")
+        endif()
+    endif()
     string(FIND "${invocation}" "forward_opaque.slang" forward_source)
     if(forward_source EQUAL -1)
         continue()
@@ -379,4 +390,29 @@ set(unchanged_outputs ${expected_outputs})
 list(REMOVE_ITEM unchanged_outputs gbuffer.vert.spv gbuffer.frag.spv
     forward_opaque.vert.spv forward_opaque.frag.spv forward_opaque_ray.frag.spv
     forward_opaque_no_ddgi.frag.spv forward_opaque_ray_no_ddgi.frag.spv)
+
+file(APPEND "${TEST_WORK_DIR}/fixture/shaders/hiz_generate.slang"
+    "float changedHiZFixtureValue() { return 4.0; }\n")
+execute_process(
+    COMMAND "${CMAKE_COMMAND}" --build "${TEST_WORK_DIR}/build" --target shaders
+    RESULT_VARIABLE hiz_changed_build_result
+    OUTPUT_VARIABLE hiz_changed_build_stdout
+    ERROR_VARIABLE hiz_changed_build_stderr
+)
+if(NOT hiz_changed_build_result EQUAL 0)
+    message(FATAL_ERROR
+        "Expected changed Hi-Z shader build to succeed.\n"
+        "stdout:\n${hiz_changed_build_stdout}\n"
+        "stderr:\n${hiz_changed_build_stderr}")
+endif()
+count_slang_invocations(hiz_changed_invocation_count)
+math(EXPR hiz_changed_invocation_delta
+    "${hiz_changed_invocation_count} - ${forward_changed_invocation_count}")
+if(NOT hiz_changed_invocation_delta EQUAL 2)
+    message(FATAL_ERROR
+        "Expected changing hiz_generate.slang to rebuild its culling and reflection variants, "
+        "but fake slangc invocation delta was ${hiz_changed_invocation_delta}.")
+endif()
+expect_output_invocations(2 hiz_generate.comp.spv screen_reflections_hiz.comp.spv)
+list(REMOVE_ITEM unchanged_outputs hiz_generate.comp.spv screen_reflections_hiz.comp.spv)
 expect_output_invocations(1 ${unchanged_outputs})
