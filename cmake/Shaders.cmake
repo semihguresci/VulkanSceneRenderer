@@ -269,6 +269,9 @@ add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/screen_reflections.slang" "comput
     "${COMPILED_SHADERS_DIR}/screen_reflections_ray.comp.spv"
     -DSCREEN_REFLECTION_RAY_QUERY=1 -capability spvRayQueryKHR)
 
+add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/hiz_generate.slang" "computeMain"
+    "${COMPILED_SHADERS_DIR}/screen_reflections_hiz.comp.spv" -DHIZ_REFLECTION_NEAREST=1)
+
 foreach(FOG_STAGE inject integrate composite)
     string(TOUPPER "${FOG_STAGE}" FOG_DEFINE)
     add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/volumetric_fog.slang" "computeMain"

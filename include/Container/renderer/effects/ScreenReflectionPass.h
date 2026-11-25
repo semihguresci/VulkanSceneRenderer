@@ -34,6 +34,9 @@ class ScreenReflectionPass {
   [[nodiscard]] bool rayFallbackAvailable() const;
   [[nodiscard]] bool rayFallbackActive() const;
   [[nodiscard]] VkDeviceSize allocationBytes() const;
+  [[nodiscard]] VkDeviceSize depthPyramidAllocationBytes() const;
+  [[nodiscard]] uint32_t depthPyramidMipLevels() const;
+  [[nodiscard]] bool depthPyramidUsed() const;
   [[nodiscard]] bool historyAvailable() const;
   [[nodiscard]] bool historyReprojected() const;
   void record(VkCommandBuffer command, const FrameRecordParams& frame);
