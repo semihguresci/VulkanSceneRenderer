@@ -160,15 +160,23 @@ float3 reflectionHitRadiance(RaySurfacePoint hit, float3 view, float2 gradients)
             reflectionDirectVisibility(hit.position, geometricNormal, direction, length(area.position - hit.position));
     }
     float nDotV = saturate(dot(normal, view));
-    float3 kD = (1.0 - FresnelSchlickRoughness(nDotV, f0, roughness)) * (1.0 - metallic);
-    float3 diffuse = environmentIrradiance.SampleLevel(environmentSampler, RotateEnvironmentDirection(
-        normal, lights.environmentOrientation.xy), 0.0).rgb * kD * color;
+    float sampledOcclusion = reflectionTexture(m.occlusionTextureIndex, hit.uv,
+        m.occlusionTextureTransform, gradients).r;
+    float occlusion = saturate(FiniteScalarOr(
+        lerp(1.0, sampledOcclusion, saturate(m.occlusionStrength)), 1.0));
+    float2 brdf = brdfLut.SampleLevel(brdfSampler, float2(nDotV, roughness), 0.0);
+    float3 specularReflectance = SpecularIblReflectance(f0, brdf);
+    float3 diffuse = LambertIrradiance(environmentIrradiance.SampleLevel(
+        environmentSampler, RotateEnvironmentDirection(
+            normal, lights.environmentOrientation.xy), 0.0).rgb) *
+        DiffuseIblWeight(specularReflectance, metallic) * color * occlusion;
     float3 specularIbl = environmentSpecular.SampleLevel(environmentSampler, RotateEnvironmentDirection(
         reflect(-view, normal), lights.environmentOrientation.xy),
         roughness * max(float(lights.prefilteredMipCount) - 1.0, 0.0)).rgb;
-    float2 brdf = max(brdfLut.SampleLevel(brdfSampler, float2(nDotV, roughness), 0.0), 0.0.xx);
-    return radiance + max(lights.environmentIntensity, 0.0) *
-        (diffuse + EvaluateSpecularIblMultipleScattering(specularIbl, f0, brdf));
+    float3 indirectSpecular = max(Finite3Or(specularIbl, 0.0.xxx), 0.0.xxx) *
+        specularReflectance * SpecularIblOcclusion(nDotV, roughness, occlusion);
+    return radiance + max(FiniteScalarOr(lights.environmentIntensity, 0.0), 0.0) *
+        (diffuse + indirectSpecular);
 }
 
 struct ReflectionRayHit

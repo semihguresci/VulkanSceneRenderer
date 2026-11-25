@@ -2,6 +2,7 @@
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
+#include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 
 #include <algorithm>
 #include <array>
@@ -63,6 +64,7 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "PbrAuxiliary",
     "ScreenReflections",
     "VolumetricFog",
+    "OpenVdbVolume",
 };
 
 static_assert(kRenderPassNames.size() == kRenderPassIdCount);
@@ -218,6 +220,10 @@ constexpr std::array kLightingScheduleDependencies{
     RenderPassId::TileCull,
     RenderPassId::GTAO,
     RenderPassId::OitClear,
+};
+constexpr std::array kOpenVdbVolumeDependencies{RenderPassId::Lighting};
+constexpr std::array kOpenVdbVolumeOptionalScheduleDependencies{
+    RenderPassId::ScreenReflections,
 };
 constexpr std::array kTransformGizmosScheduleDependencies{
     RenderPassId::Lighting,
@@ -468,6 +474,23 @@ constexpr std::array kLightingWrites{
     RenderResourceId::SceneColor,
     RenderResourceId::OitStorage,
 };
+constexpr std::array kOpenVdbVolumeReads{
+    RenderResourceId::SceneColor,
+    RenderResourceId::SceneDepth,
+    RenderResourceId::CameraBuffer,
+    RenderResourceId::LightingData,
+};
+constexpr std::array kOpenVdbVolumeOptionalReads{
+    RenderResourceId::ShadowData,
+    RenderResourceId::ShadowAtlas,
+    RenderResourceId::LocalShadowData,
+    RenderResourceId::LocalShadowAtlas,
+    RenderResourceId::OitStorage,
+};
+constexpr std::array kOpenVdbVolumeWrites{
+    RenderResourceId::SceneColor,
+    RenderResourceId::OitStorage,
+};
 constexpr std::array kTransformGizmosReads{
     RenderResourceId::CameraBuffer,
     RenderResourceId::SceneColor,
@@ -663,6 +686,7 @@ bool isProtectedRenderPass(RenderPassId id) {
   case RenderPassId::TransparentPick:
   case RenderPassId::DepthToReadOnly:
   case RenderPassId::Lighting:
+  case RenderPassId::OpenVdbVolume:
   case RenderPassId::ExposureAdaptation:
   case RenderPassId::OitResolve:
   case RenderPassId::PostProcess:
@@ -691,6 +715,8 @@ std::span<const RenderPassId> renderPassDependencies(RenderPassId id) {
       return kTileCullDependencies;
     case RenderPassId::GTAO:
       return kGtaoDependencies;
+    case RenderPassId::OpenVdbVolume:
+      return kOpenVdbVolumeDependencies;
     case RenderPassId::ExposureAdaptation:
       return kExposureAdaptationDependencies;
     case RenderPassId::Bloom:
@@ -745,6 +771,8 @@ std::span<const RenderPassId> renderPassScheduleDependencies(RenderPassId id) {
       return kGtaoDependencies;
     case RenderPassId::Lighting:
       return kLightingScheduleDependencies;
+    case RenderPassId::OpenVdbVolume:
+      return kOpenVdbVolumeDependencies;
     case RenderPassId::TemporalVelocity:
       return kTemporalVelocityScheduleDependencies;
     case RenderPassId::TemporalResolve:
@@ -826,6 +854,8 @@ std::span<const RenderResourceId> renderPassResourceReads(RenderPassId id) {
       return kGtaoReads;
     case RenderPassId::Lighting:
       return kLightingReads;
+    case RenderPassId::OpenVdbVolume:
+      return kOpenVdbVolumeReads;
     case RenderPassId::TransformGizmos:
       return kTransformGizmosReads;
     case RenderPassId::ExposureAdaptation:
@@ -863,6 +893,8 @@ std::span<const RenderResourceId> renderPassOptionalResourceReads(
       return kShadowCascade3OptionalReads;
     case RenderPassId::Lighting:
       return kLightingOptionalReads;
+    case RenderPassId::OpenVdbVolume:
+      return kOpenVdbVolumeOptionalReads;
   case RenderPassId::ExposureAdaptation:
   case RenderPassId::Bloom:
     return kTemporalColorOptionalReads;
@@ -918,6 +950,8 @@ std::span<const RenderResourceId> renderPassResourceWrites(RenderPassId id) {
       return kGtaoWrites;
     case RenderPassId::Lighting:
       return kLightingWrites;
+    case RenderPassId::OpenVdbVolume:
+      return kOpenVdbVolumeWrites;
     case RenderPassId::TransformGizmos:
       return kTransformGizmosWrites;
     case RenderPassId::ExposureAdaptation:
@@ -946,6 +980,8 @@ std::span<const RenderPassId> renderPassOptionalScheduleDependencies(
       return kPbrAuxiliaryOptionalScheduleDependencies;
     case RenderPassId::DepthToReadOnly:
       return kDepthToReadOnlyOptionalScheduleDependencies;
+    case RenderPassId::OpenVdbVolume:
+      return kOpenVdbVolumeOptionalScheduleDependencies;
     default:
       return kNoDependencies;
   }
@@ -1589,6 +1625,8 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mixPointer(params.services.temporalManager);
   mixPointer(params.services.screenReflectionPass);
   mixPointer(params.services.volumetricFogPass);
+  mix(params.services.openVdbVolumeRenderer &&
+      params.services.openVdbVolumeRenderer->records(params));
   mix(static_cast<uint32_t>(params.volumetricFog.settings.mode));
   mixFloat(params.volumetricFog.settings.density);
   mixFloat(params.volumetricFog.settings.albedo);

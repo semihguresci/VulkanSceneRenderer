@@ -461,13 +461,10 @@ float4 fragMain(VSOutput input) : SV_Target0
             albedo.a, occlusion, bounceIntensity, input.pos);
     }
 
-    // IBL ambient lighting (split-sum approximation).
-    float3 kS_ibl = FresnelSchlickRoughness(NdotV, F0, roughness);
-    float3 kD_ibl = (1.0 - kS_ibl) * (1.0 - metallic);
-
+    // Use the same directional specular reflectance for both split-sum lobes.
     float3 irradiance =
-        DeferredFinite3Or(gIrradianceCubemap.Sample(envSampler, RotateEnvironmentDirection(normal, uLighting.environmentOrientation.xy)).rgb,
-                          0.0.xxx) *
+        LambertIrradiance(gIrradianceCubemap.Sample(envSampler,
+            RotateEnvironmentDirection(normal, uLighting.environmentOrientation.xy)).rgb) *
         environmentIntensity;
     irradiance = lerp(irradiance, DdgiDiffuseIrradiance(ddgi), ddgiCoverage);
     float3 diffuseIBL = irradiance * albedo.rgb * diffuseReflectionWeight;
@@ -485,8 +482,9 @@ float4 fragMain(VSOutput input) : SV_Target0
         DeferredFinite2Or(gBrdfLUT.Sample(brdfSampler, float2(NdotV, roughness)),
                           0.0.xx),
         0.0.xx);
-    float3 specularIBL =
-        EvaluateSpecularIblMultipleScattering(prefilteredColor, F0, brdf);
+    float3 specularReflectance = SpecularIblReflectance(F0, brdf);
+    float3 specularIBL = max(prefilteredColor, 0.0.xxx) * specularReflectance;
+    float3 kD_ibl = DiffuseIblWeight(specularReflectance, metallic);
 
     // Screen-space AO (GTAO).
     float ssao = 1.0;
@@ -496,9 +494,12 @@ float4 fragMain(VSOutput input) : SV_Target0
     }
 
     float diffuseAO = occlusion * ssao;
-    float specularOcclusion = saturate(pow(NdotV + diffuseAO, exp2(-16.0 * roughness - 1.0)) - 1.0 + diffuseAO);
-    specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
-    float3 ambientLighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
+    float specularOcclusion = SpecularIblOcclusion(NdotV, roughness, diffuseAO);
+    float3 diffuseFloor = ComputeDiffuseAmbientFloor(
+        albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity) *
+        ((1.0 - ddgiCoverage) * diffuseReflectionWeight);
+    float3 ambientLighting = kD_ibl * max(diffuseIBL * diffuseAO, diffuseFloor) +
+        specularIBL * specularOcclusion;
     if (extended.diffuseTransmissionFactor > 0.0)
     {
         // Incident light from the other hemisphere has independent probe
@@ -508,8 +509,8 @@ float4 fragMain(VSOutput input) : SV_Target0
             materialData, ddgiReceiverFlags, layerTerms.transmissionFactor,
             extended.diffuseTransmissionFactor, worldPosition,
             geometricNormal, normal, V);
-        float3 backIrradiance = DeferredFinite3Or(
-            gIrradianceCubemap.Sample(envSampler, RotateEnvironmentDirection(-normal, uLighting.environmentOrientation.xy)).rgb, 0.0.xxx) *
+        float3 backIrradiance = LambertIrradiance(gIrradianceCubemap.Sample(envSampler,
+            RotateEnvironmentDirection(-normal, uLighting.environmentOrientation.xy)).rgb) *
             environmentIntensity;
         backIrradiance = lerp(backIrradiance,
             DdgiDiffuseIrradiance(backDdgi), saturate(backDdgi.coverage));
@@ -517,9 +518,6 @@ float4 fragMain(VSOutput input) : SV_Target0
             extended.diffuseTransmissionColor *
             ExtendedPbrDiffuseTransmissionWeight(extended);
     }
-    ambientLighting += ComputeDiffuseAmbientFloor(
-        albedo.rgb, occlusion, ssao, environmentIntensity, bounceIntensity) *
-        ((1.0 - ddgiCoverage) * diffuseReflectionWeight);
     // Layer the environment response exactly once, using the geometry pass's
     // sampled factors. Direct lighting already evaluates these layers above.
     if (layerTerms.clearcoatFactor > 0.0)

@@ -40,14 +40,11 @@ DdgiLookupResult LookupDdgiDiffuseBackReceiver(GpuMaterial material, uint object
 
 // DDGI stores physical incident irradiance E. Apply the Lambertian 1/PI once
 // before the caller applies receiver albedo and diffuse Fresnel/metalness.
-// The existing environment fallback keeps its historical brightness convention;
-// switching to physically normalized DDGI can therefore change its brightness.
 float3 DdgiDiffuseIrradiance(DdgiLookupResult lookup)
 {
 #if defined(DDGI_DISABLED) && DDGI_DISABLED
     return 0.0.xxx;
 #else
-    return max(lookup.irradiance, 0.0.xxx) *
-        (max(uDdgi.intensityBias.x, 0.0) / PI);
+    return LambertIrradiance(lookup.irradiance) * max(uDdgi.intensityBias.x, 0.0);
 #endif
 }

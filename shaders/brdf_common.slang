@@ -242,10 +242,15 @@ float3 EvaluateDeferredPbrF0FromDielectricColor(
         dielectricF0Color, iridescenceTint);
 }
 
-float3 EvaluateSpecularIblMultipleScattering(float3 prefilteredColor,
-                                             float3 F0, float2 brdf)
+// The irradiance cube stores the cosine-weighted hemisphere integral.
+// Apply Lambert's BRDF before multiplying by receiver color.
+float3 LambertIrradiance(float3 irradiance)
 {
-    prefilteredColor = max(Finite3Or(prefilteredColor, 0.0.xxx), 0.0.xxx);
+    return max(Finite3Or(irradiance, 0.0.xxx), 0.0.xxx) / PI;
+}
+
+float3 SpecularIblReflectance(float3 F0, float2 brdf)
+{
     F0 = saturate(Finite3Or(F0, 0.04.xxx));
     brdf = max(Finite2Or(brdf, 0.0.xx), 0.0.xx);
     float3 singleScatter = max(F0 * brdf.x + brdf.y, 0.0.xxx);
@@ -255,7 +260,26 @@ float3 EvaluateSpecularIblMultipleScattering(float3 prefilteredColor,
     float3 multiScatter =
         singleScatter * averageFresnel * missingEnergy /
         max(1.0.xxx - averageFresnel * missingEnergy, 1e-4.xxx);
-    return prefilteredColor * (singleScatter + multiScatter);
+    return saturate(singleScatter + multiScatter);
+}
+
+float3 EvaluateSpecularIblMultipleScattering(float3 prefilteredColor,
+                                             float3 F0, float2 brdf)
+{
+    return max(Finite3Or(prefilteredColor, 0.0.xxx), 0.0.xxx) *
+        SpecularIblReflectance(F0, brdf);
+}
+
+float3 DiffuseIblWeight(float3 specularReflectance, float metallic)
+{
+    return (1.0.xxx - specularReflectance) * (1.0 - metallic);
+}
+
+float SpecularIblOcclusion(float nDotV, float roughness, float ambientOcclusion)
+{
+    float visibility = saturate(pow(nDotV + ambientOcclusion, exp2(-16.0 * roughness - 1.0)) -
+        1.0 + ambientOcclusion);
+    return lerp(1.0, visibility, 1.0 - roughness);
 }
 
 float SmoothRangeAttenuation(float distanceSq, float radius)

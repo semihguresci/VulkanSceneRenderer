@@ -27,18 +27,25 @@ pyramid is unavailable.
 See [Efficient GPU Screen-Space Ray Tracing](https://jcgt.org/published/0003/04/04/)
 and [FidelityFX Stochastic Screen-Space Reflections](https://gpuopen.com/manuals/fidelityfx_sdk/techniques/stochastic-screen-space-reflections/).
 
-For a valid hit, the pass blends the hit radiance into the receiver's base
-specular IBL using the existing split-sum BRDF. It removes the corresponding
-fraction of the original specular IBL. Rough surfaces use a depth- and
-normal-aware color filter, and confidence falls to zero by roughness 0.55.
-Confidence also fades near the screen edge and the trace limit. Misses keep
-the original lit pixels. Direct light, diffuse GI, clearcoat, and sheen keep
-their existing evaluation.
+The split-sum BRDF allocates specular energy once per receiver. The remaining
+energy is available to diffuse IBL in proportion to the dielectric share of
+the material. Baked diffuse irradiance and DDGI use the same Lambertian
+normalization before blending. Ambient fill sets a floor on the diffuse term
+inside that budget.
+
+For a valid hit, the reflection pass replaces a share of the receiver's base
+specular IBL. The screen hit spends its confidence first and the optional ray
+hit can spend the remaining share. Both use the receiver's specular
+reflectance, occlusion, and layer attenuation. Rough surfaces use a depth-
+and normal-aware color filter, and confidence falls to zero by roughness 0.55.
+Confidence also fades near the screen edge and trace limit. Misses keep the
+original lit pixels.
 
 The pass handles opaque and alpha-masked receivers. Transparency still
-composites after the opaque reflection pass. Transmission receivers and aerial
-perspective use the existing lighting route. Forward rendering and ray-shadow
-visibility views bypass the reflection pass.
+composites after the opaque reflection pass. Deferred OpenVDB media attenuate
+the reflected opaque scene before fog and temporal resolve. Transmission
+receivers and aerial perspective use the existing lighting route. Forward
+rendering and ray-shadow visibility views bypass the reflection pass.
 
 ## Trace diagnostics
 
@@ -101,7 +108,8 @@ neighborhood and rejects depth, normal, and material boundaries. The temporal
 filter reprojects the receiver into the
 previous jittered camera and tests reconstructed position, normal, material,
 hit material and source, hit distance, confidence, and radiance agreement.
-It averages only the signed specular correction. A current miss immediately
+It averages the signed specular correction per unit of replacement, then
+weights the result by the current confidence. A current miss immediately
 restores the existing IBL. Exposure, fog, transparency, and TAA or FSR are
 applied later.
 
@@ -115,6 +123,39 @@ Two packed RGBA32UI history images add 32 bytes per render pixel. History
 falls back to the deterministic trace if the 128 MiB budget or image
 allocation prevents it. The mirror direction and the confidence, distance,
 and source diagnostics remain deterministic.
+
+## IBL energy validation
+
+The furnace fixture renders white dielectric and metal receivers at four
+roughnesses under constant half- and unit-radiance environments. It compares
+matching, black, and brighter reflected cards in scene-linear EXR. Matching
+radiance leaves the IBL response within the readback tolerance, while the
+black card removes only the weighted specular response. The 0.28-roughness
+unit-radiance receivers measured 0.981 for the dielectric and 0.995 for the
+metal with SSR enabled.
+
+The comparison below uses the same unit environment and exposure. Before the
+diffuse normalization, the white dielectric field returned 3.02 units of
+radiance. It now returns 0.984.
+
+| Previous dielectric furnace | Corrected dielectric furnace |
+| --- | --- |
+| ![White dielectric brighter than the unit-radiance card](images/screen-space-reflections/furnace-before.png) | ![White dielectric and unit-radiance card at comparable brightness](images/screen-space-reflections/furnace-energy.png) |
+
+The screen-edge fixture checks the analytic confidence ramp through an
+off-screen exit. In the moving-camera case, a receiver's confidence fell from
+0.267 to 0.064. The frame with accepted history and the fresh frame both
+returned 0.49194 under half-radiance IBL. Use `--energy` in place of
+`--marcher` to rerun these fixtures.
+
+With the OpenVDB-enabled build and a purely absorbing medium, the difference
+between reflected and unreflected pixels matched the clear-scene difference
+multiplied by measured transmittance to within 0.00035 scene-linear units.
+The previous composition order differed by up to 0.038 in the same fixture.
+
+Under Vulkan synchronization validation at 480×360 on an RTX 2080 SUPER, the
+High pass measured 0.133 ms median over 24 frames and used 12,298,752 bytes.
+The previous build measured 0.132 ms with the same allocation.
 
 ## Off-screen fallback
 

@@ -130,6 +130,8 @@ float3 unpackReflectionNormal(uint bits)
     return SafeNormalize(components * (2.0 / 31.0) - 1.0, float3(0, 1, 0));
 }
 
+// History stores the signed correction per unit of replacement confidence.
+// Only the current sample determines how much of the base lobe is replaced.
 float3 filterReflection(int2 pixel, float3 world, float3 normal, uint materialIndex, uint hitKey,
     float hitDistance, float roughness, float confidence, float3 correction, out bool accepted,
     out uint4 stored)
@@ -511,25 +513,27 @@ void computeMain(uint3 id : SV_DispatchThreadID)
                 return;
             }
             float roughnessWeight = 1.0 - smoothstep(0.30, kMaxRoughness, roughness);
+            hit.confidence = roughnessWeight * saturate(hit.confidence);
             float fallbackConfidence = 0.0;
             float fallbackDistance = 0.0;
             uint fallbackMaterial = 0u;
 #if SCREEN_REFLECTION_RAY_QUERY
             ReflectionRayHit rayHit = {};
-            if (hit.confidence < 1.0 && roughnessWeight > 0.0)
+            float remainingConfidence = roughnessWeight - hit.confidence;
+            if (remainingConfidence > 0.0)
                 rayHit = traceFallbackReflection(world, normal, direction, roughness);
-            fallbackConfidence = (1.0 - hit.confidence) * rayHit.confidence * roughnessWeight;
+            fallbackConfidence = remainingConfidence * saturate(rayHit.confidence);
             fallbackDistance = rayHit.distance;
             fallbackMaterial = rayHit.materialIndex;
 #endif
-            hit.confidence *= roughnessWeight;
+            float replacementConfidence = hit.confidence + fallbackConfidence;
             if (settings.debugView == 1)
-                result.rgb = (hit.confidence + fallbackConfidence).xxx;
+                result.rgb = replacementConfidence.xxx;
             else if (settings.debugView == 2)
                 result.rgb = ((fallbackConfidence > hit.confidence ? fallbackDistance : hit.distance) / kMaxDistance).xxx;
             else if (settings.debugView == 3)
                 result.rgb = float3(0.0, hit.confidence, fallbackConfidence);
-            else if (hit.confidence + fallbackConfidence > 0.0)
+            else if (replacementConfidence > 0.0)
             {
                 // Replace precisely the base specular IBL already in the HDR
                 // input. Direct, diffuse, clearcoat, and sheen remain intact.
@@ -544,26 +548,26 @@ void computeMain(uint3 id : SV_DispatchThreadID)
                     RotateEnvironmentDirection(fallbackDirection, lights.environmentOrientation.xy),
                     roughness * max(float(lights.prefilteredMipCount) - 1.0, 0.0)).rgb *
                     max(lights.environmentIntensity, 0.0);
-                float ao = saturate(parameters.z);
+                float ao = saturate(FiniteScalarOr(parameters.z, 1.0));
                 if (lights.gtaoEnabled != 0u)
-                    ao *= saturate(ambientOcclusion.SampleLevel(aoSampler, reflectionPixelUv(pixel), 0.0));
-                float specularOcclusion = saturate(pow(nDotV + ao, exp2(-16.0 * roughness - 1.0)) - 1.0 + ao);
-                float scale = lerp(1.0, specularOcclusion, 1.0 - roughness) *
+                    ao *= saturate(FiniteScalarOr(
+                        ambientOcclusion.SampleLevel(aoSampler, reflectionPixelUv(pixel), 0.0), 1.0));
+                float scale = SpecularIblOcclusion(nDotV, roughness, ao) *
                     DeferredClearcoatBaseEnergyScale(layers.clearcoatFactor) *
                     DeferredSheenBaseEnergyScale(layers.sheenColor);
-                float3 originalIbl = EvaluateSpecularIblMultipleScattering(fallback, f0, brdf);
-                // Each route spends only its share of the original IBL.
-                // The ray branch fills the complement of screen confidence.
+                float3 originalRadiance = max(Finite3Or(fallback, 0.0.xxx), 0.0.xxx);
+                // Mix the two signed deltas independently of the amount of
+                // the original lobe that this frame will replace.
+                float rayShare = fallbackConfidence / replacementConfidence;
                 float3 change = 0.0.xxx;
                 if (hit.confidence > 0.0)
-                    change += hit.confidence * (EvaluateSpecularIblMultipleScattering(
-                        roughReflectionColor(hit, roughness), f0, brdf) - originalIbl);
+                    change += (1.0 - rayShare) * (max(Finite3Or(
+                        roughReflectionColor(hit, roughness), 0.0.xxx), 0.0.xxx) - originalRadiance);
 #if SCREEN_REFLECTION_RAY_QUERY
                 if (fallbackConfidence > 0.0)
-                    change += fallbackConfidence * (EvaluateSpecularIblMultipleScattering(
-                        rayHit.radiance, f0, brdf) - originalIbl);
+                    change += rayShare * (rayHit.radiance - originalRadiance);
 #endif
-                float3 correction = change * scale;
+                float3 correction = change * SpecularIblReflectance(f0, brdf) * scale;
                 if (all(isfinite(correction)))
                 {
                     bool fromRay = fallbackConfidence > hit.confidence;
@@ -573,9 +577,9 @@ void computeMain(uint3 id : SV_DispatchThreadID)
                     bool accepted;
                     correction = filterReflection(pixel, world, normal, materialIndex, hitKey,
                         fromRay ? fallbackDistance : hit.distance, roughness,
-                        hit.confidence + fallbackConfidence, correction, accepted, stored);
+                        replacementConfidence, correction, accepted, stored);
                     result.rgb = settings.debugView == 4u ? float(accepted).xxx :
-                        clamp(base.rgb + correction, 0.0.xxx, 65504.0.xxx);
+                        clamp(base.rgb + correction * replacementConfidence, 0.0.xxx, 65504.0.xxx);
                 }
             }
         }
