@@ -1,5 +1,6 @@
 #include "Container/geometry/GltfOpacityMicromaps.h"
 #include "Container/renderer/raytracing/RayScene.h"
+#include "Container/renderer/raytracing/RaySceneAcceleration.h"
 #include "Container/renderer/raytracing/RaySceneExtraction.h"
 #include "Container/renderer/raytracing/RayShadowSettings.h"
 #include "Container/utility/RayQuerySupport.h"
@@ -390,6 +391,26 @@ TEST(RayScene, ValidatesGeometryAndProviderLocalIdentities) {
   EXPECT_THROW(validateRayScene({geometries, instances}),
                std::invalid_argument);
   EXPECT_NO_THROW(validateRayScene({}));
+}
+
+TEST(RayScene, ChecksDeviceInstanceAndPerBlasPrimitiveLimits) {
+  const auto vertices = surfaceTestVertices();
+  const std::array<uint32_t, 6> indices{0, 1, 2, 2, 1, 0};
+  const std::array geometries{
+      RaySceneGeometry{{"mesh"}, 1, 1, vertices, indices},
+      RaySceneGeometry{{"bim-usd"}, 1, 1, vertices, indices}};
+  const std::array instances{
+      RaySceneInstance{0, 0}, RaySceneInstance{0, 1}, RaySceneInstance{1, 2}};
+  const RaySceneInput input{geometries, instances};
+  ASSERT_NO_THROW(validateRayScene(input));
+
+  // Four primitives across two BLASes can fit a two-primitive per-BLAS limit.
+  EXPECT_TRUE(raySceneBuildLimitFailure(input, 3, 2).empty());
+  EXPECT_EQ(raySceneBuildLimitFailure(input, 2, 2),
+            "ray scene exceeds device instance limit");
+  EXPECT_EQ(raySceneBuildLimitFailure(input, 3, 1),
+            "ray scene exceeds device primitive limit");
+  EXPECT_TRUE(raySceneBuildLimitFailure({}, 0, 0).empty());
 }
 
 TEST(RayExtraction, GpuObjectBindingsFollowDrawOrderAndKeepCpuProviderFallback) {

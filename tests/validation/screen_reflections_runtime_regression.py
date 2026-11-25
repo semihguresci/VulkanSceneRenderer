@@ -35,27 +35,29 @@ GPU_OPT_IN = "CONTAINER_RUN_GPU_VISUAL_REGRESSION"
 
 def fixture(path, roughness, card_color=(1, .015, .008, 1), *, card_center=CARD_CENTER,
             card_size=(.63, .55), lit_card=False, blocker=None, floor_patch=None, blocker_color=(0, 0, 0),
-            receiver_patches=None):
+            receiver_patches=None, blocker_setup=None, floor_normal=(0, 1, 0), floor_double_sided=False,
+            card_setup=None, card_back=False):
     asset = Asset()
 
-    def quad(positions, normal, material):
+    def quad(positions, normal, material, *, back=False):
+        indices = [0, 2, 1, 0, 3, 2] if back else [0, 1, 2, 0, 2, 3]
         return {"attributes": {"POSITION": asset.accessor("VEC3", positions),
                                "NORMAL": asset.accessor("VEC3", [normal] * 4)},
-                "indices": asset.accessor("SCALAR", [0, 1, 2, 0, 2, 3], 5123, indices=True),
+                "indices": asset.accessor("SCALAR", indices, 5123, indices=True),
                 "material": material}
 
-    def panel(center, half_size, material):
+    def panel(center, half_size, material, *, back=False):
         x, y, z = center
         w, h = half_size
         return quad([[x - w, y - h, z], [x + w, y - h, z],
-                     [x + w, y + h, z], [x - w, y + h, z]], [0, 0, 1], material)
+                     [x + w, y + h, z], [x - w, y + h, z]], [0, 0, -1 if back else 1], material, back=back)
 
     def material(color, metallic, level):
         return {"pbrMetallicRoughness": {"baseColorFactor": list(color),
                                          "metallicFactor": metallic, "roughnessFactor": level}}
 
     def floor(x, z, w, h, index):
-        return quad([[x - w, 0, z + h], [x + w, 0, z + h], [x + w, 0, z - h], [x - w, 0, z - h]], [0, 1, 0], index)
+        return quad([[x - w, 0, z + h], [x + w, 0, z + h], [x + w, 0, z - h], [x - w, 0, z - h]], floor_normal, index)
 
     floor_materials = [material((.95, .95, .95, 1), 1, roughness)]
     if receiver_patches is None:
@@ -64,19 +66,25 @@ def fixture(path, roughness, card_color=(1, .015, .008, 1), *, card_center=CARD_
     else:
         floor_materials = [material((1, 1, 1, 1), metallic, level) for _, _, _, _, metallic, level in receiver_patches]
         receivers = [floor(*patch[:4], index) for index, patch in enumerate(receiver_patches)]
+    if floor_double_sided:
+        for floor_material in floor_materials:
+            floor_material["doubleSided"] = True
     card_material = material(card_color, 0, 1)
     if not lit_card:
         card_material["extensions"] = {"KHR_materials_unlit": {}}
-    card = panel(card_center, card_size, len(floor_materials))
+    card = panel(card_center, card_size, len(floor_materials), back=card_back)
     asset.model.update(
         extensionsUsed=["KHR_materials_unlit"],
         meshes=[{"primitives": receivers}, {"primitives": [card]}],
         nodes=[{"mesh": 0, "name": "Mirror"}, {"mesh": 1, "name": "Red card"}],
         scenes=[{"nodes": [0, 1]}],
         materials=[*floor_materials, card_material])
+    if card_setup is not None:
+        card_setup(asset, card, card_material)
     if blocker:
         center, half_size, alpha = blocker
-        asset.model["meshes"].append({"primitives": [panel(center, half_size, len(asset.model["materials"]))]})
+        primitive = panel(center, half_size, len(asset.model["materials"]))
+        asset.model["meshes"].append({"primitives": [primitive]})
         asset.model["nodes"].append({"mesh": 2, "name": "Black blocker"})
         asset.model["scenes"][0]["nodes"].append(2)
         blocker_material = {"pbrMetallicRoughness": {"baseColorFactor": [*blocker_color, alpha]},
@@ -84,6 +92,8 @@ def fixture(path, roughness, card_color=(1, .015, .008, 1), *, card_center=CARD_
         if alpha < 1:
             blocker_material["alphaMode"] = "MASK"
             blocker_material["alphaCutoff"] = .5
+        if blocker_setup is not None:
+            blocker_setup(asset, primitive, blocker_material)
         asset.model["materials"].append(blocker_material)
     asset.write(path)
 
@@ -460,11 +470,240 @@ def verify_energy(output, capture, evidence):
     return result
 
 
+def ray_policy_blocker(profile):
+    def configure(asset, primitive, material):
+        if profile == "textured":
+            transform = "KHR_texture_transform"
+            asset.model["extensionsUsed"].append(transform)
+            asset.model.update(images=[{"uri": "ray-policy-alpha.png"}],
+                               samplers=[{"magFilter": 9728, "minFilter": 9728, "wrapS": 33071, "wrapT": 33071}],
+                               textures=[{"source": 0, "sampler": 0}])
+            primitive["attributes"]["TEXCOORD_0"] = asset.accessor("VEC2", [[.875, .5]] * 4)
+            primitive["attributes"]["TEXCOORD_1"] = asset.accessor("VEC2", [[0, 0], [1, 0], [1, 1], [0, 1]])
+            material.update(alphaMode="MASK", alphaCutoff=.5)
+            material["pbrMetallicRoughness"]["baseColorTexture"] = {
+                "index": 0, "texCoord": 0, "extensions": {transform: {"texCoord": 1, "scale": [.5, 1], "offset": [.375, 0]}}}
+        elif profile in ("flat-below", "flat-equal"):
+            alpha = float(np.nextafter(np.float32(.5), np.float32(0))) if profile == "flat-below" else .5
+            primitive["attributes"]["COLOR_0"] = asset.accessor("VEC4", [[1, 1, 1, alpha]] * 4)
+            material.update(alphaMode="MASK", alphaCutoff=.5)
+        elif profile == "blend":
+            material["pbrMetallicRoughness"]["baseColorFactor"][3] = .75
+            material["alphaMode"] = "BLEND"
+        elif profile == "transmission":
+            extension = "KHR_materials_transmission"
+            asset.model["extensionsUsed"].append(extension)
+            material.update(alphaMode="OPAQUE", emissiveFactor=material["pbrMetallicRoughness"]["baseColorFactor"][:3],
+                            extensions={extension: {"transmissionFactor": .9}})
+    return configure
+
+
+def verify_ray_materials(output, capture, center, card_size, target):
+    (x, y), receiver, hit, _ = analytic_hit(center, target)
+    assert hit[1] < 0, hit
+    region = np.s_[y - 1:y + 2, x - 1:x + 2]
+
+    def texture(asset, primitive, filename):
+        asset.model.update(images=[{"uri": filename}], textures=[{"source": 0}])
+        primitive["attributes"]["TEXCOORD_0"] = asset.accessor("VEC2", [[0, 0], [1, 0], [1, 1], [0, 1]])
+
+    def render(label, light, *, profile=None, hybrid=True):
+        return capture(f"ray-policy-{label}", "high", model=f"ray-policy-{profile or label}.gltf", target=target,
+                       linear=True, bounce=0, directional=1, light_direction=-light, hybrid=hybrid)[region]
+
+    spec_gloss = "KHR_materials_pbrSpecularGlossiness"
+    for name, alpha in (("spec-gloss-smooth", 230), ("spec-gloss-rough", 26)):
+        filename = f"ray-policy-{name}.png"
+        Image.new("RGBA", (4, 4), (255, 255, 255, alpha)).save(output / filename)
+
+        def gloss_setup(asset, primitive, material):
+            texture(asset, primitive, filename)
+            asset.model["extensionsUsed"].append(spec_gloss)
+            material["extensions"] = {spec_gloss: {"diffuseFactor": [.005, .005, .005, 1.],
+                                                   "specularFactor": [.6, .6, .6], "glossinessFactor": 1.,
+                                                   "specularGlossinessTexture": {"index": 0}}}
+
+        fixture(output / f"ray-policy-{name}.gltf", .045, card_center=center, card_size=card_size, lit_card=True,
+                card_setup=gloss_setup)
+
+    # Keep the half vector on the hit panel's +Z normal. The directional
+    # light also reaches the floor, so compare the added reflected radiance.
+    view = (EYE - receiver) * [1, -1, 1]
+    view /= np.linalg.norm(view)
+    aligned_light = view * [-1, -1, 1]
+    assert np.allclose((view + aligned_light)[:2], 0) and aligned_light[2] > 0
+    baseline = render("spec-gloss-screen", aligned_light, profile="spec-gloss-smooth", hybrid=False)
+    smooth = float((render("spec-gloss-smooth", aligned_light) - baseline).mean())
+    rough = float((render("spec-gloss-rough", aligned_light) - baseline).mean())
+    # At this view angle the capped GGX denominator predicts a glossy-to-rough
+    # highlight ratio of about 2.25 for the two authored alpha values.
+    assert rough > .02 and smooth > max(.10, 1.65 * rough), ("Incorrect packed glossiness response", smooth, rough)
+
+    normal_png = "ray-policy-tangent-normal.png"
+    normal_rgb = (242, 128, 183)
+    Image.new("RGB", (4, 4), normal_rgb).save(output / normal_png)
+
+    def normal_setup(asset, primitive, material):
+        texture(asset, primitive, normal_png)
+        primitive["attributes"]["TANGENT"] = asset.accessor("VEC4", [[1, 0, 0, 1]] * 4)
+        material.update(normalTexture={"index": 0}, doubleSided=True)
+
+    for name, back in (("tangent-front", False), ("tangent-back", True)):
+        fixture(output / f"ray-policy-{name}.gltf", .045, card_color=(.65, .55, .45, 1), card_center=center,
+                card_size=card_size, lit_card=True, card_setup=normal_setup, card_back=back)
+    tangent_light = np.array([.93, 0., .36])
+    tangent_light /= np.linalg.norm(tangent_light)
+    opposite_light = tangent_light * [-1, 1, 1]
+    authored_normal = np.asarray(normal_rgb) / 127.5 - 1.
+    assert authored_normal @ view > 0 and authored_normal @ tangent_light > .9 and authored_normal @ opposite_light < 0
+    front = render("tangent-front", tangent_light)
+    back = render("tangent-back", tangent_light)
+    dark = render("tangent-opposite", opposite_light, profile="tangent-front")
+    assert float(front.mean()) > .05 and float(dark.max()) < .005, (front, dark)
+    np.testing.assert_allclose(back, front, atol=.003, rtol=.015, err_msg="Back-face tangent map differs from front")
+
+    return dict(receiverPixel=[x, y], specularGlossiness=dict(smoothAlpha=230, roughAlpha=26,
+                smoothRadianceGain=smooth, roughRadianceGain=rough),
+                tangentNormal=dict(frontRgb=front.mean(axis=(0, 1)).tolist(), backRgb=back.mean(axis=(0, 1)).tolist(),
+                                   oppositeLightRgb=dark.mean(axis=(0, 1)).tolist()))
+
+
+def verify_ray_policy(output, capture, evidence, missing_renderer):
+    target = np.array([0., -.5, 0.])
+    center = np.array([.35, 2.8, -1.5])
+    card_size = (.45, .30)
+    plane = [-1, 0, 0, .35]
+    virtual = center * [1, -1, 1]
+    floor_hit = EYE + (virtual - EYE) * (EYE[1] / (EYE[1] + center[1]))
+    blocker = floor_hit + (center - floor_hit) * .86
+    blocker_size = (.50, .34)
+    for point, size in ((center, card_size), (blocker, blocker_size)):
+        assert all(project_point(point + [dx, dy, 0], target)[1] < 0
+                   for dx in (-size[0], size[0]) for dy in (-size[1], size[1])), point
+
+    # White in RGB isolates alpha coverage; 128/255 is above the cutoff
+    # when alpha remains linear. A UV0 or transform regression misses the stripe.
+    rgba = np.full((4, 16, 4), 255, dtype=np.uint8)
+    rgba[:, :, 3] = 0
+    rgba[:, 7:10, 3] = 128
+    Image.fromarray(rgba).save(output / "ray-policy-alpha.png")
+    profiles = ("opaque", "textured", "flat-below", "flat-equal", "blend", "transmission")
+    for profile in ("clear", *profiles):
+        options = {} if profile == "clear" else dict(blocker=(blocker, blocker_size, 1), blocker_color=(.008, 1, .015),
+                                                     blocker_setup=ray_policy_blocker(profile))
+        fixture(output / f"ray-policy-{profile}.gltf", .045, card_center=center, card_size=card_size, **options)
+
+    left, right = (analytic_hit(center + [dx, 0, 0], target) for dx in (-.24, .24))
+    probes, footprints = {}, {}
+    for side, ((x, y), receiver, projected, _) in (("left", left), ("right", right)):
+        assert projected[1] < 0 and receiver[0] < plane[3], (side, receiver, projected)
+        direction = (receiver - EYE) * [1, -1, 1]
+        target_hit = receiver + direction * ((center[2] - receiver[2]) / direction[2])
+        nearer_hit = receiver + direction * ((blocker[2] - receiver[2]) / direction[2])
+        u = .5 + (nearer_hit[0] - blocker[0]) / (2 * blocker_size[0])
+        transformed_u = .375 + .5 * u
+        assert (target_hit[0] < plane[3]) == (side == "left"), (side, target_hit)
+        assert (.4375 < transformed_u < .625) == (side == "left"), (side, u, transformed_u)
+        assert not (.4375 < u < .625), (side, u)
+        probes[side] = dict(receiverPixel=[x, y], projectedHitPixel=projected.tolist(), target=target_hit.tolist(),
+                            blockerUv=u, transformedU=transformed_u)
+        footprints[side] = np.s_[y - 1:y + 2, x - 1:x + 2]
+
+    def render(label, mode="high", *, profile="clear", hybrid=True, **options):
+        return capture(f"ray-policy-{label}", mode, model=f"ray-policy-{profile}.gltf", target=target, linear=True,
+                       environment=1, bounce=0, hybrid=hybrid, **options)
+
+    screen = render("screen-only", hybrid=False)
+    clear = render("hit")
+    source = render("source", "source")
+    disabled = render("queries-disabled", no_query=True)
+    np.testing.assert_array_equal(screen, disabled)
+    images = {profile: render(profile, profile=profile) for profile in profiles}
+    section_plan = {"schemaVersion": 1, "frames": 5, "sampleFrames": [5],
+                    "events": [{"frame": 1, "sectionPlane": plane}]}
+    sectioned, section_route = render("sectioned", sequence=section_plan)
+    section_screen, section_screen_route = render("sectioned-screen", sequence=section_plan, no_query=True)
+    assert section_route[5]["route"]["rayFallbackActive"] and not section_screen_route[5]["route"]["rayFallbackActive"]
+
+    for side, roi in footprints.items():
+        base, hit, opaque = (frame[roi].mean(axis=(0, 1)) for frame in (screen, clear, images["opaque"]))
+        assert .5 < base.min() and np.max(base) - np.min(base) < .01, (side, base)
+        assert hit[0] > max(hit[1:]) + .5 and opaque[1] > max(opaque[0], opaque[2]) + .5, (side, hit, opaque)
+        np.testing.assert_allclose(source[roi], np.broadcast_to([0, 0, 1], source[roi].shape), atol=.002, rtol=0)
+        references = {"textured": images["opaque"] if side == "left" else clear,
+                      "flat-below": clear, "flat-equal": images["opaque"], "blend": clear, "transmission": clear}
+        for profile, reference in references.items():
+            np.testing.assert_allclose(images[profile][roi], reference[roi], atol=.002, rtol=0,
+                                       err_msg=f"{profile} coverage on the {side}")
+        clipped = sectioned[5][roi].mean(axis=(0, 1))
+        if side == "left":
+            assert clipped[0] > max(clipped[1:]) + .5, (side, clipped)
+        else:
+            np.testing.assert_array_equal(sectioned[5][roi], section_screen[5][roi])
+            assert clipped.min() > .5 and np.max(clipped) - np.min(clipped) < .01, (side, clipped)
+        probes[side].update(screenRgb=base.tolist(), rayRgb=hit.tolist(), sectionRgb=clipped.tolist(),
+                            blockers={name: image[roi].mean(axis=(0, 1)).tolist() for name, image in images.items()})
+
+    def ray_scene(label):
+        telemetry = Path(evidence[f"ray-policy-{label}"]["telemetry"])
+        return json.loads(telemetry.read_text(encoding="utf-8"))["rayShadows"]
+
+    ray_receipt = ray_scene("hit")
+    assert ray_receipt["supported"] and ray_receipt["generation"] > 0 and ray_receipt["totalAllocatedBytes"] > 0, ray_receipt
+    build = ray_receipt["build"]
+    assert ray_scene("opaque")["build"]["instances"] > build["instances"], (ray_receipt, ray_scene("opaque"))
+    for profile in ("blend", "transmission"):
+        candidate = ray_scene(profile)["build"]
+        for counter in ("instances", "asAllocatedBytes", "inputAllocatedBytes"):
+            assert candidate[counter] == build[counter], (profile, counter, build, candidate)
+
+    self_target = np.zeros(3)
+    self_normal = np.array([0., .95, -.31])
+    self_normal /= np.linalg.norm(self_normal)
+    incoming = -EYE / np.linalg.norm(EYE)
+    reflected = incoming - 2 * (incoming @ self_normal) * self_normal
+    assert reflected[1] < -.05 < 0 < reflected @ self_normal, reflected
+    legacy_intersection = float(-.00025 * self_normal[1] / reflected[1])
+    assert .00025 < legacy_intersection < .004, legacy_intersection
+    self_model = "ray-policy-self-hit.gltf"
+    fixture(output / self_model, .045, card_center=np.array([0., 3., 7.5]), floor_normal=self_normal.tolist(),
+            floor_double_sided=True)
+    self_source = capture("ray-policy-self-hit", "source", model=self_model, target=self_target, hybrid=True,
+                          linear=True, bounce=0)
+    x, y = project(self_target, self_target)
+    assert np.all(self_source[y - 2:y + 3, x - 2:x + 3, 2] == 0.), (x, y, self_source[y, x])
+    result = dict(probes=probes, sectionPlane=plane, capabilityFallbackPixelExact=True, rayScene=ray_receipt,
+                  materials=verify_ray_materials(output, capture, center, card_size, target),
+                  selfHit=dict(receiverPixel=[x, y], oldHitDistanceMeters=legacy_intersection,
+                               rayConfidence=float(self_source[y, x, 2])))
+
+    if missing_renderer is not None:
+        off = capture("ray-policy-onscreen-off", "off", no_query=True, linear=True, bounce=0)
+        on = capture("ray-policy-onscreen-screen", "high", no_query=True, linear=True, bounce=0)
+        missing = capture("ray-policy-onscreen-missing-spv", "high", hybrid=True, linear=True, bounce=0,
+                          alternate=missing_renderer, ray_available=False)
+        hidden = render("offscreen-missing-spv", alternate=missing_renderer, ray_available=False)
+        np.testing.assert_array_equal(missing, on)
+        np.testing.assert_array_equal(hidden, screen)
+        (x, y), _, _, _ = analytic_hit()
+        assert missing[y, x, 0] > off[y, x, 0] + .5, (x, y, missing[y, x], off[y, x])
+        for label in ("ray-policy-onscreen-missing-spv", "ray-policy-offscreen-missing-spv"):
+            sample = evidence[label]
+            assert sample["resources"]["depthPyramidUsed"], sample
+            assert "Screen reflection ray fallback unavailable" in Path(sample["log"]).read_text(encoding="utf-8"), sample
+        result["missingRayShaderFallback"] = dict(onscreenPixelExact=True, offscreenPixelExact=True,
+                                                  screenHitPixel=[x, y], screenHitRgb=missing[y, x].tolist())
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--ray-fallback", action="store_true", help="Also verify off-screen ray hits on a ray-query device")
+    parser.add_argument("--ray-policy", action="store_true", help="Check ray reflection coverage and raster fallback policy")
+    parser.add_argument("--missing-ray-renderer", type=Path,
+                        help="With --ray-policy, check a staged runtime without the optional ray reflection shader")
     parser.add_argument("--temporal", action="store_true", help="Also verify reflection history with motion and cuts")
     parser.add_argument("--marcher", action="store_true", help="Run the focused raster-only Hi-Z and numeric EXR checks")
     parser.add_argument("--energy", action="store_true", help="Check scene-linear furnace energy and screen-edge fading")
@@ -481,6 +720,10 @@ def main():
         parser.error("--marcher is a focused run separate from --temporal and --ray-fallback")
     if args.energy and (args.marcher or args.temporal or args.ray_fallback):
         parser.error("--energy runs separately from --marcher, --temporal, and --ray-fallback")
+    if args.ray_policy and (args.energy or args.marcher or args.temporal or args.ray_fallback):
+        parser.error("--ray-policy runs separately from the other suites")
+    if args.missing_ray_renderer and not args.ray_policy:
+        parser.error("--missing-ray-renderer requires --ray-policy")
     if args.mip_zero_renderer and not args.marcher:
         parser.error("--mip-zero-renderer requires --marcher")
     renderer, output = args.renderer.resolve(), args.output.resolve()
@@ -499,14 +742,14 @@ def main():
 
     def capture(label, mode, *, model="mirror.gltf", forward=False, no_query=False, environment=0,
                 hybrid=False, target=TARGET, directional=0, sequence=None, taa=False, extent=(WIDTH, HEIGHT),
-                linear=False, alternate=None, hdr=None, bounce=None):
+                linear=False, alternate=None, hdr=None, bounce=None, ray_available=None, light_direction=(0, 0, -1)):
         executable = alternate if alternate else renderer
         image = output / (f"{label}.exr" if linear else f"{label}.png")
         command = [str(executable), "--hidden", "--no-ui", "--validation", "--import-scale", "1",
                    "--width", str(extent[0]), "--height", str(extent[1]), "--msaa", "1", "--taa" if taa else "--no-taa",
                    "--no-bloom", "--no-ddgi", "--ray-shadows", "raster", "--display-mode", "lit",
                    "--environment-intensity", str(environment), "--directional-intensity", str(directional),
-                   "--directional-direction", "0", "0", "-1", "--exposure", "1",
+                   "--directional-direction", *map(str, light_direction), "--exposure", "1",
                    "--camera-position", *map(str, EYE), "--camera-target", *map(str, target),
                    "--camera-fov", str(FOV), "--render-technique", "forward-raster" if forward else "deferred-raster",
                    "--screen-reflections", mode,
@@ -537,7 +780,7 @@ def main():
         log_path.write_text(log, encoding="utf-8")
         assert run.returncode == 0 and not validation_log_error(log), log_path
         layer = None
-        if args.marcher or args.energy or validation:
+        if args.marcher or args.energy or args.ray_policy or validation:
             matched = VALIDATION_INSERTED.search(log)
             assert matched, f"Could not confirm Khronos validation layer insertion: {log_path}"
             layer = file_identity(executable.parent / Path(matched[1]))
@@ -579,9 +822,10 @@ def main():
             assert receipt["screenReflections"]["allocationBytes"] >= math.prod(extent) * 8, receipt["screenReflections"]
         if hybrid:
             route = receipt["screenReflections"]
+            available = not no_query if ray_available is None else ray_available
             assert route["rayFallbackRequested"]
-            assert route["rayFallbackAvailable"] == (not no_query), route
-            assert route["rayFallbackActive"] == (not no_query and active), route
+            assert route["rayFallbackAvailable"] == available, route
+            assert route["rayFallbackActive"] == (available and active), route
         evidence[label] = {"pass": pass_state, "resources": receipt.get("screenReflections"), "image": str(image),
                            "telemetry": str(image.with_suffix(".telemetry.json")), "log": str(log_path), "command": command}
         if layer:
@@ -592,8 +836,9 @@ def main():
         with Image.open(image) as result:
             return np.array(result.convert("RGB"))
 
-    if args.marcher or args.energy:
+    if args.marcher or args.energy or args.ray_policy:
         fallback = args.mip_zero_renderer.resolve(strict=True) if args.mip_zero_renderer else None
+        missing = args.missing_ray_renderer.resolve(strict=True) if args.missing_ray_renderer else None
         renderer_id = file_identity(renderer)
         result = dict(passed=False, renderer=renderer_id, captures=evidence)
         try:
@@ -602,13 +847,27 @@ def main():
                 assert fallback_id["sha256"] == renderer_id["sha256"], "The staged mip-zero control uses another executable"
                 assert not (fallback.parent / "spv_shaders/screen_reflections_hiz.comp.spv").is_file(), fallback
                 result["mipZeroRenderer"] = fallback_id
+            if missing:
+                missing_id = file_identity(missing)
+                assert missing_id["sha256"] == renderer_id["sha256"], "The missing-ray control uses another executable"
+                expected_shader = "spv_shaders/screen_reflections_ray.comp.spv"
+                assert (renderer.parent / expected_shader).is_file() and not (missing.parent / expected_shader).exists()
+                for shader in ("screen_reflections.comp.spv", "screen_reflections_hiz.comp.spv"):
+                    original = file_identity(renderer.parent / "spv_shaders" / shader)
+                    staged = file_identity(missing.parent / "spv_shaders" / shader)
+                    assert original["sha256"] == staged["sha256"], (original, staged)
+                result["missingRayRenderer"] = missing_id
             if args.marcher:
                 result["marcher"] = verify_marcher(output, capture, evidence, fallback)
-            else:
+            elif args.energy:
                 result["energy"] = verify_energy(output, capture, evidence)
+            else:
+                result["rayPolicy"] = verify_ray_policy(output, capture, evidence, missing)
             assert file_identity(renderer) == renderer_id, "Renderer changed during SSR capture"
             if fallback:
                 assert file_identity(fallback) == fallback_id, "Staged mip-zero executable changed during capture"
+            if missing:
+                assert file_identity(missing) == missing_id, "Staged missing-ray executable changed during capture"
             result["passed"] = True
         except Exception as error:
             result["error"] = str(error)
@@ -617,8 +876,10 @@ def main():
             (output / "results.json").write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
         if args.marcher:
             print("PASS analytic SSR hit UV/distance, roughness, clipped exit, and Hi-Z at even and odd extents")
-        else:
+        elif args.energy:
             print("PASS constant-radiance dielectric and metal energy, roughness, and screen-edge fading")
+        else:
+            print("PASS off-screen ray coverage, section clipping, and requested raster fallback checks")
         return
 
     base = capture("mirror-off", "off")

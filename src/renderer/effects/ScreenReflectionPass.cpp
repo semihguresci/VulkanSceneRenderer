@@ -484,9 +484,8 @@ bool ScreenReflectionPass::ready(const FrameRecordParams& frame) const {
 }
 
 bool ScreenReflectionPass::wantsRayScene(const FrameRecordParams& frame) const {
-  return rayFallbackAvailable() && frame.debug.screenReflections != ScreenReflectionMode::Off &&
-      !screenReflectionModeIsTraceDiagnostic(frame.debug.screenReflections) &&
-      frame.runtime.activeTechnique == RenderTechniqueId::DeferredRaster && frame.debug.displayMode == 0;
+  return rayFallbackAvailable() && !frame.debug.fullWireframe() &&
+      !screenReflectionModeIsTraceDiagnostic(frame.debug.screenReflections) && ready(frame);
 }
 
 bool ScreenReflectionPass::rayFallbackAvailable() const { return static_cast<bool>(impl_->rayPipeline); }

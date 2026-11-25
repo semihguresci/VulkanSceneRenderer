@@ -203,6 +203,11 @@ struct RayShadowManager::Impl {
   std::string surfaceUnsupported;
   std::optional<uint64_t> rejectedSurfaceScene;
   std::string rejectedSurfaceReason;
+  struct BuildRejection {
+    uint64_t sceneHash;
+    std::string_view reason;
+  };
+  std::optional<BuildRejection> rejectedBuild;
   bool validHistory{false}, recorded{false}, enabled{false},
       surfaceRequested{false}, surfaceEnabled{false}, sceneEnabled{false},
       hasRayGeometry{false};
@@ -560,6 +565,7 @@ void RayShadowManager::prepare(VkExtent2D extent, uint32_t imageCount) {
   p.surfaceUnsupported.clear();
   p.rejectedSurfaceScene.reset();
   p.rejectedSurfaceReason.clear();
+  p.rejectedBuild.reset();
   p.recorded = false;
   p.invalidate();
   if (!p.fallback)
@@ -637,6 +643,7 @@ void RayShadowManager::update(
     // an optional-surface failure. Keep requests/modes for the next loaded model.
     p.rejectedSurfaceScene.reset();
     p.rejectedSurfaceReason.clear();
+    p.rejectedBuild.reset();
     p.surfaceUnsupported.clear();
   } else if (p.surfaceRequested) {
     if (!supported())
@@ -759,6 +766,17 @@ void RayShadowManager::update(
       }
     }
   }
+  const auto retireBuildRejectedScene = [&](std::string_view reason) {
+    p.surfaceUnsupported = reason;
+    p.enabled = p.surfaceEnabled = p.sceneEnabled = false;
+    p.data.read.limits.x = 0;
+    retireDisabledScene();
+  };
+  if (p.rejectedBuild && p.rejectedBuild->sceneHash == sceneHash) {
+    retireBuildRejectedScene(p.rejectedBuild->reason);
+    return;
+  }
+  p.rejectedBuild.reset();
   if (p.surfaceEnabled) {
     if (p.rejectedSurfaceScene == sceneHash) {
       // Repeating a failed optional extraction every frame would rebuild the
@@ -814,6 +832,14 @@ void RayShadowManager::update(
         return;
       }
       p.pending = std::move(compact);
+    }
+    const auto views = p.pending->geometry->geometryViews();
+    const RaySceneInput input{views, p.pending->instances.instances};
+    if (const auto reason = p.acceleration.buildLimitFailure(input); !reason.empty()) {
+      p.rejectedBuild = Impl::BuildRejection{sceneHash, reason};
+      p.rejectSurface(std::string(reason));
+      retireBuildRejectedScene(reason);
+      return;
     }
   }
   p.sceneHash = sceneHash;

@@ -4,6 +4,10 @@
 #include "ray_footprint_common.slang"
 #include "ray_surface_common.slang"
 
+// Match the GPU object/material flags used by the raster material evaluator.
+static const uint kReflectionMaterialFlagSpecularGlossiness = 0x8u;
+static const uint kReflectionMaterialFlagUnlit = 0x10u;
+
 [[vk::binding(10, 0)]] TextureCube<float4> environmentIrradiance;
 [[vk::binding(1, 1)]] StructuredBuffer<PointLightData> reflectionPointLights;
 [[vk::binding(2, 1)]] StructuredBuffer<AreaLightData> reflectionAreaLights;
@@ -96,28 +100,41 @@ float3 reflectionHitRadiance(RaySurfacePoint hit, float3 view, float2 gradients)
         m.baseColorTextureTransform, gradients).rgb, 0.0.xxx);
     float3 emission = max(m.emissiveColor * m.emissiveStrength * reflectionTexture(m.emissiveTextureIndex,
         hit.uv, m.emissiveTextureTransform, gradients).rgb, 0.0.xxx);
-    if ((flags & 0x10u) != 0u) return color + emission; // glTF unlit
+    if ((flags & kReflectionMaterialFlagUnlit) != 0u) return color + emission;
 
-    float3 normal = hit.shadingNormal;
+    float face = hit.frontFace != 0u ? 1.0 : -1.0;
+    float3 geometricNormal = hit.geometricNormal * face;
+    float3 normal = hit.shadingNormal * face;
     if (m.normalTextureIndex != kInvalidGpuMaterialTexture)
     {
         float3 tangentNormal = reflectionTexture(m.normalTextureIndex, hit.uv,
             m.normalTextureTransform, gradients).xyz * 2.0 - 1.0;
         tangentNormal.xy *= m.normalTextureScale;
-        normal = SafeNormalize(hit.tangent.xyz * tangentNormal.x + hit.bitangent * tangentNormal.y +
-            hit.shadingNormal * tangentNormal.z, hit.shadingNormal);
+        // Raster keeps the authored tangent on back faces and rebuilds the
+        // bitangent from the face-oriented normal.
+        normal = SafeNormalize(hit.tangent.xyz * tangentNormal.x +
+            (hit.bitangent * face) * tangentNormal.y + normal * tangentNormal.z, normal);
     }
-    float face = hit.frontFace != 0u ? 1.0 : -1.0;
-    float3 geometricNormal = hit.geometricNormal * face;
-    normal *= face;
     if (dot(normal, geometricNormal) <= 0.0 || dot(normal, view) <= 0.0) normal = geometricNormal;
     float4 mr = reflectionTexture(m.metallicRoughnessTextureIndex, hit.uv, m.metallicRoughnessTextureTransform, gradients);
     float metallic = saturate(m.metallicRoughness.x * mr.b * SelectGpuTextureChannel(
         reflectionTexture(m.metalnessTextureIndex, hit.uv, m.metalnessTextureTransform, gradients),
         m.metalnessTextureTransform, 0u));
-    float roughness = clamp(m.metallicRoughness.y * mr.g * SelectGpuTextureChannel(
-        reflectionTexture(m.roughnessTextureIndex, hit.uv, m.roughnessTextureTransform, gradients),
-        m.roughnessTextureTransform, 0u), 0.045, 1.0);
+    float4 roughnessSample = reflectionTexture(m.roughnessTextureIndex, hit.uv,
+        m.roughnessTextureTransform, gradients);
+    float roughness;
+    if ((flags & kReflectionMaterialFlagSpecularGlossiness) != 0u)
+    {
+        float glossiness = m.metallicRoughness.y * SelectGpuTextureChannel(
+            roughnessSample, m.roughnessTextureTransform, 3u);
+        roughness = 1.0 - saturate(glossiness);
+    }
+    else
+    {
+        roughness = m.metallicRoughness.y * mr.g * SelectGpuTextureChannel(
+            roughnessSample, m.roughnessTextureTransform, 0u);
+    }
+    roughness = clamp(roughness, 0.045, 1.0);
     float specular = saturate(m.specularFactor * SelectGpuTextureChannel(
         reflectionTexture(m.specularTextureIndex, hit.uv, m.specularTextureTransform, gradients),
         m.specularTextureTransform, 3u));
