@@ -777,7 +777,7 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
     auxiliary=std::make_unique<PbrAuxiliaryPass>(svc_.ctx.deviceWrapper,svc_.allocationManager,svc_.pipelineManager);
     auxiliary->createResources(activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory(),
         manager.descriptorSetLayout(),resources_.gBufferFormats.depthStencil,
-        msaaSampleCount_,depths,svc_.swapChainManager.extent());auxiliaryPass=auxiliary.get();
+        msaaSampleCount_,depths,sceneRenderExtent());auxiliaryPass=auxiliary.get();
   }
   std::vector<VkImageView> anisotropy,diffuse;
   if(auxiliaryPass && auxiliaryPass->ready()) for(uint32_t i=0;i<imageCount;++i) {
