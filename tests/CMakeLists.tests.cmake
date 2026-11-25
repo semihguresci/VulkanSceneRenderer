@@ -1480,6 +1480,15 @@ set_tests_properties(screen_reflections_ray_policy_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
     LABELS "requires-vulkan;requires-display;lighting;ray-query;visual-regression")
 
+add_test(NAME screen_reflections_denoise_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/screen_reflections_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/screen-reflections-denoise"
+            --denoise --managed-output --require-opt-in)
+set_tests_properties(screen_reflections_denoise_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
+    LABELS "requires-vulkan;requires-display;lighting;visual-regression")
+
 add_test(NAME volumetric_fog_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/volumetric_fog_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"

@@ -112,6 +112,7 @@ struct AppConfig {
   container::renderer::UpscaleSelection upscaling{};
   container::renderer::ScreenReflectionMode screenReflections{};
   bool screenReflectionRayFallback{};
+  bool screenReflectionHistory{true};
   container::renderer::VolumetricFogSettings volumetricFog{};
   uint32_t taaResetFrame{0};
   std::string renderTechnique{"deferred-raster"};

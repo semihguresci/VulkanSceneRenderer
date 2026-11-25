@@ -4280,6 +4280,10 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"depthPyramidUsed", subs_.screenReflectionPass && subs_.screenReflectionPass->depthPyramidUsed()},
         {"rayFallbackRequested", svc_.config.screenReflectionRayFallback},
         {"rayFallbackAvailable", subs_.screenReflectionPass && subs_.screenReflectionPass->rayFallbackAvailable()},
+        {"historyAllocationBytes",
+            subs_.screenReflectionPass ? subs_.screenReflectionPass->historyAllocationBytes() : 0},
+        {"surfaceIdAllocationBytes",
+            subs_.screenReflectionPass ? subs_.screenReflectionPass->surfaceIdAllocationBytes() : 0},
         {"historyAvailable", subs_.screenReflectionPass && subs_.screenReflectionPass->historyAvailable()},
         {"historyReprojected", subs_.screenReflectionPass && subs_.screenReflectionPass->historyReprojected()},
         {"rayFallbackActive", subs_.screenReflectionPass && subs_.deferredRasterFrameGraphContext &&
@@ -7003,8 +7007,8 @@ void RendererFrontend::createFrameResources() {
       reflections->createResources(container::util::executableDirectory(),
           *subs_.frameResourceManager, sceneExtent,
           subs_.lightingManager->lightDescriptorSetLayout(), subs_.sceneManager->descriptorSetLayout(),
-          svc_.config.screenReflectionRayFallback,
-          screenReflectionModeUsesHistory(svc_.config.screenReflections));
+          svc_.config.screenReflections, svc_.config.screenReflectionRayFallback,
+          svc_.config.screenReflectionHistory);
       subs_.screenReflectionPass = std::move(reflections);
     } catch (const std::exception& error) {
       container::log::ContainerLogger::instance().renderer()->warn(
@@ -10551,8 +10555,10 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
             ? static_cast<uint32_t>(container::ui::GBufferViewMode::ObjectSpaceNormals) : 0u)
       : static_cast<uint32_t>(displayMode);
   p.debug.screenReflections = svc_.config.screenReflections;
-  if (subs_.rayShadowManager && subs_.rayShadowManager->settings().mode != RayShadowMode::Raster &&
-      subs_.rayShadowManager->settings().debugLayer != 0)
+  if ((svc_.config.screenReflections != ScreenReflectionMode::Off &&
+       !graphPassScheduled(subs_.frameRecorder.get(), RenderPassId::ScreenReflections)) ||
+      (subs_.rayShadowManager && subs_.rayShadowManager->settings().mode != RayShadowMode::Raster &&
+       subs_.rayShadowManager->settings().debugLayer != 0))
     p.debug.screenReflections = ScreenReflectionMode::Off;
   const bool shadowAtlasVisible =
       p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
@@ -10585,6 +10591,59 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
       .cameraEpoch = subs_.temporalManager ? subs_.temporalManager->state().epoch() : 0u,
       .materialRevision = subs_.sceneManager ? subs_.sceneManager->materialRevision() : 0u,
       .lightRevision = subs_.lightingManager ? subs_.lightingManager->lightEditRevision() : 0u};
+  if (p.services.screenReflectionPass && p.services.screenReflectionPass->historyAvailable() &&
+      screenReflectionModeUsesHistory(p.debug.screenReflections) &&
+      p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster) {
+    auto &history = p.reflectionHistory;
+    history.primaryGeometryAsset = subs_.sceneController
+        ? subs_.sceneController->geometryAssetId().value() : 0u;
+    history.gtaoEnabled = hasGtaoResources(subs_.environmentManager.get()) &&
+        graphPassScheduled(subs_.frameRecorder.get(), RenderPassId::GTAO);
+    if (subs_.bimManager && subs_.bimManager->hasScene()) {
+      history.bimAsset = subs_.bimManager->geometryAssetId().value();
+      history.bimSemanticColor = p.bim.semanticColorMode;
+      const auto filter = currentBimDrawFilter();
+      uint64_t signature = 14695981039346656037ull;
+      const auto combine = [&](uint64_t value) {
+        signature = (signature ^ value) * 1099511628211ull;
+      };
+      const std::pair<bool, std::string_view> textFilters[]{
+          {filter.typeFilterEnabled, filter.type},
+          {filter.storeyFilterEnabled, filter.storey},
+          {filter.materialFilterEnabled, filter.material},
+          {filter.disciplineFilterEnabled, filter.discipline},
+          {filter.phaseFilterEnabled, filter.phase},
+          {filter.fireRatingFilterEnabled, filter.fireRating},
+          {filter.loadBearingFilterEnabled, filter.loadBearing},
+          {filter.statusFilterEnabled, filter.status}};
+      for (const auto &[enabled, value] : textFilters) {
+        const auto text = enabled ? value : std::string_view{};
+        combine(text.size());
+        for (const unsigned char byte : text)
+          combine(byte);
+      }
+      combine(static_cast<uint32_t>(filter.disciplinePreset));
+      combine(filter.phaseTimelineEnabled);
+      if (filter.phaseTimelineEnabled) {
+        combine(filter.phaseTimelineActiveIndex);
+        combine(filter.phaseTimelineShowExisting);
+        combine(filter.phaseTimelineShowNew);
+        combine(filter.phaseTimelineShowDemolished);
+        combine(filter.phaseTimelineGhostFuture);
+      }
+      combine(filter.isolateSelection);
+      combine(filter.hideSelection);
+      if (filter.isolateSelection || filter.hideSelection)
+        combine(filter.selectedObjectIndex);
+      combine(filter.drawBudgetEnabled ? filter.drawBudgetMaxObjects : 0u);
+      if (subs_.guiManager) {
+        const auto &layers = subs_.guiManager->bimLayerVisibilityState();
+        combine(layers.pointCloudVisible);
+        combine(layers.curvesVisible);
+      }
+      history.bimVisibilitySignature = signature;
+    }
+  }
   p.services.volumetricFogPass = subs_.volumetricFogPass.get();
   p.volumetricFog = {.settings = volumetricFogSettings_, .cameraData = &buffers_.cameraData,
       .lightSet = subs_.lightingManager ? subs_.lightingManager->lightDescriptorSet(imageIndex) : VK_NULL_HANDLE,

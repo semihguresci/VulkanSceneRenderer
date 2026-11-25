@@ -202,6 +202,7 @@ struct ReflectionRayHit
     float distance;
     float confidence;
     uint materialIndex;
+    uint instanceIndex;
 };
 
 ReflectionRayHit traceFallbackReflection(float3 position, float3 normal, float3 direction, float roughness)
@@ -227,6 +228,7 @@ ReflectionRayHit traceFallbackReflection(float3 position, float3 normal, float3 
         query.CommittedTriangleFrontFace());
     if (point.valid == 0u) return result;
     result.materialIndex = point.materialIndex;
+    result.instanceIndex = instanceIndex;
     result.distance = query.CommittedRayT();
     RayCone cone = {0.0, 2.0 / float(min(settings.extent.x, settings.extent.y)) + roughness * roughness};
     float2 gradients = RayConeGradient(cone, result.distance, point.geometricNormal, -direction, point.texelDensity);

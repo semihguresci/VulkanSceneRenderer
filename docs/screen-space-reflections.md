@@ -103,26 +103,78 @@ python -B tests/validation/screen_reflections_runtime_regression.py `
 ## Reflection history
 
 Low and high quality vary the reflected direction over a small roughness-scaled
-cone on each submitted frame. A spatial filter samples the screen hit
-neighborhood and rejects depth, normal, and material boundaries. The temporal
-filter reprojects the receiver into the
-previous jittered camera and tests reconstructed position, normal, material,
-hit material and source, hit distance, confidence, and radiance agreement.
+cone on each submitted frame with history enabled. The deferred graph copies
+opaque object IDs after the scene and BIM G-buffers, before transparent
+picking can overwrite them. Multisampled G-buffers resolve the integer ID
+from sample zero. The spatial filter samples the screen hit
+neighborhood and rejects object, depth, normal, and material boundaries.
+The temporal filter projects the receiver into the previous jittered camera.
+It checks reconstructed position, normal, hit distance, confidence, and
+radiance agreement, plus a 32-bit fingerprint of the receiver and contributing
+hit objects and materials. The fingerprint includes the screen/ray mix.
 It averages the signed specular correction per unit of replacement, then
 weights the result by the current confidence. A current miss immediately
 restores the existing IBL. Exposure, fog, transparency, and TAA or FSR are
 applied later.
 
-Camera cuts, material or light edits, resolution or technique changes, and
-shader replacement invalidate reuse. The previous camera and reflection
-history advance on a successful graphics submission. Moving receivers that
-cannot match the previous surface use their current reflection sample. This
-history uses the last submitted frame even when TAA is off.
+Camera cuts, material or light edits, resolution or technique changes, shader
+replacement, BIM visibility and semantic color changes, and ray topology
+changes invalidate reuse. The previous camera and reflection history advance
+on a successful graphics submission. A moving receiver that fails the surface
+tests uses its current reflection sample. History uses the last submitted
+frame with TAA enabled or disabled.
 
-Two packed RGBA32UI history images add 32 bytes per render pixel. History
-falls back to the deterministic trace if the 128 MiB budget or image
-allocation prevents it. The mirror direction and the confidence, distance,
-and source diagnostics remain deterministic.
+Two packed RGBA32UI history images use 32 bytes per render pixel before
+allocation alignment. Each frame resource also owns a four-byte-per-pixel
+opaque ID snapshot. `--no-screen-reflections-history` uses a deterministic
+trace with the spatial filter. The renderer uses that trace when the history
+allocation is unavailable or exceeds the 128 MiB history cap. When the ID
+snapshot is unavailable, the spatial filter uses material, depth, and normal
+tests. The confidence, distance, and source diagnostics remain deterministic.
+
+### Temporal validation
+
+The moving-card fixture measures the first frame after a disocclusion against
+the same frame with a fresh history. When the foreground card revealed a
+second card using the same material, the previous filter kept up to 44.1% of
+the old color across the 9×9 patch. All 81 pixels now match the fresh frame
+exactly. The `history` view shows complete rejection in the patch on that frame
+and reuse of the new card on the next frame. A card that moves out of the
+reflection and reveals the environment also matches its fresh frame.
+At 4× MSAA, the replacement card likewise matched the fresh frame across all
+81 pixels.
+
+| Stale color in the reflected card | First frame after rejecting the previous card |
+| --- | --- |
+| ![Warm rectangular trail in the center of the reflected card](images/screen-space-reflections/temporal-surface-swap-before.png) | ![The revealed card reflected with uniform color](images/screen-space-reflections/temporal-surface-swap-after.png) |
+
+On the stationary rough mirror, temporal accumulation reduced per-pixel
+frame-to-frame RMS variation from 0.02168 to 0.00697 in scene-linear RGB.
+Mean radiance moved from 0.17160 to 0.17107. The tests compare matching rough
+ray samples by resetting only temporal reuse for the spatial control.
+
+At 480×360 on an RTX 2080 SUPER with driver 610.88, the median High pass time
+over 24 frames was 0.160 ms before and 0.135 ms after the filter change.
+The new ID copy took 0.007 ms median, and the two passes together took
+0.142 ms median. Total reflection allocation went from 12,298,752 to
+14,510,592 bytes. The ID snapshots account for the 2,211,840-byte increase.
+Disabling history kept the spatial filter and reduced the history allocation
+from 5,898,240 to 1,024 bytes for the placeholder images.
+
+The 129-capture suite passed Khronos 1.4.363.1 synchronization validation.
+It also covered manual reset, camera cuts, technique switches, material and
+light edits, section clipping, scene reload, and a resize to 483×363. A BIM
+storey filter separately reset reflection reuse at the first changed frame
+while the TAA epoch stayed constant.
+
+Run the disocclusion, roughness, fallback, and lifecycle fixtures with the
+same dependencies as the Hi-Z fixture.
+
+```powershell
+python -B tests/validation/screen_reflections_runtime_regression.py `
+  --renderer <renderer.exe> --output build/ssr-denoise --managed-output `
+  --denoise --validation-manifest <VkLayer_khronos_validation.json>
+```
 
 ## IBL energy validation
 

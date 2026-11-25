@@ -2,6 +2,8 @@
 
 #include <gtest/gtest.h>
 
+#include <limits>
+
 namespace {
 
 using namespace container::renderer;
@@ -39,6 +41,17 @@ TEST(ScreenReflectionSettingsTests, TraceDiagnosticsUseShaderModesWithoutHistory
     EXPECT_EQ(screenReflectionModeUsesHistory(diagnostic.mode), diagnostic.usesHistory);
     EXPECT_EQ(screenReflectionModeIsTraceDiagnostic(diagnostic.mode), diagnostic.tracesScreenOnly);
   }
+}
+
+TEST(ScreenReflectionSettingsTests, HistoryBudgetCoversBothImagesWithoutMultiplicationOverflow) {
+  EXPECT_TRUE(screenReflectionHistoryFits(1920, 1080));
+  EXPECT_TRUE(screenReflectionHistoryFits(2048, 2048));
+  EXPECT_FALSE(screenReflectionHistoryFits(2048, 2049));
+  EXPECT_FALSE(screenReflectionHistoryFits(3840, 2160));
+  EXPECT_FALSE(screenReflectionHistoryFits(0, 360));
+  EXPECT_FALSE(screenReflectionHistoryFits(480, 0));
+  constexpr auto maxDimension = std::numeric_limits<uint32_t>::max();
+  EXPECT_FALSE(screenReflectionHistoryFits(maxDimension, maxDimension));
 }
 
 } // namespace

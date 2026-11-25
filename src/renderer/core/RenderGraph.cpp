@@ -65,6 +65,7 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "ScreenReflections",
     "VolumetricFog",
     "OpenVdbVolume",
+    "ReflectionSurfaceIds",
 };
 
 static_assert(kRenderPassNames.size() == kRenderPassIdCount);
@@ -116,6 +117,7 @@ constexpr std::array<std::string_view, kRenderResourceIdCount>
         "DdgiIrradiance",
         "GBufferAnisotropy",
         "GBufferDiffuseTransmission",
+        "ReflectionSurfaceIds",
 };
 
 static_assert(kRenderResourceNames.size() == kRenderResourceIdCount);
@@ -191,7 +193,9 @@ constexpr std::array kDepthToReadOnlyOptionalScheduleDependencies{
 constexpr std::array kTransparentPickOptionalScheduleDependencies{
     RenderPassId::PbrAuxiliary,
     RenderPassId::BimGBuffer,
+    RenderPassId::ReflectionSurfaceIds,
 };
+constexpr std::array kReflectionSurfaceIdsOptionalScheduleDependencies{RenderPassId::BimGBuffer};
 constexpr std::array kOitClearScheduleDependencies{RenderPassId::GBuffer};
 constexpr std::array kShadowCascade0ScheduleDependencies{
     RenderPassId::ShadowCullCascade0,
@@ -681,6 +685,7 @@ bool isProtectedRenderPass(RenderPassId id) {
   case RenderPassId::DdgiUpdate:
   case RenderPassId::DepthPrepass:
   case RenderPassId::GBuffer:
+  case RenderPassId::ReflectionSurfaceIds:
   case RenderPassId::PbrAuxiliary:
   case RenderPassId::OitClear:
   case RenderPassId::TransparentPick:
@@ -976,6 +981,8 @@ std::span<const RenderPassId> renderPassOptionalScheduleDependencies(
       return kGBufferOptionalScheduleDependencies;
     case RenderPassId::TransparentPick:
       return kTransparentPickOptionalScheduleDependencies;
+    case RenderPassId::ReflectionSurfaceIds:
+      return kReflectionSurfaceIdsOptionalScheduleDependencies;
     case RenderPassId::PbrAuxiliary:
       return kPbrAuxiliaryOptionalScheduleDependencies;
     case RenderPassId::DepthToReadOnly:

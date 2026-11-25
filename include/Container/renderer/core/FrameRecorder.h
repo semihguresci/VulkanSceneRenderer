@@ -317,6 +317,11 @@ struct FrameScreenReflectionHistory {
   uint32_t cameraEpoch{};
   uint64_t materialRevision{};
   uint64_t lightRevision{};
+  uint64_t primaryGeometryAsset{};
+  uint64_t bimAsset{};
+  uint64_t bimVisibilitySignature{};
+  uint32_t bimSemanticColor{};
+  bool gtaoEnabled{};
   bool operator==(const FrameScreenReflectionHistory&) const = default;
 };
 

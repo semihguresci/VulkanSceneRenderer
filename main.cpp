@@ -359,6 +359,7 @@ void printCommandLineHelp() {
   --screen-reflections MODE         off, low, high, confidence, distance, source, history,
                                   hit-uv, or miss-reason (deferred raster)
   --screen-reflections-ray-query   Trace off-screen reflection misses on ray-query devices
+  --no-screen-reflections-history  Use reflections without temporal accumulation
   --volumetric-fog MODE            off, low, high, transmittance, scattering, or froxels
   --fog-density N                 Fog extinction density in inverse scene units
   --fog-albedo N                  Fog scattering albedo [0,1]
@@ -873,6 +874,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
           "--screen-reflections expects off, low, high, confidence, distance, source, history, hit-uv, or miss-reason");
     } else if (arg == "--screen-reflections-ray-query") {
       config.screenReflectionRayFallback = true;
+    } else if (arg == "--no-screen-reflections-history") {
+      config.screenReflectionHistory = false;
     } else if (arg == "--volumetric-fog") {
       const auto mode = container::renderer::parseVolumetricFogMode(requireValue(argc, argv, i, arg));
       if (!mode)

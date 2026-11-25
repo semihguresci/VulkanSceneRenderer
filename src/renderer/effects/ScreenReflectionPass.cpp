@@ -23,7 +23,6 @@ constexpr auto kColorFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr auto kHistoryFormat = VK_FORMAT_R32G32B32A32_UINT;
 constexpr auto kDepthIntervalFormat = VK_FORMAT_R32G32_SFLOAT;
 constexpr auto kDepthIntervalUsage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT;
-constexpr VkDeviceSize kHistoryBudget = 128 * 1024 * 1024;
 constexpr VkImageSubresourceRange kColorRange{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
 constexpr VkImageSubresourceLayers kColorLayers{VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
 
@@ -74,9 +73,11 @@ struct ScreenReflectionPass::Impl {
   struct ImageSlot {
     Image opaqueCopy;
     Image depthIntervals;
+    Image surfaceIds;
     std::vector<VkImageView> depthIntervalViews;
     std::vector<VkDescriptorSet> depthIntervalSets;
     VkImage sceneColor{VK_NULL_HANDLE};
+    VkImage pickIds{VK_NULL_HANDLE};
     std::array<VkDescriptorSet, 2> descriptors{};
     std::array<VkDescriptorSet, 2> rayDescriptors{};
   };
@@ -85,6 +86,7 @@ struct ScreenReflectionPass::Impl {
     FrameScreenReflectionHistory revisions;
     std::shared_ptr<const void> shader;
     std::shared_ptr<const void> depthPyramidShader;
+    uint64_t rayTopology{};
     ScreenReflectionMode mode{};
     uint32_t index{};
     bool reprojected{};
@@ -128,7 +130,10 @@ struct ScreenReflectionPass::Impl {
     pipelines.destroyDescriptorPool(pool);
     pipelines.destroyDescriptorSetLayout(setLayout);
     destroyDepthPyramid();
-    for (auto& slot : images) destroyImage(slot.opaqueCopy);
+    for (auto& slot : images) {
+      destroyImage(slot.opaqueCopy);
+      destroyImage(slot.surfaceIds);
+    }
     for (auto& image : history) destroyImage(image);
   }
 
@@ -176,7 +181,7 @@ struct ScreenReflectionPass::Impl {
     if (vkAllocateDescriptorSets(device->device(), &set, &descriptors) != VK_SUCCESS)
       throw std::runtime_error("could not allocate screen reflection descriptors");
 
-    const std::array<VkDescriptorImageInfo, 6> resources{{
+    const std::array<VkDescriptorImageInfo, 7> resources{{
         {{}, slot.opaqueCopy.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         {{}, frame.sceneColor.view, VK_IMAGE_LAYOUT_GENERAL},
         // Lighting samples depth while stencil is writable. After lighting,
@@ -187,8 +192,10 @@ struct ScreenReflectionPass::Impl {
         {{}, slot.depthIntervals.view ? slot.depthIntervals.view : frame.depthSamplingView,
          slot.depthIntervals.view ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL
                                 : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL},
+        {{}, slot.surfaceIds.view ? slot.surfaceIds.view : frame.pickId.view,
+         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
     }};
-    constexpr std::array<uint32_t, 6> bindings{0, 1, 2, 8, 9, 10};
+    constexpr std::array<uint32_t, 7> bindings{0, 1, 2, 8, 9, 10, 11};
     std::array<VkWriteDescriptorSet, bindings.size()> writes{};
     for (uint32_t i = 0; i < writes.size(); ++i) {
       auto& write = writes[i];
@@ -343,23 +350,41 @@ struct ScreenReflectionPass::Impl {
   }
 
   void createHistory(bool enabled) {
-    fullHistory = enabled &&
-        VkDeviceSize{extent.width} * extent.height * 32 <= kHistoryBudget;
-    if (fullHistory) {
+    if (enabled && screenReflectionHistoryFits(extent.width, extent.height)) {
       try {
         for (auto& image : history)
           createImage(image, extent, kHistoryFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
-        return;
+        if (historyBytes() <= kScreenReflectionHistoryBudget) {
+          fullHistory = true;
+          return;
+        }
       } catch (const std::exception& error) {
-        for (auto& image : history) destroyImage(image);
-        fullHistory = false;
         log::ContainerLogger::instance().renderer()->warn(
             "Screen reflection history unavailable: {}", error.what());
       }
+      for (auto& image : history) destroyImage(image);
     }
     // The same pipelines support diagnostic views and the no-history route.
     for (auto& image : history)
       createImage(image, {1, 1}, kHistoryFormat, VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_STORAGE_BIT);
+  }
+
+  VkDeviceSize historyBytes() const { return history[0].bytes + history[1].bytes; }
+
+  bool createSurfaceIds(const FrameResourceManager& frames) {
+    try {
+      for (uint32_t image = 0; image < images.size(); ++image) {
+        createImage(images[image].surfaceIds, extent, VK_FORMAT_R32_UINT,
+                    VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT);
+        images[image].pickIds = frames.frame(image)->pickId.image;
+      }
+      return true;
+    } catch (const std::exception& error) {
+      for (auto& slot : images) destroyImage(slot.surfaceIds);
+      log::ContainerLogger::instance().renderer()->warn(
+          "Screen reflection surface IDs unavailable: {}", error.what());
+      return false;
+    }
   }
 
   void createSlot(ImageSlot& slot, const FrameResources& frame) {
@@ -386,7 +411,7 @@ struct ScreenReflectionPass::Impl {
     rayPipeline = pipelines.createComputePipeline(shaderRoot / "spv_shaders/screen_reflections_ray.comp.spv",
                                                   rayPipelineLayout, "screen-reflections-ray");
     const auto count = static_cast<uint32_t>(images.size()) * 2u;
-    rayPool = pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 4},
+    rayPool = pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 5},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, count * 2}, {VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, count},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, count * 4}}, count);
     for (uint32_t image = 0; image < images.size(); ++image)
@@ -426,8 +451,8 @@ ScreenReflectionPass::~ScreenReflectionPass() = default;
 void ScreenReflectionPass::createResources(const std::filesystem::path& shaderRoot,
                                            const FrameResourceManager& frames, VkExtent2D extent,
                                            VkDescriptorSetLayout lightLayout,
-                                           VkDescriptorSetLayout sceneLayout, bool requestRayFallback,
-                                           bool enableHistory) {
+                                           VkDescriptorSetLayout sceneLayout, ScreenReflectionMode mode,
+                                           bool requestRayFallback, bool enableHistory) {
   auto& state = *impl_;
   state.extent = extent;
   const std::vector<VkDescriptorSetLayoutBinding> bindings{
@@ -436,7 +461,8 @@ void ScreenReflectionPass::createResources(const std::filesystem::path& shaderRo
       {2, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {8, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
       {9, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
-      {10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
+      {10, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {11, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}};
   state.setLayout = state.pipelines.createDescriptorSetLayout(bindings, std::vector<VkDescriptorBindingFlags>(bindings.size()));
   state.pipelineLayout = state.pipelines.createPipelineLayout({frames.lightingLayout(),
       lightLayout, sceneLayout, state.setLayout},
@@ -445,10 +471,11 @@ void ScreenReflectionPass::createResources(const std::filesystem::path& shaderRo
       shaderRoot / "spv_shaders/screen_reflections.comp.spv", state.pipelineLayout,
       "screen-reflections");
   const auto count = static_cast<uint32_t>(frames.frameCount());
-  state.createHistory(enableHistory);
-  state.pool = state.pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 8},
-      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, count * 4}}, count * 2);
   state.images.resize(count);
+  const bool hasSurfaceIds = screenReflectionModeUsesHistory(mode) && state.createSurfaceIds(frames);
+  state.createHistory(enableHistory && hasSurfaceIds);
+  state.pool = state.pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, count * 10},
+      {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, count * 4}}, count * 2);
   for (uint32_t image = 0; image < count; ++image)
     state.createSlot(state.images[image], *frames.frame(image));
   try {
@@ -488,6 +515,12 @@ bool ScreenReflectionPass::wantsRayScene(const FrameRecordParams& frame) const {
       !screenReflectionModeIsTraceDiagnostic(frame.debug.screenReflections) && ready(frame);
 }
 
+bool ScreenReflectionPass::wantsSurfaceIds(const FrameRecordParams& frame) const {
+  return !frame.debug.fullWireframe() && ready(frame) &&
+      screenReflectionModeUsesHistory(frame.debug.screenReflections) &&
+      impl_->images[frame.runtime.imageIndex].surfaceIds.handle;
+}
+
 bool ScreenReflectionPass::rayFallbackAvailable() const { return static_cast<bool>(impl_->rayPipeline); }
 bool ScreenReflectionPass::rayFallbackActive() const { return impl_->rayActive; }
 VkDeviceSize ScreenReflectionPass::allocationBytes() const { return impl_->bytes; }
@@ -498,9 +531,38 @@ VkDeviceSize ScreenReflectionPass::depthPyramidAllocationBytes() const {
 }
 uint32_t ScreenReflectionPass::depthPyramidMipLevels() const { return impl_->depthPyramidLevels; }
 bool ScreenReflectionPass::depthPyramidUsed() const { return impl_->depthPyramidSubmitted; }
+VkDeviceSize ScreenReflectionPass::historyAllocationBytes() const { return impl_->historyBytes(); }
+VkDeviceSize ScreenReflectionPass::surfaceIdAllocationBytes() const {
+  VkDeviceSize result = 0;
+  for (const auto& slot : impl_->images) result += slot.surfaceIds.bytes;
+  return result;
+}
 bool ScreenReflectionPass::historyAvailable() const { return impl_->fullHistory; }
 bool ScreenReflectionPass::historyReprojected() const {
   return impl_->previous && impl_->previous->reprojected;
+}
+
+void ScreenReflectionPass::recordSurfaceIds(VkCommandBuffer command, const FrameRecordParams& frame) {
+  const auto& state = *impl_;
+  const auto& slot = state.images[frame.runtime.imageIndex];
+  constexpr auto readOnly = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  constexpr auto copy = VK_PIPELINE_STAGE_2_COPY_BIT;
+  constexpr auto transferRead = VK_ACCESS_2_TRANSFER_READ_BIT;
+  constexpr auto transferWrite = VK_ACCESS_2_TRANSFER_WRITE_BIT;
+  // Transparent picking reuses the G-buffer ID image after this copy.
+  imageBarrier(command, slot.pickIds, readOnly, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT,
+      copy, transferRead);
+  imageBarrier(command, slot.surfaceIds.handle, VK_IMAGE_LAYOUT_UNDEFINED,
+      VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_PIPELINE_STAGE_2_NONE, 0, copy, transferWrite);
+  const VkImageCopy region{kColorLayers, {}, kColorLayers, {}, {state.extent.width, state.extent.height, 1}};
+  vkCmdCopyImage(command, slot.pickIds, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+      slot.surfaceIds.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+  imageBarrier(command, slot.pickIds, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, readOnly,
+      copy, transferRead, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+      VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
+  imageBarrier(command, slot.surfaceIds.handle, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, readOnly,
+      copy, transferWrite, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 }
 
 void ScreenReflectionPass::record(VkCommandBuffer command, const FrameRecordParams& frame) {
@@ -513,12 +575,15 @@ void ScreenReflectionPass::record(VkCommandBuffer command, const FrameRecordPara
   state.rayActive = static_cast<bool>(rayScene);
   const auto layout = state.rayActive ? state.rayPipelineLayout : state.pipelineLayout;
   const auto& pipeline = state.rayActive ? state.rayPipeline : state.pipeline;
-  const bool saveHistory = state.fullHistory && screenReflectionModeUsesHistory(mode);
+  const bool hasSurfaceIds = wantsSurfaceIds(frame);
+  const bool saveHistory = state.fullHistory && hasSurfaceIds;
+  const uint64_t rayTopology = state.rayActive && saveHistory
+      ? frame.services.rayShadowManager->surfaceMotionSnapshot(frame.runtime.imageIndex).topology : 0;
   const auto shader = pipeline.contentIdentity();
   const auto depthPyramidShader = state.depthPyramidPipeline.contentIdentity();
   const bool reproject = saveHistory && state.previous && state.previous->mode == mode &&
       state.previous->revisions == frame.reflectionHistory && state.previous->shader == shader &&
-      state.previous->depthPyramidShader == depthPyramidShader;
+      state.previous->depthPyramidShader == depthPyramidShader && state.previous->rayTopology == rayTopology;
   const uint32_t index = state.previous ? 1u - state.previous->index : 0u;
   const auto descriptors = state.rayActive ? slot.rayDescriptors[index] : slot.descriptors[index];
   if (state.rayActive) state.bindRayScene(descriptors, rayScene);
@@ -573,7 +638,7 @@ void ScreenReflectionPass::record(VkCommandBuffer command, const FrameRecordPara
       static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
   const ReflectionConstants constants{state.extent.width, state.extent.height,
       screenReflectionStepLimit(mode), screenReflectionDebugView(mode),
-      {saveHistory ? 1u : 0u, reproject ? 1u : 0u, state.depthPyramidLevels, 0u}};
+      {saveHistory ? 1u : 0u, reproject ? 1u : 0u, state.depthPyramidLevels, hasSurfaceIds ? 1u : 0u}};
   if (state.rayActive) {
     const auto* clip = frame.pushConstants.bindless;
     const ReflectionRayConstants rayConstants{constants,
@@ -591,7 +656,7 @@ void ScreenReflectionPass::record(VkCommandBuffer command, const FrameRecordPara
       VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT);
   state.recorded = true;
   state.pending = saveHistory
-      ? std::optional{Impl::History{frame.reflectionHistory, shader, depthPyramidShader, mode, index, reproject}}
+      ? std::optional{Impl::History{frame.reflectionHistory, shader, depthPyramidShader, rayTopology, mode, index, reproject}}
       : std::nullopt;
 }
 
