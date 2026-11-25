@@ -359,6 +359,7 @@ private:
   UpscaleResourceRequest upscaleResourceRequest_{};
   std::string upscaleViewportStatus_{};
   float temporalFrameMilliseconds_{1000.0f / 60.0f};
+  float pendingFsrFrameMilliseconds_{};
   std::optional<glm::vec4> captureSectionPlane_{};
   std::optional<uint32_t> captureBimHiddenObject_{};
   std::optional<int> captureBimLodBias_{};

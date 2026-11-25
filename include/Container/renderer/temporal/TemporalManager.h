@@ -46,6 +46,9 @@ public:
                                                      UpscaleMode mode, VkExtent2D display);
   [[nodiscard]] bool fsrActive() const { return fsr_ && fsr_->available(); }
   [[nodiscard]] bool dlssActive() const { return dlss_ && dlss_->available(); }
+  [[nodiscard]] std::optional<FsrDispatchInputs> fsrLastSubmittedInputs() const {
+    return fsrActive() ? fsr_->lastSubmittedInputs() : std::nullopt;
+  }
   [[nodiscard]] std::optional<uint64_t> dlssAllocatedBytes() const {
     return dlss_ ? dlss_->allocatedBytes() : std::nullopt;
   }

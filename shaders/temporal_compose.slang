@@ -48,10 +48,13 @@ void computeMain(uint3 id : SV_DispatchThreadID)
 #else
         color = oit.compositedColor;
 #endif
-        // One velocity cannot describe multiple layers. Reject history for any
-        // covered transparent pixel, including pool overflow/partial lists.
-        if (headPointerImage.Load(int2(pixel)) != INVALID_NODE_INDEX ||
-            nodeCounter[OIT_COUNTER_OVERFLOW_INDEX] != 0u)
+        // FSR weights the current sample by the opacity of the resolved layers.
+        // Preserve full reactivity on overflow, where the list may omit layers.
+        if (nodeCounter[OIT_COUNTER_OVERFLOW_INDEX] != 0u)
+            reactive = 1.0;
+        else if ((pc.reactiveFlags & 4u) != 0u)
+            reactive = max(reactive, 1.0 - oit.revealage);
+        else if (headPointerImage.Load(int2(pixel)) != INVALID_NODE_INDEX)
             reactive = 1.0;
     }
 #if DLSS_TRANSPARENCY

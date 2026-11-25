@@ -932,7 +932,8 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
                              p.services.openVdbVolumeRenderer->records(p);
   const std::array<uint32_t, 4> compose = {
       extent_.width, extent_.height, transparent ? 1u : 0u,
-      (fallback ? 1u : 0u) | (volumeCoverage ? 2u : 0u)};
+      (fallback ? 1u : 0u) | (volumeCoverage ? 2u : 0u) |
+          (fsrActive() ? 4u : 0u)};
   const auto composeLayout = dlssActive() ? dlssComposeLayout_ : composeLayout_;
   vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, dlssActive() ? dlssComposePipeline_ : composePipeline_);
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, composeLayout,

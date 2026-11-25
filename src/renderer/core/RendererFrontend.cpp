@@ -2503,7 +2503,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
   temporal.prepareCamera(
       buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
-      frameTemporalSettings, projection, temporalFrameMilliseconds_);
+      frameTemporalSettings, projection,
+      temporal.fsrActive() ? pendingFsrFrameMilliseconds_ : temporalFrameMilliseconds_);
   SceneController::writeToBuffer(
       svc_.allocationManager, buffers_.cameras[imageIndex],
       &buffers_.cameraData, sizeof(buffers_.cameraData));
@@ -2718,6 +2719,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   if (subs_.lightingManager)
     subs_.lightingManager->onSubmitted(imageIndex);
   subs_.temporalManager->commit();
+  pendingFsrFrameMilliseconds_ = 0.0f;
   if (subs_.screenReflectionPass)
     subs_.screenReflectionPass->onSubmitted(
         subs_.deferredRasterFrameGraphContext->isPassActive(RenderPassId::ScreenReflections));
@@ -3737,6 +3739,12 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"displayExtent", {extent.width, extent.height}}};
   };
   json["fsr"] = upscaleTelemetry(UpscaleBackend::Fsr, temporal.fsrActive());
+  auto& fsrTelemetry = json["fsr"];
+  const auto fsrInputs = temporal.fsrLastSubmittedInputs();
+  fsrTelemetry["frameTimeMs"] = fsrInputs ? nlohmann::json(fsrInputs->frameTimeMs) : nullptr;
+  fsrTelemetry["motionVectorScale"] = fsrInputs ? nlohmann::json(fsrInputs->motionVectorScale) : nullptr;
+  fsrTelemetry["jitterPixels"] = fsrInputs ? nlohmann::json(fsrInputs->jitterPixels) : nullptr;
+  fsrTelemetry["preExposure"] = fsrInputs ? nlohmann::json(fsrInputs->preExposure) : nullptr;
   json["dlss"] = upscaleTelemetry(UpscaleBackend::Dlss, temporal.dlssActive());
   if (const auto bytes = temporal.dlssAllocatedBytes())
     json["dlss"]["sdkAllocatedBytes"] = *bytes;
@@ -4522,10 +4530,12 @@ void RendererFrontend::updateOpenVdbSequence() {
 }
 
 void RendererFrontend::processInput(float deltaTime, bool useViewportInput) {
-  if (std::isfinite(deltaTime) && deltaTime > 0.0f)
+  if (std::isfinite(deltaTime) && deltaTime > 0.0f) {
     temporalFrameMilliseconds_ = std::min(deltaTime * 1000.0f, 250.0f);
-  if (std::isfinite(deltaTime) && deltaTime > 0.0f)
+    // Skipped ticks still contribute to the next submitted FSR frame.
+    pendingFsrFrameMilliseconds_ = std::min(pendingFsrFrameMilliseconds_ + temporalFrameMilliseconds_, 250.0f);
     pendingGltfAnimationDeltaSeconds_ += deltaTime;
+  }
   if (vdbPlayback_ && std::isfinite(deltaTime) && deltaTime > 0.0f &&
       (!vdbAsyncSequence_ || (vdbLoadedFrame_ && *vdbLoadedFrame_ == vdbPlayback_->frameIndex())))
     vdbPlayback_->advance(deltaTime);
