@@ -26,6 +26,42 @@ writes visible to both raster and compute consumers. Completion is awaited
 before staging storage retires. Progress-callback failures also retire submitted
 commands before image or staging destruction.
 
+## Opt-in mip residency
+
+Start the renderer with `--texture-streaming` to load eligible material images
+as resident mip tails for glTF and BIM/USD material imports. The default path
+loads complete textures. A streamed texture always has a valid tail whose base
+is the first available mip at or below 128 pixels on the long edge, or the
+coarsest available mip of a shorter authored chain. It keeps that fallback
+throughout its lifetime. The same logical texture slots, material sampler
+policies and image identities continue to serve every alias.
+
+The renderer uses visible world bounds, unjittered projection and material UV
+transforms to estimate demand. Higher-priority footprints get finer mips first
+under `--asset-memory-mb`. An upload creates a separate image rebased to the
+requested first mip and fills it in block-aligned copies of at most
+`--texture-upload-kb` (256 KiB by default). Staging allocations also count
+against `--asset-upload-mb`. A completed tail can replace the sampled view after
+graphics and asynchronous DDGI readers retire. Eviction switches back to the
+fallback and releases the finer image and its residency charge. The cap
+includes fallback, resident replacements and in-flight replacement images.
+
+Authored chains retain their format, swizzle and level data, including enabled
+BC, ETC2 and ASTC compression. Eligible 8-bit RGBA/BGRA images receive a CPU mip
+pyramid with linear-light filtering for sRGB color and linear filtering for
+alpha and data. The decoded texture budget covers the retained source pyramid.
+Coverage and explicitly non-mipped glTF sampler bindings keep their complete
+image to preserve visibility and fixed-level sampling.
+
+JSON capture telemetry reports demanded, planned and resident first mip,
+effective image extent and allocation size, and upload and eviction counters
+under `textureStreaming`. Use `assetResidency` for total resident and staging
+allocations, since several descriptor rows can share one image. Set
+`CONTAINER_RUN_GPU_TEXTURE_STREAMING=1` to run
+`texture_streaming_gpu_regression` on a Vulkan device with validation layers.
+The regression also enables `CONTAINER_DISABLE_TEXTURE_COMPRESSION=1` for a
+capture that exercises CPU expansion before mip streaming.
+
 ## Allocation ownership
 
 Use these APIs on the allocator's owner thread with externally synchronized

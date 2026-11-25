@@ -49,6 +49,7 @@ add_library(VulkanSceneRenderer_gpu_resource
     AllocationManager.cpp
     AllocationManagerTextures.cpp
     GeometryUploadBatch.cpp
+    TextureMipUpload.cpp
     VulkanMemoryManager.cpp
     TextureManager.cpp
     MaterialSamplerKey.cpp

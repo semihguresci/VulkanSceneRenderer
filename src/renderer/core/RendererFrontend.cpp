@@ -2490,6 +2490,11 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       (mode == 0u || mode == 8u || (mode >= 100u && mode <= 104u));
   const glm::mat4 projection = gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
       temporalCamera->projectionMatrix(float(displayExtent.width) / float(displayExtent.height));
+  if (svc_.config.textureStreamingFallbackExtent) {
+    const auto view = gltfAnimationCamera_ ? gltfAnimationCamera_->view
+                                          : temporalCamera->viewMatrix();
+    updateTextureStreaming(view, projection, displayExtent);
+  }
   temporal.prepareCamera(
       buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
       frameTemporalSettings, projection, temporalFrameMilliseconds_);
@@ -4272,6 +4277,7 @@ void RendererFrontend::writeCaptureTelemetry(
     throw std::runtime_error("Reference accumulation changed before checkpoint telemetry");
   auto json = captureTelemetry();
   writePrimaryGeometryLodTelemetry(json);
+  writeTextureStreamingTelemetry(json);
   if (comfyUi_) json["comfyUi"] = comfyUiCaptureTelemetry();
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     const auto lod = subs_.bimManager->geometryLodStats(currentBimDrawFilter());
@@ -5596,6 +5602,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                                         float importScale) {
   if (!subs_.sceneController || !subs_.sceneManager)
     return false;
+  prepareTextureStreamingForModelCommit();
   finishEditGestures();
 
   ensureObjectBuffers();
@@ -5919,6 +5926,8 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
         std::rethrow_exception(*error);
       state.ready = std::move(std::get<std::unique_ptr<ModelLoadState::Prepared>>(completion->outcome));
     }
+    if (!retireTextureStreamingForModelLoad())
+      return;
     if (svc_.config.geometryUploadChunkKiB && (state.ready->rigidGeometry || state.ready->bim)) {
       if (!state.geometryUpload) {
         const auto& device = *svc_.ctx.deviceWrapper;
@@ -5936,6 +5945,15 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
         const auto budget = svc_.allocationManager.sceneAssetBudget().limits.uploadBytes;
         if (budget)
           chunkBytes = std::min(chunkBytes, budget);
+        const auto beginUpload = [&](std::span<const gpu::GeometryUploadSource> sources) {
+          try {
+            upload.begin(sources, chunkBytes);
+          } catch (const gpu::SceneAssetBudgetExceeded&) {
+            if (!prepareTextureStreamingForModelCommit())
+              throw;
+            upload.begin(sources, chunkBytes);
+          }
+        };
         if (const auto& source = state.ready->rigidGeometry) {
           const std::array sources{
               gpu::GeometryUploadSource{std::as_bytes(std::span(source->vertices)),
@@ -5943,11 +5961,11 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
               gpu::GeometryUploadSource{std::as_bytes(std::span(source->indices)),
                   VK_BUFFER_USAGE_INDEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT},
           };
-          upload.begin(sources, chunkBytes);
+          beginUpload(sources);
         } else {
           auto& bim = *state.ready->bim;
           try {
-            upload.begin(bim.geometryUploadSources(), chunkBytes);
+            beginUpload(bim.geometryUploadSources());
           } catch (const gpu::SceneAssetBudgetExceeded&) {
             if (!bim.discardGeometryLods()) throw;
             upload.begin(bim.geometryUploadSources(), chunkBytes);
@@ -5984,6 +6002,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
       });
     bool success{};
     if (request.merge) {
+      prepareTextureStreamingForModelCommit();
       container::geometry::gltf::GltfMergeOptions options;
       options.destinationScene=state.mergeDestination->scene;
       options.parentName=request.merge->parentName;
@@ -6209,6 +6228,7 @@ void RendererFrontend::shutdown() {
 
   vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device());
   shutdownPrimaryGeometryLods();
+  textureStreaming_.reset();
   // Preview maps may own the previous cubemaps and use the environment manager
   // to free them, so release them before tearing that manager down.
   renderSetupPreview_.reset();
@@ -7170,6 +7190,7 @@ void RendererFrontend::publishSceneObjectDescriptors() {
     if (subs_.frameSyncManager) subs_.frameSyncManager->waitForAllFrames();
     if (subs_.ddgiManager) subs_.ddgiManager->synchronizeAsync();
     subs_.sceneManager->updateDescriptorSets(buffers_.cameras, buffers_.objects);
+    refreshTextureStreamingDescriptors();
   }
 }
 

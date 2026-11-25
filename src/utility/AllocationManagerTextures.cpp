@@ -118,7 +118,7 @@ container::material::TextureDecodeOptions AllocationManager::textureDecodeOption
 
 container::material::TextureResource AllocationManager::createTextureFromImageData(
     const std::string& textureName, const container::material::TextureImageData& imageData,
-    std::span<const uint32_t> queueFamilies) {
+    std::span<const uint32_t> queueFamilies, TextureMipSource mipSource) {
   const UploadOperation operation(*this);
   if (!memoryManager_ || !device_ || !physicalDevice_)
     throw std::runtime_error("texture allocation is not initialized: " + textureName);
@@ -130,9 +130,20 @@ container::material::TextureResource AllocationManager::createTextureFromImageDa
   const auto profile = textureDecodeOptions(false);
   if (std::ranges::find(profile.allowedFormats, imageData.format) == profile.allowedFormats.end())
     throw std::runtime_error("texture format is not enabled and filterable on this device: " + textureName);
+  if (mipSource.image) {
+    const auto& source = *mipSource.image;
+    if (mipSource.fallbackFirstMip == 0 || mipSource.fallbackFirstMip >= source.mips.size() ||
+        imageData.format != source.format || !imageData.authoredMipChain ||
+        imageData.mips.size() != source.mips.size() - mipSource.fallbackFirstMip ||
+        imageData.mips.front().width != source.mips[mipSource.fallbackFirstMip].width ||
+        imageData.mips.front().height != source.mips[mipSource.fallbackFirstMip].height) {
+      throw std::invalid_argument("Texture fallback does not match its mip source");
+    }
+  }
   const auto plan = textureUploadPlan(physicalDevice_, imageData);
   const auto info = textureImageInfo(imageData, plan, queueFamilies);
   const auto residentBytes = textureAllocationBytes(info);
+  mipSource.residentBytes = residentBytes;
   assetBudget_.check({residentBytes, memoryManager_->bufferAllocationBytes(
       plan.stagingBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT)});
   auto budget = assetBudget_.reserve({residentBytes, 0});
@@ -193,7 +204,8 @@ container::material::TextureResource AllocationManager::createTextureFromImageDa
     resource.allocationIdentity = registerTextureAllocation({.image = image,
         .imageView = view, .allocation = allocation,
         .lifetime = TextureAllocationLifetime::Scene, .batchGroup = batchGroup,
-        .budget = std::move(budget), .residentBytes = residentBytes});
+        .budget = std::move(budget), .residentBytes = residentBytes,
+        .mipSource = std::move(mipSource)});
   } catch (...) {
     if (view) destroyVulkanImageView(device_, view, nullptr);
     vmaDestroyImage(memoryManager_->allocator(), image, allocation);

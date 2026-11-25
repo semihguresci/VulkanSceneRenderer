@@ -43,6 +43,10 @@ struct TextureDecodeOptions {
 
 [[nodiscard]] bool HasKtxTextureCodec() noexcept;
 [[nodiscard]] bool HasWebpTextureCodec() noexcept;
+struct TextureFormatBlock {
+  uint32_t width{}, height{}, bytes{};
+};
+[[nodiscard]] TextureFormatBlock TextureBlockShape(VkFormat format);
 [[nodiscard]] uint64_t TextureMipByteSize(VkFormat format, uint32_t width, uint32_t height);
 
 // CPU decoding only: no Vulkan objects, device access or global STB settings.

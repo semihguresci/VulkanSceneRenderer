@@ -280,7 +280,12 @@ TextureAllocationIdentity AllocationManager::registerTextureAllocation(TextureAl
   identity.assetId_ = container::scene::SceneAssetId::mint();
   allocation.incarnation = identity.incarnation();
   allocation.aggregateRetained = allocation.batchGroup != 0;
+  if (allocation.mipSource.retainedBytes > UINT64_MAX - textureMipSourceBytes_) {
+    throw std::overflow_error("Texture mip source byte counter overflow");
+  }
+  const auto retainedMipBytes = allocation.mipSource.retainedBytes;
   textureAllocations_.push_back(std::move(allocation));
+  textureMipSourceBytes_ += retainedMipBytes;
   return identity;
 }
 
@@ -296,6 +301,8 @@ void AllocationManager::destroyTextureAllocation(TextureAllocation& texture) noe
   }
   texture.budget.reset();
   texture.residentBytes = 0;
+  textureMipSourceBytes_ -= texture.mipSource.retainedBytes;
+  texture.mipSource = {};
 }
 
 void AllocationManager::retireTextureAllocationGroup(uint64_t group,
@@ -459,6 +466,22 @@ void AllocationManager::checkSceneAssetAdmission(SceneAssetBytes request,
     }
   }
   assetBudget_.check(request);
+}
+
+std::optional<TextureMipSource>
+AllocationManager::textureMipSource(TextureAllocationIdentity identity) const {
+  if (!identity || identity.owner_.lock() != textureBatchControl_) {
+    return std::nullopt;
+  }
+  const auto found = std::lower_bound(textureAllocations_.begin(), textureAllocations_.end(),
+      identity.incarnation(), [](const TextureAllocation& allocation, uint64_t incarnation) {
+        return allocation.incarnation < incarnation;
+      });
+  if (found == textureAllocations_.end() || found->incarnation != identity.incarnation() ||
+      !found->mipSource.image) {
+    return std::nullopt;
+  }
+  return found->mipSource;
 }
 
 std::vector<AllocationManager::SceneTextureAsset> AllocationManager::sceneTextureAssets() const {
@@ -702,6 +725,7 @@ void AllocationManager::resetTextureAllocations(
   TextureRetirementGuard retiring(textureRetirementInProgress_);
   if (!memoryManager_) {
     textureAllocations_.clear();
+    textureMipSourceBytes_ = 0;
     return;
   }
 

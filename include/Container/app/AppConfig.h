@@ -68,6 +68,9 @@ struct AppConfig {
   // Aggregate decoded glTF image payloads per load; per-image limits remain
   // independent, and GPU mip/storage allocations can require additional memory.
   uint32_t textureMemoryMiB{container::material::kDefaultGltfTextureMemoryMiB};
+  // Zero keeps the synchronous texture path. Streaming starts with a valid mip tail.
+  uint32_t textureStreamingFallbackExtent{};
+  uint32_t textureUploadChunkKiB{256};
   // Optional renderer-owned scene asset residency and staging caps in bytes.
   uint64_t assetMemoryBytes{};
   uint64_t assetUploadBytes{};

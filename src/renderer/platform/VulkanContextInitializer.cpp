@@ -124,9 +124,13 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.optionalFeatures.wideLines              = VK_TRUE;
     ci.optionalFeatures.largePoints            = VK_TRUE;
     ci.optionalFeatures.shaderStorageImageExtendedFormats = VK_TRUE;
-    ci.optionalFeatures.textureCompressionBC = VK_TRUE;
-    ci.optionalFeatures.textureCompressionETC2 = VK_TRUE;
-    ci.optionalFeatures.textureCompressionASTC_LDR = VK_TRUE;
+    // Allow the native fallback regression to exercise an uncompressed device profile.
+    const char* disableTextureCompression = std::getenv("CONTAINER_DISABLE_TEXTURE_COMPRESSION");
+    const bool enableTextureCompression =
+        !disableTextureCompression || std::string_view(disableTextureCompression) != "1";
+    ci.optionalFeatures.textureCompressionBC = enableTextureCompression;
+    ci.optionalFeatures.textureCompressionETC2 = enableTextureCompression;
+    ci.optionalFeatures.textureCompressionASTC_LDR = enableTextureCompression;
 
     VkPhysicalDeviceVulkan11Features vulkan11Features{};
     vulkan11Features.sType =

@@ -17,6 +17,9 @@ struct GltfTextureResources {
 struct PreparedGltfTextureImage {
   TextureImageData image;
   std::string contentKey;
+  std::shared_ptr<const TextureImageData> mipSource;
+  uint32_t fallbackFirstMip{};
+  uint64_t retainedMipBytes{};
 };
 struct PreparedGltfTextureBinding {
   size_t textureIndex{}, imageIndex{};
@@ -35,7 +38,7 @@ struct PreparedGltfTextures {
 [[nodiscard]] PreparedGltfTextures PrepareGltfTextures(
     const tinygltf::Model& model, const TextureDecodeOptions& deviceProfile,
     uint64_t maxPreparedBytes = GltfTextureMemoryBytes(kDefaultGltfTextureMemoryMiB),
-    bool enableExperimentalMaterials = false);
+    bool enableExperimentalMaterials = false, uint32_t streamingFallbackExtent = 0);
 
 // Exact number of distinct image/role/sampler resources the prepared producer
 // will publish into a fresh table. Validates every binding before any upload.
@@ -43,6 +46,10 @@ struct PreparedGltfTextures {
 
 // Different sampler policies can share one uploaded image/view. Content keys
 // include format, color-space role, swizzle and the complete authored mip chain.
+[[nodiscard]] GltfTextureResources UploadPreparedGltfTextures(
+    const PreparedGltfTextures& prepared, TextureManager& manager,
+    const std::function<TextureResource(const PreparedGltfTextureImage&)>& uploader);
+
 [[nodiscard]] GltfTextureResources UploadPreparedGltfTextures(
     const PreparedGltfTextures& prepared, TextureManager& manager,
     const std::function<TextureResource(const std::string&, const TextureImageData&)>& uploader);

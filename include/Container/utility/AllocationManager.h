@@ -14,6 +14,7 @@
 #include <functional>
 #include <glm/glm.hpp>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <utility>
@@ -31,6 +32,13 @@ enum class TextureAllocationResetScope : uint32_t {
   All = 1,
 };
 
+struct TextureMipSource {
+  std::shared_ptr<const container::material::TextureImageData> image;
+  uint32_t fallbackFirstMip{};
+  uint64_t retainedBytes{};
+  VkDeviceSize residentBytes{};
+};
+
 struct TextureAllocation {
   VkImage image{VK_NULL_HANDLE};
   VkImageView imageView{VK_NULL_HANDLE};
@@ -44,6 +52,7 @@ struct TextureAllocation {
   bool individuallyManaged{};
   SceneAssetBudget::Reservation budget;
   VkDeviceSize residentBytes{};
+  TextureMipSource mipSource;
 };
 
 class AllocationManager {
@@ -135,6 +144,8 @@ class AllocationManager {
     bool staged{};
   };
   [[nodiscard]] std::vector<SceneTextureAsset> sceneTextureAssets() const;
+  [[nodiscard]] std::optional<TextureMipSource> textureMipSource(TextureAllocationIdentity) const;
+  [[nodiscard]] uint64_t textureMipSourceBytes() const noexcept { return textureMipSourceBytes_; }
   [[nodiscard]] SceneAssetBytes geometryAssetBytes(VkDeviceSize vertexBytes,
       VkDeviceSize indexBytes, bool reusePrimaryArenas) const;
   AllocatedBuffer uploadBuffer(std::span<const std::byte> bytes,
@@ -172,7 +183,7 @@ class AllocationManager {
   container::material::TextureResource createTextureFromImageData(
       const std::string& textureName,
       const container::material::TextureImageData& image,
-      std::span<const uint32_t> queueFamilies = {});
+      std::span<const uint32_t> queueFamilies = {}, TextureMipSource mipSource = {});
   container::material::TextureResource
   createTextureFromRgbaPixels(const std::string &textureName,
                               std::span<const std::byte> rgbaPixels,
@@ -232,6 +243,8 @@ class AllocationManager {
   [[nodiscard]] VulkanMemoryManager* memoryManager() const { return memoryManager_.get(); }
 
  private:
+  friend class TextureMipUpload;
+
   // Declared before staging/image locals so the allocator remains protected
   // until their normal destruction or complete exception unwinding.
   class UploadOperation {
@@ -292,6 +305,7 @@ class AllocationManager {
   std::unique_ptr<BufferArena> indexArena_;
 
   std::vector<TextureAllocation> textureAllocations_{};
+  uint64_t textureMipSourceBytes_{};
   std::shared_ptr<TextureBatchControl> textureBatchControl_;
   uint64_t activeTextureBatchGroup_{};
   uint64_t nextTextureBatchGroup_{1};

@@ -1,5 +1,6 @@
 #include <Container/utility/GltfTextureResources.h>
 #include <Container/geometry/GltfExtendedMaterials.h>
+#include <Container/utility/TextureMipStreaming.h>
 
 #include <algorithm>
 #include <array>
@@ -7,11 +8,13 @@
 #include <map>
 #include <set>
 #include <stdexcept>
+#include <string_view>
+#include <tuple>
 
 namespace container::material {
 namespace {
 constexpr uint32_t kInvalid = std::numeric_limits<uint32_t>::max();
-constexpr unsigned kColor = 1, kData = 2;
+constexpr unsigned kColor = 1, kData = 2, kPinColor = 4, kPinData = 8;
 int extensionTexture(const tinygltf::Material& material, const char* extension, const char* field) {
   const auto found = material.extensions.find(extension);
   if (found == material.extensions.end() || !found->second.IsObject() || !found->second.Has(field)) return -1;
@@ -35,7 +38,8 @@ std::vector<unsigned> roles(const tinygltf::Model& model, bool enableExperimenta
   for (size_t materialIndex = 0; materialIndex < model.materials.size(); ++materialIndex) {
     const auto& material = model.materials[materialIndex];
     const auto& extensions = extended.materials[materialIndex];
-    mark(material.pbrMetallicRoughness.baseColorTexture.index, kColor);
+    const bool coverageTexture = material.alphaMode == "MASK" || material.alphaMode == "BLEND";
+    mark(material.pbrMetallicRoughness.baseColorTexture.index, kColor | (coverageTexture ? kPinColor : 0u));
     mark(material.emissiveTexture.index, kColor);
     mark(material.normalTexture.index, kData);
     mark(material.occlusionTexture.index, kData);
@@ -54,7 +58,8 @@ std::vector<unsigned> roles(const tinygltf::Model& model, bool enableExperimenta
         {"KHR_materials_pbrSpecularGlossiness", "specularGlossinessTexture"},
         {"KHR_materials_specular", "specularColorTexture"},
         {"KHR_materials_sheen", "sheenColorTexture"}}})
-      mark(extensionTexture(material, slot[0], slot[1]), kColor);
+      mark(extensionTexture(material, slot[0], slot[1]),
+           kColor | (coverageTexture && std::string_view(slot[1]) == "diffuseTexture" ? kPinColor : 0u));
     for (const auto& slot : std::array<std::array<const char*, 2>, 9>{{
         {"KHR_materials_specular", "specularTexture"},
         {"KHR_materials_transmission", "transmissionTexture"},
@@ -71,7 +76,10 @@ std::vector<unsigned> roles(const tinygltf::Model& model, bool enableExperimenta
                                 "heightTexture", "displacementTexture", "opacityTexture",
                                 "refractionTexture", "transmissionTexture"}) {
         const auto found = values->find(field);
-        if (found != values->end()) mark(found->second.TextureIndex(), kData);
+        if (found != values->end()) {
+          mark(found->second.TextureIndex(), kData |
+              (std::string_view(field) == "opacityTexture" ? kPinData : 0u));
+        }
       }
   }
   // Unused textures retain their encoded source resources. Their color-space
@@ -115,7 +123,7 @@ bool sameImage(const TextureImageData& first, const TextureImageData& second) {
 
 PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
     const TextureDecodeOptions& deviceProfile, uint64_t maxPreparedBytes,
-    bool enableExperimentalMaterials) {
+    bool enableExperimentalMaterials, uint32_t streamingFallbackExtent) {
   if (!maxPreparedBytes || maxPreparedBytes > kMaximumGltfTextureMemoryBytes)
     throw std::invalid_argument("glTF texture preparation budget must be finite and in [1,17179869184] bytes");
   const auto plan = container::geometry::gltf::SelectTextureImageSources(model);
@@ -198,6 +206,34 @@ PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
       prepared.bindings.push_back({texture, imageIndex, role == kColor, sampler});
     }
   }
+  if (streamingFallbackExtent != 0u) {
+    std::vector<bool> pinned(prepared.images.size());
+    for (const auto& binding : prepared.bindings) {
+      const auto policy = DecodeMaterialSamplerKey(binding.sampler);
+      const unsigned coverage = binding.isSrgb ? kPinColor : kPinData;
+      if ((requiredRoles[binding.textureIndex] & coverage) != 0u ||
+          policy.minFilter == 9728 || policy.minFilter == 9729) {
+        pinned[binding.imageIndex] = true;
+      }
+    }
+    for (size_t i = 0; i < prepared.images.size(); ++i) {
+      if (pinned[i]) {
+        continue;
+      }
+      auto& image = prepared.images[i];
+      uint64_t available = remaining;
+      for (const auto& mip : image.image.mips) {
+        available += mip.bytes.size();
+      }
+      if (auto fallback = PrepareTextureMipFallback(image.image, streamingFallbackExtent, available)) {
+        remaining = available - fallback->retainedBytes;
+        image.mipSource = std::move(fallback->source);
+        image.fallbackFirstMip = fallback->firstMip;
+        image.retainedMipBytes = fallback->retainedBytes;
+        image.image = std::move(fallback->fallback);
+      }
+    }
+  }
   return prepared;
 }
 
@@ -205,42 +241,54 @@ size_t CountPreparedGltfTextureResources(const PreparedGltfTextures& prepared) {
   if(prepared.textureCount>1'000'000 || prepared.bindings.size()>2'000'000)
     throw std::length_error("Prepared glTF texture table exceeds its finite capacity");
   std::map<std::pair<size_t, bool>, size_t> assigned;
-  std::set<std::pair<std::string_view,uint32_t>> slots;
+  std::set<std::tuple<std::string_view,uint32_t,uint32_t>> slots;
   for (const auto& binding : prepared.bindings) {
     if (binding.imageIndex >= prepared.images.size() || binding.textureIndex >= prepared.textureCount)
       throw std::runtime_error("invalid prepared glTF texture binding");
     (void)DecodeMaterialSamplerKey(binding.sampler);
     if (!assigned.emplace(std::pair{binding.textureIndex, binding.isSrgb}, binding.imageIndex).second)
       throw std::runtime_error("duplicate prepared glTF texture role binding");
-    const auto& key=prepared.images[binding.imageIndex].contentKey;
-    if(key.empty()) throw std::runtime_error("prepared glTF texture content identity is empty");
-    slots.emplace(key,binding.sampler.value);
+    const auto& image = prepared.images[binding.imageIndex];
+    if(image.contentKey.empty()) throw std::runtime_error("prepared glTF texture content identity is empty");
+    slots.emplace(image.contentKey,image.fallbackFirstMip,binding.sampler.value);
   }
   return slots.size();
 }
 
 GltfTextureResources UploadPreparedGltfTextures(const PreparedGltfTextures& prepared,
     TextureManager& manager,
-    const std::function<TextureResource(const std::string&, const TextureImageData&)>& uploader) {
+    const std::function<TextureResource(const PreparedGltfTextureImage&)>& uploader) {
   (void)CountPreparedGltfTextureResources(prepared);
   GltfTextureResources resources;
   resources.color.assign(prepared.textureCount, kInvalid);
   resources.data.assign(prepared.textureCount, kInvalid);
   for (const auto& binding : prepared.bindings) {
     const auto& image = prepared.images[binding.imageIndex];
-    const auto key = image.contentKey + "|sampler=" + std::to_string(binding.sampler.value);
+    // A later merge or authoring operation can require the original base
+    // level for the same source pixels. A streamed fallback cannot satisfy it.
+    const auto imageKey = image.mipSource
+        ? image.contentKey + "|fallback-mip=" + std::to_string(image.fallbackFirstMip)
+        : image.contentKey;
+    const auto key = imageKey + "|sampler=" + std::to_string(binding.sampler.value);
     uint32_t resourceIndex{};
     if (const auto cached = manager.findTextureIndex(key)) resourceIndex = *cached;
     else {
       TextureResource resource;
-      if (const auto cachedImage = manager.findTextureImage(image.contentKey)) resource = *cachedImage;
-      else resource = uploader(image.contentKey, image.image);
-      resource.contentKey = image.contentKey; resource.name = key;
+      if (const auto cachedImage = manager.findTextureImage(imageKey)) resource = *cachedImage;
+      else resource = uploader(image);
+      resource.contentKey = imageKey; resource.name = key;
       resource.samplerIndex = binding.sampler.value;
       resourceIndex = manager.registerTexture(resource);
     }
     (binding.isSrgb ? resources.color : resources.data)[binding.textureIndex] = resourceIndex;
   }
   return resources;
+}
+GltfTextureResources UploadPreparedGltfTextures(const PreparedGltfTextures& prepared,
+    TextureManager& manager,
+    const std::function<TextureResource(const std::string&, const TextureImageData&)>& uploader) {
+  return UploadPreparedGltfTextures(prepared, manager, [&](const PreparedGltfTextureImage& image) {
+    return uploader(image.contentKey, image.image);
+  });
 }
 } // namespace container::material

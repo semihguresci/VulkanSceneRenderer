@@ -875,6 +875,17 @@ private:
   [[nodiscard]] bool retirePrimaryGeometryLodUploadForModelLoad();
   [[nodiscard]] bool modelLoadPending() const noexcept;
   void writePrimaryGeometryLodTelemetry(nlohmann::json& json) const;
+  struct TextureStreaming;
+  struct TextureStreamingDeleter {
+    void operator()(TextureStreaming*) const noexcept;
+  };
+  std::unique_ptr<TextureStreaming, TextureStreamingDeleter> textureStreaming_;
+  void updateTextureStreaming(const glm::mat4& view, const glm::mat4& projection,
+                              VkExtent2D extent);
+  void refreshTextureStreamingDescriptors();
+  [[nodiscard]] bool retireTextureStreamingForModelLoad();
+  bool prepareTextureStreamingForModelCommit();
+  void writeTextureStreamingTelemetry(nlohmann::json& json) const;
   std::string activePrimaryModelPath_{};
   container::app::SceneLightingDefaults sceneLightingDefaults_{};
   container::app::SceneLightingOverrides sceneLightingOverrides_{};
