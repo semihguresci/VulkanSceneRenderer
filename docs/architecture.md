@@ -20,6 +20,9 @@ into the primary glTF scene buffers.
 Geometry LOD uses additional index ranges on both providers for the interactive
 raster viewports. [Geometry level of detail](geometry-lod.md)
 
+Interactive model replacement streams candidate geometry before publishing it to
+either provider. [Geometry streaming](geometry-streaming.md)
+
 ## Vulkan 1.4 Rendering
 
 The renderer requires Vulkan 1.4, dynamic rendering, synchronization2,

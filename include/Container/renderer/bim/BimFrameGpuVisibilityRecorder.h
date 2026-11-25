@@ -16,10 +16,13 @@ struct BimFrameGpuVisibilityRecordInputs {
   VkDeviceSize objectBufferSize{0};
 };
 
+[[nodiscard]] bool hasBimViewportCullSources(const FrameBimResources &bim);
+
 void prepareBimFrameGpuVisibility(BimManager *manager);
 void prepareBimFrameGpuVisibility(BimManager *manager,
                                   const FrameBimResources &bim,
-                                  uint32_t imageIndex);
+                                  uint32_t imageIndex,
+                                  bool viewportCulling = false);
 
 [[nodiscard]] bool recordBimFrameGpuVisibilityCommands(
     const BimFrameGpuVisibilityRecordInputs &inputs);

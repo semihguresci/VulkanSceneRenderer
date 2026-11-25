@@ -1,5 +1,7 @@
 #include "lighting_structs.slang"
 #include "object_data_common.slang"
+#include "frustum_sphere_common.slang"
+#include "bim_residency_flags_common.slang"
 
 struct BimMeshletGpuCluster
 {
@@ -49,6 +51,7 @@ static const uint BIM_MESHLET_RESIDENCY_KEEP_SELECTED = 1u << 2u;
 static const uint BIM_GEOMETRY_KIND_POINTS = 1u;
 static const uint BIM_GEOMETRY_KIND_CURVES = 2u;
 static const uint BIM_MESHLET_RESIDENCY_PAUSED = 1u << 3u;
+static const uint BIM_MESHLET_RESIDENCY_VIEWPORT = 1u << 4u;
 
 float projectedRadiusPixels(float3 center, float radius)
 {
@@ -132,7 +135,19 @@ void computeMain(uint3 dispatchThreadId : SV_DispatchThreadID)
 
     BimMeshletResidencyEntry entry;
     entry.flags = (pc.forceResident != 0u ||
-                   ((hasClusters || nativePrimitive) && budgetResident)) ? 1u : 0u;
+                   ((hasClusters || nativePrimitive) && budgetResident)) ? BIM_MESHLET_RESIDENT : 0u;
+    if ((pc.flags & BIM_MESHLET_RESIDENCY_VIEWPORT) != 0u)
+    {
+        const float4 bounds = uObjects[sceneObjectIndex].boundingSphere;
+        if (!all(isfinite(bounds)) || bounds.w <= 0.0 ||
+            SphereFrustumTest(ExtractFrustumPlanes(StableFrustumViewProj(
+                                  uCamera.viewProj, uCamera.unjitteredViewProj,
+                                  uCamera.temporalInfo.w, uCamera.renderExtent.xy)),
+                              bounds.xyz, bounds.w))
+        {
+            entry.flags |= BIM_MESHLET_IN_VIEWPORT_FRUSTUM;
+        }
+    }
     entry.selectedLod = selectLodLevel(lod, sceneObjectIndex);
     entry.firstCluster = lod.clusterInfo.x;
     entry.clusterCount = lod.clusterInfo.y;

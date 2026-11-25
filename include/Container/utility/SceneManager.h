@@ -520,7 +520,8 @@ class SceneManager {
                    container::geometry::GltfLoadResult* prepared = nullptr,
                    bool reusePrimaryArenas = true,
                    const std::function<void()>& beforeCommit = {},
-                   VkDeviceSize releasingGeometryBytes = 0);
+                   VkDeviceSize releasingGeometryBytes = 0,
+                   bool geometryAlreadyUploaded = false);
 
   void updateDescriptorSets(
       std::span<const container::gpu::AllocatedBuffer> cameraBuffers,

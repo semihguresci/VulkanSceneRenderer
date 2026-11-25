@@ -176,6 +176,18 @@ TEST(BimSurfaceDrawRoutingPlannerTests,
   }
 }
 
+TEST(BimSurfaceDrawRoutingPlannerTests, ViewportCullingUsesDedicatedOpaqueSlots) {
+  using Slot = BimDrawCompactionSlot;
+  using container::renderer::bimViewportCompactionSlot;
+  EXPECT_EQ(bimViewportCompactionSlot(Slot::OpaqueSingleSided), Slot::ViewportOpaqueSingleSided);
+  EXPECT_EQ(bimViewportCompactionSlot(Slot::OpaqueWindingFlipped), Slot::ViewportOpaqueWindingFlipped);
+  EXPECT_EQ(bimViewportCompactionSlot(Slot::OpaqueDoubleSided), Slot::ViewportOpaqueDoubleSided);
+  EXPECT_FALSE(bimViewportCompactionSlot(Slot::TransparentSingleSided));
+  EXPECT_FALSE(bimViewportCompactionSlot(Slot::TransparentDoubleSided));
+  EXPECT_FALSE(bimViewportCompactionSlot(Slot::NativePointOpaque));
+  EXPECT_FALSE(bimViewportCompactionSlot(Slot::NativeCurveOpaque));
+}
+
 TEST(BimSurfaceDrawRoutingPlannerTests, DetectsOpaqueAndTransparentCommands) {
   const auto opaque = drawCommands(16u);
   const auto transparent = drawCommands(17u);

@@ -71,6 +71,13 @@ constexpr uint32_t kBimVisibilityFilterStatus = 1u << 7u;
 constexpr uint32_t kBimVisibilityFilterDrawBudget = 1u << 8u;
 constexpr uint32_t kBimVisibilityFilterIsolateSelection = 1u << 9u;
 constexpr uint32_t kBimVisibilityFilterHideSelection = 1u << 10u;
+constexpr uint32_t kBimResidencyComputeViewportFrustum = 1u << 4u;
+constexpr uint32_t kBimResidencyInViewportFrustum = 1u << 1u;
+constexpr uint32_t kBimResidencyVisibleAfterHiZ = 1u << 2u;
+constexpr std::array kViewportOpaqueSlots{
+    BimDrawCompactionSlot::ViewportOpaqueSingleSided,
+    BimDrawCompactionSlot::ViewportOpaqueWindingFlipped,
+    BimDrawCompactionSlot::ViewportOpaqueDoubleSided};
 
 size_t drawCompactionSlotIndex(BimDrawCompactionSlot slot) {
   return std::min(static_cast<size_t>(slot), kBimDrawCompactionSlotCount - 1u);
@@ -424,9 +431,7 @@ makeObjectData(const glm::mat4 &transform, uint32_t materialIndex,
 
   const glm::vec3 worldCenter =
       glm::vec3(transform * glm::vec4(boundsCenter, 1.0f));
-  const float scaleMax = std::max({glm::length(glm::vec3(transform[0])),
-                                   glm::length(glm::vec3(transform[1])),
-                                   glm::length(glm::vec3(transform[2]))});
+  const float scaleMax = container::math::conservativeSphereScale(transform);
   object.boundingSphere = glm::vec4(worldCenter, boundsRadius * scaleMax);
   return object;
 }
@@ -1675,6 +1680,21 @@ const BimRelationshipGraph &BimManager::PreparedScene::relationships() const {
   return drawData->relationships;
 }
 
+std::array<gpu::GeometryUploadSource, 2>
+BimManager::PreparedScene::geometryUploadSources() const {
+  return {{{std::as_bytes(std::span(uploadVertices)), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT},
+           {std::as_bytes(std::span(uploadIndices)), VK_BUFFER_USAGE_INDEX_BUFFER_BIT}}};
+}
+
+bool BimManager::PreparedScene::discardGeometryLods() {
+  if (geometryLodRanges.empty()) {
+    return false;
+  }
+  uploadIndices.resize(sourceIndexCount);
+  geometryLodRanges.clear();
+  return true;
+}
+
 BimManager::BimManager(std::shared_ptr<container::gpu::VulkanDevice> device,
                        container::gpu::AllocationManager &allocationManager,
                        container::gpu::PipelineManager &pipelineManager)
@@ -1690,6 +1710,7 @@ BimManager::~BimManager() {
   loadProgressCallback_ = {};
   clear();
   destroyVisibilityFrames();
+  destroyViewportOcclusionResources();
   destroyDrawCompactionComputeResources();
   destroyVisibilityFilterComputeResources();
   destroyMeshletResidencyComputeResources();
@@ -1737,6 +1758,9 @@ void BimManager::clear() {
   for (auto &frame : visibilityFrames_) {
     frame.geometryLodDraws.clear();
     frame.hasCoarseGeometryLods = false;
+    frame.viewportCullingRequested = false;
+    frame.viewportFrustumCurrent = false;
+    frame.viewportOcclusionCurrent = false;
   }
   objectData_.clear();
   runtimeObjectTransforms_.clear();
@@ -3261,9 +3285,27 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
 }
 
 void BimManager::checkPreparedSceneBudget(PreparedScene& prepared,
-    bool replacingSceneTextures, VkDeviceSize releasingPrimaryLodBytes) const {
+    bool replacingSceneTextures, VkDeviceSize releasingPrimaryLodBytes,
+    const gpu::GeometryUploadResult* stagedGeometry) const {
   if (!prepared.drawData)
     throw std::invalid_argument("BIM asset admission requires prepared draw data");
+  if (stagedGeometry) {
+    if (prepared.sourceIndexCount == 0 ||
+        prepared.sourceIndexCount > prepared.uploadIndices.size()) {
+      throw std::invalid_argument("Prepared BIM scene has an invalid source index range");
+    }
+    const auto sources = prepared.geometryUploadSources();
+    const auto targets = stagedGeometry->targets();
+    if (targets.size() != sources.size()) {
+      throw std::invalid_argument("BIM geometry upload requires one vertex and one index buffer");
+    }
+    for (size_t i = 0; i < sources.size(); ++i) {
+      if (targets[i].buffer.buffer == VK_NULL_HANDLE ||
+          targets[i].logicalSize != sources[i].bytes.size()) {
+        throw std::invalid_argument("Staged geometry buffers do not match the prepared BIM scene");
+      }
+    }
+  }
   const auto limits = allocationManager_.sceneAssetBudget().limits;
   if (!limits.residentBytes && !limits.uploadBytes)
     return;
@@ -3276,6 +3318,11 @@ void BimManager::checkPreparedSceneBudget(PreparedScene& prepared,
       drawCount * sizeof(decltype(visibilityFilterMetadata_)::value_type)});
   const auto metadataStagingBytes = allocationManager_.memoryManager()
       ->bufferAllocationBytes(uploadBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+  if (stagedGeometry) {
+    // The detached buffers already hold their VMA resident reservations.
+    allocationManager_.checkSceneAssetAdmission({.uploadBytes = metadataStagingBytes});
+    return;
+  }
   auto releasingGeometryBytes = releasingPrimaryLodBytes;
   for (const auto *buffer : {&vertexBuffer_, &indexBuffer_,
                              &sectionClipCapVertexBuffer_, &sectionClipCapIndexBuffer_,
@@ -3302,19 +3349,19 @@ void BimManager::checkPreparedSceneBudget(PreparedScene& prepared,
       throw;
     }
     checkIndexCount(prepared.sourceIndexCount);
-    prepared.uploadIndices.resize(prepared.sourceIndexCount);
-    prepared.geometryLodRanges.clear();
+    static_cast<void>(prepared.discardGeometryLods());
     container::log::ContainerLogger::instance().renderer()->info(
         "Discarding generated BIM raster LODs to fit the scene asset budget");
   }
 }
 
 void BimManager::loadPreparedScene(PreparedScene &&prepared,
-                                    container::scene::SceneManager &sceneManager) {
-  checkPreparedSceneBudget(prepared, false);
+                                    container::scene::SceneManager &sceneManager,
+                                    gpu::GeometryUploadResult* stagedGeometry) {
+  checkPreparedSceneBudget(prepared, false, 0, stagedGeometry);
   clear();
   loadPreparedModel(prepared.model, prepared.assetPath, prepared.format,
-                    sceneManager, &prepared);
+                    sceneManager, &prepared, stagedGeometry);
   modelPath_ = prepared.requestedPath;
   openVdbOptions_ = prepared.openVdbOptions;
 }
@@ -3432,7 +3479,7 @@ void BimManager::loadPreparedModel(
     const container::geometry::dotbim::Model &model,
     const std::filesystem::path &path, std::string_view format,
     container::scene::SceneManager &sceneManager,
-    PreparedScene *prepared) {
+    PreparedScene *prepared, gpu::GeometryUploadResult* stagedGeometry) {
   const auto logger = container::log::ContainerLogger::instance().renderer();
   auto stageStart = std::chrono::steady_clock::now();
   auto logStage = [&](std::string_view stage) {
@@ -3486,12 +3533,16 @@ void BimManager::loadPreparedModel(
     logStage("floor plans");
   }
 
-  notifyLoadProgress("Uploading BIM geometry");
-  uploadGeometry(prepared ? std::span<const container::geometry::Vertex>(prepared->uploadVertices)
-                          : std::span<const container::geometry::Vertex>(localUploadVertices),
-                 prepared ? std::span<const uint32_t>(prepared->uploadIndices)
-                          : std::span<const uint32_t>(localUploadIndices),
-                 prepared ? std::optional{prepared->sourceIndexCount} : std::nullopt);
+  notifyLoadProgress(stagedGeometry ? "Installing BIM geometry" : "Uploading BIM geometry");
+  if (stagedGeometry) {
+    adoptPreparedGeometry(*prepared, *stagedGeometry);
+  } else {
+    uploadGeometry(prepared ? std::span<const container::geometry::Vertex>(prepared->uploadVertices)
+                            : std::span<const container::geometry::Vertex>(localUploadVertices),
+                   prepared ? std::span<const uint32_t>(prepared->uploadIndices)
+                            : std::span<const uint32_t>(localUploadIndices),
+                   prepared ? std::optional{prepared->sourceIndexCount} : std::nullopt);
+  }
   logStage("geometry upload");
   if (prepared) {
     geometryLodRanges_ = std::move(prepared->geometryLodRanges);
@@ -4148,6 +4199,25 @@ void BimManager::loadGltfFallback(
   loadedSourcePath_ = sourceIdentityPath(path);
 }
 
+void BimManager::adoptPreparedGeometry(PreparedScene& prepared,
+                                        gpu::GeometryUploadResult& stagedGeometry) {
+  if (geometryRevision_ == std::numeric_limits<uint64_t>::max())
+    throw std::overflow_error("BIM geometry revision exhausted");
+  const auto assetId = container::scene::SceneAssetId::mint();
+  const auto targets = stagedGeometry.targets();
+  const VkDeviceSize vertexBytes = targets[0].logicalSize;
+  const VkDeviceSize indexBytes = targets[1].logicalSize;
+  prepared.uploadIndices.resize(prepared.sourceIndexCount);
+  vertices_ = std::move(prepared.uploadVertices);
+  indices_ = std::move(prepared.uploadIndices);
+  vertexBuffer_ = stagedGeometry.release(0);
+  indexBuffer_ = stagedGeometry.release(1);
+  vertexSlice_ = {vertexBuffer_.buffer, 0, vertexBytes};
+  indexSlice_ = {indexBuffer_.buffer, 0, indexBytes};
+  geometryAssetId_ = assetId;
+  ++geometryRevision_;
+}
+
 void BimManager::uploadGeometry(
     std::span<const container::geometry::Vertex> vertices,
     std::span<const uint32_t> indices,
@@ -4430,6 +4500,31 @@ void BimManager::createDrawCompactionResources(
         compPath, drawCompactionPipelineLayout_, "bim_draw_compact");
 }
 
+void BimManager::destroyViewportOcclusionResources() {
+  pipelineManager_.destroyPipeline(viewportOcclusionPipeline_);
+  pipelineManager_.destroyPipelineLayout(viewportOcclusionPipelineLayout_);
+  pipelineManager_.destroyDescriptorSetLayout(viewportOcclusionSetLayout_);
+}
+
+void BimManager::createViewportOcclusionResources(const std::filesystem::path &shaderDir) {
+  const std::array<VkDescriptorSetLayoutBinding, 4> bindings{{
+      {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+      {3, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+  }};
+  viewportOcclusionSetLayout_ = pipelineManager_.createDescriptorSetLayout(
+      {bindings.begin(), bindings.end()}, std::vector<VkDescriptorBindingFlags>(bindings.size()));
+  const VkPushConstantRange range{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(uint32_t)};
+  viewportOcclusionPipelineLayout_ = pipelineManager_.createPipelineLayout(
+      {viewportOcclusionSetLayout_}, {range});
+  const auto path = shaderDir / "spv_shaders" / "bim_viewport_occlusion.comp.spv";
+  if (std::filesystem::exists(path)) {
+    viewportOcclusionPipeline_ = pipelineManager_.createComputePipeline(
+        path, viewportOcclusionPipelineLayout_, "bim_viewport_occlusion");
+  }
+}
+
 void BimManager::createMeshletResidencyResources(
     const std::filesystem::path &shaderDir) {
   if (visibilityDescriptorPool_ != VK_NULL_HANDLE) return;
@@ -4438,6 +4533,7 @@ void BimManager::createMeshletResidencyResources(
     destroyMeshletResidencyComputeResources();
     destroyVisibilityFilterComputeResources();
     destroyDrawCompactionComputeResources();
+    destroyViewportOcclusionResources();
   }
   const auto imageCount = static_cast<uint32_t>(objectFrameCount_);
   if (!device_) {
@@ -4476,6 +4572,7 @@ void BimManager::createMeshletResidencyResources(
   meshletResidencyStats_.computeReady = meshletResidencyPipeline_ != VK_NULL_HANDLE;
   createVisibilityFilterResources(shaderDir);
   createDrawCompactionResources(shaderDir);
+  createViewportOcclusionResources(shaderDir);
   resizeVisibilityFrames(imageCount);
 }
 
@@ -4498,6 +4595,28 @@ void BimManager::beginVisibilityFrame(uint32_t imageIndex) {
     visibilityFrame().maskCurrent = false;
 }
 
+bool BimManager::beginViewportCulling(bool requested) {
+  auto &frame = visibilityFrame();
+  frame.viewportCullingRequested = requested && drawCompactionSupported() &&
+      meshletResidencyStats_.computeReady && drawCompactionPipeline_ != VK_NULL_HANDLE;
+  frame.viewportFrustumCurrent = false;
+  frame.viewportOcclusionCurrent = false;
+  return frame.viewportCullingRequested;
+}
+
+bool BimManager::viewportFrustumReady(uint32_t imageIndex) const {
+  if (imageIndex >= visibilityFrames_.size() || !visibilityFrames_[imageIndex].viewportFrustumCurrent) {
+    return false;
+  }
+  return std::ranges::any_of(kViewportOpaqueSlots, [this, imageIndex](BimDrawCompactionSlot slot) {
+    return drawCompactionReady(slot, imageIndex);
+  });
+}
+
+bool BimManager::viewportOcclusionReady(uint32_t imageIndex) const {
+  return viewportFrustumReady(imageIndex) && visibilityFrames_[imageIndex].viewportOcclusionCurrent;
+}
+
 void BimManager::releaseVisibilityFrames(std::vector<VisibilityFrame>& frames) noexcept {
   for (auto& frame : frames) {
     allocationManager_.destroyBuffer(frame.mask);
@@ -4513,14 +4632,15 @@ void BimManager::destroyVisibilityFrames() noexcept {
 
 void BimManager::resizeVisibilityFrames(uint32_t imageCount) {
   if (visibilityDescriptorPool_ && visibilityFrames_.size() == imageCount) return;
-  constexpr uint32_t setCount = 2 + static_cast<uint32_t>(kBimDrawCompactionSlotCount);
-  constexpr uint32_t storageCount = 6 + 5 * static_cast<uint32_t>(kBimDrawCompactionSlotCount);
+  constexpr uint32_t setCount = 3 + static_cast<uint32_t>(kBimDrawCompactionSlotCount);
+  constexpr uint32_t storageCount = 8 + 5 * static_cast<uint32_t>(kBimDrawCompactionSlotCount);
   if (!imageCount || imageCount > std::numeric_limits<uint32_t>::max() / storageCount)
     throw std::invalid_argument("Invalid BIM visibility image count");
   const auto device = device_->device();
-  const std::array<VkDescriptorPoolSize, 2> sizes{{
+  const std::array<VkDescriptorPoolSize, 3> sizes{{
       {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, storageCount * imageCount},
-      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, imageCount}}};
+      {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 2 * imageCount},
+      {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, imageCount}}};
   const VkDescriptorPoolCreateInfo poolInfo{
       .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
       .maxSets = setCount * imageCount,
@@ -4535,6 +4655,7 @@ void BimManager::resizeVisibilityFrames(uint32_t imageCount) {
     layouts.fill(drawCompactionSetLayout_);
     layouts[0] = meshletResidencySetLayout_;
     layouts[1] = visibilityFilterSetLayout_;
+    layouts[2] = viewportOcclusionSetLayout_;
     const VkDescriptorSetAllocateInfo allocate{
         .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO,
         .descriptorPool = pool,
@@ -4547,7 +4668,8 @@ void BimManager::resizeVisibilityFrames(uint32_t imageCount) {
         throw std::runtime_error("Failed to allocate BIM visibility frame sets");
       frame.residencySet = sets[0];
       frame.filterSet = sets[1];
-      std::copy(sets.begin() + 2, sets.end(), frame.drawSets.begin());
+      frame.viewportOcclusionSet = sets[2];
+      std::copy(sets.begin() + 3, sets.end(), frame.drawSets.begin());
       if (!mask.empty()) {
         frame.mask = allocationManager_.uploadBuffer(std::as_bytes(std::span(mask)),
             VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
@@ -4857,7 +4979,8 @@ void BimManager::recordMeshletResidencyUpdate(VkCommandBuffer cmd,
       (meshletResidencySettings_.autoLod ? 1u : 0u) |
       (meshletResidencySettings_.drawBudgetEnabled ? 2u : 0u) |
       (meshletResidencySettings_.keepSelectedResident ? 4u : 0u) |
-      (meshletResidencySettings_.pauseStreaming ? 8u : 0u);
+      (meshletResidencySettings_.pauseStreaming ? 8u : 0u) |
+      (frame.viewportCullingRequested ? kBimResidencyComputeViewportFrustum : 0u);
 
   const VkBufferMemoryBarrier2 beforeWrite{
       .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2,
@@ -4900,6 +5023,7 @@ void BimManager::recordMeshletResidencyUpdate(VkCommandBuffer cmd,
       meshletResidencySettings_.autoLod ||
       meshletResidencySettings_.drawBudgetEnabled;
   meshletResidencyStats_.dispatchPending = meshletResidencyDispatchPending_;
+  frame.viewportFrustumCurrent = frame.viewportCullingRequested;
   frame.compactionResidencyRevision = ++meshletResidencyRevision_;
   invalidateDrawCompactionOutputs(visibilityMaskReadyForDrawCompaction());
 }
@@ -5170,6 +5294,8 @@ BimGeometryLodStats BimManager::geometryLodStats(const BimDrawFilter &filter) {
       (drawCompactionReady(BimDrawCompactionSlot::OpaqueSingleSided) ||
        drawCompactionReady(BimDrawCompactionSlot::OpaqueWindingFlipped) ||
        drawCompactionReady(BimDrawCompactionSlot::OpaqueDoubleSided));
+  stats.viewportFrustumReady = viewportFrustumReady(visibilityImage_);
+  stats.viewportOcclusionReady = viewportOcclusionReady(visibilityImage_);
   const auto *filtered = filter.active() ? &filteredDrawLists(filter) : nullptr;
   const auto accumulate = [this, &stats](std::span<const DrawCommand> commands) {
     for (const auto &command : commands) {
@@ -5295,6 +5421,10 @@ void BimManager::prepareDrawCompaction(
 }
 
 void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
+  recordDrawCompactionUpdate(cmd, false);
+}
+
+void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd, bool viewportOcclusion) {
   auto& frame = visibilityFrame();
   if (frame.compactionResidencyRevision != meshletResidencyRevision_) {
     invalidateDrawCompactionOutputs(visibilityMaskReadyForDrawCompaction());
@@ -5314,6 +5444,10 @@ void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
     BimDrawCompactionSlotResources &slot = frame.draws[index];
     const BimDrawCompactionSlot slotId =
         static_cast<BimDrawCompactionSlot>(index);
+    const bool viewport = isBimViewportCompactionSlot(slotId);
+    if ((viewportOcclusion && !viewport) || (viewport && !frame.viewportFrustumCurrent)) {
+      continue;
+    }
     if (slot.stats.inputDrawCount == 0u || slot.stats.outputCapacity == 0u ||
         frame.drawSets[index] == VK_NULL_HANDLE) {
       continue;
@@ -5321,7 +5455,7 @@ void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
     if (slot.descriptorsDirty) {
       writeDrawCompactionDescriptorSet(slotId);
     }
-    if (slot.descriptorsDirty || !slot.dispatchPending) {
+    if (slot.descriptorsDirty || (!slot.dispatchPending && !viewportOcclusion)) {
       continue;
     }
 
@@ -5344,7 +5478,8 @@ void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
     pushConstants.objectCount = static_cast<uint32_t>(
         std::min<size_t>(meshletResidencyStats_.objectCount,
                          std::numeric_limits<uint32_t>::max()));
-    pushConstants.flags = 0u;
+    pushConstants.flags = !viewport ? 0u : viewportOcclusion
+        ? kBimResidencyVisibleAfterHiZ : kBimResidencyInViewportFrustum;
 
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
                             drawCompactionPipelineLayout_, 0, 1,
@@ -5372,6 +5507,76 @@ void BimManager::recordDrawCompactionUpdate(VkCommandBuffer cmd) {
   }
 }
 
+void BimManager::recordViewportOcclusionCull(
+    VkCommandBuffer cmd, uint32_t imageIndex, VkImageView depthPyramid) {
+  if (cmd == VK_NULL_HANDLE || imageIndex != visibilityImage_ ||
+      depthPyramid == VK_NULL_HANDLE || viewportOcclusionPipeline_ == VK_NULL_HANDLE ||
+      !viewportFrustumReady(imageIndex)) {
+    return;
+  }
+  auto &frame = visibilityFrame();
+  const std::array<VkDescriptorBufferInfo, 3> buffers{{
+      {frame.camera, 0, frame.cameraBytes},
+      {frame.objects, 0, frame.objectBytes},
+      {meshletResidencyBuffer_.buffer, 0, meshletResidencyStats_.residencyBufferBytes},
+  }};
+  const VkDescriptorImageInfo depthInfo{
+      .imageView = depthPyramid,
+      .imageLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+  const VkDescriptorSet set = frame.viewportOcclusionSet;
+  const std::array<VkWriteDescriptorSet, 4> writes{{
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
+       .dstBinding = 0, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,
+       .pBufferInfo = &buffers[0]},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
+       .dstBinding = 1, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+       .pBufferInfo = &buffers[1]},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
+       .dstBinding = 2, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+       .pBufferInfo = &buffers[2]},
+      {.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = set,
+       .dstBinding = 3, .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+       .pImageInfo = &depthInfo},
+  }};
+  vkUpdateDescriptorSets(device_->device(), static_cast<uint32_t>(writes.size()),
+                         writes.data(), 0, nullptr);
+
+  // Depth and motion-vector passes already consumed the camera-frustum indirect
+  // streams. Retire their reads before the viewport compactor reuses those buffers.
+  const VkMemoryBarrier2 reuseBarrier{
+      .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT |
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_TRANSFER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT |
+                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT};
+  const VkDependencyInfo before{
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .memoryBarrierCount = 1, .pMemoryBarriers = &reuseBarrier};
+  vkCmdPipelineBarrier2(cmd, &before);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, viewportOcclusionPipeline_);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE,
+                         viewportOcclusionPipelineLayout_, 0, 1, &set, 0, nullptr);
+  const uint32_t objectCount = static_cast<uint32_t>(meshletResidencyStats_.objectCount);
+  vkCmdPushConstants(cmd, viewportOcclusionPipelineLayout_, VK_SHADER_STAGE_COMPUTE_BIT,
+                     0, sizeof(objectCount), &objectCount);
+  vkCmdDispatch(cmd, (objectCount + 63u) / 64u, 1, 1);
+
+  const VkMemoryBarrier2 maskBarrier{
+      .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER_2,
+      .srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
+      .dstAccessMask = VK_ACCESS_2_SHADER_STORAGE_READ_BIT};
+  const VkDependencyInfo after{
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .memoryBarrierCount = 1, .pMemoryBarriers = &maskBarrier};
+  vkCmdPipelineBarrier2(cmd, &after);
+  recordDrawCompactionUpdate(cmd, true);
+  frame.viewportOcclusionCurrent = true;
+}
+
 const BimDrawCompactionStats &
 BimManager::drawCompactionStats(BimDrawCompactionSlot slot) const {
   return visibilityFrame().draws[drawCompactionSlotIndex(slot)].stats;
@@ -5386,7 +5591,8 @@ bool BimManager::drawCompactionReady(BimDrawCompactionSlot slotId, uint32_t imag
   const auto& frame = visibilityFrames_[imageIndex];
   const size_t slotIndex = drawCompactionSlotIndex(slotId);
   const BimDrawCompactionSlotResources &slot = frame.draws[slotIndex];
-  return frame.compactionResidencyRevision == meshletResidencyRevision_ && slot.stats.drawsValid &&
+  return (!isBimViewportCompactionSlot(slotId) || frame.viewportFrustumCurrent) &&
+         frame.compactionResidencyRevision == meshletResidencyRevision_ && slot.stats.drawsValid &&
          slot.indirectBuffer.buffer != VK_NULL_HANDLE &&
          slot.countBuffer.buffer != VK_NULL_HANDLE;
 }

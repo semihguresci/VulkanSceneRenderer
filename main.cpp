@@ -231,6 +231,7 @@ void printCommandLineHelp() {
   --import-scale F              Model import scale
   --bim-import-scale F          Auxiliary model import scale
   --geometry-lod-error F        Maximum raster geometry LOD error in display pixels (0 disables)
+  --geometry-upload-kb N        Geometry copy limit per streaming tick in KiB (1–4096, 0 uses synchronous upload)
   --vdb-model-grid NAME         Scalar/point/vector model grid selector
   --vdb-slice                   Explicit sampled scalar/vector plane preview
   --vdb-slice-origin X Y Z      Source-world plane center (0 0 0)
@@ -892,6 +893,12 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.geometryLodErrorPixels = parseFloat(requireValue(argc, argv, i, arg), arg);
       if (config.geometryLodErrorPixels < 0.0f)
         throw std::invalid_argument("--geometry-lod-error requires a nonnegative pixel tolerance");
+      continue;
+    }
+    if (arg == "--geometry-upload-kb") {
+      config.geometryUploadChunkKiB = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (config.geometryUploadChunkKiB > 4096)
+        throw std::invalid_argument("--geometry-upload-kb accepts values from 0 to 4096");
       continue;
     }
     if (arg == "--asset-memory-mb" || arg == "--asset-upload-mb") {

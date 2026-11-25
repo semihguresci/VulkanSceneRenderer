@@ -240,6 +240,7 @@ struct CaptureEvent {
   bool acquireOutOfDate{false}, presentSuboptimal{false};
   bool guiUnload{false};
   bool guiWaitForLoad{true};
+  std::optional<uint32_t> guiWaitForUploadChunks;
   std::optional<bool> taa, orthographic, objectVisible, minimized;
   std::optional<container::renderer::UpscaleSelection> upscaling;
   std::optional<container::renderer::VolumetricFogMode> volumetricFogMode;
@@ -965,8 +966,16 @@ public:
           !value.at("guiWaitForLoad").is_boolean())
         throw std::invalid_argument("Capture guiWaitForLoad must be a boolean");
       event.guiWaitForLoad = value.value("guiWaitForLoad", true);
+      if (value.contains("guiWaitForUploadChunks")) {
+        const auto& chunks = value.at("guiWaitForUploadChunks");
+        if (!chunks.is_number_integer() || chunks < 1 || chunks > UINT32_MAX)
+          throw std::invalid_argument("Capture guiWaitForUploadChunks requires a positive uint32 count");
+        if (event.guiUnload || event.merge || (value.contains("guiWaitForLoad") && event.guiWaitForLoad))
+          throw std::invalid_argument("Capture upload checkpoint requires an unpublished replacement model");
+        event.guiWaitForUploadChunks = chunks.get<uint32_t>();
+      }
       if (!event.guiWaitForLoad && event.guiReload.empty() &&
-          event.guiSampleModel.empty() && !event.guiUnload && !event.merge)
+          event.guiSampleModel.empty() && !event.guiUnload && !event.merge && !event.guiWaitForUploadChunks)
         throw std::invalid_argument(
             "Capture guiWaitForLoad=false requires a GUI model action");
       events_.push_back(std::move(event));

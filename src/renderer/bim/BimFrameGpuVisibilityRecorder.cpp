@@ -1,9 +1,27 @@
 #include "Container/renderer/bim/BimFrameGpuVisibilityRecorder.h"
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimDrawCompactionPlanner.h"
+#include "Container/renderer/bim/BimSurfaceDrawRoutingPlanner.h"
+#include "Container/utility/Logger.h"
 #include "Container/renderer/core/FrameRecorder.h"
 
 namespace container::renderer {
+namespace {
+
+BimSurfaceDrawLists viewportMeshSources(const FrameBimResources &bim) {
+  return {
+      .opaqueDrawCommands = bim.draws.opaqueDrawCommands,
+      .opaqueSingleSidedDrawCommands = bim.draws.opaqueSingleSidedDrawCommands,
+      .opaqueWindingFlippedDrawCommands = bim.draws.opaqueWindingFlippedDrawCommands,
+      .opaqueDoubleSidedDrawCommands = bim.draws.opaqueDoubleSidedDrawCommands,
+  };
+}
+
+} // namespace
+
+bool hasBimViewportCullSources(const FrameBimResources &bim) {
+  return hasBimSurfaceOpaqueDrawCommands(viewportMeshSources(bim));
+}
 
 void prepareBimFrameGpuVisibility(BimManager *manager) {
   prepareBimFrameGpuVisibility(manager, FrameBimResources{}, 0);
@@ -11,7 +29,7 @@ void prepareBimFrameGpuVisibility(BimManager *manager) {
 
 void prepareBimFrameGpuVisibility(BimManager *manager,
                                   const FrameBimResources &bim,
-                                  uint32_t imageIndex) {
+                                  uint32_t imageIndex, bool viewportCulling) {
   if (manager == nullptr) {
     return;
   }
@@ -38,6 +56,27 @@ void prepareBimFrameGpuVisibility(BimManager *manager,
     const bool dynamicSource =
         useGeometryLods && source.slot < BimDrawCompactionSlot::NativePointOpaque;
     manager->prepareDrawCompaction(source.slot, *source.commands, dynamicSource);
+  }
+  if (!manager->beginViewportCulling(viewportCulling && hasBimViewportCullSources(bim))) {
+    return;
+  }
+  const auto viewportPlan = buildBimSurfaceDrawRoutingPlan({.draws = viewportMeshSources(bim)});
+  static const std::vector<DrawCommand> empty;
+  try {
+    for (const auto &route : viewportPlan.routes) {
+      if (const auto slot = bimViewportCompactionSlot(route.gpuSlot)) {
+        const bool staticSource = route.cpuCommands == &manager->opaqueDrawCommands() ||
+            route.cpuCommands == &manager->opaqueSingleSidedDrawCommands() ||
+            route.cpuCommands == &manager->opaqueWindingFlippedDrawCommands() ||
+            route.cpuCommands == &manager->opaqueDoubleSidedDrawCommands();
+        manager->prepareDrawCompaction(*slot, route.cpuCommands ? *route.cpuCommands : empty,
+                                       !staticSource);
+      }
+    }
+  } catch (const std::exception &error) {
+    static_cast<void>(manager->beginViewportCulling(false));
+    container::log::ContainerLogger::instance().renderer()->warn(
+        "Using fallback BIM viewport draws: {}", error.what());
   }
 }
 

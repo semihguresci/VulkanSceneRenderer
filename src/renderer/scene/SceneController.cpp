@@ -3,8 +3,10 @@
 #include "Container/ecs/World.h"
 #include "Container/renderer/scene/ScenePrimitives.h"
 #include "Container/utility/AllocationManager.h"
+#include "Container/utility/GeometryUploadBatch.h"
 #include "Container/utility/GuiManager.h"
 #include "Container/utility/MaterialBindingAuthoring.h"
+#include "Container/utility/ModelImportCancellation.h"
 #include "Container/utility/PipelineManager.h"
 #include "Container/utility/SceneGraph.h"
 #include "Container/utility/SceneManager.h"
@@ -897,14 +899,35 @@ static container::scene::MaterialBindingContext routingBindingContext(const cont
 
 static void buildSceneBindStreams(std::span<const container::geometry::Vertex> vertices,
     std::span<const uint32_t> indices,std::vector<container::geometry::Vertex>& bindVertices,
-    std::vector<uint32_t>& bindIndices) {
+    std::vector<uint32_t>& bindIndices, std::stop_token stop = {}) {
   const auto cube=makeScenePrimitiveCube();
   if(vertices.size()>UINT32_MAX-cube.vertices().size() || indices.size()>UINT32_MAX-cube.indices().size())
     throw std::runtime_error("Expanded scene and diagnostic geometry exceed 32-bit indexing");
-  bindVertices.assign(vertices.begin(),vertices.end());
+  const auto copy = [stop]<typename T>(std::span<const T> source, std::vector<T>& target, size_t tail) {
+    target.clear();
+    target.reserve(source.size() + tail);
+    while (!source.empty()) {
+      container::util::checkModelImportCancellation(stop);
+      const auto chunk = source.first(std::min(source.size(), size_t{65536}));
+      target.insert(target.end(), chunk.begin(), chunk.end());
+      source = source.subspan(chunk.size());
+    }
+  };
+  copy(vertices, bindVertices, cube.vertices().size());
   bindVertices.insert(bindVertices.end(),cube.vertices().begin(),cube.vertices().end());
-  bindIndices.assign(indices.begin(),indices.end());
+  copy(indices, bindIndices, cube.indices().size());
   for(const auto index:cube.indices()) bindIndices.push_back(uint32_t(vertices.size())+index);
+}
+
+std::optional<SceneController::RigidGeometryUploadSource>
+SceneController::prepareRigidGeometryUpload(const container::geometry::GltfLoadResult& prepared,
+                                           std::stop_token stop) {
+  if (prepared.deformation)
+    return std::nullopt;
+  RigidGeometryUploadSource source;
+  buildSceneBindStreams(prepared.model.vertices(), prepared.model.indices(),
+                        source.vertices, source.indices, stop);
+  return source;
 }
 
 SceneController::PreparedMaterialRouting SceneController::prepareMaterialRouting(
@@ -1327,7 +1350,8 @@ void SceneController::rebuildDeformationBindStreams() {
   generationSceneIndexCount_=sceneIndices.size();
 }
 
-GltfDeformationSceneUpdate SceneController::updateDeformation(bool resetHistory) {
+GltfDeformationSceneUpdate SceneController::updateDeformation(
+    bool resetHistory, RigidGeometryUploadSource* preparedRigid) {
   if (geometryRevision_ == std::numeric_limits<uint64_t>::max())
     throw std::overflow_error("scene geometry revision exhausted");
   const auto sourceRevision=sceneManager_.geometryRevision();
@@ -1358,7 +1382,22 @@ GltfDeformationSceneUpdate SceneController::updateDeformation(bool resetHistory)
   auto result=updateConfiguredDeformation(deformationScene_.get(),normalFrameRenderPrimitives_,resetHistory || framesChanged);
   if(sourceChanged || framesChanged || result.topologyChanged) {
     deformationTopologyPending_=true;
-    rebuildDeformationBindStreams();
+    if (!preparedRigid || deformationScene_) {
+      rebuildDeformationBindStreams();
+    } else {
+      const auto cube = makeScenePrimitiveCube();
+      const auto vertexCount = sceneManager_.vertices().size();
+      const auto indexCount = sceneManager_.indices().size();
+      if (preparedRigid->vertices.size() == vertexCount + cube.vertices().size() &&
+          preparedRigid->indices.size() == indexCount + cube.indices().size()) {
+        gpuBindVertices_.swap(preparedRigid->vertices);
+        gpuBindIndices_.swap(preparedRigid->indices);
+        generationSceneVertexCount_ = vertexCount;
+        generationSceneIndexCount_ = indexCount;
+      } else {
+        rebuildDeformationBindStreams();
+      }
+    }
   }
   if(sourceChanged || framesChanged || result.geometryChanged || result.topologyChanged) {
     ++geometryRevision_;
@@ -1512,18 +1551,43 @@ bool SceneController::ensureObjectBufferCapacity(
 // ---------------------------------------------------------------------------
 
 void SceneController::createGeometryBuffers() {
-  updateDeformation();
+  publishGeometryBuffers(nullptr, nullptr);
+}
+
+void SceneController::publishGeometryBuffers(container::gpu::GeometryUploadResult* uploadedGeometry,
+                                             RigidGeometryUploadSource* preparedRigid) {
+  updateDeformation(false, preparedRigid);
   const auto sceneIndices = geometryIndices();
   const container::geometry::Mesh cube = makeScenePrimitiveCube();
   const VkDeviceSize diagIndexByteOffset =
       static_cast<VkDeviceSize>(sceneIndices.size()) * sizeof(uint32_t);
 
-  if (ownedGenerationBuffers_) {
-    auto replacement=OwnedGenerationBuffers::geometry(allocationManager_,device_,gpuBindVertices_,gpuBindIndices_);
+  const auto staged = uploadedGeometry ? uploadedGeometry->targets() :
+      std::span<const container::gpu::GeometryUploadTarget>{};
+  const bool readyRigid = !deformationScene_ && staged.size() == 2 &&
+      staged[0].logicalSize == gpuBindVertices_.size() * sizeof(container::geometry::Vertex) &&
+      staged[1].logicalSize == gpuBindIndices_.size() * sizeof(uint32_t) &&
+      staged[0].buffer.buffer != VK_NULL_HANDLE && staged[1].buffer.buffer != VK_NULL_HANDLE;
+  if (!readyRigid && uploadedGeometry) {
+    for (size_t i = 0; i < staged.size(); ++i) {
+      auto buffer = uploadedGeometry->release(i);
+      allocationManager_.destroyBuffer(buffer);
+    }
+  }
+  if (readyRigid || ownedGenerationBuffers_) {
+    auto replacement = readyRigid
+        ? std::make_unique<OwnedGenerationBuffers>(allocationManager_, device_)
+        : OwnedGenerationBuffers::geometry(allocationManager_,device_,gpuBindVertices_,gpuBindIndices_);
+    if (readyRigid) {
+      replacement->vertices = uploadedGeometry->release(0);
+      replacement->indices = uploadedGeometry->release(1);
+    }
     // Existing frontend aliases still identify these owned per-image buffers.
     // A topology update replaces geometry only, after retiring its readers.
-    replacement->objects.swap(ownedGenerationBuffers_->objects);
-    replacement->capacities.swap(ownedGenerationBuffers_->capacities);
+    if (ownedGenerationBuffers_) {
+      replacement->objects.swap(ownedGenerationBuffers_->objects);
+      replacement->capacities.swap(ownedGenerationBuffers_->capacities);
+    }
     ownedGenerationBuffers_=std::move(replacement);
     vertexSlice_={ownedGenerationBuffers_->vertices.buffer,0,gpuBindVertices_.size()*sizeof(container::geometry::Vertex)};
     indexSlice_={ownedGenerationBuffers_->indices.buffer,0,gpuBindIndices_.size()*sizeof(uint32_t)};
@@ -2202,9 +2266,9 @@ bool SceneController::reloadSceneModel(
     uint32_t&                               outCubeNode,
     container::geometry::GltfLoadResult*      prepared,
     const std::function<void()>& beforeCommit,
-    VkDeviceSize releasingOptionalGeometry) {
-  if (vkDeviceWaitIdle(device_->device()) != VK_SUCCESS)
-    throw std::runtime_error("Failed to retire GPU readers before replacing the scene");
+    VkDeviceSize releasingOptionalGeometry,
+    container::gpu::GeometryUploadResult* uploadedGeometry,
+    RigidGeometryUploadSource* preparedRigid) {
   const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
       cameraBuffer};
   const bool boundedUnload = path.empty() && config_.assetMemoryBytes != 0;
@@ -2222,10 +2286,16 @@ bool SceneController::reloadSceneModel(
     }
   }
   const uint64_t previousGeometryRevision = sceneManager_.geometryRevision();
+  const auto commit = [&] {
+    if (vkDeviceWaitIdle(device_->device()) != VK_SUCCESS)
+      throw std::runtime_error("Failed to retire GPU readers before replacing the scene");
+    if (beforeCommit)
+      beforeCommit();
+  };
   const bool result =
       sceneManager_.reloadModel(path, importScale, cameraBuffers, objectBuffer,
                                prepared, !ownedGenerationBuffers_ && !boundedUnload,
-                               beforeCommit, releasingGeometryBytes);
+                               commit, releasingGeometryBytes, uploadedGeometry != nullptr);
   if (!result && sceneManager_.geometryRevision() == previousGeometryRevision) {
     if (guiManager_)
       guiManager_->setStatusMessage("Failed to load model: " + path);
@@ -2246,8 +2316,8 @@ bool SceneController::reloadSceneModel(
     diagCubeVertexSlice_ = {};
     diagCubeIndexSlice_ = {};
   }
-  allocationManager_.resetGeometryAllocations(result && boundedUnload);
-  createGeometryBuffers();
+  allocationManager_.resetGeometryAllocations(result && (boundedUnload || uploadedGeometry != nullptr));
+  publishGeometryBuffers(result ? uploadedGeometry : nullptr, result ? preparedRigid : nullptr);
   if (guiManager_) {
     guiManager_->setStatusMessage(
         result ? "Loaded model: " + path : "Failed to load model: " + path);

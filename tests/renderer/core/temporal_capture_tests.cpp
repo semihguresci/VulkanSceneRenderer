@@ -11,6 +11,26 @@ namespace {
 using container::temporal::CaptureSequence;
 using nlohmann::json;
 
+TEST(TemporalCapture, GeometryUploadCheckpointRequiresAnUnpublishedModel) {
+  const auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+    {"frame":2,"guiReload":"incoming.gltf","guiWaitForUploadChunks":2},
+    {"frame":3,"guiWaitForLoad":false,"guiWaitForUploadChunks":5}
+  ]})");
+  const CaptureSequence sequence(input);
+  EXPECT_FALSE(sequence.sample(1).event.guiWaitForUploadChunks);
+  EXPECT_EQ(sequence.sample(2).event.guiWaitForUploadChunks, 2u);
+  EXPECT_EQ(sequence.sample(3).event.guiWaitForUploadChunks, 5u);
+  EXPECT_FALSE(sequence.sample(4).event.guiWaitForUploadChunks);
+  for (const auto& value : json::array({0, -1, 1.5, nullptr, uint64_t{UINT32_MAX} + 1})) {
+    auto invalid = input;
+    invalid["events"][0]["guiWaitForUploadChunks"] = value;
+    EXPECT_THROW((void)CaptureSequence(invalid), std::invalid_argument);
+  }
+  auto invalid = input;
+  invalid["events"][0]["guiWaitForLoad"] = true;
+  EXPECT_THROW((void)CaptureSequence(invalid), std::invalid_argument);
+}
+
 TEST(TemporalCapture, VolumetricFogModesAreTypedAndOneShot) {
   using Mode = container::renderer::VolumetricFogMode;
   const auto input = json::parse(R"({"schemaVersion":1,"frames":6,"events":[

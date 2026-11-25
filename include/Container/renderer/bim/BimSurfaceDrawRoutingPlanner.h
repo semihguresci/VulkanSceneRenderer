@@ -2,6 +2,7 @@
 
 #include <array>
 #include <cstdint>
+#include <optional>
 #include <vector>
 
 namespace container::renderer {
@@ -61,6 +62,9 @@ public:
 private:
   BimSurfaceDrawRoutingInputs inputs_{};
 };
+
+[[nodiscard]] std::optional<BimDrawCompactionSlot>
+bimViewportCompactionSlot(BimDrawCompactionSlot slot);
 
 [[nodiscard]] bool
 hasBimSurfaceOpaqueDrawCommands(const BimSurfaceDrawLists &draws);

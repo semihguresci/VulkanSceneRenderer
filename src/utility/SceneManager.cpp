@@ -1959,7 +1959,7 @@ bool SceneManager::reloadModel(
     container::geometry::GltfLoadResult* prepared,
     bool reusePrimaryArenas,
     const std::function<void()>& beforeCommit,
-    VkDeviceSize releasingGeometryBytes) {
+    VkDeviceSize releasingGeometryBytes, bool geometryAlreadyUploaded) {
   const std::string previousModelPath = config_.modelPath;
   const float previousImportScale = config_.importScale;
   const int previousScene = static_cast<int>(selectedScene_);
@@ -2038,9 +2038,10 @@ bool SceneManager::reloadModel(
           sceneTextureFallbackImage(), materialQueueFamilies()));
       auto total = textures;
       const auto vertexBytes = geometry.vertices * sizeof(container::geometry::Vertex);
-      accumulateSceneAssetBytes(total, allocationManager_->geometryAssetBytes(
-          vertexBytes,
-          geometry.indices * sizeof(uint32_t), reusePrimaryArenas));
+      if (!geometryAlreadyUploaded) {
+        accumulateSceneAssetBytes(total, allocationManager_->geometryAssetBytes(
+            vertexBytes, geometry.indices * sizeof(uint32_t), reusePrimaryArenas));
+      }
       if (geometry.hasDeformationInstances && !descriptorSets_.empty()) {
         // The compute deformation pass writes current and previous copies of
         // the entire packed vertex stream for each swapchain image.
