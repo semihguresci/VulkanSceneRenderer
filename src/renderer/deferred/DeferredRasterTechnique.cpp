@@ -1702,8 +1702,25 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     }
   });
 
-  graph.addPass(RenderPassId::Lighting, [deferred](VkCommandBuffer cmd,
-                                                   const FrameRecordParams &p) {
+  const auto canRecordReflections = [](const FrameRecordParams &p) {
+    return !p.debug.fullWireframe() && p.services.screenReflectionPass &&
+           p.services.screenReflectionPass->ready(p);
+  };
+  const auto volumeBeforeReflectionDebug = [canRecordReflections](const FrameRecordParams &p) {
+    return screenReflectionDebugView(p.debug.screenReflections) != 0u &&
+           canRecordReflections(p);
+  };
+  const auto recordVolume = [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
+    if (p.services.openVdbVolumeRenderer) {
+      p.services.openVdbVolumeRenderer->record(
+          cmd, p, deferred->isPassActive(RenderPassId::OitClear) &&
+                      deferred->isPassActive(RenderPassId::OitResolve));
+    }
+  };
+
+  graph.addPass(RenderPassId::Lighting,
+                [deferred, volumeBeforeReflectionDebug, recordVolume](
+                    VkCommandBuffer cmd, const FrameRecordParams &p) {
     const std::array<VkDescriptorSet, 2> lightingSets = {
         deferredRasterDescriptorSet(
             p, DeferredRasterDescriptorSetId::FrameLighting),
@@ -1717,19 +1734,19 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     deferred->lightingPassRecorder(p).record(cmd, p,
                                             deferredRasterSceneDescriptorSet(p),
                                             lightingSets, transparentSets);
-    if (p.services.openVdbVolumeRenderer)
-      p.services.openVdbVolumeRenderer->record(cmd, p,
-          deferred->isPassActive(RenderPassId::OitClear) &&
-          deferred->isPassActive(RenderPassId::OitResolve));
+    // The SSR diagnostic writes its own RGB. Composite media first so the
+    // diagnostic stays readable while retaining volume coverage for temporal.
+    if (volumeBeforeReflectionDebug(p))
+      recordVolume(cmd, p);
   });
 
   graph.addPass(RenderPassId::ScreenReflections, {RenderPassId::Lighting},
       [](VkCommandBuffer cmd, const FrameRecordParams& p) {
         p.services.screenReflectionPass->record(cmd, p);
       });
-  graph.setPassReadiness(RenderPassId::ScreenReflections, [](const FrameRecordParams& p) {
-    return p.services.screenReflectionPass && p.services.screenReflectionPass->ready(p)
-        ? renderPassReady() : renderPassNotNeeded();
+  graph.setPassReadiness(RenderPassId::ScreenReflections,
+                         [canRecordReflections](const FrameRecordParams &p) {
+    return canRecordReflections(p) ? renderPassReady() : renderPassNotNeeded();
   });
   graph.setPassResourceAccess(RenderPassId::ScreenReflections,
       {RenderResourceId::SceneColor, RenderResourceId::SceneDepth,
@@ -1740,7 +1757,17 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
       {RenderResourceId::AmbientOcclusion, RenderResourceId::GBufferAnisotropy,
        RenderResourceId::GBufferDiffuseTransmission, RenderResourceId::RayScene}, {RenderResourceId::SceneColor});
 
-  registerVolumetricFogPass(graph, RenderPassId::ScreenReflections, deferred);
+  graph.addPass(RenderPassId::OpenVdbVolume, recordVolume);
+  graph.setPassReadiness(RenderPassId::OpenVdbVolume,
+                         [volumeBeforeReflectionDebug](const FrameRecordParams &p) {
+    return p.services.openVdbVolumeRenderer &&
+                   p.services.openVdbVolumeRenderer->records(p) &&
+                   !volumeBeforeReflectionDebug(p)
+               ? renderPassReady()
+               : renderPassNotNeeded();
+  });
+
+  registerVolumetricFogPass(graph, RenderPassId::OpenVdbVolume, deferred);
   registerTemporalPasses(graph, RenderPassId::VolumetricFog);
   registerRayShadowPasses(graph);
   registerDdgiPasses(graph);

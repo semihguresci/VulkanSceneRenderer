@@ -34,7 +34,8 @@ GPU_OPT_IN = "CONTAINER_RUN_GPU_VISUAL_REGRESSION"
 
 
 def fixture(path, roughness, card_color=(1, .015, .008, 1), *, card_center=CARD_CENTER,
-            card_size=(.63, .55), lit_card=False, blocker=None, floor_patch=None, blocker_color=(0, 0, 0)):
+            card_size=(.63, .55), lit_card=False, blocker=None, floor_patch=None, blocker_color=(0, 0, 0),
+            receiver_patches=None):
     asset = Asset()
 
     def quad(positions, normal, material):
@@ -49,32 +50,41 @@ def fixture(path, roughness, card_color=(1, .015, .008, 1), *, card_center=CARD_
         return quad([[x - w, y - h, z], [x + w, y - h, z],
                      [x + w, y + h, z], [x - w, y + h, z]], [0, 0, 1], material)
 
-    x, z, w, h = floor_patch if floor_patch is not None else (0., -1., 4., 4.)
-    floor = quad([[x - w, 0, z + h], [x + w, 0, z + h], [x + w, 0, z - h], [x - w, 0, z - h]], [0, 1, 0], 0)
-    card = panel(card_center, card_size, 1)
+    def material(color, metallic, level):
+        return {"pbrMetallicRoughness": {"baseColorFactor": list(color),
+                                         "metallicFactor": metallic, "roughnessFactor": level}}
+
+    def floor(x, z, w, h, index):
+        return quad([[x - w, 0, z + h], [x + w, 0, z + h], [x + w, 0, z - h], [x - w, 0, z - h]], [0, 1, 0], index)
+
+    floor_materials = [material((.95, .95, .95, 1), 1, roughness)]
+    if receiver_patches is None:
+        patch = floor_patch if floor_patch is not None else (0., -1., 4., 4.)
+        receivers = [floor(*patch, 0)]
+    else:
+        floor_materials = [material((1, 1, 1, 1), metallic, level) for _, _, _, _, metallic, level in receiver_patches]
+        receivers = [floor(*patch[:4], index) for index, patch in enumerate(receiver_patches)]
+    card_material = material(card_color, 0, 1)
+    if not lit_card:
+        card_material["extensions"] = {"KHR_materials_unlit": {}}
+    card = panel(card_center, card_size, len(floor_materials))
     asset.model.update(
         extensionsUsed=["KHR_materials_unlit"],
-        meshes=[{"primitives": [floor]}, {"primitives": [card]}],
+        meshes=[{"primitives": receivers}, {"primitives": [card]}],
         nodes=[{"mesh": 0, "name": "Mirror"}, {"mesh": 1, "name": "Red card"}],
         scenes=[{"nodes": [0, 1]}],
-        materials=[{"pbrMetallicRoughness": {"baseColorFactor": [.95, .95, .95, 1],
-                                             "metallicFactor": 1, "roughnessFactor": roughness}},
-                   {"pbrMetallicRoughness": {"baseColorFactor": list(card_color),
-                                             "metallicFactor": 0, "roughnessFactor": 1},
-                    "extensions": {"KHR_materials_unlit": {}}}])
-    if lit_card:
-        del asset.model["materials"][1]["extensions"]
+        materials=[*floor_materials, card_material])
     if blocker:
         center, half_size, alpha = blocker
-        asset.model["meshes"].append({"primitives": [panel(center, half_size, 2)]})
+        asset.model["meshes"].append({"primitives": [panel(center, half_size, len(asset.model["materials"]))]})
         asset.model["nodes"].append({"mesh": 2, "name": "Black blocker"})
         asset.model["scenes"][0]["nodes"].append(2)
-        material = {"pbrMetallicRoughness": {"baseColorFactor": [*blocker_color, alpha]},
-                    "doubleSided": True, "extensions": {"KHR_materials_unlit": {}}}
+        blocker_material = {"pbrMetallicRoughness": {"baseColorFactor": [*blocker_color, alpha]},
+                            "doubleSided": True, "extensions": {"KHR_materials_unlit": {}}}
         if alpha < 1:
-            material["alphaMode"] = "MASK"
-            material["alphaCutoff"] = .5
-        asset.model["materials"].append(material)
+            blocker_material["alphaMode"] = "MASK"
+            blocker_material["alphaCutoff"] = .5
+        asset.model["materials"].append(blocker_material)
     asset.write(path)
 
 
@@ -270,6 +280,186 @@ def verify_marcher(output, capture, evidence, fallback_renderer):
     return result
 
 
+def verify_furnace(output, capture, environments):
+    center = np.array([0., 1.05, -1.1])
+    levels = (.045, .28, .44, .58)
+    patches, probes = [], {}
+    for span, roughness in zip((.35, 1., 1.65, 2.3), levels):
+        for sign, metal in ((-1, 0), (1, 1)):
+            pixel, receiver, _, _ = analytic_hit(center + [sign * span, 0, 0])
+            probes[roughness, metal] = pixel
+            patches.append((receiver[0], receiver[2], .235, .42, metal, roughness))
+    models = {"black": 0., "matched": .5, "white": 1.}
+    for label, radiance in models.items():
+        fixture(output / f"energy-{label}.gltf", .045, card_color=(radiance,) * 3 + (1,),
+                card_center=center, card_size=(3., .78), receiver_patches=patches)
+
+    def render(label, mode, card, incident=.5):
+        return capture(f"energy-{label}", mode, model=f"energy-{card}.gltf", no_query=True, linear=True,
+                       hdr=environments[incident], environment=1, bounce=0)
+
+    half_off = render("matched-off", "off", "matched")
+    half_on = render("matched-high", "high", "matched")
+    black_on = render("black-high", "high", "black")
+    bright_on = render("white-against-half-high", "high", "white")
+    unit_off = render("unit-off", "off", "white", 1.)
+    unit_on = render("unit-high", "high", "white", 1.)
+    confidence = render("confidence", "confidence", "matched")
+
+    cx, cy = project(center)
+    for image, expected in ((black_on, 0.), (half_off, .5), (half_on, .5), (bright_on, 1.),
+                            (unit_off, 1.), (unit_on, 1.)):
+        np.testing.assert_allclose(image[cy, cx], expected, atol=.002, rtol=0,
+                                   err_msg="Unlit card did not deliver the authored scene-linear radiance")
+
+    results = {}
+    for roughness in levels:
+        levels_report = {}
+        for metal, kind in ((0, "dielectric"), (1, "metal")):
+            x, y = probes[roughness, metal]
+            roi = np.s_[y - 2:y + 3, x - 2:x + 3]
+            weight = float(confidence[roi][..., 0].mean())
+            observed = [float(image[roi].mean()) for image in (half_off, half_on, black_on, bright_on, unit_off, unit_on)]
+            base, matched, black, bright, base_unit, matched_unit = observed
+            context = (roughness, kind, (x, y), observed, weight)
+            for incident, off, on in ((.5, half_off, half_on), (1., unit_off, unit_on)):
+                for image in (off, on):
+                    assert float(image[roi].max()) <= incident * 1.02 + .002, ("Furnace exceeds incident radiance", context)
+                    assert float(image[roi].min()) >= incident * .70, ("White receiver loses excessive furnace energy", context)
+                np.testing.assert_allclose(on[roi], off[roi], atol=incident * .018 + .002, rtol=0,
+                                           err_msg=f"Matched radiance changed {kind} at roughness {roughness}")
+
+            # With the geometry, lighting, and camera fixed, the two changes in
+            # source radiance isolate the specular part of the receiver's response.
+            loss, gain = matched - black, bright - matched
+            if roughness > .55:
+                assert weight == 0., context
+                for image in (black_on, bright_on):
+                    np.testing.assert_array_equal(image[roi], half_off[roi])
+            else:
+                assert weight >= .30, context
+                assert min(loss, gain) > (.003 if not metal else .30 * weight), context
+                assert abs(loss - gain) < .012, ("Unequal response to opposite incident changes", context)
+                if metal:
+                    np.testing.assert_allclose([loss, gain], [.5 * weight] * 2, rtol=.17, atol=.008,
+                                               err_msg=f"White conductor replacement at roughness {roughness}")
+                else:
+                    assert black >= .75 * base, ("Dark screen hit suppressed dielectric diffuse", context)
+
+            levels_report[kind] = dict(receiverPixel=[x, y], confidence=weight, offHalf=base, onHalf=matched,
+                                       offUnit=base_unit, onUnit=matched_unit, blackHit=black, brightHit=bright,
+                                       darkening=loss, brightening=gain)
+        if roughness <= .55:
+            assert levels_report["dielectric"]["darkening"] < .25 * levels_report["metal"]["darkening"], levels_report
+        results[str(roughness)] = levels_report
+    assert results["0.44"]["metal"]["confidence"] <= results["0.28"]["metal"]["confidence"] - .30, results
+    return results
+
+
+def card_point(x, y, z, target):
+    forward, right, up = camera_axes(target)
+    focal = (HEIGHT * .5) / math.tan(math.radians(FOV) * .5)
+    direction = forward + right * ((x - WIDTH * .5) / focal) + up * ((HEIGHT * .5 - y) / focal)
+    return EYE + direction * ((z - EYE[2]) / direction[2])
+
+
+def verify_edge_energy(output, capture, environment):
+    target = np.array([0., -.5, 0.])
+    center = np.array([.37, 1.6767378, -1.5])
+    card_size = (.45, .4360411)
+    model = "energy-edge-black.gltf"
+    fixture(output / model, .045, card_color=(0, 0, 0, 1), card_center=center, card_size=card_size,
+            receiver_patches=[(.22, .5, .65, 1.4, 1, .045)])
+
+    def render(label, mode, **options):
+        return capture(f"energy-edge-{label}", mode, model=model, no_query=True, linear=True,
+                       hdr=environment, environment=1, bounce=0, target=target, **options)
+
+    off, on, hit, confidence = (render(mode, mode) for mode in ("off", "high", "hit-uv", "confidence"))
+    samples = []
+    for row in (-5, 2, 5, 9, 13, 18, 25):
+        point = card_point(264, row, center[2], target)
+        (x, y), _, expected_pixel, _ = analytic_hit(point, target)
+        uv, distance = hit[y, x, :2], float(hit[y, x, 2])
+        measured, source = float(confidence[y, x, 0]), (uv * (WIDTH, HEIGHT)).tolist()
+        if row < 0:
+            assert expected_pixel[1] < 0 and distance == 0 and measured == 0, (row, expected_pixel, source, measured)
+            expected_confidence = 0.
+        else:
+            assert distance > 0 and np.max(np.abs(source - expected_pixel)) < 3., (row, expected_pixel, source)
+            # Use the measured depth texel center to account for discrete hits.
+            inset = float(min(*uv, *(1 - uv)))
+            t = min(1., inset / .045)
+            expected_confidence = t * t * (3 - 2 * t)
+        base, reflected = (float(image[y, x].mean()) for image in (off, on))
+        assert abs(measured - expected_confidence) < .006 and base > .35, (row, measured, expected_confidence, base)
+        assert abs((base - reflected) / base - measured) < .025, (row, base, reflected, measured)
+        samples.append(dict(receiverPixel=[x, y], expectedHitPixel=expected_pixel.tolist(), hitPixel=source,
+                            confidence=measured, expectedConfidence=expected_confidence, off=base, reflected=reflected))
+    weights = [sample["confidence"] for sample in samples]
+    assert weights[0] == 0. and .015 < weights[1] < .15 and weights[-1] > .98, weights
+    assert all(a < b for a, b in zip(weights[:5], weights[1:6])), weights
+
+    # At fixed sight-line geometry and roughness, pan just enough to make a
+    # modest-contrast card approach the border while its history still matches.
+    moving_model = "energy-edge-moving.gltf"
+    fixture(output / moving_model, .045, card_color=(.375, .375, .375, 1), card_center=center, card_size=card_size,
+            receiver_patches=[(.22, .5, .65, 1.4, 1, .045)])
+    initial_target = target + [0, .04, 0]
+    motion = {"schemaVersion": 1, "frames": 5, "sampleFrames": [4, 5],
+              "camera": [{"frame": 1, "position": EYE.tolist(), "target": initial_target.tolist()},
+                         {"frame": 4, "position": EYE.tolist(), "target": initial_target.tolist()},
+                         {"frame": 5, "position": EYE.tolist(), "target": target.tolist()}]}
+    first = {"schemaVersion": 1, "frames": 1, "sampleFrames": [1]}
+
+    def motion_capture(label, mode, sequence):
+        return capture(f"energy-edge-{label}", mode, model=moving_model, no_query=True, linear=True,
+                       hdr=environment, environment=1, bounce=0, target=target, sequence=sequence)
+
+    fresh, fresh_routes = motion_capture("fresh", "high", first)
+    warmed, warmed_routes = motion_capture("warmed", "high", motion)
+    accepted, _ = motion_capture("warmed-history", "history", motion)
+    motion_confidence, _ = motion_capture("warmed-confidence", "confidence", motion)
+    assert not fresh_routes[1]["route"]["historyReprojected"] and warmed_routes[5]["route"]["historyReprojected"]
+    witnesses = {}
+    for row in (2, 5, 6, 7, 8):
+        for column in (250, 264, 276):
+            point = card_point(column, row, center[2], target)
+            (x, y), receiver, _, _ = analytic_hit(point, target)
+            px, py = project(receiver, initial_target)
+            prev_conf = float(motion_confidence[4][py, px, 0])
+            current_conf = float(motion_confidence[5][y, x, 0])
+            if not (.03 < current_conf < .45 and .075 < prev_conf - current_conf < .24):
+                continue
+            base = float(off[y, x].mean())
+            cold = float(fresh[1][y, x].mean())
+            history = float(warmed[5][y, x].mean())
+            assert abs((base - cold) - .125 * current_conf) < .003, (x, y, base, cold, current_conf)
+            if accepted[5][y, x, 0] > .9:
+                assert abs(history - cold) < .0025, (x, y, base, cold, history, prev_conf, current_conf)
+                witnesses[x, y] = dict(receiverPixel=[x, y], prevPixel=[px, py], prevConfidence=prev_conf,
+                                       currentConfidence=current_conf, off=base, fresh=cold, warmed=history)
+    assert len(witnesses) >= 2, ("No usable history while edge confidence was falling", witnesses)
+    return dict(static=samples, moving=list(witnesses.values()))
+
+
+def verify_energy(output, capture, evidence):
+    from reference_path_runtime_regression import write_environment
+
+    environments = {incident: output / f"energy-{label}.hdr" for incident, label in ((.5, "half"), (1., "unit"))}
+    for incident, hdr in environments.items():
+        write_environment(hdr, [incident] * 3)
+    result = dict(furnace=verify_furnace(output, capture, environments),
+                  edge=verify_edge_energy(output, capture, environments[.5]))
+    for label, capture_evidence in evidence.items():
+        samples = [capture_evidence] if "resources" in capture_evidence else capture_evidence.values()
+        for sample in samples:
+            route = sample.get("resources", sample.get("route"))
+            if sample["pass"] and sample["pass"]["active"]:
+                assert route and not route["rayFallbackActive"] and route["depthPyramidUsed"], (label, route)
+    return result
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", required=True, type=Path)
@@ -277,6 +467,7 @@ def main():
     parser.add_argument("--ray-fallback", action="store_true", help="Also verify off-screen ray hits on a ray-query device")
     parser.add_argument("--temporal", action="store_true", help="Also verify reflection history with motion and cuts")
     parser.add_argument("--marcher", action="store_true", help="Run the focused raster-only Hi-Z and numeric EXR checks")
+    parser.add_argument("--energy", action="store_true", help="Check scene-linear furnace energy and screen-edge fading")
     parser.add_argument("--mip-zero-renderer", type=Path,
                         help="Also check a staged renderer with the optional reflection depth-pyramid shader omitted")
     parser.add_argument("--validation-manifest", type=Path, help="Use this Khronos synchronization validation layer")
@@ -288,6 +479,8 @@ def main():
         return 77
     if args.marcher and (args.temporal or args.ray_fallback):
         parser.error("--marcher is a focused run separate from --temporal and --ray-fallback")
+    if args.energy and (args.marcher or args.temporal or args.ray_fallback):
+        parser.error("--energy runs separately from --marcher, --temporal, and --ray-fallback")
     if args.mip_zero_renderer and not args.marcher:
         parser.error("--mip-zero-renderer requires --marcher")
     renderer, output = args.renderer.resolve(), args.output.resolve()
@@ -306,13 +499,12 @@ def main():
 
     def capture(label, mode, *, model="mirror.gltf", forward=False, no_query=False, environment=0,
                 hybrid=False, target=TARGET, directional=0, sequence=None, taa=False, extent=(WIDTH, HEIGHT),
-                linear=False, alternate=None):
+                linear=False, alternate=None, hdr=None, bounce=None):
         executable = alternate if alternate else renderer
         image = output / (f"{label}.exr" if linear else f"{label}.png")
         command = [str(executable), "--hidden", "--no-ui", "--validation", "--import-scale", "1",
                    "--width", str(extent[0]), "--height", str(extent[1]), "--msaa", "1", "--taa" if taa else "--no-taa",
-                   "--no-bloom", "--no-ddgi", "--ray-shadows", "raster", "--sky", "plain",
-                   "--sky-horizon", "1", "1", "1", "--display-mode", "lit",
+                   "--no-bloom", "--no-ddgi", "--ray-shadows", "raster", "--display-mode", "lit",
                    "--environment-intensity", str(environment), "--directional-intensity", str(directional),
                    "--directional-direction", "0", "0", "-1", "--exposure", "1",
                    "--camera-position", *map(str, EYE), "--camera-target", *map(str, target),
@@ -320,6 +512,12 @@ def main():
                    "--screen-reflections", mode,
                    "--screenshot", str(image), "--model",
                    str(output / model)]
+        if hdr is not None:
+            command.extend(("--environment", str(hdr)))
+        else:
+            command.extend(("--sky", "plain", "--sky-horizon", "1", "1", "1"))
+        if bounce is not None:
+            command.extend(("--bounce-intensity", str(bounce)))
         if not linear:
             command.append("--screenshot-viewport")
         if sequence is None:
@@ -339,25 +537,40 @@ def main():
         log_path.write_text(log, encoding="utf-8")
         assert run.returncode == 0 and not validation_log_error(log), log_path
         layer = None
-        if args.marcher or validation:
+        if args.marcher or args.energy or validation:
             matched = VALIDATION_INSERTED.search(log)
             assert matched, f"Could not confirm Khronos validation layer insertion: {log_path}"
             layer = file_identity(executable.parent / Path(matched[1]))
             if validation:
                 assert layer == validation["library"], (log_path, layer)
+
+        def read_receipt(path):
+            receipt = json.loads(path.with_suffix(".telemetry.json").read_text(encoding="utf-8"))
+            if hdr is not None:
+                lighting = receipt["environment"]
+                assert Path(lighting["hdrPath"]).resolve() == hdr and not lighting["loading"] \
+                    and not lighting["generating"], (label, lighting)
+            return receipt
+
         if sequence is not None:
             images, routes = {}, {}
             for frame in sequence["sampleFrames"]:
-                path = image if frame == sequence["frames"] else output / f"{label}.frame-{frame:04d}.png"
-                receipt = json.loads(path.with_suffix(".telemetry.json").read_text(encoding="utf-8"))
+                path = image if frame == sequence["frames"] else output / f"{label}.frame-{frame:04d}{image.suffix}"
+                receipt = read_receipt(path)
                 route = receipt["screenReflections"]
                 pass_state = next((p for p in receipt["passes"] if p["name"] == "ScreenReflections"), None)
                 routes[frame] = {"route": route, "pass": pass_state}
-                with Image.open(path) as result:
-                    images[frame] = np.array(result.convert("RGB"))
+                if linear:
+                    assert receipt["resolution"] == list(extent) and receipt["validationEnabled"], receipt
+                    routes[frame].update(image=str(path), telemetry=str(path.with_suffix(".telemetry.json")),
+                                         log=str(log_path), command=command, validationLayer=layer)
+                    images[frame] = read_linear(path, extent)
+                else:
+                    with Image.open(path) as result:
+                        images[frame] = np.array(result.convert("RGB"))
             evidence[label] = routes
             return images, routes
-        receipt = json.loads(image.with_suffix(".telemetry.json").read_text(encoding="utf-8"))
+        receipt = read_receipt(image)
         active = mode != "off" and not forward
         pass_state = next((entry for entry in receipt["passes"] if entry["name"] == "ScreenReflections"), None)
         assert bool(pass_state and pass_state["active"]) == active, (label, pass_state)
@@ -379,7 +592,7 @@ def main():
         with Image.open(image) as result:
             return np.array(result.convert("RGB"))
 
-    if args.marcher:
+    if args.marcher or args.energy:
         fallback = args.mip_zero_renderer.resolve(strict=True) if args.mip_zero_renderer else None
         renderer_id = file_identity(renderer)
         result = dict(passed=False, renderer=renderer_id, captures=evidence)
@@ -389,7 +602,10 @@ def main():
                 assert fallback_id["sha256"] == renderer_id["sha256"], "The staged mip-zero control uses another executable"
                 assert not (fallback.parent / "spv_shaders/screen_reflections_hiz.comp.spv").is_file(), fallback
                 result["mipZeroRenderer"] = fallback_id
-            result["marcher"] = verify_marcher(output, capture, evidence, fallback)
+            if args.marcher:
+                result["marcher"] = verify_marcher(output, capture, evidence, fallback)
+            else:
+                result["energy"] = verify_energy(output, capture, evidence)
             assert file_identity(renderer) == renderer_id, "Renderer changed during SSR capture"
             if fallback:
                 assert file_identity(fallback) == fallback_id, "Staged mip-zero executable changed during capture"
@@ -399,7 +615,10 @@ def main():
             raise
         finally:
             (output / "results.json").write_text(json.dumps(result, indent=2, allow_nan=False) + "\n", encoding="utf-8")
-        print("PASS analytic SSR hit UV/distance, roughness, clipped exit, and Hi-Z at even and odd extents")
+        if args.marcher:
+            print("PASS analytic SSR hit UV/distance, roughness, clipped exit, and Hi-Z at even and odd extents")
+        else:
+            print("PASS constant-radiance dielectric and metal energy, roughness, and screen-edge fading")
         return
 
     base = capture("mirror-off", "off")

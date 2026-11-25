@@ -30,14 +30,16 @@ struct alignas(16) Query {
   glm::vec4 albedo{.8f,.4f,.2f,0}, f0Metallic{.04f,.04f,.04f,0};
   glm::vec4 radianceRoughness{1,1,1,.5f}, occlusionLayerTransmission{1,1,0,0};
   glm::uvec4 controls{0};
+  glm::vec4 iblBrdf{.7f,.05f,0,0};
 };
 static_assert(offsetof(Query,smoothNormal)==sizeof(GpuMaterial));
-static_assert(sizeof(Query)==sizeof(GpuMaterial)+14*16);
+static_assert(sizeof(Query)==sizeof(GpuMaterial)+15*16);
 struct alignas(16) Result {
   glm::vec4 direct{}, feedback{}, anisotropy{}, diffuse{}, visibilityNormal{}, resolvedUv{};
   glm::vec4 sampledLayerFactors{}, sampledSheenIridescence{}, deferredLayerFactors{}, deferredSheen{};
+  glm::vec4 iblSpecular{}, iblDiffuse{}, iblFurnace{};
 };
-static_assert(sizeof(Result)==160);
+static_assert(sizeof(Result)==208);
 
 class DdgiExtendedMaterialGpu : public ::testing::Test {
 protected:
@@ -345,6 +347,38 @@ TEST_F(DdgiExtendedMaterialGpu, DirectFrontAndBackMatchIndependentDoublePrecisio
     const auto expected=analyticDirect(input[i]);
     for (int c=0;c<3;++c) EXPECT_NEAR(actual[i].direct[c],expected[c],3e-5);
   }
+}
+
+TEST_F(DdgiExtendedMaterialGpu, WhiteFurnacePartitionsSpecularAndDiffuseEnergy) {
+  constexpr float unitIrradiance = std::numbers::pi_v<float>;
+  std::array<Query, 4> input;
+  for (auto& query : input) {
+    query.albedo = {1, 1, 1, 0};
+    query.frontIrradiance = {unitIrradiance, unitIrradiance, unitIrradiance, 0};
+    query.iblBrdf = {1, 0, 0, 0};
+  }
+  input[0].f0Metallic = {.04f, .12f, .3f, 0};
+  input[1].f0Metallic = {1, 1, 1, 1};
+  input[1].iblBrdf = {.55f, .1f, 0, 0};
+  input[2].f0Metallic = input[1].f0Metallic;
+  input[2].iblBrdf = {1.05f, .02f, 0, 0};
+  input[3].f0Metallic = {.3f, .2f, .1f, .45f};
+  input[3].iblBrdf = {.55f, .1f, 0, 0};
+  const auto actual = run(input);
+  for (int channel = 0; channel < 3; ++channel) {
+    EXPECT_NEAR(actual[0].iblSpecular[channel], input[0].f0Metallic[channel], 2e-6);
+    EXPECT_NEAR(actual[0].iblDiffuse[channel], 1.0f - input[0].f0Metallic[channel], 2e-6);
+    EXPECT_NEAR(actual[0].iblFurnace[channel], 1.0f, 2e-6);
+    for (int metal : {1, 2}) {
+      EXPECT_NEAR(actual[metal].iblSpecular[channel], 1.0f, 2e-6);
+      EXPECT_FLOAT_EQ(actual[metal].iblDiffuse[channel], 0.0f);
+      EXPECT_NEAR(actual[metal].iblFurnace[channel], 1.0f, 2e-6);
+    }
+    EXPECT_GT(actual[3].iblDiffuse[channel], 0.0f);
+    EXPECT_GT(actual[3].iblSpecular[channel], 0.0f);
+    EXPECT_LT(actual[3].iblFurnace[channel], 1.0f);
+  }
+  EXPECT_FLOAT_EQ(actual[0].iblSpecular.w, 1.0f);
 }
 
 TEST_F(DdgiExtendedMaterialGpu, ZeroAnisotropyKeepsSpecularAndHasNoEnableBoundaryJump) {

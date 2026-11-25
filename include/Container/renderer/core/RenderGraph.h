@@ -63,6 +63,7 @@ enum class RenderPassId : uint8_t {
   PbrAuxiliary,
   ScreenReflections,
   VolumetricFog,
+  OpenVdbVolume,
   Count,
   Invalid = Count,
 };

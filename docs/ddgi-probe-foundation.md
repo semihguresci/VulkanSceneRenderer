@@ -21,10 +21,9 @@ owns image/buffer allocations. All passes use Vulkan 1.4 synchronization2.
 
 Probe rays store incident scene-linear radiance before exposure/tone mapping.
 The irradiance estimator is `4*pi/N * sum(L * max(NdotOmega,0))` for rotated
-uniform-sphere Fibonacci rays. The atlas stores physical irradiance E;
-Lambertian evaluation applies receiver albedo and `E/pi` exactly once. The
-historical environment fallback has a different brightness convention, so
-switching routes can change brightness even under a constant environment.
+uniform-sphere Fibonacci rays. The atlas and environment irradiance cube store
+physical irradiance E. Both use `E/pi` for the Lambertian term before the
+renderer applies the receiver's albedo and diffuse weight.
 
 Valid opaque receivers replace diffuse environment lighting, the ambient floor
 and approximate bounce terms with probe diffuse lighting in forward/deferred

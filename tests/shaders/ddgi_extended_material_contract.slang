@@ -17,6 +17,7 @@ struct ExtendedDdgiQuery
     float4 radianceRoughness;
     float4 occlusionLayerTransmission;
     uint4 controls;
+    float4 iblBrdf;
 };
 struct ExtendedDdgiResult
 {
@@ -30,6 +31,9 @@ struct ExtendedDdgiResult
     float4 sampledSheenIridescence;
     float4 deferredLayerFactors;
     float4 deferredSheen;
+    float4 iblSpecular;
+    float4 iblDiffuse;
+    float4 iblFurnace;
 };
 [[vk::binding(0, 0)]] StructuredBuffer<ExtendedDdgiQuery> uQueries;
 [[vk::binding(1, 0)]] RWStructuredBuffer<ExtendedDdgiResult> uResults;
@@ -111,5 +115,13 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     result.deferredLayerFactors = float4(deferred.transmissionFactor, deferred.clearcoatFactor,
         deferred.clearcoatRoughness, deferred.sheenRoughness);
     result.deferredSheen = float4(deferred.sheenColor, deferred.iridescenceFactor);
+    float3 reflectance = SpecularIblReflectance(material.f0, query.iblBrdf.xy);
+    float3 diffuseWeight = DiffuseIblWeight(reflectance, material.metallic);
+    result.iblSpecular = float4(reflectance, SpecularIblOcclusion(
+        saturate(dot(material.normal, query.view.xyz)), material.roughness, material.occlusion));
+    result.iblDiffuse = float4(diffuseWeight, 0.0);
+    result.iblFurnace = float4(
+        diffuseWeight * material.albedo * LambertIrradiance(query.frontIrradiance.rgb) +
+        reflectance * query.radianceRoughness.rgb, 0.0);
     uResults[tid.x] = result;
 }

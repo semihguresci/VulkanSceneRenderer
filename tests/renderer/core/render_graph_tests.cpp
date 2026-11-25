@@ -1135,6 +1135,50 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
                        RenderPassId::LocalShadowDepth));
 }
 
+TEST(RenderGraphTests, OpenVdbCompositesAfterScreenReflectionsAndBeforeFog) {
+  RenderGraph graph;
+  graph.addPass(RenderPassId::OitResolve, {RenderPassId::VolumetricFog},
+                noopRecord());
+  graph.addPass(RenderPassId::VolumetricFog, {RenderPassId::OpenVdbVolume},
+                noopRecord());
+  graph.addPass(RenderPassId::OpenVdbVolume, noopRecord());
+  graph.addPass(RenderPassId::ScreenReflections, {RenderPassId::Lighting},
+                noopRecord());
+  graph.addPass(RenderPassId::Lighting, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(
+      RenderPassId::Lighting, {}, {},
+      {RenderResourceId::SceneColor, RenderResourceId::SceneDepth,
+       RenderResourceId::OitStorage}));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::ScreenReflections,
+                                          {RenderResourceId::SceneColor}, {},
+                                          {RenderResourceId::SceneColor}));
+  ASSERT_TRUE(graph.setPassResourceAccess(
+      RenderPassId::VolumetricFog, {RenderResourceId::SceneColor},
+      {RenderResourceId::OitStorage}, {RenderResourceId::SceneColor}));
+
+  EXPECT_EQ(execute(graph), (std::vector{RenderPassId::Lighting,
+                                        RenderPassId::ScreenReflections,
+                                        RenderPassId::OpenVdbVolume,
+                                        RenderPassId::VolumetricFog,
+                                        RenderPassId::OitResolve}));
+
+  ASSERT_TRUE(graph.setPassEnabled(RenderPassId::ScreenReflections, false));
+  EXPECT_EQ(execute(graph), (std::vector{RenderPassId::Lighting,
+                                        RenderPassId::OpenVdbVolume,
+                                        RenderPassId::VolumetricFog,
+                                        RenderPassId::OitResolve}));
+
+  ASSERT_TRUE(graph.setPassEnabled(RenderPassId::ScreenReflections, true));
+  ASSERT_TRUE(graph.setPassReadiness(RenderPassId::OpenVdbVolume,
+                                     [](const FrameRecordParams &) {
+                                       return notNeeded();
+                                     }));
+  EXPECT_EQ(execute(graph), (std::vector{RenderPassId::Lighting,
+                                        RenderPassId::ScreenReflections,
+                                        RenderPassId::VolumetricFog,
+                                        RenderPassId::OitResolve}));
+}
+
 TEST(RenderGraphTests, CullStatsReadbackRunsWhenCullingIsDisabledOrSkipped) {
   for (const bool runtimeSkip : {false, true}) {
     SCOPED_TRACE(runtimeSkip);

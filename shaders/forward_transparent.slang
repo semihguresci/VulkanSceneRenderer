@@ -394,16 +394,11 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
         baseColor, metallic, specularFactor, specularColor,
         material.ior, iridescenceTint);
 
-    float3 F_ibl = FresnelSchlickRoughness(NdotV, F0, roughness);
-    float3 kD_ibl = (1.0 - F_ibl) * (1.0 - metallic);
     float environmentIntensity =
         max(TransparentFiniteOr(uLighting.environmentIntensity, 0.0), 0.0);
-    float3 irradiance =
-        TransparentFinite3Or(
-            gIrradianceCubemap.Sample(envSampler, RotateEnvironmentDirection(surfaceNormal.shadingNormal, uLighting.environmentOrientation.xy)).rgb,
-            0.0.xxx) *
+    float3 irradiance = LambertIrradiance(gIrradianceCubemap.Sample(envSampler,
+        RotateEnvironmentDirection(surfaceNormal.shadingNormal, uLighting.environmentOrientation.xy)).rgb) *
         environmentIntensity;
-    float3 diffuseIBL = irradiance * diffuseBaseColor;
     float3 R = reflect(-V, ExtendedPbrIblNormal(
         surfaceNormal.shadingNormal, V, roughness, extendedTerms));
     float maxMipLevel = max(float(uLighting.prefilteredMipCount) - 1.0, 0.0);
@@ -418,23 +413,22 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
             gBrdfLUT.Sample(brdfSampler, float2(NdotV, roughness)),
             0.0.xx),
         0.0.xx);
-    float3 specularIBL =
-        EvaluateSpecularIblMultipleScattering(prefilteredColor, F0, brdf);
-
-    float diffuseAO = occlusion;
-    float specularOcclusion = saturate(pow(NdotV + diffuseAO, exp2(-16.0 * roughness - 1.0)) - 1.0 + diffuseAO);
-    specularOcclusion = lerp(1.0, specularOcclusion, saturate(1.0 - roughness));
-    float3 lighting = kD_ibl * diffuseIBL * diffuseAO + specularIBL * specularOcclusion;
-    lighting += ComputeTransparentAmbientFloor(
+    float3 specularReflectance = SpecularIblReflectance(F0, brdf);
+    float3 diffuseWeight = DiffuseIblWeight(specularReflectance, metallic);
+    float diffuseAO = saturate(TransparentFiniteOr(occlusion, 1.0));
+    float specularOcclusion = SpecularIblOcclusion(NdotV, roughness, diffuseAO);
+    float3 diffuseIBL = irradiance * diffuseBaseColor * diffuseAO;
+    float3 ambientFloor = ComputeTransparentAmbientFloor(
         diffuseBaseColor, occlusion, environmentIntensity, uLighting.bounceIntensity);
+    float3 lighting = diffuseWeight * max(diffuseIBL, ambientFloor) +
+        max(prefilteredColor, 0.0.xxx) * specularReflectance * specularOcclusion;
     if (extendedTerms.diffuseTransmissionFactor > 0.0)
     {
-        float3 backsideIrradiance = TransparentFinite3Or(
-            gIrradianceCubemap.Sample(
-                envSampler, RotateEnvironmentDirection(-surfaceNormal.shadingNormal, uLighting.environmentOrientation.xy)).rgb, 0.0.xxx) *
+        float3 backsideIrradiance = LambertIrradiance(gIrradianceCubemap.Sample(envSampler,
+            RotateEnvironmentDirection(-surfaceNormal.shadingNormal, uLighting.environmentOrientation.xy)).rgb) *
             environmentIntensity;
         // Visible-side AO does not describe occlusion behind this thin surface.
-        lighting += kD_ibl * backsideIrradiance *
+        lighting += diffuseWeight * backsideIrradiance *
             extendedTerms.diffuseTransmissionColor *
             ExtendedPbrDiffuseTransmissionWeight(extendedTerms);
     }
