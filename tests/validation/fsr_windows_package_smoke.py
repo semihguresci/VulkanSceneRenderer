@@ -94,7 +94,7 @@ def capture(root, output, cwd, env, label, technique, mode, commit, timeout):
     command = [str(executable), "--hidden", "--no-ui", "--no-validation", "--no-taa",
                "--msaa", "1", "--width", str(DISPLAY[0]), "--height", str(DISPLAY[1]),
                "--model", MODEL, "--import-scale", "1", "--camera-position", "0", "1.8", "6.5",
-               "--camera-target", "0", ".8", "0", "--render-technique", technique,
+               "--camera-target", "0", ".8", "0", "--render-technique", technique, "--display-mode", "lit",
                "--fsr", mode, "--no-bloom", "--no-ddgi", "--no-ray-query", "--ray-shadows", "raster",
                "--sky", "plain", "--exposure", ".5", "--fixed-dt", ".016666667",
                "--warmup-frames", "7", "--capture-frame", "8", "--screenshot-viewport", "--screenshot", str(png)]
@@ -103,6 +103,10 @@ def capture(root, output, cwd, env, label, technique, mode, commit, timeout):
     require(process.returncode == 0, f"Extracted package failed to start or render: {log}")
     state_path = png.with_suffix(".telemetry.json")
     state = json.loads(state_path.read_text(encoding="utf-8"))
+    capture_path = png.with_suffix(".png.capture.json")
+    capture_info = json.loads(capture_path.read_text(encoding="utf-8"))
+    require(capture_info["source"] == "viewport" and not capture_info["includesUi"]
+            and capture_info["displayMode"] == 0, f"Expected a Lit viewport capture: {capture_path}")
     require(state["technique"] == technique and state["msaaSamples"] == 1
             and not state["validationEnabled"] and not state["taa"]["enabled"],
             f"Unintended render settings: {state_path}")
