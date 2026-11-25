@@ -26,6 +26,11 @@ struct TextureSamplingRowState {
   bool operator==(const TextureSamplingRowState&) const noexcept = default;
 };
 
+struct TextureMipViewOverride {
+  container::gpu::TextureAllocationIdentity fallback;
+  VkImageView view{VK_NULL_HANDLE};
+};
+
 struct TextureSamplingPlan {
   uint64_t textureRevision{};
   MaterialSamplerSlotPlan samplerSlots;

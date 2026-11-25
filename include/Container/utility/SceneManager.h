@@ -239,6 +239,21 @@ class SceneManager {
   using MaterialTextureProvenance = std::array<std::optional<MaterialTextureReference>,23>;
   [[nodiscard]] uint64_t materialResourceRevision() const noexcept { return materialResourceRevision_; }
   [[nodiscard]] size_t materialTextureResourceCount() const noexcept { return textureManager_.textureCount(); }
+  [[nodiscard]] const container::material::TextureResource* materialTextureResource(uint32_t slot) const {
+    return textureManager_.getTexture(slot);
+  }
+  [[nodiscard]] std::span<const container::material::TextureSamplingRowState>
+  materialTextureSamplingRows() const noexcept { return textureSamplingPlan_.rows; }
+  [[nodiscard]] uint64_t materialTextureDescriptorRevision() const noexcept {
+    return materialTextureDescriptorRevision_;
+  }
+  // Caller has retired all graphics and async-compute readers of the live sets.
+  // Keep each replacement view alive until the next retired-reader update.
+  void writeMaterialTextureImageDescriptors(
+      std::span<const container::material::TextureMipViewOverride>) const;
+  [[nodiscard]] uint32_t textureStreamingFallbackExtent() const noexcept {
+    return config_.textureStreamingFallbackExtent;
+  }
   [[nodiscard]] container::material::TextureImageOwnershipPtr textureImageOwnership() const noexcept { return textureImageOwnership_; }
   [[nodiscard]] TextureResourceLifecycleGenerationPtr resourceLifecycleGeneration() const noexcept { return textureResourceLifecycle_; }
   [[nodiscard]] TextureResourceReferenceOwnerPtr retainMaterialResourceReferences(
@@ -601,10 +616,11 @@ class SceneManager {
       const MaterialTextureProvenance& provenance);
   [[nodiscard]] bool hasRuntimeMaterialProvenance(uint32_t runtimeMaterial) const noexcept;
   [[nodiscard]] MaterialTextureReference loadMaterialTextureSource(
-      const std::filesystem::path& texturePath, bool isSrgb, uint32_t samplerIndex = 0);
+      const std::filesystem::path& texturePath, bool isSrgb, uint32_t samplerIndex = 0,
+      bool allowMipStreaming = false);
   [[nodiscard]] MaterialTextureReference loadMaterialTextureSourceFromBytes(
       const std::string& textureName, std::span<const std::byte> encodedBytes,
-      bool isSrgb, uint32_t samplerIndex = 0);
+      bool isSrgb, uint32_t samplerIndex = 0, bool allowMipStreaming = false);
   uint32_t loadMaterialTexture(const std::filesystem::path& texturePath,
                                bool isSrgb,
                                uint32_t samplerIndex = 0);
@@ -1054,7 +1070,8 @@ class SceneManager {
   void validateMaterialResourceSource(const tinygltf::Model& source) const;
   [[nodiscard]] MaterialTextureReference loadMaterialTextureSourceBytes(
       const std::string& requestKey, const std::string& textureName,
-      std::span<const std::byte> encodedBytes, bool isSrgb, uint32_t samplerIndex);
+      std::span<const std::byte> encodedBytes, bool isSrgb, uint32_t samplerIndex,
+      bool allowMipStreaming);
   [[nodiscard]] bool materialTextureReferenceMatches(const MaterialTextureReference&,bool color,
       uint32_t runtime) const noexcept;
   [[nodiscard]] MaterialTextureReference materialTextureReference(uint32_t archive,bool color) const;
@@ -1224,6 +1241,7 @@ class SceneManager {
   bool ownsDescriptorPool_{false};
   std::vector<VkDescriptorSet> descriptorSets_{};
   std::vector<VkDescriptorSet> auxiliaryDescriptorSets_{};
+  mutable uint64_t materialTextureDescriptorRevision_{};
   uint32_t textureDescriptorCapacity_{1};
   uint32_t materialSamplerDescriptorCapacity_{1};
   // Detached generations retain complete immutable per-image coverage.

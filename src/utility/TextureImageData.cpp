@@ -721,6 +721,10 @@ TextureImageData webp(Bytes bytes,const TextureDecodeOptions& o) {
 
 bool HasKtxTextureCodec() noexcept {return CONTAINER_HAS_KTX!=0;}
 bool HasWebpTextureCodec() noexcept {return CONTAINER_HAS_WEBP!=0;}
+TextureFormatBlock TextureBlockShape(VkFormat format) {
+  const auto block = info(format);
+  return {block.x, block.y, block.bytes};
+}
 uint64_t TextureMipByteSize(VkFormat format,uint32_t width,uint32_t height) {
   if(!width||!height) fail("zero-sized mip");
   const auto f=info(format);

@@ -525,6 +525,12 @@ add_custom_test(geometry_upload_plan_tests
 target_include_directories(geometry_upload_plan_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/utility)
 set_tests_properties(geometry_upload_plan_tests PROPERTIES LABELS "cpu;scene;assets")
 
+add_custom_test(texture_mip_streaming_tests
+    ${CMAKE_SOURCE_DIR}/tests/utility/texture_mip_streaming_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_texture_codecs Dep_Math)
+target_include_directories(texture_mip_streaming_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/utility)
+set_tests_properties(texture_mip_streaming_tests PROPERTIES LABELS "cpu;scene;assets;textures")
+
 add_custom_test(queue_family_selection_tests
     ${CMAKE_SOURCE_DIR}/tests/utility/queue_family_selection_tests.cpp "" ${TEST_RESULTS_DIR}
     Dep_VulkanCore)
@@ -1147,6 +1153,14 @@ add_test(NAME scene_asset_budget_gpu_regression
 set_tests_properties(scene_asset_budget_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 950
     LABELS "requires-vulkan;requires-display;ray-query;scene;assets;visual-regression")
+
+add_test(NAME texture_streaming_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/texture_streaming_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/texture-streaming" --managed-output --require-opt-in)
+set_tests_properties(texture_streaming_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1200
+    LABELS "requires-vulkan;requires-display;scene;assets;textures;visual-regression")
 
 add_test(NAME geometry_lod_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/geometry_lod_runtime_regression.py"

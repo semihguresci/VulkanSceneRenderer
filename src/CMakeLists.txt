@@ -85,6 +85,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererMsaa.cpp
     renderer/core/RendererFrontend.cpp
     renderer/core/RendererFrontendGeometryLod.cpp
+    renderer/core/RendererFrontendTextureStreaming.cpp
     renderer/core/RendererFrontendComfyUi.cpp
     renderer/core/ComfyUiBridge.cpp
     renderer/core/RendererFrontendReference.cpp
@@ -317,7 +318,7 @@ add_library(VulkanSceneRenderer_stb geometry/stb_impl.cpp)
 target_compile_features(VulkanSceneRenderer_stb PUBLIC cxx_std_23)
 target_link_libraries(VulkanSceneRenderer_stb PUBLIC Dep_SceneIO)
 add_library(VulkanSceneRenderer_texture_codecs
-    utility/TextureImageData.cpp utility/TextureUploadPlan.cpp)
+    utility/TextureImageData.cpp utility/TextureUploadPlan.cpp utility/TextureMipStreaming.cpp)
 target_compile_features(VulkanSceneRenderer_texture_codecs PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_texture_codecs PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(VulkanSceneRenderer_texture_codecs PUBLIC Dep_VulkanCore

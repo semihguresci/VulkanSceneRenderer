@@ -54,6 +54,56 @@ TEST(GltfTextureResources, DifferentSamplerPoliciesShareOneDecodedAndUploadedIma
   const auto repeated = UploadPreparedGltfTextures(prepared, manager, upload);
   EXPECT_EQ(uploads, 1u); EXPECT_EQ(resources.color, repeated.color);
 }
+TEST(GltfTextureResources, MipFallbackPreservesSharedContentIdentityAndPinsCoverageAliases) {
+  auto source = model();
+  auto& image = source.images.front();
+  image.width = image.height = 8;
+  image.image.resize(8 * 8 * 4, 127);
+
+  source.textures.push_back(source.textures.front());
+  source.materials.push_back(source.materials.front());
+  source.materials.back().pbrMetallicRoughness.baseColorTexture.index = 1;
+
+  const auto unmodified = PrepareGltfTextures(source, {}, 1024);
+  const auto streamed = PrepareGltfTextures(source, {}, 1024, false, 2);
+  ASSERT_EQ(streamed.images.size(), 1u);
+  ASSERT_EQ(streamed.bindings.size(), 2u);
+  const auto& fallback = streamed.images.front();
+  ASSERT_TRUE(fallback.mipSource);
+  EXPECT_EQ(fallback.mipSource->mips.front().width, 8u);
+  EXPECT_EQ(fallback.fallbackFirstMip, 2u);
+  EXPECT_EQ(fallback.image.mips.front().width, 2u);
+  EXPECT_EQ(fallback.image.format, VK_FORMAT_R8G8B8A8_SRGB);
+  EXPECT_EQ(fallback.contentKey, unmodified.images.front().contentKey);
+  EXPECT_EQ(CountPreparedGltfTextureResources(streamed), CountPreparedGltfTextureResources(unmodified));
+
+  TextureManager manager;
+  size_t uploads = 0;
+  const auto upload = [&](const PreparedGltfTextureImage& row) {
+    ++uploads;
+    return resource(row.contentKey, row.image);
+  };
+  const auto initial = UploadPreparedGltfTextures(streamed, manager, upload);
+  const auto full = UploadPreparedGltfTextures(unmodified, manager, upload);
+  EXPECT_EQ(uploads, 2u);
+  EXPECT_NE(initial.color.front(), full.color.front());
+  EXPECT_EQ(manager.getTexture(full.color.front())->width, 8u);
+
+  source.materials.back().alphaMode = "MASK";
+  const auto coverage = PrepareGltfTextures(source, {}, 1024, false, 2);
+  EXPECT_FALSE(coverage.images.front().mipSource);
+  EXPECT_EQ(coverage.images.front().image.mips.front().width, 8u);
+
+  source.materials.back().alphaMode = "OPAQUE";
+  tinygltf::Sampler baseOnly;
+  baseOnly.minFilter = 9729;
+  source.samplers.push_back(baseOnly);
+  source.textures.back().sampler = 0;
+  const auto nonMippedAlias = PrepareGltfTextures(source, {}, 1024, false, 2);
+  EXPECT_FALSE(nonMippedAlias.images.front().mipSource);
+  EXPECT_EQ(nonMippedAlias.images.front().image.mips.front().width, 8u);
+}
+
 TEST(GltfTextureResources, DeduplicatesIdenticalSourceContentAcrossImageIndices) {
   auto source = model(); source.images.push_back(source.images[0]);
   source.textures.push_back(source.textures[0]); source.textures[1].source = 1;

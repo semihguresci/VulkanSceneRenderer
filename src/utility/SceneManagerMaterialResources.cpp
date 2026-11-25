@@ -5,6 +5,7 @@
 #include <Container/utility/VulkanDevice.h>
 #include <Container/utility/VulkanMemoryManager.h>
 #include <Container/utility/TextureSamplingPlan.h>
+#include <Container/utility/TextureMipStreaming.h>
 #include <Container/utility/TextureImageOwnership.h>
 #include <Container/geometry/GltfTextureResourceReferences.h>
 
@@ -202,7 +203,8 @@ uint32_t SceneManager::loadMaterialTexture(const std::filesystem::path& path,boo
 uint32_t SceneManager::loadMaterialTextureFromBytes(const std::string& name,std::span<const std::byte> bytes,bool color,uint32_t sampler) {
   return loadMaterialTextureSourceFromBytes(name,bytes,color,sampler).runtimeResource();
 }
-SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSource(const std::filesystem::path& path,bool color,uint32_t sampler) {
+SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSource(
+    const std::filesystem::path& path, bool color, uint32_t sampler, bool allowMipStreaming) {
   (void)container::material::DecodeMaterialSamplerKey({sampler});
   const auto normalized=path.lexically_normal();const auto name=container::util::pathToUtf8(normalized);
   if(name.size()>65536) throw std::length_error("Material texture path exceeds its limit");
@@ -211,19 +213,25 @@ SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSource(c
   const auto size=stream.tellg();if(size<=0 || uint64_t(size)>256ull*1024*1024) throw std::length_error("Material texture encoded bytes exceed their limit");
   std::vector<std::byte> bytes(static_cast<size_t>(size));stream.seekg(0);
   if(!stream.read(reinterpret_cast<char*>(bytes.data()),std::streamsize(bytes.size()))) throw std::runtime_error("failed to read material texture: "+name);
-  return loadMaterialTextureSourceBytes("file:"+name,name,bytes,color,sampler);
+  return loadMaterialTextureSourceBytes("file:"+name,name,bytes,color,sampler,allowMipStreaming);
 }
-SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSourceFromBytes(const std::string& name,std::span<const std::byte> bytes,bool color,uint32_t sampler) {
+SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSourceFromBytes(
+    const std::string& name, std::span<const std::byte> bytes, bool color, uint32_t sampler,
+    bool allowMipStreaming) {
   const auto normalized=name.empty()?std::string("embedded-usd-texture"):name;
   if(normalized.size()>65536) throw std::length_error("Material texture name exceeds its limit");
-  return loadMaterialTextureSourceBytes("bytes:"+normalized,normalized,bytes,color,sampler);
+  return loadMaterialTextureSourceBytes("bytes:"+normalized,normalized,bytes,color,sampler,allowMipStreaming);
 }
 
 SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSourceBytes(const std::string& request,
-    const std::string& name,std::span<const std::byte> bytes,bool color,uint32_t sampler) {
+    const std::string& name,std::span<const std::byte> bytes,bool color,uint32_t sampler,
+    bool allowMipStreaming) {
   if(bytes.empty() || bytes.size()>256ull*1024*1024) throw std::length_error("Material texture encoded bytes exceed their limit");
-  (void)container::material::DecodeMaterialSamplerKey({sampler});
-  const auto key=request+"#sampler="+std::to_string(sampler)+"#size="+std::to_string(bytes.size())+"#bytes="+std::to_string(hashEncoded(bytes));
+  const auto policy = container::material::DecodeMaterialSamplerKey({sampler});
+  const uint32_t streamingExtent = allowMipStreaming && policy.minFilter != 9728 && policy.minFilter != 9729
+      ? config_.textureStreamingFallbackExtent : 0u;
+  const auto key=request+"#sampler="+std::to_string(sampler)+"#size="+std::to_string(bytes.size())+"#bytes="+std::to_string(hashEncoded(bytes))+
+      (streamingExtent ? "#streaming-mip-fallback" : "");
   if(materialTextureSourceRequests_.size()>maxSources) throw std::length_error("Material texture request table exceeds its limit");
   // The caller's encoded payload and the optional immutable request copy can
   // coexist. Resident image tables are charged separately below; codec-private
@@ -303,6 +311,11 @@ SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSourceBy
     decodedBytes+=mip.bytes.size();
   }
   budget.add(decodedBytes,2);
+  const uint64_t mipSourceLimit = container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB);
+  const uint64_t liveMipBytes = allocationManager_->textureMipSourceBytes();
+  const auto availableMipBytes = mipSourceLimit - std::min(mipSourceLimit, liveMipBytes);
+  auto mipFallback = container::material::PrepareTextureMipFallback(
+      preparedImage, streamingExtent, std::min(budget.remaining, availableMipBytes));
   auto retention=decode;
   const auto raw=std::span(reinterpret_cast<const unsigned char*>(bytes.data()),bytes.size());
   const bool encodedArchive=!container::geometry::gltf::EncodedTextureMimeType(raw).empty();
@@ -392,7 +405,14 @@ SceneManager::MaterialTextureReference SceneManager::loadMaterialTextureSourceBy
       archiveTextureIdentities_.resize(exportSource_.textures.size());archiveTextureIdentities_[archived]=std::move(cookie);
     }
     auto batch=allocationManager_->beginTextureAllocationBatch();
-    auto resource=allocationManager_->createTextureFromImageData(name,preparedImage,materialQueueFamilies());
+    const auto& uploadImage = mipFallback ? mipFallback->fallback : preparedImage;
+    container::gpu::TextureMipSource mipSource{};
+    if (mipFallback) {
+      mipSource = {.image = mipFallback->source, .fallbackFirstMip = mipFallback->firstMip,
+                   .retainedBytes = mipFallback->retainedBytes};
+    }
+    auto resource = allocationManager_->createTextureFromImageData(
+        name, uploadImage, materialQueueFamilies(), std::move(mipSource));
     resource.name=key+"#source="+std::to_string(archived)+(color?"#color":"#data");resource.samplerIndex=sampler;
     if(candidateTextures.findTextureIndex(resource.name)) throw std::invalid_argument("Material source resource name is already registered without this proof");
     const auto runtime=candidateTextures.registerTexture(resource);

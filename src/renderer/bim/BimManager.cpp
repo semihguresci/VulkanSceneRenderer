@@ -672,7 +672,7 @@ bool geometryDrawListsCoverObject(const BimGeometryDrawLists &lists,
 std::optional<container::scene::SceneManager::MaterialTextureReference> tryLoadSceneTexture(
     container::scene::SceneManager &sceneManager,
     const container::geometry::dotbim::MaterialTextureAsset &texture,
-    bool isSrgb) {
+    bool isSrgb, bool allowMipStreaming) {
   if (texture.empty()) {
     return std::nullopt;
   }
@@ -685,7 +685,7 @@ std::optional<container::scene::SceneManager::MaterialTextureReference> tryLoadS
             container::util::pathToUtf8(texture.path.lexically_normal());
       }
       return sceneManager.loadMaterialTextureSourceFromBytes(
-          textureName, texture.encodedBytes, isSrgb, texture.samplerIndex);
+          textureName, texture.encodedBytes, isSrgb, texture.samplerIndex, allowMipStreaming);
     } catch (...) {
       if (texture.path.empty()) {
         return std::nullopt;
@@ -700,25 +700,31 @@ std::optional<container::scene::SceneManager::MaterialTextureReference> tryLoadS
   }
   try {
     return sceneManager.loadMaterialTextureSource(normalized, isSrgb,
-                                            texture.samplerIndex);
+                                                  texture.samplerIndex, allowMipStreaming);
   } catch (...) {
     return std::nullopt;
   }
 }
 
-void assignTextureIndex(
-    container::scene::SceneManager &sceneManager,
-    const container::geometry::dotbim::MaterialTextureAsset &texture,
-    bool isSrgb, uint32_t &textureIndex,
-    container::material::GltfMaterialTextureSlot slot,
-    container::scene::SceneManager::MaterialTextureProvenance &provenance) {
-  if (const auto loaded = tryLoadSceneTexture(sceneManager, texture, isSrgb)) {
-    // Keep the source identity while this producer still knows its exact slot
-    // and color/data role. A shared GPU resource is not a source texture ID.
-    provenance[size_t(slot)] = *loaded;
-    textureIndex = loaded->runtimeResource();
+struct BimTextureMipPolicy {
+  bool enabled{};
+  std::unordered_set<std::filesystem::path> coveragePaths;
+  std::unordered_set<std::string> coverageNames;
+
+  void pin(const container::geometry::dotbim::MaterialTextureAsset &asset) {
+    if (!asset.path.empty()) {
+      coveragePaths.insert(asset.path.lexically_normal());
+    }
+    if (!asset.encodedBytes.empty()) {
+      coverageNames.insert(asset.name);
+    }
   }
-}
+
+  [[nodiscard]] bool allows(const container::geometry::dotbim::MaterialTextureAsset &asset) const {
+    return enabled && !coveragePaths.contains(asset.path.lexically_normal()) &&
+           (asset.encodedBytes.empty() || !coverageNames.contains(asset.name));
+  }
+};
 
 struct PreparedBimSceneMaterial {
   container::material::Material value;
@@ -727,7 +733,8 @@ struct PreparedBimSceneMaterial {
 
 PreparedBimSceneMaterial
 makeSceneMaterial(const container::geometry::dotbim::Material &source,
-                  container::scene::SceneManager &sceneManager) {
+                  container::scene::SceneManager &sceneManager,
+                  const BimTextureMipPolicy &mipPolicy) {
   using Slot = container::material::GltfMaterialTextureSlot;
   PreparedBimSceneMaterial result{source.pbr, {}};
   auto &material = result.value;
@@ -743,42 +750,49 @@ makeSceneMaterial(const container::geometry::dotbim::Material &source,
   material.occlusionStrength =
       std::clamp(material.occlusionStrength, 0.0f, 1.0f);
 
-  assignTextureIndex(sceneManager, source.texturePaths.baseColor, true,
-                     material.baseColorTextureIndex, Slot::BaseColor, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.emissive, true,
-                     material.emissiveTextureIndex, Slot::Emissive, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.normal, false,
-                     material.normalTextureIndex, Slot::Normal, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.occlusion, false,
-                     material.occlusionTextureIndex, Slot::Occlusion, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.metallicRoughness, false,
-                     material.metallicRoughnessTextureIndex, Slot::MetallicRoughness, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.roughness, false,
-                     material.roughnessTextureIndex, Slot::Roughness, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.metalness, false,
-                     material.metalnessTextureIndex, Slot::Metalness, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.specular, false,
-                     material.specularTextureIndex, Slot::Specular, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.specularColor, true,
-                     material.specularColorTextureIndex, Slot::SpecularColor, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.opacity, false,
-                     material.opacityTextureIndex, Slot::Opacity, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.transmission, false,
-                     material.transmissionTextureIndex, Slot::Transmission, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.clearcoat, false,
-                     material.clearcoatTextureIndex, Slot::Clearcoat, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.clearcoatRoughness,
-                     false, material.clearcoatRoughnessTextureIndex, Slot::ClearcoatRoughness, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.clearcoatNormal, false,
-                     material.clearcoatNormalTextureIndex, Slot::ClearcoatNormal, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.sheenColor, true,
-                     material.sheenColorTextureIndex, Slot::SheenColor, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.sheenRoughness, false,
-                     material.sheenRoughnessTextureIndex, Slot::SheenRoughness, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.iridescence, false,
-                     material.iridescenceTextureIndex, Slot::Iridescence, result.textures);
-  assignTextureIndex(sceneManager, source.texturePaths.iridescenceThickness,
-                     false, material.iridescenceThicknessTextureIndex, Slot::IridescenceThickness, result.textures);
+  const auto assign = [&](const container::geometry::dotbim::MaterialTextureAsset &texture,
+                          bool isSrgb, uint32_t &textureIndex, Slot slot) {
+    if (const auto loaded = tryLoadSceneTexture(sceneManager, texture, isSrgb, mipPolicy.allows(texture))) {
+      result.textures[size_t(slot)] = *loaded;
+      textureIndex = loaded->runtimeResource();
+    }
+  };
+  assign(source.texturePaths.baseColor, true,
+                     material.baseColorTextureIndex, Slot::BaseColor);
+  assign(source.texturePaths.emissive, true,
+                     material.emissiveTextureIndex, Slot::Emissive);
+  assign(source.texturePaths.normal, false,
+                     material.normalTextureIndex, Slot::Normal);
+  assign(source.texturePaths.occlusion, false,
+                     material.occlusionTextureIndex, Slot::Occlusion);
+  assign(source.texturePaths.metallicRoughness, false,
+                     material.metallicRoughnessTextureIndex, Slot::MetallicRoughness);
+  assign(source.texturePaths.roughness, false,
+                     material.roughnessTextureIndex, Slot::Roughness);
+  assign(source.texturePaths.metalness, false,
+                     material.metalnessTextureIndex, Slot::Metalness);
+  assign(source.texturePaths.specular, false,
+                     material.specularTextureIndex, Slot::Specular);
+  assign(source.texturePaths.specularColor, true,
+                     material.specularColorTextureIndex, Slot::SpecularColor);
+  assign(source.texturePaths.opacity, false,
+                     material.opacityTextureIndex, Slot::Opacity);
+  assign(source.texturePaths.transmission, false,
+                     material.transmissionTextureIndex, Slot::Transmission);
+  assign(source.texturePaths.clearcoat, false,
+                     material.clearcoatTextureIndex, Slot::Clearcoat);
+  assign(source.texturePaths.clearcoatRoughness,
+                     false, material.clearcoatRoughnessTextureIndex, Slot::ClearcoatRoughness);
+  assign(source.texturePaths.clearcoatNormal, false,
+                     material.clearcoatNormalTextureIndex, Slot::ClearcoatNormal);
+  assign(source.texturePaths.sheenColor, true,
+                     material.sheenColorTextureIndex, Slot::SheenColor);
+  assign(source.texturePaths.sheenRoughness, false,
+                     material.sheenRoughnessTextureIndex, Slot::SheenRoughness);
+  assign(source.texturePaths.iridescence, false,
+                     material.iridescenceTextureIndex, Slot::Iridescence);
+  assign(source.texturePaths.iridescenceThickness,
+                     false, material.iridescenceThicknessTextureIndex, Slot::IridescenceThickness);
   return result;
 }
 
@@ -3852,6 +3866,17 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
     return;
   }
 
+  BimTextureMipPolicy mipPolicy{};
+  mipPolicy.enabled = sceneManager.textureStreamingFallbackExtent() != 0u;
+  if (mipPolicy.enabled) {
+    for (const auto &material : model.materials) {
+      mipPolicy.pin(material.texturePaths.opacity);
+      if (material.pbr.alphaMode != container::material::AlphaMode::Opaque) {
+        mipPolicy.pin(material.texturePaths.baseColor);
+      }
+    }
+  }
+
   // Draw order is already fixed. Create materials in source order so their
   // runtime IDs follow the same order as a direct model load.
   std::vector<uint32_t> sourceObjects(model.elements.size(), kInvalidMaterialIndex);
@@ -3871,7 +3896,8 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
     if (isValidMaterialIndex(row.sourceMaterialIndex, model)) {
       auto &cached = sourceMaterialCache[row.sourceMaterialIndex];
       if (cached == kInvalidMaterialIndex) {
-        const auto material = makeSceneMaterial(model.materials[row.sourceMaterialIndex], sceneManager);
+        const auto material = makeSceneMaterial(
+            model.materials[row.sourceMaterialIndex], sceneManager, mipPolicy);
         cached = sceneManager.createMaterial(material.value, material.textures);
       }
       materialIndex = cached;

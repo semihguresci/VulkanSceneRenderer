@@ -232,6 +232,8 @@ void printCommandLineHelp() {
   --bim-import-scale F          Auxiliary model import scale
   --geometry-lod-error F        Maximum raster geometry LOD error in display pixels (0 disables)
   --geometry-upload-kb N        Geometry copy limit per streaming tick in KiB (1–4096, 0 uses synchronous upload)
+  --texture-streaming           Stream eligible scene texture mips from a resident fallback
+  --texture-upload-kb N         Texture copy limit per streaming tick in KiB (1–4096, default 256)
   --vdb-model-grid NAME         Scalar/point/vector model grid selector
   --vdb-slice                   Explicit sampled scalar/vector plane preview
   --vdb-slice-origin X Y Z      Source-world plane center (0 0 0)
@@ -899,6 +901,16 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       config.geometryUploadChunkKiB = parseUint(requireValue(argc, argv, i, arg), arg);
       if (config.geometryUploadChunkKiB > 4096)
         throw std::invalid_argument("--geometry-upload-kb accepts values from 0 to 4096");
+      continue;
+    }
+    if (arg == "--texture-streaming") {
+      config.textureStreamingFallbackExtent = 128;
+      continue;
+    }
+    if (arg == "--texture-upload-kb") {
+      config.textureUploadChunkKiB = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (config.textureUploadChunkKiB == 0 || config.textureUploadChunkKiB > 4096)
+        throw std::invalid_argument("--texture-upload-kb requires a value from 1 to 4096");
       continue;
     }
     if (arg == "--asset-memory-mb" || arg == "--asset-upload-mb") {

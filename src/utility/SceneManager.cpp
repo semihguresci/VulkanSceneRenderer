@@ -15,6 +15,7 @@
 #include <set>
 #include <stdexcept>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 
 #include "Container/geometry/GltfModelLoader.h"
@@ -2017,7 +2018,8 @@ bool SceneManager::reloadModel(
           geometry = gltfReloadGeometryCounts(*prepared, hierarchy);
       }
       incomingTextures = container::material::PrepareGltfTextures(prepared->gltfModel,
-          allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB), experimental);
+          allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB),
+          experimental, config_.textureStreamingFallbackExtent);
       if(container::material::CountPreparedGltfTextureResources(*incomingTextures)>textureDescriptorCapacity_)
         throw std::runtime_error("Incoming glTF textures exceed the scene image descriptor capacity");
       if (checkAssetBudget) {
@@ -3415,14 +3417,16 @@ void SceneManager::loadGltfAssets(int requestedScene,
       if (!preparedTextures) {
         localTextures = container::material::PrepareGltfTextures(gltfModel_,
             allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB),
-            config_.experimentalGltfMaterials);
+            config_.experimentalGltfMaterials, config_.textureStreamingFallbackExtent);
         preparedTextures = &*localTextures;
       }
       if(preparedTextures->textureCount!=gltfModel_.textures.size())
         throw std::runtime_error("Prepared glTF texture identity table differs from the source");
       auto imageToTexture = container::material::UploadPreparedGltfTextures(
-          *preparedTextures, textureManager_, [this](const auto& name, const auto& image) {
-            return allocationManager_->createTextureFromImageData(name, image, materialQueueFamilies());
+          *preparedTextures, textureManager_, [this](const container::material::PreparedGltfTextureImage& image) {
+            return allocationManager_->createTextureFromImageData(image.contentKey, image.image,
+                materialQueueFamilies(), {.image = image.mipSource, .fallbackFirstMip = image.fallbackFirstMip,
+                                          .retainedBytes = image.retainedMipBytes});
           });
       validateGltfTextureResourceTable(imageToTexture,gltfModel_.textures.size(),textureManager_.textureCount());
 
@@ -4369,6 +4373,52 @@ void SceneManager::writeMaterialDescriptorSetContents(
   vkUpdateDescriptorSets(deviceWrapper_->device(),
                          static_cast<uint32_t>(writes.size()), writes.data(), 0,
                          nullptr);
+  if (descriptorSet == this->descriptorSet(static_cast<uint32_t>(imageIndex)) ||
+      descriptorSet == auxiliaryDescriptorSet(static_cast<uint32_t>(imageIndex))) {
+    ++materialTextureDescriptorRevision_;
+  }
+}
+
+void SceneManager::writeMaterialTextureImageDescriptors(
+    std::span<const container::material::TextureMipViewOverride> overrides) const {
+  if (!deviceWrapper_ || !textureSamplingStateValid()) {
+    throw std::runtime_error("Scene texture descriptors are unavailable for mip publication");
+  }
+  // The immutable plan describes logical rows, including the white fallback
+  // for retired slots. Apply each physical view to every alias of its source.
+  std::unordered_map<uint64_t, const container::material::TextureMipViewOverride*> effective;
+  effective.reserve(overrides.size());
+  for (const auto& entry : overrides) {
+    if (!entry.fallback || entry.view == VK_NULL_HANDLE ||
+        !effective.emplace(entry.fallback.incarnation(), &entry).second) {
+      throw std::invalid_argument("Invalid or duplicate texture mip descriptor override");
+    }
+  }
+  auto images = textureSamplingPlan_.images;
+  for (size_t i = 0; i < textureSamplingPlan_.rows.size(); ++i) {
+    const auto& row = textureSamplingPlan_.rows[i];
+    if (const auto found = effective.find(row.allocationIdentity.incarnation());
+        found != effective.end() && row.allocationIdentity == found->second->fallback) {
+      images[i].imageView = found->second->view;
+    }
+  }
+  std::vector<VkWriteDescriptorSet> writes;
+  writes.reserve(descriptorSets_.size() + auxiliaryDescriptorSets_.size());
+  for (const auto& sets : {std::span(descriptorSets_), std::span(auxiliaryDescriptorSets_)}) {
+    for (const auto set : sets) {
+      if (set != VK_NULL_HANDLE) {
+        writes.push_back({.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                          .dstSet = set, .dstBinding = 5,
+                          .descriptorCount = static_cast<uint32_t>(images.size()),
+                          .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+                          .pImageInfo = images.data()});
+      }
+    }
+  }
+  if (!writes.empty()) {
+    vkUpdateDescriptorSets(deviceWrapper_->device(), static_cast<uint32_t>(writes.size()),
+                           writes.data(), 0, nullptr);
+  }
 }
 
 void SceneManager::resetLoadedAssets() {
