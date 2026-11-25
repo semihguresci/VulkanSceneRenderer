@@ -1,13 +1,18 @@
 # Vulkan FSR upscaling with AMD FSR SDK 2.4.0
 
-The optional Windows x64 backend uses AMD FSR SDK 2.4.0 at commit
-`7539ae8b6568ad29ed78a753404351daf3b5cca7`. The API selects the newest compatible
-provider. On hardware without AMD ML-upscaler support, the bundled analytical
-provider is FSR 3.1.6. This is the intended path on NVIDIA RTX 20-series hardware.
-The wrapper queries and reports the actual provider version after creation.
-The upscaler DLL's 4.1.2 file version does not establish ML support on NVIDIA.
+The optional backend uses the signed Windows x64 Vulkan binaries from AMD FSR
+SDK 2.4.0 at commit `7539ae8b6568ad29ed78a753404351daf3b5cca7`. The SDK selects a
+compatible provider and the engine reports its version after context creation.
+The RTX 2080 SUPER audit exercised the bundled analytical FSR 3.1.6 provider.
+AMD also lists ML providers for supported AMD hardware and drivers. The table
+below records the versions of the installed DLLs separately from the provider.
 [Pinned AMD release](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/releases/tag/v2.4.0)
 and [AMD hardware/provider guidance](https://gpuopen.com/amd-fsr-sdk/).
+
+| Signed Windows x64 Vulkan runtime | PE file version |
+| --- | --- |
+| `amd_fidelityfx_loader_vk.dll` | 1.0.2.4555 |
+| `amd_fidelityfx_upscaler_vk.dll` | 4.1.2.4555 |
 
 Configure an existing build with the SDK root. The build checks both signed
 Vulkan DLLs, the four public headers and license/notices against the pin. The
@@ -18,9 +23,10 @@ same-name module from another directory, and destroys the context before
 unloading either module. Missing modules leave the scene at native resolution.
 Building without the SDK requires neither AMD DLL nor AMD sample tools.
 
-The Windows package includes the full SDK redistribution license and third-party
-notices. The license's MIT exceptions apply to the listed source files; its
-default binary redistribution terms apply to the signed SDK distribution.
+Both shipped Vulkan DLLs appear among the MIT exceptions in the pinned SDK
+license. The Windows package includes `AMD-FSR-SDK-2.4.0-LICENSE.txt` and
+`AMD-FSR-SDK-2.4.0-THIRD-PARTY-NOTICES.md` under `THIRD_PARTY_LICENSES/`. The
+packager uses CMake's actual FSR availability and checks both DLL hashes.
 [Pinned SDK license](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v2.4.0/Kits/FidelityFX/docs/license.md).
 
 ```powershell
@@ -30,12 +36,32 @@ $env:CONTAINER_RUN_GPU_FSR_UPSCALER = '1'
 ctest --test-dir build/fsr -R '^fsr_upscaler_gpu_tests$' --output-on-failure
 ```
 
-Launch with `--fsr quality`, `--fsr balanced`, or `--fsr performance` to
-render at approximately 67%, 59%, or 50% of the display size on each axis.
-`--fsr native` selects the normal resolution. ImGui uses the display extent.
-FSR shares the single-sample perspective raster path. MSAA, orthographic and
-reference rendering use native resolution. The FSR velocity and reactive mask
-are available in `--display-mode taa-velocity` and `taa-reactive`.
+## SDK 2.4.0 compatibility matrix
+
+| `--fsr` mode | Display-to-render ratio per axis | Render extent at 640 × 360 output | Temporal resolve |
+| --- | --- | --- | --- |
+| `native` | 1.0× | 640 × 360 | TAA when enabled |
+| `quality` | 1.5× | 426 × 240 | FSR |
+| `balanced` | 1.7× | 376 × 211 | FSR |
+| `performance` | 2.0× | 320 × 180 | FSR |
+
+The mode table describes a compatible device and viewport. The render extent
+rounds each axis down. If either render dimension falls below two pixels,
+the FSR context is rejected and rendering stays at native resolution. ImGui and
+captures use the display extent. FSR owns jitter and temporal resolve while
+active, including when TAA is selected. Native resolution can use TAA after
+FSR is disabled or falls back, subject to the normal TAA requirements.
+
+| Capability or request | Result | Audit coverage |
+| --- | --- | --- |
+| Windows x64 build with the pinned SDK, both DLLs and a compatible Vulkan device | Uses the SDK-selected provider. The engine applies its format adapter to analytical 3.1.6. | Analytical 3.1.6 on RTX 2080 SUPER. AMD ML and other driver providers are unverified. |
+| `ENABLE_FSR_UPSCALING=OFF` or enabled with an empty SDK path | Builds without Vulkan FSR. An upscale request runs at native resolution. | Separate SDK-off build and native image comparison. |
+| A supplied SDK root has a missing or mismatched pinned file | CMake rejects that configuration. | Pin checks in `cmake/FsrUpscalerDependencies.cmake`. |
+| SDK-enabled build with a missing adjacent loader or upscaler | The runtime stays at native resolution and reports the unavailable DLL pair. | Staged runtime capture and standalone missing-module test. |
+| Required Vulkan features or image formats absent, or the provider context cannot initialize | The runtime stays at native resolution and reports why FSR could not activate. | Source audit and standalone failure checks. The viewport device-feature rejection path still needs a hardware capture. |
+| Perspective deferred or forward raster, MSAA 1×, at most four frames in flight | Eligible in Lit, `taa-velocity` and `taa-reactive` display modes. | Deferred mode transitions, forward Performance, velocity and reactive diagnostics, and UI capture. |
+| MSAA above 1×, orthographic or reference rendering, another display mode, or more than four frames in flight | Retains the requested mode and renders at native resolution. | Live MSAA fallback and recovery. The other eligibility gates were inspected in `RendererFrontend::currentUpscaleResourceRequest`. |
+| Linux or 32-bit Windows | Vulkan FSR SDK backend stays disabled. | Configure gate. Only Windows x64 is supported by the pinned binaries. |
 
 ## Frame inputs and submission
 
@@ -48,11 +74,12 @@ output in `FsrUpscaler::outputFormat()` to `GENERAL`: RGBA32F for the analytical
 3.1.6 provider and RGBA16F for the automatic ML/default profile. The caller owns
 producer and consumer barriers and keeps
 all dispatches ordered on one graphics queue. The AMD backend owns its internal
-history, views, and descriptors. The native GPU test exercises the driver with
-graphics and compute support, extended storage image formats, Vulkan 1.1
-16-bit storage, Vulkan 1.2 float16 and Vulkan 1.3 subgroup controls when
-available. The SDK queries supported physical-device features itself, so an
-enabled integration must supply compatible logical-device features. [Pinned Vulkan backend](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v2.4.0/Kits/FidelityFX/backend/vk)
+history, views, and descriptors. The engine requires a graphics queue with
+compute support, storage image read/write without format, extended storage
+image formats, subgroup size control and full compute subgroups. If the device
+advertises `shaderFloat16`, it must also support `storageBuffer16BitAccess`.
+The SDK queries physical-device features and needs the corresponding features
+enabled on the logical device. [Pinned Vulkan backend](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/tree/v2.4.0/Kits/FidelityFX/backend/vk)
 
 SDK 2.4.0 analytical shaders also require the device extension
 `VK_KHR_compute_shader_derivatives` and `computeDerivativeGroupLinear`.
@@ -143,31 +170,88 @@ emissive shading. Exposure, bloom and post-processing consume the upscaled
 linear HDR. Engine allocation telemetry covers its own velocity, conversion and
 presentation images. The AMD runtime owns and manages its internal history.
 
-`tests/validation/fsr_upscaling_runtime_regression.py` runs the native capture
-comparison. Use `--suite full` to include forward transparency, temporal debug
-inputs and UI capture. Its `--expect-unavailable` mode checks pixel-exact native
-fallback when the SDK or its DLL is unavailable.
+## Executable verification
 
-SDK 2.4.0 passed the enabled build, all four strict Vulkan GPU cases and all
-18 CPU adapter tests. The native RTX 2080 SUPER regression passed 39 captures
-across eight processes using the actual analytical 3.1.6 provider. It covered
-both raster techniques, camera motion and cuts, quality/backend switches,
-scene reload, resize, recovery from MSAA fallback, forward transparency,
-velocity/reactive diagnostics and UI capture. Validation layer 1.4.363.1 was
-loaded with its duplicate-message cap raised to 1000; every process log was
-clean, and frozen runtime, helper and layer hashes matched before and after.
+Build `fsr_vulkan_image_adapter_tests` for CPU coverage of the pinned format
+adapter. Run the GPU target with the opt-in environment variable shown above
+to exercise module loading, context creation, HDR dispatch and dispatch
+abandonment on Vulkan.
 
-In the 640×360 deferred fixture, median instrumented GPU pass totals were
-0.868 ms at native resolution and 0.925 ms with Quality. The reconstruction
-pass measured 0.248 ms; the engine's temporal images allocated 27,377,664 bytes.
-The maximum mean absolute RGB difference from native frames was 1.938/255.
-At 1280×720, the forward transparency fixture measured 1.434 ms native and
-1.129 ms in Performance mode, with a 0.459 ms reconstruction pass and
-81,838,080 engine temporal image bytes. These are validation-enabled fixture
-measurements, not general performance guarantees or SDK internal-memory totals.
+With Python 3.11 or newer, NumPy and Pillow, run the end-to-end capture fixture
+from the repository root. Point `$manifest` to the
+`VkLayer_khronos_validation.json` used by the installed Vulkan validation layer.
+Give each run a new output directory.
 
-Capture settings and per-frame diagnostics are in
-`build/codex-gltf-validation/latest-fsr-native-full/results.json`; the frozen
-input receipt is `build/codex-gltf-validation/latest-fsr-native-full-inputs.json`.
-The accepted renderer SHA-256 is
-`a250881bfdfd0832d11fcf6a7838926e3bc3a59ef6e9c2a098837763ccf0cf63`.
+```powershell
+python -B tests/validation/fsr_upscaling_runtime_regression.py `
+  --renderer build/fsr/VulkanSceneRenderer.exe --output build/fsr-verification/active `
+  --suite full --expect-provider 3.1.6 --validation-manifest $manifest
+python -B tests/validation/fsr_upscaling_runtime_regression.py `
+  --renderer build/fsr-off/VulkanSceneRenderer.exe --output build/fsr-verification/sdk-off `
+  --expect-fallback sdk-disabled --validation-manifest $manifest
+python -B tests/validation/fsr_upscaling_runtime_regression.py `
+  --renderer build/fsr-missing-dll/VulkanSceneRenderer.exe --output build/fsr-verification/missing-dll `
+  --expect-fallback missing-runtime --validation-manifest $manifest
+```
+
+Build the second executable with `-DENABLE_FSR_UPSCALING=OFF`. For the third
+run, stage the SDK-enabled executable with its runtime files in a separate
+directory and omit `amd_fidelityfx_upscaler_vk.dll`. Keep the loader beside the
+executable. The fallback tests compare PNG pixels against ordinary native
+rendering and check the reported cause. The active suite checks the provider,
+render and display extents, forward transparency, motion and camera cuts,
+mode switches, reload, resize, MSAA recovery, velocity and reactive displays,
+and UI capture. It also switches between standalone TAA and FSR, checking
+resolve ownership, jitter and history. Each run records DLL and executable
+identity, validation settings and the loaded validation library in
+`results.json` alongside the per-frame telemetry and screenshots.
+
+### Audit results
+
+The SDK 2.4.0 build passed 18 CPU adapter tests and four wrapper tests, including
+three Vulkan device tests. The RTX 2080 SUPER with NVIDIA driver 610.88 used
+analytical 3.1.6 and passed 44 captures across nine processes. Both fallback
+profiles passed 17 captures each. In each profile, all six frames requested
+with Quality were pixel-identical to their native control frames. Vulkan
+validation layer 1.4.363.1 reported no errors with synchronization validation
+enabled. The maximum mean absolute RGB difference from native across the six
+active Quality frames was 1.935 on the 0–255 scale.
+
+| Fixture and mode | Median instrumented GPU pass total | Median resolve GPU time | Engine temporal images |
+| --- | ---: | ---: | ---: |
+| 640 × 360 deferred Native | 18.449 ms | — | 0 bytes |
+| 640 × 360 deferred Quality | 6.338 ms | 0.188 ms | 27,377,664 bytes |
+| 1280 × 720 forward Native | 102.267 ms | — | 0 bytes |
+| 1280 × 720 forward Performance | 20.632 ms | 0.754 ms | 81,838,080 bytes |
+
+These are fixture measurements with synchronization validation enabled and TAA
+disabled for the four rows. The memory counts cover engine temporal images.
+AMD-owned context allocations require separate measurement.
+
+Frame 8 from `models/validation/taa_scene.gltf` at 640 × 360 uses the same
+camera, lighting and scene state in each capture.
+
+| Native at 640 × 360 | FSR Quality at 426 × 240, reconstructed to 640 × 360 |
+| --- | --- |
+| ![Native capture of the motion and transparency fixture](images/fsr/sdk-2.4.0-native.png) | ![FSR Quality capture of the same fixture](images/fsr/sdk-2.4.0-quality.png) |
+
+## Remaining work
+
+- Complete the resize, reload, viewport/UI and blocked-profile matrix in
+  [#302](https://github.com/semihguresci/VulkanSceneRenderer/issues/302),
+  including orthographic and reference rendering.
+- Expand motion, transparency, shading-change, exposure and ghosting coverage
+  in [#303](https://github.com/semihguresci/VulkanSceneRenderer/issues/303).
+- Benchmark representative Sponza, glTF and BIM models and qualify the
+  extracted Windows package on another machine in
+  [#304](https://github.com/semihguresci/VulkanSceneRenderer/issues/304).
+- Qualify AMD ML and other SDK-selected providers on supported devices.
+  Verify the native fallback on a device missing the required features and
+  account for AMD-owned context allocations separately from engine images.
+- The CMake gate checks Windows and 64-bit pointer width. Native Windows
+  ARM64 and ARM64EC builds need an explicit target architecture check before
+  enabling the packaged x64 runtime.
+- Native fallback covers initial FSR selection and context setup. Later
+  allocation failures in the FSR frame resources and errors querying jitter
+  or recording an active dispatch still propagate. Recovery needs to retire
+  the failing context and recreate native frame resources.

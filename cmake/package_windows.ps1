@@ -441,6 +441,8 @@ foreach ($guide in @('gltf-texture-ingestion.md', 'texture-image-data.md', 'mate
         'screen-space-reflections.md', 'gltf-ies-lights.md', 'volumetric-fog.md')) {
     Copy-Item -LiteralPath (Join-Path $sourceDirectory "docs/$guide") -Destination $stagingDirectory
 }
+$guideImages = New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'images')
+Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/images/fsr') -Destination $guideImages.FullName -Recurse
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ltc-area-lighting.md') -Destination (Join-Path $stagingDirectory 'ltc-area-lighting.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/ddgi-probe-foundation.md') -Destination (Join-Path $stagingDirectory 'ddgi-probe-foundation.md')
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/physics-integration.md') -Destination (Join-Path $stagingDirectory 'physics-integration.md')

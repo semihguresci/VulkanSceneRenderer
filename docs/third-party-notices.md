@@ -111,11 +111,11 @@ OptiX-enabled executable follows NVIDIA's SDK license terms.
 [OptiX 9.1.0 SDK](https://github.com/NVIDIA/optix-dev/tree/v9.1.0) · [NVIDIA SDK license](https://github.com/NVIDIA/optix-dev/blob/v9.1.0/LICENSE.txt)
 # AMD FSR SDK
 
-Windows packages built with optional Vulkan FSR upscaling include the signed
-AMD FSR SDK 2.4.0 loader and upscaler DLLs. The package includes the full SDK
-redistribution license as `AMD-FSR-SDK-2.4.0-LICENSE.txt` and third-party notices
-as `AMD-FSR-SDK-2.4.0-THIRD-PARTY-NOTICES.md` in `THIRD_PARTY_LICENSES`.
-The SDK license's MIT exceptions apply to its listed source files.
+Windows x64 packages built with optional Vulkan FSR upscaling include the signed
+`amd_fidelityfx_loader_vk.dll` and `amd_fidelityfx_upscaler_vk.dll` from AMD FSR SDK
+2.4.0. The SDK license explicitly lists both DLLs under its MIT terms. The package
+includes the full SDK license as `AMD-FSR-SDK-2.4.0-LICENSE.txt` and third-party
+notices as `AMD-FSR-SDK-2.4.0-THIRD-PARTY-NOTICES.md` in `THIRD_PARTY_LICENSES`.
 [Pinned SDK license](https://github.com/GPUOpen-LibrariesAndSDKs/FidelityFX-SDK/blob/v2.4.0/Kits/FidelityFX/docs/license.md)
 
 # NVIDIA DLSS SDK
