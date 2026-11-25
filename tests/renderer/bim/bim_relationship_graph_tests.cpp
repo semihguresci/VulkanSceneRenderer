@@ -2,6 +2,7 @@
 
 #include "Container/geometry/DotBimLoader.h"
 #include "Container/renderer/bim/BimManager.h"
+#include "Container/renderer/bim/BimDerivedCache.h"
 #include "Container/utility/ModelImportCancellation.h"
 #include "Container/utility/Platform.h"
 
@@ -12,6 +13,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -623,6 +625,118 @@ TEST_F(BimPreparationTests, CancelsDuringFloorPlanProjection) {
 
 TEST_F(BimPreparationTests, CancelsDuringMetadataIndexing) {
   cancelAt("Indexing BIM objects");
+}
+
+TEST_F(BimPreparationTests, RestoresDerivedGeometryAndRejectsInternalCorruptionAndChangedInputs) {
+  using container::renderer::BimManager;
+  using container::util::DerivedAssetCacheStatus;
+  const std::string source = container::util::pathToUtf8(fixturePath());
+  auto directory = fixturePath();
+  directory += ".derived";
+  struct Cleanup {
+    std::filesystem::path directory, file;
+    ~Cleanup() {
+      std::error_code ignored;
+      if (!file.empty()) std::filesystem::remove(file, ignored);
+      std::filesystem::remove(directory, ignored);
+    }
+  } cleanup{directory, {}};
+
+  constexpr int side = 17;
+  std::ostringstream grid;
+  grid << R"({"schema_version":"1.1.0","meshes":[{"mesh_id":1,"coordinates":[)";
+  for (int y = 0; y < side; ++y) {
+    for (int x = 0; x < side; ++x) {
+      if (x || y) grid << ',';
+      grid << x << ",0," << y;
+    }
+  }
+  grid << R"(],"indices":[)";
+  for (int y = 0; y < side - 1; ++y) {
+    for (int x = 0; x < side - 1; ++x) {
+      const int corner = y * side + x;
+      if (x || y) grid << ',';
+      grid << corner << ',' << corner + 1 << ',' << corner + side + 1 << ','
+           << corner << ',' << corner + side + 1 << ',' << corner + side;
+    }
+  }
+  grid << R"(]}],"elements":[{"mesh_id":1,"guid":"wall","type":"IfcWall","storeyName":"Ground floor"}]})";
+  auto fixture = grid.str();
+  const auto writeFixture = [&] {
+    std::ofstream file(fixturePath(), std::ios::binary | std::ios::trunc);
+    file << fixture;
+    ASSERT_TRUE(file);
+  };
+  writeFixture();
+
+  std::vector<std::string> stages;
+  const auto prepare = [&] {
+    stages.clear();
+    return BimManager::prepareScene(source, 1.0f, {}, {}, {},
+        [&](std::string_view stage) { stages.emplace_back(stage); }, true, directory);
+  };
+  const auto cold = prepare();
+  cleanup.file = cold.derivedCache.file;
+  ASSERT_EQ(cold.derivedCache.status, DerivedAssetCacheStatus::Miss);
+  ASSERT_GT(cold.derivedCache.bytesWritten, 0u);
+  ASSERT_GT(cold.floorPlanGround.indexCount, 0u);
+  ASSERT_FALSE(cold.geometryLodRanges.empty());
+  EXPECT_NE(std::ranges::find(stages, "floorPlans"), stages.end());
+  EXPECT_NE(std::ranges::find(stages, "geometryLods"), stages.end());
+
+  const auto warm = prepare();
+  EXPECT_EQ(warm.derivedCache.status, DerivedAssetCacheStatus::Hit);
+  EXPECT_EQ(warm.derivedCache.bytesRead, cold.derivedCache.bytesWritten);
+  EXPECT_EQ(warm.derivedCache.bytesWritten, 0u);
+  EXPECT_EQ(warm.uploadIndices, cold.uploadIndices);
+  ASSERT_EQ(warm.uploadVertices.size(), cold.uploadVertices.size());
+  for (size_t i = 0; i < warm.uploadVertices.size(); ++i) {
+    EXPECT_EQ(warm.uploadVertices[i].position, cold.uploadVertices[i].position);
+  }
+  EXPECT_EQ(warm.metadata()[0].bounds.max, cold.metadata()[0].bounds.max);
+  EXPECT_EQ(warm.metadata()[0].guid, cold.metadata()[0].guid);
+  EXPECT_EQ(warm.floorPlanGround.commands("Ground floor").front().indexCount,
+            cold.floorPlanGround.commands("Ground floor").front().indexCount);
+  EXPECT_EQ(std::ranges::find(stages, "floorPlans"), stages.end());
+  EXPECT_EQ(std::ranges::find(stages, "geometryLods"), stages.end());
+  EXPECT_EQ(std::ranges::find(stages, "meshlets"), stages.end());
+
+  // An external dependency can alter the parsed model while the root file is
+  // byte-for-byte unchanged. The root file alone must never key this cache.
+  BimManager::PreparedScene alternate;
+  alternate.assetPath = fixturePath();
+  alternate.model = cold.model;
+  alternate.model.elements.front().transform[3].x += 2.f;
+  std::vector<container::renderer::BimElementBounds> bounds;
+  EXPECT_FALSE(container::renderer::restoreBimDerivedCache(
+      alternate, directory, fixturePath(), true, bounds, {}));
+  EXPECT_EQ(alternate.derivedCache.status, DerivedAssetCacheStatus::Miss);
+  EXPECT_EQ(alternate.derivedCache.file, cold.derivedCache.file);
+  EXPECT_NE(alternate.derivedCache.key, cold.derivedCache.key);
+
+  // Recompute the envelope checksum to exercise payload validation directly.
+  auto blob = container::util::readDerivedAssetCache(
+      cleanup.file, 1, cold.derivedCache.key, cold.derivedCache.bytesWritten);
+  ASSERT_EQ(blob.status, DerivedAssetCacheStatus::Hit);
+  ASSERT_GE(blob.payload.size(), 4u);
+  std::fill_n(blob.payload.begin(), 4, '\0');
+  ASSERT_GT(container::util::writeDerivedAssetCache(
+      cleanup.file, 1, cold.derivedCache.key, blob.payload), 0u);
+  const auto repaired = prepare();
+  EXPECT_EQ(repaired.derivedCache.status, DerivedAssetCacheStatus::Corrupt);
+  EXPECT_GT(repaired.derivedCache.bytesWritten, 0u);
+  EXPECT_EQ(repaired.uploadIndices, cold.uploadIndices);
+
+  const auto label = fixture.find("Ground floor");
+  ASSERT_NE(label, std::string::npos);
+  fixture.replace(label, 12, "Second floor");
+  writeFixture();
+  const auto changed = prepare();
+  EXPECT_EQ(changed.derivedCache.status, DerivedAssetCacheStatus::Miss);
+  EXPECT_NE(changed.derivedCache.key, cold.derivedCache.key);
+  EXPECT_TRUE(changed.floorPlanGround.commands("Ground floor").empty());
+  EXPECT_FALSE(changed.floorPlanGround.commands("Second floor").empty());
+  EXPECT_EQ(prepare().derivedCache.status, DerivedAssetCacheStatus::Hit);
 }
 
 TEST_F(BimPreparationTests, PreservesPropertiesAndEstimatesTriangleMeshlet) {

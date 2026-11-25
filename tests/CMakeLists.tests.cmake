@@ -1955,6 +1955,11 @@ add_custom_test(geometry_lod_tests
     ${TEST_GEOMETRY_DIR}/geometry_lod_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry
 )
+add_custom_test(geometry_lod_cache_tests
+    ${TEST_GEOMETRY_DIR}/geometry_lod_cache_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_geometry
+)
+set_tests_properties(geometry_lod_cache_tests PROPERTIES LABELS "cpu;scene;assets")
 add_custom_test(gltf_accessor_tests
     ${TEST_GEOMETRY_DIR}/gltf_accessor_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_geometry

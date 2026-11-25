@@ -9933,6 +9933,57 @@ void GuiManager::drawDdgiControls() {
   ImGui::TreePop();
 }
 
+void GuiManager::drawAssetStreamingOverlay(
+    std::span<const container::renderer::AssetStreamingMarker> markers) {
+  if (!initialized_ || !imguiFrameOpen_)
+    return;
+  using container::renderer::AssetStreamingOverlay;
+  const bool textures = assetStreamingOverlay_ == AssetStreamingOverlay::TextureResidency;
+  const auto* viewport = ImGui::GetMainViewport();
+  auto* overlay = ImGui::GetBackgroundDrawList();
+  constexpr ImU32 background = IM_COL32(14, 20, 28, 232);
+  constexpr ImU32 colorFine = IM_COL32(152, 231, 206, 255);
+  constexpr ImU32 colorCoarse = IM_COL32(162, 200, 255, 255);
+  constexpr ImU32 colorLowest = IM_COL32(210, 183, 255, 255);
+  constexpr ImU32 colorWaiting = IM_COL32(255, 208, 129, 255);
+  std::vector<ImVec4> markerRects;
+  markerRects.reserve(markers.size());
+  for (const auto& marker : markers) {
+    const auto label = (textures ? "Mip " : "LOD ") + std::to_string(marker.level);
+    const auto size = ImGui::CalcTextSize(label.c_str());
+    const ImVec2 point(viewport->Pos.x + marker.uv.x * viewport->Size.x,
+                       viewport->Pos.y + marker.uv.y * viewport->Size.y);
+    const ImVec2 topLeft(point.x - size.x * 0.5f - 5.0f, point.y - size.y * 0.5f - 3.0f);
+    const ImVec2 bottomRight(topLeft.x + size.x + 10.0f, topLeft.y + size.y + 6.0f);
+    // Centres in adjacent grid cells can still be closer than the label width.
+    constexpr float spacing = 3.0f;
+    const auto overlaps = [&](const ImVec4& rect) {
+      return topLeft.x < rect.z + spacing && bottomRight.x + spacing > rect.x &&
+             topLeft.y < rect.w + spacing && bottomRight.y + spacing > rect.y;
+    };
+    if (std::ranges::any_of(markerRects, overlaps))
+      continue;
+    markerRects.emplace_back(topLeft.x, topLeft.y, bottomRight.x, bottomRight.y);
+    const auto color = marker.waitingForDetail ? colorWaiting
+        : marker.level == 0 ? colorFine : marker.level == 1 ? colorCoarse : colorLowest;
+    overlay->AddRectFilled(topLeft, bottomRight, background, 4.0f);
+    overlay->AddRect(topLeft, bottomRight, color, 4.0f);
+    overlay->AddText(ImVec2(topLeft.x + 5.0f, topLeft.y + 3.0f), color, label.c_str());
+  }
+  const char* legend = textures ? "Texture residency   |   Amber: finer mip requested"
+                                : "Geometry LOD   |   0 full detail   1 reduced   2 coarse";
+  if (markerRects.empty())
+    legend = textures ? "Texture residency   |   No streamed textures in view"
+                      : "Geometry LOD   |   No mesh bounds in view";
+  const auto size = ImGui::CalcTextSize(legend);
+  const ImVec2 topLeft(viewport->Pos.x + (viewport->Size.x - size.x) * 0.5f - 10.0f,
+                       viewport->Pos.y + viewport->Size.y - size.y - 22.0f);
+  overlay->AddRectFilled(topLeft, ImVec2(topLeft.x + size.x + 20.0f, topLeft.y + size.y + 12.0f),
+                         background, 5.0f);
+  overlay->AddText(ImVec2(topLeft.x + 10.0f, topLeft.y + 6.0f),
+                   IM_COL32(226, 234, 243, 255), legend);
+}
+
 void GuiManager::drawRendererTelemetryWindow() {
   if (!initialized_)
     return;
@@ -9948,6 +9999,7 @@ void GuiManager::drawRendererTelemetryWindow() {
   ImGui::SetNextWindowCollapsed(true, ImGuiCond_FirstUseEver);
   const auto &telemetry = rendererTelemetry_;
   if (!ImGui::Begin("Renderer Telemetry")) {
+    assetStreamingDetailsOpen_ = false;
     ImGui::End();
     return;
   }
@@ -9957,6 +10009,48 @@ void GuiManager::drawRendererTelemetryWindow() {
     ImGui::TextDisabled("No renderer telemetry captured yet");
     ImGui::End();
     return;
+  }
+
+  assetStreamingDetailsOpen_ = ImGui::CollapsingHeader("Asset streaming");
+  if (assetStreamingDetailsOpen_) {
+    int overlay = static_cast<int>(assetStreamingOverlay_);
+    if (ImGui::Combo("Viewport markers", &overlay, "Off\0Geometry LOD\0Texture residency\0"))
+      assetStreamingOverlay_ = static_cast<container::renderer::AssetStreamingOverlay>(overlay);
+    const auto& summary = assetStreamingSummary_;
+    constexpr auto mib = 1024.0 * 1024.0;
+    constexpr auto kib = 1024.0;
+    const auto memory = [](const char* label, uint64_t used, uint64_t peak, uint64_t limit) {
+      if (limit) {
+        ImGui::Text("%s  %.2f / %.2f MiB  (peak %.2f)", label, used / mib, limit / mib, peak / mib);
+        ImGui::ProgressBar(static_cast<float>(double(used) / double(limit)), ImVec2(-1, 4), "");
+      } else {
+        ImGui::Text("%s  %.2f MiB  (peak %.2f)", label, used / mib, peak / mib);
+      }
+    };
+    memory("Resident assets", summary.budget.used.residentBytes, summary.budget.peak.residentBytes,
+           summary.budget.limits.residentBytes);
+    memory("Staging", summary.budget.used.uploadBytes, summary.budget.peak.uploadBytes,
+           summary.budget.limits.uploadBytes);
+    if (summary.geometryPendingBytes || summary.texturePendingBytes)
+      ImGui::Text("Copy remaining   Geometry %.1f KiB   Textures %.1f KiB",
+                  summary.geometryPendingBytes / kib, summary.texturePendingBytes / kib);
+    ImGui::Text("Triangles   %llu / %llu", static_cast<unsigned long long>(summary.submittedTriangles),
+                static_cast<unsigned long long>(summary.baseTriangles));
+    ImGui::Text("LOD instances   %llu full   %llu reduced   %llu coarse",
+                static_cast<unsigned long long>(summary.geometryLevels[0]),
+                static_cast<unsigned long long>(summary.geometryLevels[1]),
+                static_cast<unsigned long long>(summary.geometryLevels[2]));
+    ImGui::Text("Streamed images   %llu total   %llu fallback   %llu waiting",
+                static_cast<unsigned long long>(summary.textureImages),
+                static_cast<unsigned long long>(summary.textureFallbackImages),
+                static_cast<unsigned long long>(summary.textureWaitingImages));
+    ImGui::Text("Texture changes   %llu promotions   %llu evictions",
+                static_cast<unsigned long long>(summary.texturePromotions),
+                static_cast<unsigned long long>(summary.textureEvictions));
+    ImGui::Text("Peak copy per frame   Geometry %.1f KiB   Textures %.1f KiB",
+                summary.geometryPeakCopyBytes / kib, summary.texturePeakCopyBytes / kib);
+    ImGui::Text("Derived asset cache   %s", summary.assetCacheEnabled ? "enabled" : "off");
+    ImGui::Separator();
   }
 
   const float frameMs =

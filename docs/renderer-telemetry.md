@@ -27,6 +27,10 @@ The live ImGui window is named `Renderer Telemetry`. It shows:
   CPU record time, GPU timing availability, and blocker resource or pass.
 - Synchronization counters for swapchain recreates and `vkDeviceWaitIdle`
   calls.
+- The **Asset streaming** section shows memory and staging peaks, geometry LOD,
+  texture residency, and pending copies. Its viewport markers and the capture
+  fields for startup, cache events, and AS builds are described in
+  [Derived asset cache and streaming diagnostics](derived-asset-cache.md).
 
 ## Code Ownership
 

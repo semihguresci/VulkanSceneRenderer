@@ -28,6 +28,7 @@
 #include "Container/common/CommonMath.h"
 #include "Container/common/CommonVulkan.h"
 #include "Container/geometry/ImportReport.h"
+#include "Container/renderer/core/AssetStreamingDiagnostics.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimGeoreferenceTransform.h"
 #include "Container/renderer/bim/BimModelCompare.h"
@@ -1227,6 +1228,20 @@ public:
   void setLightCullingStats(const container::gpu::LightCullingStats &stats);
   void setRendererTelemetry(
       const container::renderer::RendererTelemetryView &telemetry);
+  [[nodiscard]] container::renderer::AssetStreamingOverlay assetStreamingOverlay() const noexcept {
+    return assetStreamingOverlay_;
+  }
+  void setAssetStreamingOverlay(container::renderer::AssetStreamingOverlay overlay) noexcept {
+    assetStreamingOverlay_ = overlay;
+  }
+  [[nodiscard]] bool assetStreamingDiagnosticsRequested() const noexcept {
+    return assetStreamingDetailsOpen_ ||
+           assetStreamingOverlay_ != container::renderer::AssetStreamingOverlay::Off;
+  }
+  void setAssetStreamingSummary(const container::renderer::AssetStreamingSummary& summary) noexcept {
+    assetStreamingSummary_ = summary;
+  }
+  void drawAssetStreamingOverlay(std::span<const container::renderer::AssetStreamingMarker> markers);
   void setGpuHardwareMonitor(const container::renderer::GpuHardwareMonitor* monitor) {
     gpuHardwareMonitor_ = monitor;
   }
@@ -1549,6 +1564,9 @@ private:
   uint32_t cullStatsOcclusion_{0};
   container::gpu::LightCullingStats lightCullingStats_{};
   GuiRendererTelemetryView rendererTelemetry_{};
+  container::renderer::AssetStreamingOverlay assetStreamingOverlay_{};
+  container::renderer::AssetStreamingSummary assetStreamingSummary_{};
+  bool assetStreamingDetailsOpen_{};
   const container::renderer::GpuHardwareMonitor* gpuHardwareMonitor_{};
   container::gpu::LightingSettings lightingSettings_{};
   bool openVdbVolumeLoaded_{false};

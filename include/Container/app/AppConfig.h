@@ -4,6 +4,7 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -11,6 +12,7 @@
 
 #include "Container/app/GfxCapture.h"
 #include "Container/common/CommonVulkan.h"
+#include "Container/renderer/core/AssetStreamingDiagnostics.h"
 #include "Container/renderer/effects/DisplayGrade.h"
 #include "Container/renderer/effects/OpenVdbVolumeSettings.h"
 #include "Container/renderer/effects/ScreenReflectionSettings.h"
@@ -74,6 +76,8 @@ struct AppConfig {
   // Optional renderer-owned scene asset residency and staging caps in bytes.
   uint64_t assetMemoryBytes{};
   uint64_t assetUploadBytes{};
+  std::filesystem::path assetCacheDirectory;
+  container::renderer::AssetStreamingOverlay assetStreamingOverlay{};
   bool enableValidationLayers{false};
   bool enableRayQueries{true};
   bool experimentalOpacityMicromaps{false};

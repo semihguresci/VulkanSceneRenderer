@@ -9,6 +9,7 @@
 #include "Container/geometry/OpenVdbLoader.h"
 #include "Container/geometry/UsdLoader.h"
 #include "Container/renderer/bim/BimDrawCompactionPlanner.h"
+#include "Container/renderer/bim/BimDerivedCache.h"
 #include "Container/renderer/bim/BimDrawFilterState.h"
 #include "Container/renderer/bim/BimFrameDrawRoutingPlanner.h"
 #include "Container/renderer/bim/BimMetadataCatalog.h"
@@ -1817,6 +1818,7 @@ void BimManager::clear() {
   meshletClusters_.clear();
   objectLodMetadata_.clear();
   optimizedModelMetadata_ = {};
+  derivedCacheReport_ = {};
   destroyMeshletResidencyBuffers();
   destroyVisibilityFilterBuffers();
   destroyDrawCompactionBuffers();
@@ -3207,12 +3209,13 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
     std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions,
     std::stop_token stop, const std::function<void(std::string_view)> &progress,
     const std::function<void(std::string_view)> &profileStage,
-    bool generateGeometryLods) {
+    bool generateGeometryLods, const std::filesystem::path &derivedCacheDirectory) {
   container::util::checkModelImportCancellation(stop);
   if (profileStage)
     profileStage("parse");
   PreparedScene prepared;
   prepared.assetPath = resolveModelPath(path);
+  const auto sourcePath = prepared.assetPath;
   prepared.requestedPath = path;
   prepared.openVdbOptions = std::move(openVdbOptions);
   const auto extension = lowerAscii(prepared.assetPath.extension().string());
@@ -3268,32 +3271,57 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   }
   container::util::checkModelImportCancellation(stop);
   requireGeometry();
-  if (profileStage)
-    profileStage("meshlets");
-  prepared.meshletClusters = buildMeshletClusterMetadataForModel(prepared.model, stop);
-  if (profileStage)
-    profileStage("optimizedMetadata");
-  prepared.optimizedMetadata = buildOptimizedModelMetadata(
-      prepared.assetPath, prepared.model, prepared.meshletClusters, stop);
-  container::util::checkModelImportCancellation(stop);
+  const auto derivedStart = std::chrono::steady_clock::now();
   if (profileStage)
     profileStage("geometryCopy");
   prepared.uploadVertices = prepared.model.vertices;
   container::util::checkModelImportCancellation(stop);
   prepared.uploadIndices = prepared.model.indices;
-  if (profileStage)
-    profileStage("floorPlans");
-  appendFloorPlanOverlays(prepared.model, prepared.uploadVertices,
-                          prepared.uploadIndices, prepared.floorPlanGround,
-                          prepared.floorPlanSourceElevation, stop, progress);
-  prepared.sourceIndexCount = prepared.uploadIndices.size();
-  if (generateGeometryLods && extension != ".vdb") {
-    if (profileStage) {
-      profileStage("geometryLods");
+
+  std::vector<BimElementBounds> bounds;
+  const bool useCache = !derivedCacheDirectory.empty() && extension != ".vdb";
+  if (useCache && profileStage)
+    profileStage("derivedCacheRead");
+  const bool restored = useCache && restoreBimDerivedCache(
+      prepared, derivedCacheDirectory, sourcePath, generateGeometryLods, bounds, stop);
+  if (!restored) {
+    if (profileStage)
+      profileStage("meshlets");
+    prepared.meshletClusters = buildMeshletClusterMetadataForModel(prepared.model, stop);
+    if (profileStage)
+      profileStage("floorPlans");
+    appendFloorPlanOverlays(prepared.model, prepared.uploadVertices,
+                            prepared.uploadIndices, prepared.floorPlanGround,
+                            prepared.floorPlanSourceElevation, stop, progress);
+    prepared.sourceIndexCount = prepared.uploadIndices.size();
+    if (generateGeometryLods && extension != ".vdb") {
+      if (profileStage)
+        profileStage("geometryLods");
+      appendGeometryLods(prepared, stop, progress);
     }
-    appendGeometryLods(prepared, stop, progress);
   }
-  prepared.drawData = prepareDrawData(prepared.model, stop, progress, profileStage);
+  if (profileStage)
+    profileStage("optimizedMetadata");
+  prepared.optimizedMetadata = buildOptimizedModelMetadata(
+      prepared.assetPath, prepared.model, prepared.meshletClusters, stop);
+
+  const bool saveCache = !restored && !prepared.derivedCache.file.empty();
+  if (saveCache)
+    bounds.resize(prepared.model.elements.size());
+  prepared.drawData = prepareDrawData(prepared.model, stop, progress, profileStage,
+      restored ? std::span<const BimElementBounds>(bounds) : std::span<const BimElementBounds>{},
+      saveCache ? &bounds : nullptr);
+  if (saveCache) {
+    if (profileStage)
+      profileStage("derivedCacheWrite");
+    saveBimDerivedCache(prepared, bounds, stop);
+  }
+  if (!derivedCacheDirectory.empty()) {
+    if (!useCache)
+      prepared.derivedCache.status = util::DerivedAssetCacheStatus::NotCacheable;
+    prepared.derivedCache.elapsedMs =
+        std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - derivedStart).count();
+  }
   container::util::checkModelImportCancellation(stop);
   return prepared;
 }
@@ -3378,12 +3406,13 @@ void BimManager::loadPreparedScene(PreparedScene &&prepared,
                     sceneManager, &prepared, stagedGeometry);
   modelPath_ = prepared.requestedPath;
   openVdbOptions_ = prepared.openVdbOptions;
+  derivedCacheReport_ = std::move(prepared.derivedCache);
 }
 
 void BimManager::loadModel(const std::string &path, float importScale,
                            container::scene::SceneManager &sceneManager,
     std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions,
-    bool generateGeometryLods) {
+    bool generateGeometryLods, const std::filesystem::path &derivedCacheDirectory) {
   if (path.empty()) {
     clear();
     return;
@@ -3394,10 +3423,10 @@ void BimManager::loadModel(const std::string &path, float importScale,
       "Loading BIM model: {}", container::util::pathToUtf8(resolvedPath));
   const std::string extension = lowerAscii(resolvedPath.extension().string());
   const auto limits = allocationManager_.sceneAssetBudget().limits;
-  if ((limits.residentBytes || limits.uploadBytes || generateGeometryLods) &&
+  if ((limits.residentBytes || limits.uploadBytes || generateGeometryLods || !derivedCacheDirectory.empty()) &&
       extension != ".gltf" && extension != ".glb") {
     auto prepared = prepareScene(path, importScale, std::move(openVdbOptions),
-                                 {}, {}, {}, generateGeometryLods);
+                                 {}, {}, {}, generateGeometryLods, derivedCacheDirectory);
     loadPreparedScene(std::move(prepared), sceneManager);
     return;
   }
@@ -3583,7 +3612,9 @@ std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(
     const container::geometry::dotbim::Model &model,
     std::stop_token stop,
     const std::function<void(std::string_view)> &progress,
-    const std::function<void(std::string_view)> &profileStage) {
+    const std::function<void(std::string_view)> &profileStage,
+    std::span<const BimElementBounds> cachedBounds,
+    std::vector<BimElementBounds>* builtBounds) {
   if (profileStage)
     profileStage("drawMetadata");
   auto result = std::make_unique<PreparedDrawData>();
@@ -3694,8 +3725,10 @@ std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(
     }
 
     const auto &range = rangeIt->second;
-    const BimElementBounds elementBounds =
-        computeWorldBounds(range, element.transform);
+    const BimElementBounds elementBounds = cachedBounds.empty()
+        ? computeWorldBounds(range, element.transform) : cachedBounds[elementIndex];
+    if (builtBounds)
+      (*builtBounds)[elementIndex] = elementBounds;
     const bool doubleSided = element.doubleSided || materialDoubleSided;
     const bool windingFlipped =
         !doubleSided && transformFlipsWinding(element.transform);

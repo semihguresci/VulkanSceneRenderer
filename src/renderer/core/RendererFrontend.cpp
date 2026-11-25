@@ -1502,6 +1502,7 @@ RendererFrontend::~RendererFrontend() { shutdown(); }
 // ---------------------------------------------------------------------------
 
 void RendererFrontend::initialize() {
+  assetStartupBegin_ = TelemetryClock::now();
   // Start capture object tracks active. kInvalidNode later suspends them after
   // an explicit unload until a capture model-load event reactivates them.
   captureObjectNode_ = 0;
@@ -1541,6 +1542,7 @@ void RendererFrontend::initialize() {
   }
   createRenderPasses();
 
+  const auto initialSceneBegin = TelemetryClock::now();
   subs_.sceneManager = std::make_unique<container::scene::SceneManager>(
       svc_.allocationManager, svc_.pipelineManager, svc_.ctx.deviceWrapper,
       svc_.config);
@@ -1560,10 +1562,12 @@ void RendererFrontend::initialize() {
     subs_.bimManager->loadModel(svc_.config.bimModelPath,
                                 svc_.config.bimImportScale,
                                 *subs_.sceneManager, svc_.config.vdbModelOptions,
-                                svc_.config.geometryLodErrorPixels > 0.0f);
+                                svc_.config.geometryLodErrorPixels > 0.0f,
+                                svc_.config.assetCacheDirectory);
     activeAuxiliaryModelPath_ = svc_.config.bimModelPath;
     activeAuxiliaryImportScale_ = svc_.config.bimImportScale;
   }
+  initialSceneMs_ = elapsedMilliseconds(initialSceneBegin);
 
   subs_.sceneController = std::make_unique<SceneController>(
       svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager,
@@ -1742,6 +1746,7 @@ void RendererFrontend::initialize() {
 
   if (svc_.config.enableGui) {
     subs_.guiManager = std::make_unique<container::ui::GuiManager>();
+    subs_.guiManager->setAssetStreamingOverlay(svc_.config.assetStreamingOverlay);
     subs_.guiManager->setGpuHardwareMonitor(subs_.gpuHardwareMonitor.get());
     subs_.guiManager->setLinkedNodeAuthoringQueries(
         [this](uint32_t node) {
@@ -2222,6 +2227,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
       }
       const auto retiredFrames = profiler.collectRetired();
       for (const auto& retired : retiredFrames) {
+        collectAssetRayBuildTiming(retired.frameIndex, retired.timings);
 #ifdef CONTAINER_ENABLE_RENDERER_MCP
         if (subs_.mcpServer)
           subs_.mcpServer->observeGpuTimings(retired.serial,
@@ -2631,6 +2637,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   FrameRecordParams frameRecordParams = buildFrameRecordParams(imageIndex);
   frameRecordParams.pickIdWritten = &pickIdWritten;
   attachActiveTechniqueLifecycle(frameRecordParams);
+  if (subs_.guiManager && subs_.guiManager->assetStreamingOverlay() != AssetStreamingOverlay::Off) {
+    const auto view = gltfAnimationCamera_ ? gltfAnimationCamera_->view : temporalCamera->viewMatrix();
+    drawAssetStreamingOverlay(frameRecordParams, projection * view);
+  }
 
   phaseStart = TelemetryClock::now();
   updateFrameDescriptorSets(imageIndex, &frameRecordParams);
@@ -2645,6 +2655,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
 
   phaseStart = TelemetryClock::now();
+  const auto previousRayGeneration = subs_.rayShadowManager->sceneGeneration();
   vkResetCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), 0);
   if (subs_.exposureManager)
     subs_.exposureManager->beginFrame();
@@ -2700,6 +2711,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                     submittedFrameFence) != VK_SUCCESS) {
     throw std::runtime_error("failed to submit draw command buffer!");
   }
+  if (!firstSubmittedMs_)
+    firstSubmittedMs_ = elapsedMilliseconds(assetStartupBegin_);
   if (subs_.exposureManager)
     subs_.exposureManager->onSubmitted();
   if (subs_.lightingManager)
@@ -2715,6 +2728,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     subs_.gpuHierarchyPass->commitFrame(imageIndex);
   commitGltfDeformationFrame();
   subs_.rayShadowManager->commit();
+  recordAssetRayBuild(previousRayGeneration);
   std::optional<RenderPassGpuProfiler::ReferenceBatch> referenceBatch;
   if (referenceRecorded_ && subs_.referencePathTracePass) {
     auto& path = *subs_.referencePathTracePass;
@@ -4278,6 +4292,7 @@ void RendererFrontend::writeCaptureTelemetry(
   auto json = captureTelemetry();
   writePrimaryGeometryLodTelemetry(json);
   writeTextureStreamingTelemetry(json);
+  writeAssetStreamingTelemetry(json);
   if (comfyUi_) json["comfyUi"] = comfyUiCaptureTelemetry();
   if (subs_.bimManager && subs_.bimManager->hasScene()) {
     const auto lod = subs_.bimManager->geometryLodStats(currentBimDrawFilter());
@@ -5711,7 +5726,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
         localPrepared = BimManager::prepareScene(path, importScale,
             vdbOptionsForReload(path,requestedOptions,previousAuxiliaryPath,
                                 previousOpenVdbOptions,svc_.config.vdbModelOptions),
-            {}, {}, {}, svc_.config.geometryLodErrorPixels > 0.0f);
+            {}, {}, {}, svc_.config.geometryLodErrorPixels > 0.0f,
+            svc_.config.assetCacheDirectory);
         prepared = &*localPrepared;
       }
       auto* stagedGeometry = !localPrepared && modelLoad_->uploadedGeometry
@@ -5736,7 +5752,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
             subs_.bimManager->loadModel(previousAuxiliaryPath,
                                         previousAuxiliaryScale,
                                       *subs_.sceneManager, previousOpenVdbOptions,
-                                      svc_.config.geometryLodErrorPixels > 0.0f);
+                                      svc_.config.geometryLodErrorPixels > 0.0f,
+                                      svc_.config.assetCacheDirectory);
           } catch (const std::exception &restoreError) {
             container::log::ContainerLogger::instance().renderer()->error(
                 "Failed to restore auxiliary model '{}': {}",
@@ -5793,7 +5810,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       subs_.bimManager->loadModel(activeAuxiliaryModelPath_,
                                   activeAuxiliaryImportScale_,
                                   *subs_.sceneManager, previousOpenVdbOptions,
-                                  svc_.config.geometryLodErrorPixels > 0.0f);
+                                  svc_.config.geometryLodErrorPixels > 0.0f,
+                                  svc_.config.assetCacheDirectory);
     } catch (const std::exception &error) {
       container::log::ContainerLogger::instance().renderer()->error(
           "Failed to restore auxiliary model '{}': {}",
@@ -5877,13 +5895,14 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
                                     merge = action.merge.has_value(),
                                     linked = svc_.config.experimentalGltfLinkedAssets && !remote,
                                     generateGeometryLods = svc_.config.geometryLodErrorPixels > 0.0f,
+                                    derivedCacheDirectory = svc_.config.assetCacheDirectory,
                                     streamGeometry = svc_.config.geometryUploadChunkKiB != 0,
                                     micromaps = svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !remote,
                                     experimental = svc_.config.experimentalGltfMaterials, remote](std::stop_token stop) {
         auto prepared = std::make_unique<ModelLoadState::Prepared>();
         if (isAuxiliaryRenderModelPath(path))
           prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions, stop,
-                                                   {}, {}, generateGeometryLods);
+                                                   {}, {}, generateGeometryLods, derivedCacheDirectory);
         else {
           prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
               merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
@@ -8783,6 +8802,8 @@ void RendererFrontend::presentSceneControls() {
   if (subs_.rendererTelemetry) {
     subs_.guiManager->setRendererTelemetry(subs_.rendererTelemetry->view());
   }
+  if (subs_.guiManager->assetStreamingDiagnosticsRequested())
+    subs_.guiManager->setAssetStreamingSummary(assetStreamingSummary());
 
   // Sync freeze-culling: push debug state into GUI before rendering.
   subs_.guiManager->setFreezeCulling(debugState_.freezeCulling);
