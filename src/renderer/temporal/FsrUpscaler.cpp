@@ -240,7 +240,7 @@ VkFormat FsrUpscaler::outputFormat() const noexcept {
 bool FsrUpscaler::prepare(const FsrUpscalerSettings& settings) {
 #if CONTAINER_HAS_FSR_UPSCALER
   if (available() && sameSettings(settings_, settings)) return true;
-  if (recorded_) {
+  if (recordedInputs_) {
     status_ = "Submit or discard the recorded FSR dispatch before recreating its context";
     return false;
   }
@@ -364,6 +364,7 @@ bool FsrUpscaler::prepare(const FsrUpscalerSettings& settings) {
   backend_ = std::move(next);
   settings_ = settings;
   submittedFrames_ = 0;
+  submittedInputs_.reset();
   discarded_ = false;
   status_ = "FSR " + backend_->providerVersion + " is ready (SDK 2.4.0)";
   return true;
@@ -392,7 +393,7 @@ std::optional<std::array<float, 2>> FsrUpscaler::nextJitterPixels() const {
 FsrDispatchResult FsrUpscaler::record(const FsrUpscalerFrame& frame) {
 #if CONTAINER_HAS_FSR_UPSCALER
   if (!available()) return FsrDispatchResult::Unavailable;
-  if (recorded_ || !validFrame(frame, settings_, outputFormat())) return FsrDispatchResult::InvalidInput;
+  if (recordedInputs_ || !validFrame(frame, settings_, outputFormat())) return FsrDispatchResult::InvalidInput;
   ffxDispatchDescUpscale desc{{FFX_API_DISPATCH_DESC_TYPE_UPSCALE}};
   desc.commandList = reinterpret_cast<void*>(frame.commands);
   desc.color = ffxImage(frame.color);
@@ -421,7 +422,9 @@ FsrDispatchResult FsrUpscaler::record(const FsrUpscalerFrame& frame) {
         backend_->imageAdapter->failure();
     return FsrDispatchResult::DiscardCommands;
   }
-  recorded_ = true;
+  recordedInputs_ = FsrDispatchInputs{
+      desc.frameTimeDelta, {desc.motionVectorScale.x, desc.motionVectorScale.y},
+      {desc.jitterOffset.x, desc.jitterOffset.y}, desc.preExposure};
   return FsrDispatchResult::Recorded;
 #else
   (void)frame;
@@ -430,13 +433,15 @@ FsrDispatchResult FsrUpscaler::record(const FsrUpscalerFrame& frame) {
 }
 
 void FsrUpscaler::commit() noexcept {
-  if (recorded_) ++submittedFrames_;
-  recorded_ = false;
+  if (!recordedInputs_) return;
+  ++submittedFrames_;
+  submittedInputs_ = recordedInputs_;
+  recordedInputs_.reset();
 }
 
 void FsrUpscaler::discard() noexcept {
-  discarded_ = discarded_ || recorded_;
-  recorded_ = false;
+  discarded_ = discarded_ || recordedInputs_.has_value();
+  recordedInputs_.reset();
 }
 
 } // namespace container::renderer

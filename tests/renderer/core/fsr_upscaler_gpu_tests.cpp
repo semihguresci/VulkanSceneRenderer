@@ -315,6 +315,7 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
   submit();
   ASSERT_FALSE(::testing::Test::HasFailure());
+  EXPECT_FALSE(upscaler->lastSubmittedInputs());
 
   std::array<uint64_t, 2> ticks{};
   const auto firstJitter = upscaler->nextJitterPixels();
@@ -337,6 +338,7 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
     vkCmdWriteTimestamp2(*command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, *timestamps, 0);
     ASSERT_EQ(upscaler->record(frame), FsrDispatchResult::Recorded) << upscaler->status();
     EXPECT_EQ(upscaler->nextJitterPixels(), jitter);
+    if (i == 0) EXPECT_FALSE(upscaler->lastSubmittedInputs());
     vkCmdWriteTimestamp2(*command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, *timestamps, 1);
     barrier(frame.output, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -355,6 +357,13 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
     vkCmdPipelineBarrier2(*command, &dependency);
     submit();
     ASSERT_FALSE(::testing::Test::HasFailure());
+    const auto submitted = upscaler->lastSubmittedInputs();
+    ASSERT_TRUE(submitted);
+    EXPECT_FLOAT_EQ(submitted->frameTimeMs, frame.frameMilliseconds);
+    EXPECT_FLOAT_EQ(submitted->preExposure, 1.0f);
+    EXPECT_EQ(submitted->jitterPixels, *jitter);
+    const std::array expectedScale{float(settings.renderExtent.width), float(settings.renderExtent.height)};
+    EXPECT_EQ(submitted->motionVectorScale, expectedScale);
     ASSERT_EQ(vmaInvalidateAllocation(memory->allocator(), readback.allocation, 0, outputBytes), VK_SUCCESS);
     const auto component = [&](uint32_t index) {
       if (outputFormat == VK_FORMAT_R32G32B32A32_SFLOAT)
@@ -375,11 +384,17 @@ TEST_F(FsrVulkan, UpscalesHdrAndRecreatesAnAbandonedRecording) {
       (ticks[1] - ticks[0]) * physical.getProperties().limits.timestampPeriod / 1e6);
   command.reset();
   command.begin(vk::CommandBufferBeginInfo{});
+  const auto lastCommitted = upscaler->lastSubmittedInputs();
+  ASSERT_TRUE(lastCommitted);
+  frame.frameMilliseconds = 50.0f;
   ASSERT_EQ(upscaler->record(frame), FsrDispatchResult::Recorded);
   upscaler->discard();
+  ASSERT_TRUE(upscaler->lastSubmittedInputs());
+  EXPECT_FLOAT_EQ(upscaler->lastSubmittedInputs()->frameTimeMs, lastCommitted->frameTimeMs);
   command.reset();
   EXPECT_FALSE(upscaler->available());
   ASSERT_TRUE(upscaler->prepare(settings)) << upscaler->status();
+  EXPECT_FALSE(upscaler->lastSubmittedInputs());
   EXPECT_EQ(upscaler->outputFormat(), outputFormat);
   EXPECT_EQ(upscaler->nextJitterPixels(), firstJitter);
 }

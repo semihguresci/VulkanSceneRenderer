@@ -164,11 +164,15 @@ the presentation aspect, while its jitter and scene sampling use render pixels.
 
 Both raster techniques share the `TemporalManager` velocity and HDR compose
 boundary. FSR reuses that velocity and OIT composition, then converts the depth
-and motion and writes separate reactive and composition masks. The shader uses
-strong reactivity for new surfaces, unsupported motion, OIT coverage and
-emissive shading. Exposure, bloom and post-processing consume the upscaled
-linear HDR. Engine allocation telemetry covers its own velocity, conversion and
-presentation images. The AMD runtime owns and manages its internal history.
+and motion and writes separate reactive and composition masks. OIT feeds both
+FSR masks with the resolved transparent opacity, `1 − revealage`, combined
+with existing surface and volume reactivity. The reactive mask is capped at
+0.9. New surfaces, unsupported motion, emissive shading and OIT overflow
+retain conservative reactivity. Native TAA and DLSS retain their existing
+binary OIT policy. Exposure, bloom and post-processing consume the upscaled
+linear HDR. Engine allocation telemetry covers its own velocity, conversion
+and presentation images. The AMD runtime owns and manages its internal history.
+[AMD FSR 3.1.6 mask guidance](https://gpuopen.com/manuals/fsr_sdk/techniques/super-resolution-upscaler/#reactive-mask)
 
 ## Executable verification
 
@@ -296,10 +300,64 @@ The before and after viewport PNGs use the same fixed camera in FSR Quality.
 | --- | --- |
 | ![FSR Quality at 426 × 240 render resolution](images/fsr/resize-before.png) | ![FSR Quality at 487 × 272 render resolution](images/fsr/resize-after.png) |
 
+## Temporal input and ghosting regression
+
+```powershell
+python -B tests/validation/fsr_upscaling_runtime_regression.py `
+  --renderer build/fsr/VulkanSceneRenderer.exe --output build/fsr-verification/temporal `
+  --suite temporal --validation-manifest $manifest
+```
+
+The suite projects known scene and camera translations and checks the signed
+render-pixel displacement in the renderer velocity view. It checks finite
+reverse-Z readback against two authored depth planes. It also compares the
+applied projection jitter against the analytical provider's jitter sequence
+and the committed SDK dispatch receipt. `fsr.frameTimeMs`, `jitterPixels`,
+`motionVectorScale` and `preExposure` report the last dispatch submitted to the
+active FSR context. A fixed 60 Hz sequence checks that two skipped ticks carry
+50 ms into the following submission while jitter advances once. The viewer's
+manual exposure step is compared with a constant-exposure control to verify
+that display exposure stays outside the scene-linear FSR history.
+
+The opacity fixture checks single and overlapping transparent layers against
+the resolved opacity, alongside opaque, cutout and emissive controls. The
+ghosting fixture moves alpha-tested foliage and translucent glass in both
+directions. Native captures define the vacated and newly occupied sample
+regions. A live FSR history and a same-frame FSR reset use identical poses,
+jitter and exposure. The report tracks retained old color and recovery of newly
+visible surfaces through motion and for 16 frames after arrival.
+
+The RTX 2080 SUPER passed 130 captures with analytical FSR 3.1.6 and Vulkan
+synchronization validation enabled. Both raster paths measured object motion
+of (−3.120, +2.312) render pixels and camera motion of (+3.102, −2.060), each
+within 0.03 pixels per axis of the projection oracle. The nearest and farthest
+depth probes measured 0.0124012 and 0.0082342. Submitted frame times around
+two skipped ticks were 16.67 ms, 50.00 ms and 16.67 ms.
+After stepping display exposure from 0.5 to 0.95, the PNGs matched the 0.95
+control pixel for pixel with the history epoch preserved.
+
+In both raster paths the old reactive view gave both transparent samples
+243/255. With the fix it gives 160/255 for one 0.35-opacity layer and 200/255
+for two overlapping layers. In the ghosting fixture, neither foreground
+material retained measurable old-color signal in the vacated interior at any
+sample from four through 16 frames after arrival.
+
+| Before opacity weighting | After opacity weighting |
+| --- | --- |
+| ![Binary FSR reactive mask for one and two transparent layers](images/fsr/oit-reactivity-before.png) | ![Graded FSR reactive mask for one and two transparent layers](images/fsr/oit-reactivity-after.png) |
+
+| Ghosting fixture at 640 × 384 | Median instrumented GPU pass total | Median FSR resolve | Engine temporal images |
+| --- | ---: | ---: | ---: |
+| Deferred Native | 2.793 ms | — | 0 bytes |
+| Deferred Quality | 1.182 ms | 0.216 ms | 27,377,664 bytes |
+| Forward Native | 2.954 ms | — | 0 bytes |
+| Forward Quality | 1.142 ms | 0.215 ms | 27,377,664 bytes |
+
+The fixture timings are validation-enabled. Memory covers the engine's
+temporal images. Detailed per-frame values are in the suite's `results.json`.
+
 ## Remaining work
 
-- Expand motion, transparency, shading-change, exposure and ghosting coverage
-  in [#303](https://github.com/semihguresci/VulkanSceneRenderer/issues/303).
 - Benchmark representative Sponza, glTF and BIM models and qualify the
   extracted Windows package on another machine in
   [#304](https://github.com/semihguresci/VulkanSceneRenderer/issues/304).

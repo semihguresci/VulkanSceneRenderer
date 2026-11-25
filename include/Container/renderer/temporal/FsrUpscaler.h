@@ -41,6 +41,13 @@ struct FsrUpscalerFrame {
   bool debugView{};
 };
 
+struct FsrDispatchInputs {
+  float frameTimeMs{};
+  std::array<float, 2> motionVectorScale{};
+  std::array<float, 2> jitterPixels{};
+  float preExposure{};
+};
+
 enum class FsrDispatchResult {
   Recorded,
   Unavailable,
@@ -76,6 +83,9 @@ public:
   [[nodiscard]] FsrDispatchResult record(const FsrUpscalerFrame& frame);
   void commit() noexcept;   // After successful queue submission.
   void discard() noexcept;  // A recorded dispatch was abandoned.
+  [[nodiscard]] std::optional<FsrDispatchInputs> lastSubmittedInputs() const noexcept {
+    return submittedInputs_;
+  }
 
 private:
   struct Backend;
@@ -86,7 +96,8 @@ private:
   FsrUpscalerSettings settings_{};
   std::string status_;
   uint64_t submittedFrames_{};
-  bool recorded_{};
+  std::optional<FsrDispatchInputs> recordedInputs_;
+  std::optional<FsrDispatchInputs> submittedInputs_;
   bool discarded_{};
 };
 

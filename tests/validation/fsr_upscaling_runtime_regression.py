@@ -72,6 +72,7 @@ def runtime_receipt(renderer, enabled):
     runtime = {name: file_identity(renderer.parent / name) if (renderer.parent / name).is_file() else None
                for name in RUNTIME_HASHES}
     shader = renderer.parent / "spv_shaders/fsr_inputs.comp.spv"
+    compose = renderer.parent / "spv_shaders/temporal_compose.comp.spv"
     machine = pe_machine(renderer)
     for name, info in runtime.items():
         if info:
@@ -82,6 +83,7 @@ def runtime_receipt(renderer, enabled):
         assert machine == X64_PE_MACHINE and shader.is_file(), (renderer, machine, shader)
     return {"renderer": {**file_identity(renderer), "peMachine": machine}, "sdkPin": SDK, "backend": "Vulkan",
             "signedRuntime": runtime,
+            "composeShader": file_identity(compose) if compose.is_file() else None,
             "inputShader": file_identity(shader) if shader.is_file() else None}
 
 
@@ -358,7 +360,7 @@ def main():
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", type=Path, default=ROOT / "models/validation/taa_scene.gltf")
-    parser.add_argument("--suite", choices=("smoke", "full", "resize"), default="smoke")
+    parser.add_argument("--suite", choices=("smoke", "full", "resize", "temporal"), default="smoke")
     parser.add_argument("--resize-format", choices=SWAPCHAIN_FORMATS, help="Add a supported format-only resize to the resize suite")
     parser.add_argument("--resize-reference", action="store_true", help="Check reference viewport fallback on a ray-tracing GPU")
     fallback = parser.add_mutually_exclusive_group()
@@ -371,8 +373,8 @@ def main():
     unavailable = args.expect_unavailable or args.expect_fallback is not None
     if (args.resize_format or args.resize_reference) and args.suite != "resize":
         parser.error("--resize-format and --resize-reference require --suite resize")
-    if unavailable and args.suite == "resize":
-        parser.error("--suite resize requires active FSR")
+    if unavailable and args.suite in ("resize", "temporal"):
+        parser.error(f"--suite {args.suite} requires active FSR")
     renderer, output, model = (p.resolve() for p in (args.renderer, args.output, args.model))
     runtime = runtime_receipt(renderer, enabled=not unavailable)
     if args.expect_fallback == "missing-runtime":
@@ -403,8 +405,9 @@ def main():
         run = subprocess.run(command, cwd=renderer.parent, env=env, capture_output=True, text=True,
                              errors="replace", timeout=240)
         log = run.stdout + run.stderr
-        (output / f"{label}.log").write_text(log, encoding="utf-8")
-        assert run.returncode == 0 and not validation_log_error(log), (label, log)
+        log_path = output / f"{label}.log"
+        log_path.write_text(log, encoding="utf-8")
+        assert run.returncode == 0 and not validation_log_error(log), f"Capture {label} failed. See {log_path}"
         inserted = VALIDATION_INSERTED.search(log)
         assert inserted, f"Vulkan validation layer was not confirmed for {label}"
         layer = file_identity(renderer.parent / Path(inserted[1]))
@@ -449,7 +452,7 @@ def main():
         if args.expect_fallback:
             assert state["fsr"]["status"] in FALLBACK_REASONS[args.expect_fallback], state["fsr"]
 
-    def write_report(state):
+    def write_report(state, *, temporal_checks=None):
         assert runtime == runtime_receipt(renderer, enabled=not unavailable), "The installed runtime changed during the captures"
         device = {key: state[key] for key in ("gpu", "vendorId", "deviceId", "driverVersion", "vulkanApiVersion")}
         report = {"passed": True, "gpu": device["gpu"], "device": device, "runtime": runtime,
@@ -457,7 +460,20 @@ def main():
                   "validationSettings": VALIDATION_SETTINGS.splitlines(),
                   "activeProvider": None if unavailable else args.expect_provider,
                   "expectedFallback": args.expect_fallback or ("unspecified" if unavailable else None), "captures": results}
+        if temporal_checks is not None:
+            report["temporalChecks"] = temporal_checks
         (output / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    if args.suite == "temporal":
+        from fsr_ghosting_runtime_regression import verify_fsr_ghosting
+        from fsr_oit_mask_runtime_regression import verify_fsr_oit_masks
+        from fsr_temporal_input_runtime_regression import verify_fsr_temporal_inputs
+
+        state, inputs = verify_fsr_temporal_inputs(output, capture, check_mode)
+        masks = verify_fsr_oit_masks(output, capture, check_mode)
+        ghosting = verify_fsr_ghosting(output, capture, check_mode)
+        write_report(state, temporal_checks={"inputs": inputs, "reactiveMasks": masks, "ghosting": ghosting})
+        return
 
     if args.suite == "resize":
         plan, phases = resize_plan(args.resize_format)
