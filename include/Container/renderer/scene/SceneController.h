@@ -270,6 +270,9 @@ class SceneController {
   [[nodiscard]] std::span<const container::geometry::Vertex> gpuBindVertices() const {
     return gpuBindVertices_;
   }
+  [[nodiscard]] std::span<const uint32_t> gpuBindIndices() const {
+    return gpuBindIndices_;
+  }
   void commitDeformationFrame();
 
   // Creates cameraBuffer + objectBuffer if not already present, uploads data.
@@ -325,7 +328,8 @@ class SceneController {
       uint32_t&                               outSelectedMeshNode,
       uint32_t&                               outCubeNode,
       container::geometry::GltfLoadResult*      prepared = nullptr,
-      const std::function<void()>& beforeCommit = {});
+      const std::function<void()>& beforeCommit = {},
+      VkDeviceSize releasingOptionalGeometry = 0);
 
   [[nodiscard]] uint32_t pickRenderableNode(
       const container::gpu::CameraData& cameraData,

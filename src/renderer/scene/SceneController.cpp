@@ -2201,7 +2201,8 @@ bool SceneController::reloadSceneModel(
     uint32_t&                               outSelectedMeshNode,
     uint32_t&                               outCubeNode,
     container::geometry::GltfLoadResult*      prepared,
-    const std::function<void()>& beforeCommit) {
+    const std::function<void()>& beforeCommit,
+    VkDeviceSize releasingOptionalGeometry) {
   if (vkDeviceWaitIdle(device_->device()) != VK_SUCCESS)
     throw std::runtime_error("Failed to retire GPU readers before replacing the scene");
   const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
@@ -2209,6 +2210,9 @@ bool SceneController::reloadSceneModel(
   const bool boundedUnload = path.empty() && config_.assetMemoryBytes != 0;
   auto releasingGeometryBytes =
       boundedUnload ? allocationManager_.geometryArenaAllocationBytes() : VkDeviceSize{0};
+  if (releasingOptionalGeometry > (std::numeric_limits<VkDeviceSize>::max)() - releasingGeometryBytes)
+    throw container::gpu::SceneAssetBudgetExceeded("Scene geometry release bytes overflow");
+  releasingGeometryBytes += releasingOptionalGeometry;
   if (boundedUnload && ownedGenerationBuffers_) {
     for (const auto bytes : {ownedGenerationBuffers_->vertices.allocation_info.size,
                              ownedGenerationBuffers_->indices.allocation_info.size}) {

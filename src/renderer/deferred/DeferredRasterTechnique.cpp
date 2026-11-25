@@ -1405,7 +1405,9 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                   .cameraBufferSize = deferredRasterCameraBufferSize(p),
                   .objectBuffer = p.scene.objectBuffer,
                   .objectBufferSize = p.scene.objectBufferSize,
-                  .drawSourceRevision = p.scene.objectDataRevision}));
+                  .drawSourceRevision = p.draws.sourceRevision != 0u
+                                            ? p.draws.sourceRevision
+                                            : p.scene.objectDataRevision}));
       });
 
   graph.addPass(

@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <future>
@@ -44,6 +45,7 @@
 #include "Container/utility/VulkanMemoryManager.h"
 #include "Container/utility/ComputePipeline.h"
 #include "Container/utility/SceneEditHistory.h"
+#include "Container/geometry/GeometryLodSelection.h"
 #include "Container/geometry/GltfAnimationRuntime.h"
 #include "Container/geometry/GltfInteractivity.h"
 #include "Container/geometry/GltfCameraAuthoring.h"
@@ -836,6 +838,32 @@ private:
   std::vector<DrawCommand> selectedBimNativeCurveStrokeDrawCommands_{};
   std::vector<DrawCommand> hoveredDrawCommands_{};
   std::vector<DrawCommand> selectedDrawCommands_{};
+  struct PrimaryGeometryLods {
+    struct Primitive {
+      uint32_t firstIndex{};
+      uint32_t indexCount{};
+      std::vector<geometry::GeometryLodRange> levels;
+    };
+    struct Choice {
+      uint32_t node{UINT32_MAX};
+      uint32_t primitive{UINT32_MAX};
+      uint32_t level{0};
+    };
+    scene::SceneAssetId asset;
+    uint64_t geometryRevision{};
+    container::gpu::AllocatedBuffer buffer;
+    VkDeviceSize indexBytes{};
+    std::vector<Primitive> ranges;
+    std::vector<Choice> choices;
+    std::array<std::vector<DrawCommand>, 10> drawLists;
+    uint64_t drawRevision{};
+    bool active{false};
+  } primaryGeometryLods_;
+  void applyPrimaryGeometryLods(FrameRecordParams& frame,
+                               const geometry::GeometryLodView& view,
+                               float pixelLimit);
+  void clearPrimaryGeometryLods();
+  void writePrimaryGeometryLodTelemetry(nlohmann::json& json) const;
   std::string activePrimaryModelPath_{};
   container::app::SceneLightingDefaults sceneLightingDefaults_{};
   container::app::SceneLightingOverrides sceneLightingOverrides_{};

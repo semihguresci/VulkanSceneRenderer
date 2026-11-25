@@ -84,6 +84,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/FrameRecorder.cpp
     renderer/core/RendererMsaa.cpp
     renderer/core/RendererFrontend.cpp
+    renderer/core/RendererFrontendGeometryLod.cpp
     renderer/core/RendererFrontendComfyUi.cpp
     renderer/core/ComfyUiBridge.cpp
     renderer/core/RendererFrontendReference.cpp

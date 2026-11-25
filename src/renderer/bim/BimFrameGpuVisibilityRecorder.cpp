@@ -22,9 +22,22 @@ void prepareBimFrameGpuVisibility(BimManager *manager,
   inputs.meshCompactionEnabled =
           bim.opaqueMeshDrawsUseGpuVisibility ||
           bim.transparentMeshDrawsUseGpuVisibility;
+  const bool useGeometryLods = inputs.meshCompactionEnabled &&
+                               manager->hasCoarseGeometryLodSelections(imageIndex);
+  if (useGeometryLods) {
+    inputs.opaqueSingleSided = bim.draws.opaqueSingleSidedDrawCommands;
+    inputs.opaqueWindingFlipped = bim.draws.opaqueWindingFlippedDrawCommands;
+    inputs.opaqueDoubleSided = bim.draws.opaqueDoubleSidedDrawCommands;
+    inputs.transparentAggregate = bim.draws.transparentDrawCommands;
+    inputs.transparentSingleSided = bim.draws.transparentSingleSidedDrawCommands;
+    inputs.transparentWindingFlipped = bim.draws.transparentWindingFlippedDrawCommands;
+    inputs.transparentDoubleSided = bim.draws.transparentDoubleSidedDrawCommands;
+  }
   const auto compactionPlan = buildBimDrawCompactionPlan(inputs);
   for (const BimDrawCompactionPlanSource &source : compactionPlan) {
-    manager->prepareDrawCompaction(source.slot, *source.commands);
+    const bool dynamicSource =
+        useGeometryLods && source.slot < BimDrawCompactionSlot::NativePointOpaque;
+    manager->prepareDrawCompaction(source.slot, *source.commands, dynamicSource);
   }
 }
 

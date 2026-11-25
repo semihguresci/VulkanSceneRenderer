@@ -5,6 +5,7 @@
 #include "Container/common/CommonVulkan.h"
 #include "Container/geometry/ImportReport.h"
 #include "Container/geometry/DotBimLoader.h"
+#include "Container/geometry/GeometryLodSelection.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
 #include "Container/renderer/bim/BimDrawingExport.h"
@@ -61,6 +62,24 @@ class BimMetadataCatalog;
 class BimMetadataIndex;
 class BimStatisticsCache;
 struct BimDrawFilterStateInputs;
+struct BimFrameMeshDrawLists;
+
+struct BimGeometryLodDrawInfo {
+  uint32_t level{};
+  uint32_t levelCount{};
+  uint32_t sourceFirstIndex{};
+  uint32_t sourceIndexCount{};
+  uint32_t firstIndex{};
+  uint32_t indexCount{};
+};
+
+struct BimGeometryLodStats {
+  uint64_t baseTriangles{};
+  uint64_t triangles{};
+  VkDeviceSize extraIndexBytes{};
+  std::vector<uint64_t> levels{0u};
+  bool opaqueCompactionReady{};
+};
 
 struct BimPickHit {
   uint32_t objectIndex{std::numeric_limits<uint32_t>::max()};
@@ -582,7 +601,8 @@ public:
 
   void loadModel(const std::string &path, float importScale,
                  container::scene::SceneManager &sceneManager,
-                 std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {});
+                 std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {},
+                 bool generateGeometryLods = false);
   struct PreparedScene {
     PreparedScene();
     ~PreparedScene();
@@ -599,6 +619,8 @@ public:
     std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions;
     std::vector<container::geometry::Vertex> uploadVertices;
     std::vector<uint32_t> uploadIndices;
+    size_t sourceIndexCount{};
+    std::unordered_map<uint32_t, std::vector<geometry::GeometryLodRange>> geometryLodRanges;
     BimFloorPlanOverlayData floorPlanGround;
     BimFloorPlanOverlayData floorPlanSourceElevation;
     std::vector<BimMeshletClusterMetadata> meshletClusters;
@@ -613,9 +635,12 @@ public:
       std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {},
       std::stop_token stop = {},
       const std::function<void(std::string_view)> &progress = {},
-      const std::function<void(std::string_view)> &profileStage = {});
+      const std::function<void(std::string_view)> &profileStage = {},
+      bool generateGeometryLods = false);
   [[nodiscard]] const auto& openVdbOptions() const { return openVdbOptions_; }
-  void checkPreparedSceneBudget(const PreparedScene&, bool replacingSceneTextures) const;
+  // Optional raster ranges may be dropped when the source geometry fits alone.
+  void checkPreparedSceneBudget(PreparedScene&, bool replacingSceneTextures,
+                                VkDeviceSize releasingPrimaryLodBytes = 0) const;
   void loadPreparedScene(PreparedScene &&prepared,
                          container::scene::SceneManager &sceneManager);
   // Commit/unload checkpoints run on the calling render thread. The callback
@@ -627,8 +652,19 @@ public:
   void
   updateMeshletResidencySettings(const BimMeshletResidencySettings &settings);
   void updateVisibilityFilterSettings(const BimDrawFilter &filter, uint32_t imageIndex);
+  // Returned pointers belong to the acquired image until it is reused.
+  [[nodiscard]] BimFrameMeshDrawLists renderGeometryLods(
+      const BimFrameMeshDrawLists &source, uint32_t imageIndex,
+      const geometry::GeometryLodView &view, float pixelLimit,
+      uint32_t selectedObjectIndex);
+  [[nodiscard]] std::optional<BimGeometryLodDrawInfo>
+  geometryLodDrawInfo(uint32_t objectIndex) const;
+  // Counts mesh instances after the semantic filter, before raster visibility.
+  [[nodiscard]] BimGeometryLodStats geometryLodStats(const BimDrawFilter &filter);
   void prepareDrawCompaction(BimDrawCompactionSlot slot,
-                             const std::vector<DrawCommand> &commands);
+                             const std::vector<DrawCommand> &commands,
+                             bool dynamicSource = false);
+  [[nodiscard]] bool hasCoarseGeometryLodSelections(uint32_t imageIndex) const noexcept;
   void prepareDrawCompaction(const std::vector<DrawCommand> &commands);
   void recordMeshletResidencyUpdate(VkCommandBuffer cmd, VkBuffer cameraBuffer,
                                     VkDeviceSize cameraBufferSize,
@@ -954,7 +990,8 @@ private:
       bool skipNativeCurveStrokes = false,
       const BimDrawFilter *nativeCurveStrokeFilter = nullptr) const;
   void uploadGeometry(std::span<const container::geometry::Vertex> vertices,
-                      std::span<const uint32_t> indices);
+                      std::span<const uint32_t> indices,
+                      std::optional<size_t> sourceIndexCount = std::nullopt);
   void uploadMeshletResidencyBuffers();
   void uploadVisibilityFilterBuffers();
   void destroyMeshletResidencyBuffers();
@@ -1019,6 +1056,9 @@ private:
 
   std::vector<container::geometry::Vertex> vertices_{};
   std::vector<uint32_t> indices_{};
+  std::unordered_map<uint32_t, std::vector<geometry::GeometryLodRange>> geometryLodRanges_;
+  std::vector<uint32_t> selectedGeometryLods_;
+  uint64_t geometryLodSelectionRevision_{};
   uint64_t geometryRevision_{0};
   container::scene::SceneAssetId geometryAssetId_{};
   glm::vec3 temporalRootTranslation_{0};
@@ -1076,6 +1116,8 @@ private:
     VkDescriptorSet filterSet{};
     std::array<VkDescriptorSet, kBimDrawCompactionSlotCount> drawSets{};
     std::array<BimDrawCompactionSlotResources, kBimDrawCompactionSlotCount> draws{};
+    BimGeometryDrawLists geometryLodDraws{};
+    bool hasCoarseGeometryLods{};
     container::gpu::AllocatedBuffer mask{};
     VkBuffer camera{};
     VkBuffer objects{};

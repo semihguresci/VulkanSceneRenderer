@@ -17,6 +17,9 @@ scene data. `BimManager` owns sidecar geometry and draw data so IFC, IFCX,
 dotbim, and USD/USDZ content can be rendered without being folded
 into the primary glTF scene buffers.
 
+Geometry LOD uses additional index ranges on both providers for the interactive
+raster viewports. [Geometry level of detail](geometry-lod.md)
+
 ## Vulkan 1.4 Rendering
 
 The renderer requires Vulkan 1.4, dynamic rendering, synchronization2,

@@ -103,6 +103,9 @@ struct FrameDrawLists {
   const std::vector<DrawCommand> *transparentDoubleSidedDrawCommands{nullptr};
   const std::vector<DrawCommand> *hoveredDrawCommands{nullptr};
   const std::vector<DrawCommand> *selectedDrawCommands{nullptr};
+  // Changes when the selected draw ranges change in place. Zero uses the
+  // owning scene's object-data revision for canonical draw lists.
+  uint64_t sourceRevision{0};
 };
 
 struct FrameBimFloorPlanOverlayState {

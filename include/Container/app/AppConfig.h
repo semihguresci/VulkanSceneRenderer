@@ -145,6 +145,7 @@ struct AppConfig {
   int gltfSceneIndex{-1};
   bool experimentalGltfLinkedAssets{false};
   bool experimentalGltfMaterials{false};
+  float geometryLodErrorPixels{0.0f};
   double gltfAnimationTime{0};
   double gltfAnimationSpeed{1};
   bool gltfAnimationPlaying{true};

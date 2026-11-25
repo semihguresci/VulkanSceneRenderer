@@ -230,6 +230,7 @@ void printCommandLineHelp() {
   --bim-model PATH              Additional BIM/IFC/USD/VDB model
   --import-scale F              Model import scale
   --bim-import-scale F          Auxiliary model import scale
+  --geometry-lod-error F        Maximum raster geometry LOD error in display pixels (0 disables)
   --vdb-model-grid NAME         Scalar/point/vector model grid selector
   --vdb-slice                   Explicit sampled scalar/vector plane preview
   --vdb-slice-origin X Y Z      Source-world plane center (0 0 0)
@@ -887,6 +888,12 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     if (parseExtendedPreviewOption(arg,i))continue;
     if (parseVolumeOption(arg, i)) continue;
     if (parseReferencePathOption(arg, i)) continue;
+    if (arg == "--geometry-lod-error") {
+      config.geometryLodErrorPixels = parseFloat(requireValue(argc, argv, i, arg), arg);
+      if (config.geometryLodErrorPixels < 0.0f)
+        throw std::invalid_argument("--geometry-lod-error requires a nonnegative pixel tolerance");
+      continue;
+    }
     if (arg == "--asset-memory-mb" || arg == "--asset-upload-mb") {
       auto& bytes = arg == "--asset-memory-mb" ? config.assetMemoryBytes
                                              : config.assetUploadBytes;
