@@ -312,6 +312,8 @@ void printCommandLineHelp() {
   --borderless                  Remove the window frame and title bar
   --texture-memory-mb N         Decoded glTF texture budget [1,16384] MiB (1024)
   --asset-memory-mb N           GPU scene asset memory cap in MiB (0 uses existing limits)
+  --asset-cache-dir PATH        Enable a persistent cache for CPU-derived scene assets
+  --asset-overlay MODE          Show geometry-lod, texture-residency, or off in window captures
   --asset-upload-mb N           Scene asset upload staging cap in MiB (0 uses existing limits)
   --render-technique NAME       Render technique
   --path-spp N                 Reference samples per frame [1,64] (1)
@@ -917,6 +919,26 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       auto& bytes = arg == "--asset-memory-mb" ? config.assetMemoryBytes
                                              : config.assetUploadBytes;
       bytes = uint64_t{parseUint(requireValue(argc, argv, i, arg), arg)} * 1024 * 1024;
+      continue;
+    }
+    if (arg == "--asset-cache-dir") {
+      config.assetCacheDirectory = container::util::pathFromUtf8(
+          std::string(requireValue(argc, argv, i, arg)));
+      if (config.assetCacheDirectory.empty())
+        throw std::invalid_argument("--asset-cache-dir requires a directory");
+      continue;
+    }
+    if (arg == "--asset-overlay") {
+      using container::renderer::AssetStreamingOverlay;
+      const auto mode = requireValue(argc, argv, i, arg);
+      if (mode == "off")
+        config.assetStreamingOverlay = AssetStreamingOverlay::Off;
+      else if (mode == "geometry-lod")
+        config.assetStreamingOverlay = AssetStreamingOverlay::GeometryLod;
+      else if (mode == "texture-residency")
+        config.assetStreamingOverlay = AssetStreamingOverlay::TextureResidency;
+      else
+        throw std::invalid_argument("--asset-overlay expects off, geometry-lod, or texture-residency");
       continue;
     }
     if (arg == "--capture-data") {

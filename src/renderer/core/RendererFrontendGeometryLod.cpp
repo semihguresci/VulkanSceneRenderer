@@ -1,7 +1,7 @@
 #include "Container/renderer/core/RendererFrontend.h"
 
 #include "Container/app/AppConfig.h"
-#include "Container/geometry/GeometryLod.h"
+#include "Container/geometry/GeometryLodCache.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/platform/VulkanContextInitializer.h"
 #include "Container/renderer/scene/SceneController.h"
@@ -33,8 +33,7 @@ constexpr std::array drawListMembers{
     &FrameDrawLists::selectedDrawCommands,
 };
 
-constexpr size_t maxIndexBufferElements = 128ull * 1024 * 1024 / sizeof(uint32_t);
-constexpr size_t maxGenerationSourceIndices = 1'500'000;
+constexpr size_t maxIndexBufferElements = geometry::GeometryLodPreparationOptions{}.maxBufferIndexCount;
 constexpr size_t maxSnapshotBytes = 192ull * 1024 * 1024;
 constexpr size_t snapshotBytesPerFrame = 2ull * 1024 * 1024;
 
@@ -62,60 +61,7 @@ struct RendererFrontend::PrimaryGeometryLods::Streaming {
     }
   };
 
-  struct Prepared {
-    std::vector<PrimaryGeometryLods::Primitive> ranges;
-    std::vector<uint32_t> indices;
-  };
-
-  static std::unique_ptr<Prepared> prepare(std::span<const geometry::Vertex> vertices,
-                                           std::span<const uint32_t> source,
-                                           std::span<const geometry::PrimitiveRange> primitives,
-                                           std::stop_token stop = {}) {
-    if (source.size() >= maxIndexBufferElements)
-      return {};
-    auto result = std::make_unique<Prepared>();
-    result->ranges.resize(primitives.size());
-    size_t generationBudget = maxGenerationSourceIndices;
-    for (size_t i = 0; i < primitives.size(); ++i) {
-      util::checkModelImportCancellation(stop);
-      const auto& primitive = primitives[i];
-      const auto first = size_t(primitive.firstIndex);
-      const auto count = size_t(primitive.indexCount);
-      if (first > source.size() || count > source.size() - first || count > generationBudget)
-        continue;
-      generationBudget -= count;
-      const auto levels = geometry::buildTriangleLods(vertices, source.subspan(first, count), stop);
-      if (levels.empty())
-        continue;
-      if (result->indices.empty()) {
-        // This alternate index buffer serves both canonical and reduced draws.
-        result->indices.reserve(source.size() + std::min({source.size(), maxGenerationSourceIndices,
-                                                         maxIndexBufferElements - source.size()}));
-        auto remaining = source;
-        while (!remaining.empty()) {
-          util::checkModelImportCancellation(stop);
-          const auto part = remaining.first(std::min(remaining.size(), size_t{65536}));
-          result->indices.insert(result->indices.end(), part.begin(), part.end());
-          remaining = remaining.subspan(part.size());
-        }
-      }
-      auto& range = result->ranges[i];
-      range.firstIndex = primitive.firstIndex;
-      range.indexCount = primitive.indexCount;
-      for (const auto& level : levels) {
-        if (level.indices.size() > maxIndexBufferElements - result->indices.size())
-          break;
-        range.levels.push_back({static_cast<uint32_t>(result->indices.size()),
-                                static_cast<uint32_t>(level.indices.size()), level.maxError});
-        result->indices.insert(result->indices.end(), level.indices.begin(), level.indices.end());
-      }
-    }
-    util::checkModelImportCancellation(stop);
-    if (result->indices.size() <= source.size())
-      return {};
-    return result;
-  }
-
+  using Prepared = geometry::PreparedGeometryLods;
   util::AsyncModelPreparation<std::unique_ptr<Prepared>> worker;
   std::unique_ptr<Snapshot> snapshot;
   uint64_t requestId{};
@@ -160,6 +106,7 @@ void RendererFrontend::clearPrimaryGeometryLods() {
   lod.geometryRevision = 0;
   lod.indexBytes = 0;
   lod.ranges.clear();
+  lod.cacheReport.reset();
   lod.choices.clear();
   lod.attempted = false;
   lod.active = false;
@@ -213,8 +160,11 @@ void RendererFrontend::updatePrimaryGeometryLodStreaming(bool allowWork) {
             primitives.size_bytes() > maxSnapshotBytes - indices.size_bytes() - vertices.size_bytes() ||
             std::ranges::none_of(primitives, [](const auto& primitive) {
               return primitive.indexCount >= 96 * 3 && primitive.indexCount % 3 == 0;
-            }))
+            })) {
+          if (!svc_.config.assetCacheDirectory.empty())
+            lod.cacheReport.emplace().status = util::DerivedAssetCacheStatus::NotCacheable;
           return;
+        }
         stream.snapshot = std::make_unique<PrimaryGeometryLods::Streaming::Snapshot>();
         stream.snapshot->vertices.reserve(vertices.size());
         stream.snapshot->indices.reserve(indices.size());
@@ -223,9 +173,10 @@ void RendererFrontend::updatePrimaryGeometryLodStreaming(bool allowWork) {
       if (!stream.snapshot->copyNext(vertices, indices, primitives))
         return;
       stream.requestId = stream.worker.start(
-          [snapshot = std::move(stream.snapshot)](std::stop_token stop) {
-            return PrimaryGeometryLods::Streaming::prepare(snapshot->vertices, snapshot->indices,
-                                                            snapshot->primitives, stop);
+          [snapshot = std::move(stream.snapshot),
+           cacheDirectory = svc_.config.assetCacheDirectory](std::stop_token stop) {
+            return std::make_unique<geometry::PreparedGeometryLods>(geometry::prepareGeometryLods(
+                snapshot->vertices, snapshot->indices, snapshot->primitives, cacheDirectory, {}, stop));
           });
       return;
     }
@@ -238,6 +189,9 @@ void RendererFrontend::updatePrimaryGeometryLodStreaming(bool allowWork) {
       if (const auto* error = std::get_if<std::exception_ptr>(&completion->outcome))
         std::rethrow_exception(*error);
       stream.prepared = std::move(std::get<0>(completion->outcome));
+      lod.cacheReport = stream.prepared->cache;
+      if (stream.prepared->indices.empty())
+        stream.worker.discard(std::move(stream.prepared));
     }
     if (!stream.prepared)
       return;
@@ -322,12 +276,15 @@ void RendererFrontend::applyPrimaryGeometryLods(FrameRecordParams& frame,
   } else if (!lod.attempted) {
     lod.attempted = true;
     try {
-      if (const auto result = PrimaryGeometryLods::Streaming::prepare(
-              scene.gpuBindVertices(), scene.gpuBindIndices(), subs_.sceneManager->primitiveRanges())) {
-        const auto bytes = std::as_bytes(std::span(result->indices));
+      auto result = geometry::prepareGeometryLods(scene.gpuBindVertices(), scene.gpuBindIndices(),
+                                                  subs_.sceneManager->primitiveRanges(),
+                                                  svc_.config.assetCacheDirectory);
+      lod.cacheReport = std::move(result.cache);
+      if (!result.indices.empty()) {
+        const auto bytes = std::as_bytes(std::span(result.indices));
         lod.buffer = svc_.allocationManager.uploadBuffer(bytes, VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
         lod.indexBytes = bytes.size();
-        lod.ranges = std::move(result->ranges);
+        lod.ranges = std::move(result.ranges);
       }
     } catch (const std::exception& error) {
       container::log::ContainerLogger::instance().renderer()->warn(
@@ -400,11 +357,8 @@ void RendererFrontend::applyPrimaryGeometryLods(FrameRecordParams& frame,
   lod.active = true;
 }
 
-void RendererFrontend::writePrimaryGeometryLodTelemetry(nlohmann::json& json) const {
+void RendererFrontend::addPrimaryGeometryDiagnostics(AssetStreamingSummary& summary) const {
   const auto& lod = primaryGeometryLods_;
-  uint64_t baseTriangles = 0;
-  uint64_t triangles = 0;
-  std::array<uint64_t, 3> levels{};
   if (subs_.sceneController) {
     const auto collect = [&](const std::vector<DrawCommand>& source, size_t list) {
       const auto& draws = lod.active ? lod.drawLists[list] : source;
@@ -413,18 +367,30 @@ void RendererFrontend::writePrimaryGeometryLodTelemetry(nlohmann::json& json) co
         const auto& draw = draws[i];
         if (original.objectIndex == sceneState_.diagCubeObjectIndex)
           continue;
-        baseTriangles += uint64_t(original.indexCount / 3) * original.instanceCount;
-        triangles += uint64_t(draw.indexCount / 3) * draw.instanceCount;
+        summary.baseTriangles += uint64_t(original.indexCount / 3) * original.instanceCount;
+        summary.submittedTriangles += uint64_t(draw.indexCount / 3) * draw.instanceCount;
         const auto level = draw.firstIndex == original.firstIndex ? 0u : lod.choices[draw.objectIndex].level;
-        levels[level] += draw.instanceCount;
+        summary.geometryLevels[level] += draw.instanceCount;
       }
     };
     collect(subs_.sceneController->opaqueDrawCommands(), 0);
     collect(subs_.sceneController->transparentDrawCommands(), 1);
   }
+  summary.geometryIndexBytes += lod.indexBytes;
+  if (const auto* stream = lod.streaming.get()) {
+    summary.geometryPendingBytes += stream->progress.totalBytes - stream->progress.completedBytes;
+    summary.geometryPeakCopyBytes = stream->maxBytesPerTick;
+  }
+}
+
+void RendererFrontend::writePrimaryGeometryLodTelemetry(nlohmann::json& json) const {
+  const auto& lod = primaryGeometryLods_;
+  AssetStreamingSummary summary;
+  addPrimaryGeometryDiagnostics(summary);
   json["geometryLod"]["errorPixels"] = svc_.config.geometryLodErrorPixels;
-  json["geometryLod"]["primary"] = {{"baseTriangles", baseTriangles}, {"triangles", triangles},
-                                    {"extraIndexBytes", lod.indexBytes}, {"levels", levels}};
+  json["geometryLod"]["primary"] = {
+      {"baseTriangles", summary.baseTriangles}, {"triangles", summary.submittedTriangles},
+      {"extraIndexBytes", summary.geometryIndexBytes}, {"levels", summary.geometryLevels}};
   const auto* stream = lod.streaming.get();
   const auto uploadState = stream && stream->upload ? stream->upload->state()
                                                    : gpu::GeometryUploadState::Idle;

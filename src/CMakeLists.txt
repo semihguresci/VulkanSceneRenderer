@@ -3,7 +3,8 @@ add_library(VulkanSceneRenderer_Core
     app/Application.cpp
 )
 
-add_library(VulkanSceneRenderer_fingerprint utility/ContentFingerprint.cpp)
+add_library(VulkanSceneRenderer_fingerprint
+    utility/ContentFingerprint.cpp utility/DerivedAssetCache.cpp)
 target_compile_features(VulkanSceneRenderer_fingerprint PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_fingerprint PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/../include)
 
@@ -84,6 +85,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/FrameRecorder.cpp
     renderer/core/RendererMsaa.cpp
     renderer/core/RendererFrontend.cpp
+    renderer/core/RendererFrontendAssetDiagnostics.cpp
     renderer/core/RendererFrontendGeometryLod.cpp
     renderer/core/RendererFrontendTextureStreaming.cpp
     renderer/core/RendererFrontendComfyUi.cpp
@@ -238,6 +240,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/bim/BimStatisticsCache.cpp
     renderer/bim/BimObjectTransforms.cpp
     renderer/bim/BimManager.cpp
+    renderer/bim/BimDerivedCache.cpp
     renderer/bim/BimHardClash.cpp
     renderer/bim/BimDdgiRooms.cpp
     renderer/bim/BimMetadataCatalog.cpp

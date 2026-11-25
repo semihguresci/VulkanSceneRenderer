@@ -1,5 +1,9 @@
 #pragma once
 
+#include "Container/renderer/core/AssetStreamingDiagnostics.h"
+
+#include <chrono>
+
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -46,6 +50,7 @@
 #include "Container/utility/ComputePipeline.h"
 #include "Container/utility/SceneEditHistory.h"
 #include "Container/geometry/GeometryLodSelection.h"
+#include "Container/geometry/GeometryLodCache.h"
 #include "Container/geometry/GltfAnimationRuntime.h"
 #include "Container/geometry/GltfInteractivity.h"
 #include "Container/geometry/GltfCameraAuthoring.h"
@@ -137,6 +142,7 @@ enum class RenderTechniqueId;
 class RenderTechniqueRegistry;
 struct RenderSystemContext;
 class RendererTelemetry;
+struct RendererPassGpuTiming;
 class GpuHardwareMonitor;
 class SceneController;
 class SceneProviderSynchronizer;
@@ -840,11 +846,6 @@ private:
   std::vector<DrawCommand> hoveredDrawCommands_{};
   std::vector<DrawCommand> selectedDrawCommands_{};
   struct PrimaryGeometryLods {
-    struct Primitive {
-      uint32_t firstIndex{};
-      uint32_t indexCount{};
-      std::vector<geometry::GeometryLodRange> levels;
-    };
     struct Choice {
       uint32_t node{UINT32_MAX};
       uint32_t primitive{UINT32_MAX};
@@ -858,7 +859,8 @@ private:
     uint64_t geometryRevision{};
     container::gpu::AllocatedBuffer buffer;
     VkDeviceSize indexBytes{};
-    std::vector<Primitive> ranges;
+    std::vector<geometry::GeometryLodPrimitive> ranges;
+    std::optional<geometry::GeometryLodCacheStats> cacheReport;
     std::vector<Choice> choices;
     std::array<std::vector<DrawCommand>, 10> drawLists;
     std::unique_ptr<Streaming, StreamingDeleter> streaming;
@@ -886,6 +888,18 @@ private:
   [[nodiscard]] bool retireTextureStreamingForModelLoad();
   bool prepareTextureStreamingForModelCommit();
   void writeTextureStreamingTelemetry(nlohmann::json& json) const;
+  void addPrimaryGeometryDiagnostics(AssetStreamingSummary& summary) const;
+  void addTextureStreamingDiagnostics(AssetStreamingSummary& summary) const;
+  [[nodiscard]] std::vector<std::optional<AssetStreamingMarker>> textureMaterialMarkers() const;
+  [[nodiscard]] AssetStreamingSummary assetStreamingSummary();
+  void drawAssetStreamingOverlay(const FrameRecordParams& frame, const glm::mat4& viewProjection);
+  void recordAssetRayBuild(uint64_t previousGeneration);
+  void collectAssetRayBuildTiming(uint64_t frame, std::span<const RendererPassGpuTiming> timings);
+  void writeAssetStreamingTelemetry(nlohmann::json& json) const;
+  std::chrono::steady_clock::time_point assetStartupBegin_{};
+  float initialSceneMs_{};
+  std::optional<float> firstSubmittedMs_;
+  std::vector<AssetRayBuildSample> assetRayBuilds_;
   std::string activePrimaryModelPath_{};
   container::app::SceneLightingDefaults sceneLightingDefaults_{};
   container::app::SceneLightingOverrides sceneLightingOverrides_{};

@@ -18,6 +18,7 @@
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/scene/SceneProvider.h"
 #include "Container/utility/GeometryUploadBatch.h"
+#include "Container/utility/DerivedAssetCache.h"
 #include "Container/utility/SceneData.h"
 #include "Container/utility/VulkanMemoryManager.h"
 
@@ -64,6 +65,15 @@ class BimMetadataIndex;
 class BimStatisticsCache;
 struct BimDrawFilterStateInputs;
 struct BimFrameMeshDrawLists;
+
+struct BimDerivedCacheReport {
+  util::DerivedAssetCacheStatus status{util::DerivedAssetCacheStatus::Disabled};
+  uint64_t bytesRead{};
+  uint64_t bytesWritten{};
+  double elapsedMs{};
+  std::filesystem::path file;
+  std::string key;
+};
 
 struct BimGeometryLodDrawInfo {
   uint32_t level{};
@@ -613,7 +623,8 @@ public:
   void loadModel(const std::string &path, float importScale,
                  container::scene::SceneManager &sceneManager,
                  std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {},
-                 bool generateGeometryLods = false);
+                 bool generateGeometryLods = false,
+                 const std::filesystem::path &derivedCacheDirectory = {});
   struct PreparedScene {
     PreparedScene();
     ~PreparedScene();
@@ -639,6 +650,7 @@ public:
     BimFloorPlanOverlayData floorPlanSourceElevation;
     std::vector<BimMeshletClusterMetadata> meshletClusters;
     BimOptimizedModelMetadata optimizedMetadata;
+    BimDerivedCacheReport derivedCache;
     std::unique_ptr<PreparedDrawData> drawData;
   };
   // CPU-only staging. The optional observer runs inline and may request a stop.
@@ -650,8 +662,10 @@ public:
       std::stop_token stop = {},
       const std::function<void(std::string_view)> &progress = {},
       const std::function<void(std::string_view)> &profileStage = {},
-      bool generateGeometryLods = false);
+      bool generateGeometryLods = false,
+      const std::filesystem::path &derivedCacheDirectory = {});
   [[nodiscard]] const auto& openVdbOptions() const { return openVdbOptions_; }
+  [[nodiscard]] const BimDerivedCacheReport &derivedCacheReport() const noexcept { return derivedCacheReport_; }
   // Optional raster ranges may be dropped when the source geometry fits alone.
   void checkPreparedSceneBudget(PreparedScene&, bool replacingSceneTextures,
                                 VkDeviceSize releasingPrimaryLodBytes = 0,
@@ -1000,7 +1014,9 @@ private:
   [[nodiscard]] static std::unique_ptr<PreparedDrawData> prepareDrawData(
       const container::geometry::dotbim::Model &model, std::stop_token stop,
       const std::function<void(std::string_view)> &progress = {},
-      const std::function<void(std::string_view)> &profileStage = {});
+      const std::function<void(std::string_view)> &profileStage = {},
+      std::span<const BimElementBounds> cachedBounds = {},
+      std::vector<BimElementBounds>* builtBounds = nullptr);
   void installDrawData(const container::geometry::dotbim::Model &model,
                        PreparedDrawData &prepared,
                        container::scene::SceneManager &sceneManager);
@@ -1117,6 +1133,7 @@ private:
   std::vector<BimMeshletClusterMetadata> meshletClusters_{};
   std::vector<BimObjectLodStreamingMetadata> objectLodMetadata_{};
   BimOptimizedModelMetadata optimizedModelMetadata_{};
+  BimDerivedCacheReport derivedCacheReport_{};
   container::gpu::AllocatedBuffer meshletClusterBuffer_{};
   container::gpu::AllocatedBuffer meshletObjectLodBuffer_{};
   container::gpu::AllocatedBuffer meshletResidencyBuffer_{};

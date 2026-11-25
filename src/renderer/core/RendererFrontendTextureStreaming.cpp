@@ -57,6 +57,14 @@ constexpr std::array experimentalTransforms{
     &GpuMaterial::scatterColorTextureTransform,
 };
 
+template <typename Visitor>
+void visitMaterialTextures(const GpuMaterial& material, Visitor&& visit) {
+  for (const auto& use : materialTextureUses)
+    visit(material.*use.slot, material.*use.transform);
+  for (int ext = 0; ext < static_cast<int>(experimentalTransforms.size()); ++ext)
+    visit(material.experimentalTextures[ext], material.*experimentalTransforms[ext]);
+}
+
 }  // namespace
 
 struct RendererFrontend::TextureStreaming {
@@ -246,11 +254,9 @@ struct RendererFrontend::TextureStreaming {
       const auto pixels = materialPixels[i];
       if (!(pixels > 0.0f))
         continue;
-      const auto& material = materials[i];
-      for (const auto& use : materialTextureUses)
-        accumulate(material.*use.slot, material.*use.transform, pixels);
-      for (int ext = 0; ext < static_cast<int>(experimentalTransforms.size()); ++ext)
-        accumulate(material.experimentalTextures[ext], material.*experimentalTransforms[ext], pixels);
+      visitMaterialTextures(materials[i], [&](uint32_t slot, const gpu::GpuTextureTransform& transform) {
+        accumulate(slot, transform, pixels);
+      });
     }
     for (auto& [key, entry] : entries)
       entry.demand = entry.nextDemand;
@@ -452,6 +458,46 @@ bool RendererFrontend::prepareTextureStreamingForModelCommit() {
 void RendererFrontend::refreshTextureStreamingDescriptors() {
   if (textureStreaming_)
     textureStreaming_->refreshCatalog();
+}
+
+void RendererFrontend::addTextureStreamingDiagnostics(AssetStreamingSummary& summary) const {
+  const auto* stream = textureStreaming_.get();
+  if (!stream)
+    return;
+  for (const auto& [key, entry] : stream->entries) {
+    if (!entry.live)
+      continue;
+    ++summary.textureImages;
+    summary.textureFallbackImages += !entry.tail;
+    summary.textureWaitingImages += entry.first() > entry.demand;
+  }
+  const auto progress = stream->upload.progress();
+  summary.texturePendingBytes = progress.totalBytes - progress.completedBytes;
+  summary.texturePeakCopyBytes = stream->maxBytesPerTick;
+  summary.texturePromotions = stream->promotions;
+  summary.textureEvictions = stream->evictions;
+}
+
+std::vector<std::optional<AssetStreamingMarker>> RendererFrontend::textureMaterialMarkers() const {
+  const auto* stream = textureStreaming_.get();
+  if (!stream || stream->entries.empty() || !subs_.sceneManager)
+    return {};
+  const auto materials = subs_.sceneManager->gpuMaterialData();
+  std::vector<std::optional<AssetStreamingMarker>> markers(materials.size());
+  for (size_t i = 0; i < materials.size(); ++i) {
+    auto& marker = markers[i];
+    visitMaterialTextures(materials[i], [&](uint32_t slot, const gpu::GpuTextureTransform&) {
+      if (slot >= stream->slotEntries.size())
+        return;
+      if (const auto* entry = stream->slotEntries[slot]) {
+        if (!marker)
+          marker.emplace();
+        marker->level = std::max(marker->level, entry->first());
+        marker->waitingForDetail |= entry->first() > entry->demand;
+      }
+    });
+  }
+  return markers;
 }
 
 void RendererFrontend::writeTextureStreamingTelemetry(nlohmann::json& json) const {
