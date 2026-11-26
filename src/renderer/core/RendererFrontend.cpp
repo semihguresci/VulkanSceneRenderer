@@ -3019,21 +3019,25 @@ void RendererFrontend::applyTemporalCapture(
                                                   : "capture DDGI intensity changed");
   }
   if (subs_.lightingManager &&
-      (!event.areaLighting.empty() || event.areaLightSamples)) {
+      (!event.areaLighting.empty() || event.areaLightSamples || event.localShadowLayerBudget)) {
     const auto &currentSettings = subs_.lightingManager->lightingSettings();
     auto settings = currentSettings;
     if (!event.areaLighting.empty())
       settings.areaLightingMode = event.areaLighting == "ltc" ? 1u : 0u;
     if (event.areaLightSamples)
       settings.areaLightSampleCount = *event.areaLightSamples;
+    if (event.localShadowLayerBudget)
+      settings.localShadowLayerBudget = *event.localShadowLayerBudget;
     const bool areaLightingChanged =
         settings.areaLightingMode != currentSettings.areaLightingMode ||
         settings.areaLightSampleCount != currentSettings.areaLightSampleCount;
+    const bool shadowBudgetChanged = settings.localShadowLayerBudget != currentSettings.localShadowLayerBudget;
     subs_.lightingManager->setLightingSettings(settings);
     if (subs_.guiManager)
       subs_.guiManager->setLightingSettings(settings);
-    if (areaLightingChanged && subs_.temporalManager)
-      subs_.temporalManager->reset("area light integration changed");
+    if ((areaLightingChanged || shadowBudgetChanged) && subs_.temporalManager)
+      subs_.temporalManager->reset(shadowBudgetChanged ? "local shadow layer budget changed"
+                                                      : "area light integration changed");
   }
   if (subs_.rayShadowManager &&
       (!event.rayShadows.empty() || event.rayShadowSamples ||

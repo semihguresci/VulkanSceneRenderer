@@ -65,6 +65,11 @@ python -B tests/validation/reference_path_runtime_regression.py --renderer $rend
 The edit sequence checks fresh accumulation on visibility changes, undo and
 redo, primary and BIM provider replacement, environment replacement and
 material edits. The renderer keeps accumulating through display-only changes.
+The raster shadow budget replay changes the local atlas from eight layers to
+zero and back. It checks that the raw EXRs and accumulated sample count match
+an unchanged control, then edits the point light to verify a fresh accumulation.
+Use `--shadow-budget-only` to run this pair of capture sequences.
+The `localShadowLayerBudget` capture event accepts whole numbers from 0 to 24.
 Hiding or filtering out the last ray-visible object leaves a valid empty scene
 and renders the background. A visible ray-incompatible surface still reports
 its unsupported status.

@@ -270,7 +270,9 @@ the native raster attachment remains owned by the frame-resource manager.
 Explicit barriers transition display GENERAL → SHADER_READ_ONLY → GENERAL around
 presentation. TAA jitter and resolve, DDGI, ray-shadow filtering and raster OIT
 are disabled for reference transport. Exposure, bloom and tone mapping remain
-display operations and do not invalidate the accumulated means.
+display operations and do not invalidate the accumulated means. Changing the
+raster local shadow layer budget also preserves the reference samples. Changes
+to the authored light still restart accumulation.
 
 EXR export reads the raw RGBA32F mean directly through the existing linear-capture
 storage buffer. It does not round through the raster RGBA16F color attachment.
@@ -425,6 +427,8 @@ radiance cube, including orientation and intensity. Directional and point/spot
 lights retain authored units and range/cone rules; point falloff uses the actual
 inverse squared distance. Rectangle/disk emitters have matching area/solid-angle
 PDFs and analytic ray intersections, so both camera and BSDF rays can see them.
+Emitters with zero intensity or an all-zero RGB tint are invisible to camera
+and visibility rays. They contribute zero when the light sampler selects them.
 Emissive and unlit meshes use a separate next-event proposal. It selects an
 emitting instance, a triangle, and a uniform point on that triangle. The
 world-space area, facing, and selection probabilities define the solid-angle

@@ -27,7 +27,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--renderer', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    parser.add_argument('--visibility-only', action='store_true', help='Run the scene visibility and provider reload sequence')
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument('--visibility-only', action='store_true', help='Run the scene visibility and provider reload sequence')
+    modes.add_argument('--shadow-budget-only', action='store_true', help='Run the raster shadow budget history check')
     args = parser.parse_args()
     renderer, output = args.renderer.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
@@ -136,6 +138,43 @@ def main():
         for sample in (hidden_again, filtered):
             np.testing.assert_array_equal(sample['pixels'], hidden['pixels'])
 
+    def point_light_fixture(name, *, light_range=None):
+        path = output / name
+        scene = json.loads(model.read_text())
+        scene['materials'][0]['emissiveFactor'] = [0, 0, 0]
+        scene['materials'][0]['pbrMetallicRoughness']['baseColorFactor'] = [1, 1, 1, 1]
+        light = dict(type='point', intensity=4)
+        if light_range is not None:
+            light['range'] = light_range
+        extension = 'KHR_lights_punctual'
+        scene.setdefault('extensions', {})[extension] = dict(lights=[light])
+        scene['nodes'][1] = dict(name='Reference point', translation=[0, 0, 2],
+                                 extensions={extension: dict(light=0)})
+        path.write_text(json.dumps(scene))
+        return path
+
+    def check_shadow_budget_history():
+        point_model = point_light_fixture('finite-point.gltf', light_range=8)
+        target = dict(type='point', source='imported', sourceNode=1)
+        initial_budget = dict(frame=1, localShadowLayerBudget=8)
+        light_edit = dict(frame=9, lightEdit=dict(target=target, phase='commit', values=dict(intensity=8)))
+        frames = (4, 5, 8, 9, 12)
+        changed = capture('raster-shadow-budget-history', model_path=point_model, suffix='.exr',
+                          frames=frames, events=(initial_budget, dict(frame=5, localShadowLayerBudget=0),
+                                                dict(frame=7, localShadowLayerBudget=8), light_edit))
+        control = capture('raster-shadow-budget-control', model_path=point_model, suffix='.exr',
+                          frames=frames, events=(initial_budget, light_edit))
+        assert [sample['state']['lighting']['localShadowLayerBudget'] for sample in changed] == [8, 0, 8, 8, 8]
+        assert [sample['state']['lighting']['activeLocalShadowLayers'] for sample in changed] == [6, 0, 6, 6, 6]
+        for sample, baseline, count, resets in zip(changed, control, (13, 13, 13, 4, 13), (1, 1, 1, 2, 2), strict=True):
+            assert sample['state']['validationEnabled']
+            reference(sample, samples=count, resets=resets)
+            reference(baseline, samples=count, resets=resets)
+            np.testing.assert_array_equal(sample['pixels'], baseline['pixels'])
+        before, after = changed[0]['pixels'][120, 160], changed[-1]['pixels'][120, 160]
+        assert np.min(before) > .05, before
+        np.testing.assert_allclose(after, before * 2, atol=.001, rtol=0)
+
     def check_viewport():
         progress = capture('sample-stop', frames=(1, 2, 3, 4, 6))
         for sample, count in zip(progress, (4, 8, 12, 13, 13), strict=True):
@@ -235,13 +274,7 @@ def main():
         np.testing.assert_array_equal(changes[3]['pixels'], changes[5]['pixels'])
         assert np.any(changes[2]['pixels'] != changes[3]['pixels'])
 
-        point_model = output / 'point-light.gltf'
-        point_asset = json.loads(model.read_text())
-        point_asset['materials'][0]['emissiveFactor'] = [0,0,0]
-        point_asset['materials'][0]['pbrMetallicRoughness']['baseColorFactor'] = [1,1,1,1]
-        point_asset.setdefault('extensions', {})['KHR_lights_punctual'] = dict(lights=[dict(type='point', intensity=4)])
-        point_asset['nodes'][1] = dict(name='Reference point', translation=[0,0,2], extensions={'KHR_lights_punctual': dict(light=0)})
-        point_model.write_text(json.dumps(point_asset))
+        point_model = point_light_fixture('point-light.gltf')
         target = dict(type='point', source='imported', sourceNode=1)
         lights = capture('light-history-gizmo', model_path=point_model, suffix='.exr', frames=(4,8,12,16,20,24,28), events=(
             dict(frame=5, lightEdit=dict(target=target, phase='commit', values=dict(intensity=8))),
@@ -271,9 +304,13 @@ def main():
         reference(capture('simple-ui', ui=True, flags=('--width','1280','--height','800'))[0], resets=1)
 
     try:
-        check_visibility()
-        if not args.visibility_only:
-            check_viewport()
+        if args.shadow_budget_only:
+            check_shadow_budget_history()
+        else:
+            check_visibility()
+            if not args.visibility_only:
+                check_viewport()
+                check_shadow_budget_history()
         if hashlib.sha256(renderer.read_bytes()).hexdigest() != report['executableSha256']:
             raise RuntimeError('Executable changed during validation')
         report['passed'] = True

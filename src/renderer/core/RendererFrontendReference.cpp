@@ -227,7 +227,15 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   hash(lighting.environmentOrientation.y);
   hash(lighting.pointLightCount);
   hash(lighting.areaLightCount);
-  for (const auto& light : subs_.lightingManager->pointLightsSsbo()) hash(light);
+  for (const auto& light : subs_.lightingManager->pointLightsSsbo()) {
+    hash(light.positionRadius);
+    hash(light.colorIntensity);
+    hash(light.directionInnerCos);
+    // The remaining components are raster atlas layer metadata.
+    hash(glm::vec2(light.coneOuterCosType));
+    hash(light.iesTangent);
+    hash(light.iesProfileAddress);
+  }
   for (const auto& light : subs_.lightingManager->areaLightsSsbo()) hash(light);
   input.contentRevision = revision;
   hashValue(input.contentRevision, subs_.rayShadowManager->sceneRevision());

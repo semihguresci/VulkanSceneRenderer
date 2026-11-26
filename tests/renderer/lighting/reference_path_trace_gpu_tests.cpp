@@ -2536,6 +2536,98 @@ TEST_F(ReferencePathTraceGpu, AnalyticAreaEmitterIsVisibleToCameraWithExactHdrRa
   EXPECT_EQ(pixels.images[1][16+16*32],glm::vec4(0));
   EXPECT_EQ(pixels.images[0][0],glm::vec4(0,0,0,64));save(pixels,"visible-emitter-hdr");
 }
+
+TEST_F(ReferencePathTraceGpu, DisabledAnalyticEmittersDoNotHideUnlitSurface) {
+  materialValues[0].flags = kObjectFlagUnlit;
+  materialValues[0].color = {.25f, .5f, .75f, 1};
+  lighting.environmentIntensity = 0;
+  input.settings.sampleLimit = 64;
+  syncInputs();
+  const auto receiver = render();
+  constexpr size_t centerPixel = 16 + 16 * 32;
+  ASSERT_EQ(receiver.images[0][centerPixel], glm::vec4(.25f, .5f, .75f, 64));
+
+  lighting.areaLightCount = 1;
+  auto& light = areaValues.emplace_back();
+  light.positionRange = {0, 0, 1, 0};
+  light.tangentHalfSize = {1, 0, 0, .35f};
+  light.bitangentHalfSize = {0, 1, 0, .35f};
+  const std::array inactiveRadiances{glm::vec4(1, 1, 1, 0), glm::vec4(0, 0, 0, 4)};
+  for (const float shape : {kAreaLightTypeRectangle, kAreaLightTypeDisk}) {
+    light.directionType = {0, 0, 1, shape};
+    for (const auto radiance : inactiveRadiances) {
+      light.colorIntensity = radiance;
+      syncInputs();
+      EXPECT_EQ(render().images, receiver.images);
+      EXPECT_EQ(tracer->diagnostics(0).acceptedSamples, 64 * 32 * 32);
+      EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+      EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+    }
+  }
+}
+
+TEST_F(ReferencePathTraceGpu, InvalidNonzeroAnalyticEmitterHitsStillRejectSamples) {
+  lighting.environmentIntensity = 0;
+  lighting.areaLightCount = 1;
+  input.settings.sampleLimit = 64;
+  auto& light = areaValues.emplace_back();
+  light.positionRange = {0, 0, 1, 0};
+  light.directionType = {0, 0, 1, kAreaLightTypeRectangle};
+  const std::array invalidRadiances{
+      glm::vec4(std::numeric_limits<float>::quiet_NaN(), 1, 1, 4),
+      glm::vec4(-1, -1, -1, 4)};
+  constexpr size_t centerPixel = 16 + 16 * 32;
+  for (const auto radiance : invalidRadiances) {
+    light.colorIntensity = radiance;
+    syncInputs();
+    const auto pixels = render();
+    EXPECT_EQ(pixels.images[0][centerPixel], glm::vec4(0));
+    EXPECT_EQ(pixels.images[1][centerPixel].w, 2);
+    EXPECT_EQ(pixels.images[2][centerPixel], glm::vec4(1, 1, 0, 1));
+    EXPECT_GT(tracer->diagnostics(0).rejectedSamples, 0);
+    EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+  }
+}
+
+TEST_F(ReferencePathTraceGpu, DisabledAnalyticEmittersDoNotBlockPointLightConnections) {
+  lighting.environmentIntensity = 0;
+  lighting.pointLightCount = 1;
+  auto& point = pointValues.emplace_back();
+  point.positionRadius = {1, 0, 2, 0};
+  point.colorIntensity = {1, 1, 1, 8};
+  input.settings.sampleLimit = 64;
+  input.settings.maxBounces = 1;
+  syncInputs();
+  const auto pointOnly = render().roi();
+  ASSERT_GT(pointOnly.x, .2);
+
+  lighting.areaLightCount = 1;
+  auto& area = areaValues.emplace_back();
+  area.directionType = {0, 0, 1, kAreaLightTypeRectangle};
+  area.tangentHalfSize = {1, 0, 0, .14f};
+  area.bitangentHalfSize = {0, 1, 0, .14f};
+  area.colorIntensity = {1, 1, 1, 0};
+  area.positionRange = {100, 0, 1, 0};
+  syncInputs();
+  // Hold the number and order of light proposals fixed for exact comparisons.
+  const auto unblocked = render().roi();
+  ASSERT_NEAR(unblocked.x, pointOnly.x, .025);
+
+  // The rectangle intersects connections from the central ROI to the point
+  // light, and presents its unlit back face to those receiving surfaces.
+  area.positionRange = {.5f, 0, 1, 0};
+  for (const auto radiance : {glm::vec4(1, 1, 1, 0), glm::vec4(0, 0, 0, 4)}) {
+    area.colorIntensity = radiance;
+    syncInputs();
+    EXPECT_EQ(render().roi(), unblocked);
+    EXPECT_EQ(tracer->diagnostics(0).unsupportedSamples, 0);
+    EXPECT_EQ(tracer->diagnostics(0).rejectedSamples, 0);
+  }
+  area.colorIntensity = {1, 1, 1, 4};
+  syncInputs();
+  EXPECT_EQ(render().roi(), glm::dvec3(0));
+}
+
 TEST_F(ReferencePathTraceGpu, SharedFacingFlagsCullSingleSidedBacksAndOrientDoubleSidedNormals) {
   objects[0].model=glm::rotate(glm::mat4(1),3.14159265359f,glm::vec3(0,1,0));
   const auto normal=glm::transpose(glm::inverse(glm::mat3(objects[0].model)));
