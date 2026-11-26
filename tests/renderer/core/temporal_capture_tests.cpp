@@ -92,6 +92,24 @@ TEST(TemporalCapture, ReferenceRendererSwitchIsOneShotAndRejectsUnknownNames) {
   EXPECT_THROW(CaptureSequence{invalid},std::invalid_argument);
 }
 
+TEST(TemporalCapture, LocalShadowLayerBudgetAcceptsIntegerBoundsAndIsOneShot) {
+  const auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
+    {"frame":2,"localShadowLayerBudget":0},
+    {"frame":4,"localShadowLayerBudget":8}
+  ]})");
+  const CaptureSequence sequence(input);
+  EXPECT_FALSE(sequence.sample(1).event.localShadowLayerBudget);
+  EXPECT_EQ(sequence.sample(2).event.localShadowLayerBudget, 0u);
+  EXPECT_FALSE(sequence.sample(3).event.localShadowLayerBudget);
+  EXPECT_EQ(sequence.sample(4).event.localShadowLayerBudget, 8u);
+  for (const auto& value : json::array({-1, .5, 8.0, "8", nullptr,
+                                        container::gpu::kMaxShadowedLocalLightLayers + 1})) {
+    auto rejected = input;
+    rejected["events"][0]["localShadowLayerBudget"] = value;
+    EXPECT_THROW((void)CaptureSequence(rejected), std::invalid_argument) << value;
+  }
+}
+
 TEST(TemporalCapture, SwapchainFormatRequestsAreTypedAndOneShot) {
   using Format = container::temporal::CaptureSwapchainFormat;
   const auto input = json::parse(R"({"schemaVersion":1,"frames":7,"events":[

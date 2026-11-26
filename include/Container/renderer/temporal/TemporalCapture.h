@@ -254,6 +254,7 @@ struct CaptureEvent {
   std::optional<CaptureDdgiRoomPlan> ddgiRoomPlan;
   std::optional<uint32_t> rayShadowSamples;
   std::optional<uint32_t> areaLightSamples;
+  std::optional<uint32_t> localShadowLayerBudget;
   std::optional<uint32_t> samples;
   std::optional<uint32_t> bimHiddenObject;
   std::optional<uint32_t> bimSelectedObject;
@@ -440,7 +441,7 @@ public:
         // mutation keys cannot bypass isolation by looking inert after parse.
         nodeFields(value,{"frame","lightEdit","lightSelection","lightAdd","expectLightEditFailure",
             "taa","fsr","dlss","exposure","resize","swapchainFormat","depthProbe","environment","environmentAsync","environmentYaw","proceduralSky","technique","rayShadows","rayShadowSamples","rayShadowDenoise","reloadShaders","gpuTransforms",
-            "areaLighting","areaLightSamples","ddgiPaused","ddgiEnabled","ddgiIntensity","samples","reset"},"light action event");
+            "areaLighting","areaLightSamples","localShadowLayerBudget","ddgiPaused","ddgiEnabled","ddgiIntensity","samples","reset"},"light action event");
       }
       for(const auto& [field,present,destination]:{
           std::tuple{"expectCameraProjectionFailure",event.cameraProjection.has_value(),&event.expectCameraProjectionFailure},
@@ -703,6 +704,13 @@ public:
             (samples != 9u && samples != 25u && samples != 64u))
           throw std::invalid_argument("Capture area light samples must be 9,25,64");
         event.areaLightSamples = samples.get<uint32_t>();
+      }
+      if (value.contains("localShadowLayerBudget")) {
+        const auto& budget = value.at("localShadowLayerBudget");
+        if (!budget.is_number_integer() || budget < 0 ||
+            budget > container::gpu::kMaxShadowedLocalLightLayers)
+          throw std::invalid_argument("Invalid capture local shadow layer budget");
+        event.localShadowLayerBudget = budget.get<uint32_t>();
       }
       auto boolean = [&](const char *name, std::optional<bool> &target) {
         if (value.contains(name))

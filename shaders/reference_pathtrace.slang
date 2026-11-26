@@ -651,6 +651,10 @@ float3 PtEnvironment(float3 direction)
             RotateEnvironmentDirection(direction, lighting.environmentOrientation.xy), 0.0).rgb;
     return value * lighting.environmentIntensity;
 }
+bool PtAreaEmitterDisabled(float4 colorIntensity)
+{
+    return colorIntensity.a == 0.0 || all(colorIntensity.rgb == 0.0.xxx);
+}
 struct PtEmitterHit { float distance; uint index; uint hit; float3 position; };
 PtEmitterHit PtAreaHit(RayDesc ray, uint count, uint ignoredEmitter)
 {
@@ -659,7 +663,9 @@ PtEmitterHit PtAreaHit(RayDesc ray, uint count, uint ignoredEmitter)
     for (uint i = 0u; i < count; ++i)
     {
         if (i == ignoredEmitter) continue;
-        AreaLightFrame light = BuildAreaLightFrame(areaLights[i]);
+        AreaLightData data = areaLights[i];
+        if (PtAreaEmitterDisabled(data.colorIntensity)) continue;
+        AreaLightFrame light = BuildAreaLightFrame(data);
         float denominator = dot(ray.Direction, light.normal);
         if (denominator == 0.0) continue;
         float distance = dot(light.position - ray.Origin, light.normal) / denominator;
@@ -1153,6 +1159,9 @@ float3 PtDirect(PtHit hit, PtMaterial material, float3 view, float3 geometricNor
     {
         ignoredEmitter = index - counts.x - counts.y - counts.z;
         AreaLightData data = areaLights[ignoredEmitter];
+        // A disabled entry is still a null outcome of the light proposal.
+        if (PtAreaEmitterDisabled(data.colorIntensity))
+            return 0.0.xxx;
         AreaLightFrame light = BuildAreaLightFrame(data);
         float2 offset = 2.0 * u - 1.0;
         if (abs(light.type - AREA_LIGHT_TYPE_DISK) < 0.5)

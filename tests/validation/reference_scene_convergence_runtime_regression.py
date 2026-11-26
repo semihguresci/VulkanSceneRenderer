@@ -529,13 +529,17 @@ def calibration_guide(output, scene_results):
     for name in fixtures.NAMES:
         stats = scene_results[name]['convergence']
         values = [r['aggregateRmse'] for r in stats['checkpoints']]
-        lines += [f'| {name} | '+ ' | '.join(f'{v:.7g}' for v in values+[stats['estimatedReferenceMeanNoiseRmse']])+' |',
-                  f'\n![{name} matched views]({name}-comparison.png)\n']
-    lines += ['## Analytic mirror', '',
+        values.append(stats['estimatedReferenceMeanNoiseRmse'])
+        lines.append(f'| {name} | ' + ' | '.join(f'{v:.7g}' for v in values) + ' |')
+    lines += ['', '## Analytic mirror', '',
         'Each of the two 32-spp raw EXRs is checked against the authored emissive radiance in the reflected patches and zero in the surround.',
         f'Every checked channel has an absolute radiance tolerance of {MIRROR_ABSOLUTE_TOLERANCE:g}. Pixels near patch edges are excluded to allow subpixel sampling.',
         'The mean of both raw mirror captures serves as the HDR target for the matched forward and deferred raster views.',
-        '', '![Mirror matched views](mirror-comparison.png)']
+        '', '## Matched renderer views', '',
+        'Each image shows path tracing, forward raster, and deferred raster from left to right.']
+    for name in (*fixtures.NAMES, fixtures.MIRROR):
+        label = name.capitalize()
+        lines += ['', f'### {label}', '', f'![{label} matched views]({name}-comparison.png)']
     (output/'CALIBRATION.md').write_text('\n'.join(lines)+'\n', encoding='utf-8')
 
 
@@ -702,7 +706,16 @@ def self_check():
             bad = copy.deepcopy(last_capture); change(bad)
             negative(label, lambda: capture_identity(bad, mirror, authored[fixtures.MIRROR]))
         calibration_guide(output, simulated)
-        require(len(simulated) == 6 and (output/'CALIBRATION.md').is_file(), 'Full simulated capture analysis failed')
+        require(len(simulated) == 6, 'Full simulated capture analysis failed')
+        guide = (output/'CALIBRATION.md').read_text(encoding='utf-8')
+        lines = guide.splitlines()
+        table_start = next(index for index, line in enumerate(lines) if line.startswith('| Scene |')) + 2
+        table_rows = lines[table_start:table_start + len(fixtures.NAMES)]
+        require(all(row.startswith(f'| {name} |') for name, row in zip(fixtures.NAMES, table_rows, strict=True)),
+                'Calibration table rows are interrupted or out of order')
+        image_links = re.findall(r'^!\[[^\]]+\]\(([^)]+)\)$', guide, re.MULTILINE)
+        require(image_links == [f'{name}-comparison.png' for name in (*fixtures.NAMES, fixtures.MIRROR)] and
+                all((output/link).is_file() for link in image_links), 'Calibration guide is missing matched views')
         return dict(passed=True, gpuUsed=False, fixtureChecks=fixture_receipt,
             statisticalAndComparisonNegativeChecks=rejected, processCount=inventory['processCount'], captureCount=inventory['captureCount'],
             simulatedCapturedArtifactAnalysis=True, syntheticConvergence=good, thresholds=THRESHOLDS)
