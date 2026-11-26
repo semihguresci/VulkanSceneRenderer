@@ -33,6 +33,9 @@ struct IfcSectionMiterResult {
   IfcSectionMiterEvaluator point;
   std::vector<double> breaks;
   IfcSectionMiterEvaluator meshNormal;
+  // Transverse directions after transporting the same miter correction as
+  // the surface. At a join the normal is the shared half-angle bisector.
+  IfcSectionMiterFrameAt guideFrame;
 };
 
 // Section and directrix breaks use the native U parameter. Profile breaks

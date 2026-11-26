@@ -177,33 +177,50 @@ TEST(IfcTrimPlacement, MeshesBacktrackingBandsOnEitherSinglePeriodicAxis) {
   }
 }
 
-TEST(IfcTrimPlacement, MonotoneSplineBandFindsAnotherSharedCutAnchor) {
+enum class SplineBandPeriodicity { U, V, Both };
+
+void expectMonotoneSplineBandSharedCut(SplineBandPeriodicity periodicity,
+                                      bool railsCross = false) {
   using container::geometry::ifc::detail::CurvedFaceChartLoop;
   using container::geometry::ifc::detail::meshIfcCurvedFace;
   using container::geometry::ifc::detail::ParametricSurface;
   constexpr double tau = 2 * std::numbers::pi, major = .55, minor = .23;
-  constexpr double tip = .125, shoulder = .165, upper = .185;
+  constexpr double tip = .125, shoulder = .165;
+  const double upper = railsCross ? .155 : .185;
   constexpr double rampWidth = 1. / 1024.;
   constexpr unsigned samples = 128, rampSteps = 4;
+  const bool transpose = periodicity == SplineBandPeriodicity::V;
   ParametricSurface surface;
   surface.spline = true;
-  surface.periods = {1., 1.};
+  surface.periods = {periodicity != SplineBandPeriodicity::V ? 1. : 0.,
+                     periodicity != SplineBandPeriodicity::U ? 1. : 0.};
+  if (periodicity == SplineBandPeriodicity::U)
+    surface.vDomain = {{0., .25}};
+  if (periodicity == SplineBandPeriodicity::V)
+    surface.uDomain = {{0., .25}};
   surface.point = [=](double u, double v) {
+    if (transpose)
+      std::swap(u, v);
     const double radial = major + minor * std::cos(tau * v);
     return glm::dvec3(radial * std::cos(tau * u), radial * std::sin(tau * u),
                       minor * std::sin(tau * v));
   };
   surface.derivatives = [=](double u, double v) {
+    if (transpose)
+      std::swap(u, v);
     const double c = std::cos(tau * u), s = std::sin(tau * u);
     const double radial = major + minor * std::cos(tau * v);
     const double dr = -minor * std::sin(tau * v);
-    return std::pair(glm::dvec3(-s * radial, c * radial, 0.) * tau,
-                     glm::dvec3(c * dr, s * dr, minor * std::cos(tau * v)) * tau);
+    const auto du = glm::dvec3(-s * radial, c * radial, 0.) * tau;
+    const auto dv = glm::dvec3(c * dr, s * dr, minor * std::cos(tau * v)) * tau;
+    return transpose ? std::pair(dv, du) : std::pair(du, dv);
   };
 
   std::array<CurvedFaceChartLoop, 2> chart;
   std::vector<std::vector<glm::vec3>> points(2);
   const auto append = [&](size_t rail, double u, double v) {
+    if (transpose)
+      std::swap(u, v);
     chart[rail].vertices.emplace_back(u, v);
     points[rail].emplace_back(*surface.point(u, v));
   };
@@ -221,12 +238,18 @@ TEST(IfcTrimPlacement, MonotoneSplineBandFindsAnotherSharedCutAnchor) {
   }
   for (unsigned i = 0; i < samples; ++i)
     append(1, (.5 - i) / samples, upper);
-  chart[0].closure = chart[0].vertices.front() + glm::dvec2(1., 0.);
-  chart[1].closure = chart[1].vertices.front() - glm::dvec2(1., 0.);
+  const glm::dvec2 advance = transpose ? glm::dvec2(0., 1.) : glm::dvec2(1., 0.);
+  chart[0].closure = chart[0].vertices.front() + advance;
+  chart[1].closure = chart[1].vertices.front() - advance;
 
   std::string error;
-  const auto mesh = meshIfcCurvedFace(surface, points, false, true, 1., error,
+  const auto mesh = meshIfcCurvedFace(surface, points, false, !transpose, 1., error,
                                       {}, chart);
+  if (railsCross) {
+    EXPECT_FALSE(mesh);
+    EXPECT_NE(error.find("Spline band bounds cross"), std::string::npos);
+    return;
+  }
   ASSERT_TRUE(mesh) << error;
   using Key = std::array<float, 3>;
   const auto key = [](glm::vec3 p) { return Key{p.x, p.y, p.z}; };
@@ -258,9 +281,10 @@ TEST(IfcTrimPlacement, MonotoneSplineBandFindsAnotherSharedCutAnchor) {
     const glm::dvec3 flatCenter =
         (glm::dvec3(p[0]) + glm::dvec3(p[1]) + glm::dvec3(p[2])) / 3.;
     const auto centerUv = (uv[0] + uv[1] + uv[2]) / 3.;
+    const auto onSurface = transpose ? surface.point(centerUv.y, centerUv.x)
+                                     : surface.point(centerUv.x, centerUv.y);
     maxCentroidError = std::max(
-        maxCentroidError,
-        glm::length(*surface.point(centerUv.x, centerUv.y) - flatCenter));
+        maxCentroidError, glm::length(*onSurface - flatCenter));
     for (size_t i = 0; i < p.size(); ++i) {
       const auto next = (i + 1) % p.size();
       area += (uv[i].x - uv[next].x) * meanAreaPrimitive(uv[i].y, uv[next].y);
@@ -287,6 +311,23 @@ TEST(IfcTrimPlacement, MonotoneSplineBandFindsAnotherSharedCutAnchor) {
     }
   for (const auto &[_, use] : edges)
     EXPECT_EQ(use, (std::pair(2, 0)));
+}
+
+TEST(IfcTrimPlacement, MonotoneSplineBandFindsAnotherSharedCutAnchor) {
+  expectMonotoneSplineBandSharedCut(SplineBandPeriodicity::Both);
+}
+
+TEST(IfcTrimPlacement, MonotoneSplineBandFindsSharedCutOnEitherSingleAxis) {
+  for (const auto periodicity :
+       {SplineBandPeriodicity::U, SplineBandPeriodicity::V}) {
+    SCOPED_TRACE(periodicity == SplineBandPeriodicity::U ? "U period"
+                                                         : "V period");
+    ASSERT_NO_FATAL_FAILURE(expectMonotoneSplineBandSharedCut(periodicity));
+  }
+}
+
+TEST(IfcTrimPlacement, MonotoneSplineBandRejectsCrossingRailsOnASingleAxis) {
+  expectMonotoneSplineBandSharedCut(SplineBandPeriodicity::U, true);
 }
 
 std::string polygonFixture(std::string_view points, std::string_view face,

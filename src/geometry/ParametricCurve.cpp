@@ -560,9 +560,6 @@ std::optional<ParametricCurve> makeBSplineCurve(unsigned degree,
   };
   const bool clamped =
       spline->knots.front() == first && spline->knots.back() == last;
-  const bool polynomial = std::ranges::all_of(
-      weights, [w = weights.front()](double weight) { return weight == w; });
-  const bool singleSpan = spline->controls.size() == degree + 1;
   bool smoothSpans = true;
   const auto firstKnot = spline->knots.begin() + degree + 1;
   const auto lastKnot = spline->knots.begin() + spline->controls.size();
@@ -571,12 +568,13 @@ std::optional<ParametricCurve> makeBSplineCurve(unsigned degree,
     smoothSpans &= after - knot < degree;
     knot = after;
   }
-  if (clamped && smoothSpans && (polynomial || singleSpan)) {
+  if (clamped && smoothSpans) {
     curve.increasingSplineProjection = [spline](glm::dvec3 direction) {
-      // Positive Bézier weights preserve monotonic control order (the
-      // derivative is proportional to the weighted covariance of control
-      // projection and control index). Polynomial spline derivative
-      // controls each inherit the sign of their consecutive differences.
+      // Interior knot insertion preserves strict projected control order:
+      // each blended positive-weight control lies strictly between its two
+      // neighbors. Thus the extracted rational Bézier spans are also ordered.
+      // On each span the derivative has the sign of the weighted covariance
+      // between projected control values and their indices.
       for (size_t i = 1; i < spline->controls.size(); ++i) {
         const auto a = spline->controls[i - 1], b = spline->controls[i];
         const auto delta = glm::dvec3(b) / b.w - glm::dvec3(a) / a.w;

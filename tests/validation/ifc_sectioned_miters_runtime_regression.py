@@ -19,6 +19,7 @@ SPATIAL_SCALE = .60
 SPATIAL_CENTER = (-4.55, -2.45)
 ARC_RADIUS = 12.
 ARC_WIDTH = .75
+GUIDE_RADIUS = ARC_RADIUS + ARC_WIDTH + .55
 ARC_SCALE = .26
 ARC_CENTER = (1.28, -2.26)
 
@@ -64,6 +65,8 @@ FIXTURE = Fixture((
     (0, "beyond rising side", probe(spatial_point(9.40, 8.66, 3.5466666666667)), False),
     (1, "arc near start", probe(arc_at(-math.radians(76))), True),
     (1, "arc interior", probe(arc_at(-math.radians(49), ARC_RADIUS + .12)), True),
+    (1, "guided widening beyond the original arc",
+     probe(arc_at(-math.radians(45), ARC_RADIUS + 1.04)), True),
     (1, "clear inside trimmed arc", probe(arc_at(-math.radians(52), ARC_RADIUS - 1.6)), False),
     (1, "clear outside swept arc", probe(arc_at(-math.radians(55), ARC_RADIUS + 1.6)), False),
     (1, "before circular miter", probe(arc_at(-math.radians(18))), True),
@@ -109,7 +112,27 @@ def write_fixture(path):
         target = step.add("IFCCARTESIANTRANSFORMATIONOPERATOR3D", "$", "$", step.point(0., 0., 0.), scale, "$")
         item = step.add("IFCMAPPEDITEM", mapping, target)
         rep = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'MappedRepresentation'", f"({item})")
-        shape = step.add("IFCPRODUCTDEFINITIONSHAPE", "$", "$", f"({rep})")
+        representations = [rep]
+        if directrix == curved:
+            # The separately authored outer rail widens the arc, intersects
+            # the half-angle row at the unchanged corner, then follows the exit.
+            knots = [(0., -ARC_WIDTH, 0.)]
+            for angle in (-67.5, -45., -22.5):
+                theta = math.radians(angle)
+                knots.append((GUIDE_RADIUS * math.cos(theta),
+                              ARC_RADIUS + GUIDE_RADIUS * math.sin(theta), 0.))
+            knots.extend(((ARC_RADIUS + ARC_WIDTH, ARC_RADIUS - ARC_WIDTH, 0.),
+                          (ARC_RADIUS + 6., ARC_RADIUS - ARC_WIDTH, 0.)))
+            rail = polyline(step, knots)
+            position = section_point(step, 0., rail, 0., 0.)
+            guide = step.add("IFCOFFSETCURVEBYDISTANCES", rail, f"({position})", "'left'")
+            guides = step.add("IFCGEOMETRICCURVESET", f"({guide})")
+            axis = step.add("IFCSHAPEREPRESENTATION", context, "'Axis'", "'GeometricCurveSet'", f"({guides})")
+            axis_map = step.add("IFCREPRESENTATIONMAP", world, axis)
+            axis_item = step.add("IFCMAPPEDITEM", axis_map, target)
+            representations.append(step.add("IFCSHAPEREPRESENTATION", context, "'Axis'", "'MappedRepresentation'",
+                                            f"({axis_item})"))
+        shape = step.add("IFCPRODUCTDEFINITIONSHAPE", "$", "$", f"({','.join(representations)})")
         position = step.add("IFCAXIS2PLACEMENT3D", step.point(center_xy[0], 0., center_xy[1]),
                             step.direction(0., -1., 0.), step.direction(1., 0., 0.))
         placement = step.add("IFCLOCALPLACEMENT", "$", position)
