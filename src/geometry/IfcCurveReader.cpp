@@ -19,6 +19,7 @@
 #include <numbers>
 #include <numeric>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <unordered_set>
 
@@ -3060,16 +3061,17 @@ Surface Reader::surfaceImpl(uint32_t id) {
             intermittentColumns[column] = true;
       struct GuidedColumn {
         IfcSectionedGuide guide;
+        size_t firstSection, lastSection;
         std::vector<glm::dvec2> anchorCorrections;
+
+        bool coversInterval(size_t before) const {
+          return firstSection <= before && before < lastSection;
+        }
       };
       std::vector<std::optional<GuidedColumn>> guides(columns.size());
       for (const auto &[tag, ref] : matchingGuides) {
         container::util::checkModelImportCancellation(stop_);
         const auto [v, uniqueColumn] = taggedColumns.at(tag);
-        if (std::ranges::binary_search(tagLayout.intermittentTags, tag))
-          throw std::runtime_error("Guide #" + std::to_string(ref) +
-                                   " references intermittent profile tag '" +
-                                   tag + "' with no authored guide extent");
         if (!uniqueColumn)
           throw std::runtime_error("Guide #" + std::to_string(ref) +
                                    " has a repeated profile tag '" + tag + "'");
@@ -3077,6 +3079,29 @@ Surface Reader::surfaceImpl(uint32_t id) {
         if (column == columns.end() || *column != v)
           throw std::runtime_error("Guide #" + std::to_string(ref) +
                                    " does not identify a section vertex");
+        const size_t columnIndex = size_t(column - columns.begin());
+        size_t firstSection = 0, lastSection = sections->size() - 1;
+        std::span<const double> guideStations = stationBreaks;
+        if (intermittentColumns[columnIndex]) {
+          const auto &rows = tagLayout.retainedColumns;
+          const auto hasTag = [&](const auto &row) { return !row[columnIndex]; };
+          const auto begin = std::ranges::find_if(rows, hasTag);
+          const auto end = std::find_if_not(begin, rows.end(), hasTag);
+          if (end - begin < 2 || std::any_of(end, rows.end(), hasTag))
+            throw std::runtime_error(
+                "Guide #" + std::to_string(ref) + " for intermittent tag '" +
+                tag + "' requires one contiguous run of at least two "
+                      "authored cross sections");
+          firstSection = size_t(begin - rows.begin());
+          lastSection = size_t(end - rows.begin() - 1);
+          // Offset curves can extend beyond their offset samples. The profile
+          // tags bound the interval where this guide controls the surface.
+          const auto lower = std::ranges::lower_bound(
+              stationBreaks, (*sections)[firstSection].parameter);
+          const auto upper = std::ranges::upper_bound(
+              stationBreaks, (*sections)[lastSection].parameter);
+          guideStations = {lower, upper};
+        }
         const auto &source = get(ref);
         const auto &basis = referenced(source, 0);
         const bool sharedBasis = basis.id == directrixId;
@@ -3117,11 +3142,12 @@ Surface Reader::surfaceImpl(uint32_t id) {
           }
         }
         auto guide =
-            resolveIfcSectionedGuide(ref, read(ref), sharedBasis, stationBreaks,
+            resolveIfcSectionedGuide(ref, read(ref), sharedBasis, guideStations,
                                      planeAt, planeTolerance, stop_, exactPolyline);
         std::vector<glm::dvec2> corrections;
-        corrections.reserve(sections->size());
-        for (const auto &section : *sections) {
+        corrections.reserve(lastSection - firstSection + 1);
+        for (size_t i = firstSection; i <= lastSection; ++i) {
+          const auto &section = (*sections)[i];
           const auto frame = guideSectionAt(section.parameter);
           const auto point = guide.point(section.parameter);
           const auto expected =
@@ -3130,7 +3156,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
               glm::length(*point - *expected) > anchorTolerance)
             throw std::runtime_error("Guide #" + std::to_string(ref) +
                                      " for tag '" + tag +
-                                     " disagrees with its authored "
+                                     "' disagrees with its authored "
                                      "cross-section point at parameter " +
                                      std::to_string(section.parameter));
           const auto residual = *expected - *point;
@@ -3140,8 +3166,8 @@ Surface Reader::surfaceImpl(uint32_t id) {
         uBreaks.insert(uBreaks.end(), guide.breaks.begin(), guide.breaks.end());
         result.creaseU.insert(result.creaseU.end(), guide.breaks.begin(),
                               guide.breaks.end());
-        guides[column - columns.begin()] =
-            GuidedColumn{std::move(guide), std::move(corrections)};
+        guides[columnIndex] = GuidedColumn{std::move(guide), firstSection,
+                                           lastSection, std::move(corrections)};
       }
       std::ranges::sort(uBreaks);
       uBreaks.erase(std::unique(uBreaks.begin(), uBreaks.end()), uBreaks.end());
@@ -3157,44 +3183,50 @@ Surface Reader::surfaceImpl(uint32_t id) {
         std::array<glm::dvec3, 2> points;
         std::array<glm::dvec3, 2> authored;
         std::array<uint32_t, 2> guideIds{};
+        const auto activeGuide = [&](size_t column) -> const GuidedColumn * {
+          const auto &binding = guides[column];
+          return binding && binding->coversInterval(frame.index) ? &*binding
+                                                                 : nullptr;
+        };
         for (unsigned side = 0; side < 2; ++side) {
           const size_t i = left + side;
           const auto original = originalPoint(frame, u, columns[i]);
           if (!original)
             throw std::runtime_error("Undefined tagged cross-section point");
           authored[side] = *original;
-          size_t guidedColumn = i;
-          if (intermittentColumns[i]) {
+          const auto *binding = activeGuide(i);
+          if (!binding && intermittentColumns[i]) {
             // Either end may be the first authored tip, with a real tag
             // at that row and a collapsed placeholder at the other end.
             const auto before = retainedColumns[frame.index][i];
             const auto after = retainedColumns[frame.index + 1][i];
             const auto anchor = before ? before : after;
-            if (anchor && guides[*anchor]) {
+            const auto *retainedGuide = anchor ? activeGuide(*anchor) : nullptr;
+            if (retainedGuide) {
               const auto retained = originalPoint(frame, u, columns[*anchor]);
               if (retained && *retained == *original)
-                guidedColumn = *anchor;
+                binding = retainedGuide;
             }
           }
-          if (!guides[guidedColumn]) {
+          if (!binding) {
             points[side] = *original;
             continue;
           }
-          const auto &binding = *guides[guidedColumn];
-          guideIds[side] = binding.guide.sourceId;
-          const auto guided = binding.guide.point(u);
+          guideIds[side] = binding->guide.sourceId;
+          const auto guided = binding->guide.point(u);
           if (!guided)
             throw std::runtime_error("Undefined section point on guide #" +
-                                     std::to_string(binding.guide.sourceId));
+                                     std::to_string(binding->guide.sourceId));
           const auto &a = (*sections)[frame.index],
                      &b = (*sections)[frame.index + 1];
           if (u == a.parameter || u == b.parameter) {
             points[side] = *original;
             continue;
           }
+          const size_t correctionIndex = frame.index - binding->firstSection;
           const auto correction =
-              binding.anchorCorrections[frame.index] * (1 - frame.fraction) +
-              binding.anchorCorrections[frame.index + 1] * frame.fraction;
+              binding->anchorCorrections[correctionIndex] * (1 - frame.fraction) +
+              binding->anchorCorrections[correctionIndex + 1] * frame.fraction;
           const auto local = *guided - frame.origin;
           points[side] =
               frame.origin +
@@ -3261,8 +3293,13 @@ Surface Reader::surfaceImpl(uint32_t id) {
             return p.front();
           if (fraction == 1.)
             return p.back();
-          if (!curvedIndexedTags)
+          if (!curvedIndexedTags) {
+            // Keep every sample on a collapsed panel edge bit-identical when
+            // refinement inserts additional transverse stations.
+            if (p.front() == p.back())
+              return p.front();
             return glm::mix(p[0], p[1], fraction);
+          }
           const auto base = originalPoint(frame, u, v);
           const auto a = originalPoint(frame, u, columns[left]);
           const auto b = originalPoint(frame, u, columns[left + 1]);

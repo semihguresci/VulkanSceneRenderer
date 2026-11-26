@@ -33,7 +33,7 @@ struct IfcCurveStrokePaths {
 // Empty explicit fields keep the importing application's stroke defaults.
 [[nodiscard]] IfcCurveStroke
 readIfcCurveStroke(const std::unordered_map<uint32_t, Entity> &entities,
-                   const Entity &curveStyle);
+                   const Entity &curveStyle, double metresPerUnit);
 
 // Cuts the sampled curve by model-space distance. Phase is continuous across
 // source vertices and restarts for each distinct path. Invalid or overly

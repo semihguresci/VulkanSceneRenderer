@@ -1,4 +1,4 @@
-"""Capture IFC spherical shells whose explicit edge curves pass through poles."""
+"""Capture IFC spherical shells with shared edge loops and trimmed caps."""
 
 import argparse
 from itertools import pairwise
@@ -21,15 +21,20 @@ CAP_OFFSET = .6 * CAP_RADIUS
 HOLED_RADIUS = 2.
 HOLE_HEIGHT = 1.6
 HOLE_RADIUS = math.sqrt(HOLED_RADIUS ** 2 - HOLE_HEIGHT ** 2)
-RADII = (SPHERE_RADIUS, CAP_RADIUS, HOLED_RADIUS)
+SINGLE_RADIUS = 1.45
+SINGLE_HEIGHT = .86
+SINGLE_RIM_RADIUS = math.sqrt(SINGLE_RADIUS ** 2 - SINGLE_HEIGHT ** 2)
+RADII = (SPHERE_RADIUS, CAP_RADIUS, HOLED_RADIUS, SINGLE_RADIUS)
 PRODUCTS = (
     Profile("Shared meridian sphere", (-2.55, -1.40), (.11, .64, .92)),
     Profile("Tilted cap", (1.90, -1.40), (.18, .78, .32)),
     Profile("Sphere with opposite-cut hole", (0., 1.85), (.16, .48, .93)),
+    Profile("Sphere with one ordinary bound", (4.3, 1.55), (.84, .18, .72)),
 )
 EAST_COLOR = (.91, .31, .09)
 CAP_BASE_COLOR = (.66, .20, .78)
 HOLE_DISK_COLOR = (.95, .36, .10)
+SINGLE_DISK_COLOR = (.12, .78, .34)
 
 
 def surface_probe(index, name, x, y, *, z=None):
@@ -62,6 +67,12 @@ FIXTURE = Fixture(PRODUCTS, (
     surface_probe(2, "spherical cut below the hole", 0., -1.37),
     surface_probe(2, "spherical trim beside the hole", 1.43, .24),
     (2, "clear outside holed sphere", (2.23, .12), False),
+    surface_probe(3, "center of the shared disk", 0., 0., z=SINGLE_HEIGHT),
+    surface_probe(3, "disk inside the shared rim", .64, .60, z=SINGLE_HEIGHT),
+    surface_probe(3, "spherical face left of the disk", -1.28, -.15),
+    surface_probe(3, "spherical face below the disk", .78, -.99),
+    surface_probe(3, "spherical face on the unlit side", -1.05, -.90),
+    (3, "clear outside singly bounded sphere", (1.85, -.12), False),
 ), None, None)
 
 
@@ -88,13 +99,13 @@ def semicircle_edges(step, normal, offset, radius):
             step.add("IFCEDGECURVE", last, first, circle, ".T."))
 
 
-def advanced_face(step, surface, loops, name, color):
+def advanced_face(step, surface, loops, name, color, *, explicit_outer=True):
     bounds = []
     for index, uses in enumerate(loops):
         oriented = [step.add("IFCORIENTEDEDGE", "*", "*", edge, ".T." if forward else ".F.")
                     for edge, forward in uses]
         loop = step.add("IFCEDGELOOP", f"({','.join(oriented)})")
-        bounds.append(step.add("IFCFACEOUTERBOUND" if index == 0 else "IFCFACEBOUND", loop, ".T."))
+        bounds.append(step.add("IFCFACEOUTERBOUND" if explicit_outer and index == 0 else "IFCFACEBOUND", loop, ".T."))
     face = step.add("IFCADVANCEDFACE", f"({','.join(bounds)})", surface, ".T.")
     rgb = step.add("IFCCOLOURRGB", "$", *color)
     appearance = step.add("IFCSURFACESTYLERENDERING", rgb, "0.", "$", "$", "$", "$", "$", "$", ".NOTDEFINED.")
@@ -144,6 +155,21 @@ def opposite_hole(step, context):
     return wall, disk
 
 
+def single_bound_sphere(step):
+    # Both poles are inside the spherical face and neither lies on the rim.
+    frame = placement(step, (0., 0., 0.), (0., 1., 0.), (1., 0., 0.))
+    sphere = step.add("IFCSPHERICALSURFACE", frame, SINGLE_RADIUS)
+    disk_frame = placement(step, (0., 0., SINGLE_HEIGHT), (0., 0., 1.), (1., 0., 0.))
+    circle = step.add("IFCCIRCLE", disk_frame, SINGLE_RIM_RADIUS)
+    start = step.add("IFCVERTEXPOINT", step.point(SINGLE_RIM_RADIUS, 0., SINGLE_HEIGHT))
+    rim = step.add("IFCEDGECURVE", start, start, circle, ".T.")
+    wall = advanced_face(step, sphere, (((rim, False),),), "Spherical face with ordinary bound",
+                         PRODUCTS[3].color, explicit_outer=False)
+    disk = advanced_face(step, step.add("IFCPLANE", disk_frame), (((rim, True),),),
+                         "Disk at the ordinary bound", SINGLE_DISK_COLOR)
+    return wall, disk
+
+
 def write_fixture(path):
     step = StepFixture()
     step.add("IFCSIUNIT", "*", ".LENGTHUNIT.", "$", ".METRE.")
@@ -165,7 +191,7 @@ def write_fixture(path):
     base_surface = step.add("IFCPLANE", base_frame)
     disk = advanced_face(step, base_surface, (tuple((edge, False) for edge in reversed(cap_rim)),),
                          "Tilted disk", CAP_BASE_COLOR)
-    shells = ((west, east), (cap, disk), opposite_hole(step, context))
+    shells = ((west, east), (cap, disk), opposite_hole(step, context), single_bound_sphere(step))
     for index, (product, faces) in enumerate(zip(PRODUCTS, shells, strict=True)):
         shell = step.add("IFCCLOSEDSHELL", f"({','.join(faces)})")
         brep = step.add("IFCADVANCEDBREP", shell)
@@ -195,12 +221,12 @@ def sphere_hits(ray, index):
     return discriminant, relative_camera + t[..., None] * ray
 
 
-def hole_disk_hits(ray):
+def disk_hits(ray, index, height):
     import numpy as np
 
-    x, y = PRODUCTS[2].center
+    x, y = PRODUCTS[index].center
     camera = np.array([-x, -y, DISTANCE])
-    t = (HOLE_HEIGHT - DISTANCE) / ray[..., 2]
+    t = (height - DISTANCE) / ray[..., 2]
     return camera + t[..., None] * ray
 
 
@@ -211,9 +237,11 @@ def expected_depth(index, point, pixel, matrix):
     discriminant, hit = sphere_hits(ray, index)
     require(discriminant > 0 and (index != 1 or hit @ CAP_NORMAL > CAP_OFFSET),
             f"Positive depth probe outside the analytic spherical trim: {point}")
-    if index == 2 and hit[2] > HOLE_HEIGHT:
-        hit = hole_disk_hits(ray)
-        require(np.linalg.norm(hit[:2]) < HOLE_RADIUS, f"Depth probe outside the circular hole: {point}")
+    if index in (2, 3):
+        height, radius = (HOLE_HEIGHT, HOLE_RADIUS) if index == 2 else (SINGLE_HEIGHT, SINGLE_RIM_RADIUS)
+        if hit[2] > height:
+            hit = disk_hits(ray, index, height)
+            require(np.linalg.norm(hit[:2]) < radius, f"Depth probe outside the circular disk: {point}")
     x, y = PRODUCTS[index].center
     clip = matrix @ [*(hit + [x, y, 0.]), 1.]
     return clip[2] / clip[3]
@@ -235,18 +263,29 @@ def check_pixels(image, _fixture):
     sphere_disc, sphere = sphere_hits(ray, 0)
     cap_disc, cap = sphere_hits(ray, 1)
     holed_disc, holed = sphere_hits(ray, 2)
-    disk = hole_disk_hits(ray)
+    single_disc, single = sphere_hits(ray, 3)
+    disk = disk_hits(ray, 2, HOLE_HEIGHT)
+    single_disk_distance = np.linalg.norm(disk_hits(ray, 3, SINGLE_HEIGHT)[..., :2], axis=-1)
     sphere_interior = (sphere_disc > 0.) & (sphere[..., 2] > .60 * SPHERE_RADIUS)
     cap_interior = (cap_disc > 0.) & (cap[..., 2] > .55 * CAP_RADIUS)
     cap_margin = cap @ CAP_NORMAL - CAP_OFFSET
     holed_wall = (holed_disc > 0.) & (holed[..., 2] > .53 * HOLED_RADIUS) & (holed[..., 2] < HOLE_HEIGHT - .08)
     hole_disk = np.linalg.norm(disk[..., :2], axis=-1) < HOLE_RADIUS - .16
+    # The capture uses only a directional light. Depth probes also cover the
+    # unlit wall, where an opaque surface can have the same color as the sky.
+    light = np.array((.3, .35, 1.))
+    light /= np.linalg.norm(light)
+    single_wall = ((single_disc > 0.) & (single[..., 2] > .35) &
+                   (single[..., 2] < SINGLE_HEIGHT - .08) & (single @ light > .20 * SINGLE_RADIUS))
+    single_disk = (single_disc > 0.) & (single[..., 2] > SINGLE_HEIGHT) & (single_disk_distance < SINGLE_RIM_RADIUS - .12)
     masks = (
         ("West hemisphere", sphere_interior & (sphere[..., 0] < -.17), 2, 0),
         ("East hemisphere", sphere_interior & (sphere[..., 0] > .17), 0, 2),
         ("Tilted spherical face", cap_interior & (cap_margin > .15), 1, 0),
         ("Spherical wall around the hole", holed_wall, 2, 0),
         ("Disk in the spherical hole", hole_disk, 0, 2),
+        ("Spherical face with ordinary bound", single_wall, 0, 1),
+        ("Disk at the ordinary bound", single_disk, 1, 0),
     )
     results = {}
     for label, mask, dominant, opposite in masks:
@@ -259,17 +298,24 @@ def check_pixels(image, _fixture):
     meridian = sphere_interior & (np.abs(sphere[..., 0]) < .10)
     opposite = holed_wall & (np.abs(holed[..., 0]) < .12)
     clipped = cap_interior & (cap_margin < -.16)
+    single_rim = ((single_disc > 0.) & (np.abs(single_disk_distance - SINGLE_RIM_RADIUS) < .045) &
+                  ((single[..., 2] <= SINGLE_HEIGHT) | (single_disk_distance < SINGLE_RIM_RADIUS)))
     require(np.count_nonzero(meridian) >= 100 and np.count_nonzero(opposite) >= 100 and np.count_nonzero(clipped) >= 450,
             "Insufficient trim witness pixels")
+    require(np.count_nonzero(single_rim) >= 100, "Insufficient pixels across the ordinary bound")
     seam_coverage = float(np.mean(visible[meridian]))
     opposite_coverage = float(np.mean(visible[opposite]))
     clipped_coverage = float(np.mean(visible[clipped]))
+    single_rim_coverage = float(np.mean(visible[single_rim]))
     require(seam_coverage == 1., f"Open shared pole seam: {seam_coverage}")
     require(opposite_coverage == 1., f"Open opposite meridian beside the spherical hole: {opposite_coverage}")
     require(clipped_coverage < .01, f"Visible geometry past the tilted cap edge: {clipped_coverage}")
+    require(single_rim_coverage == 1., f"Open spherical rim at the ordinary bound: {single_rim_coverage}")
     results["Shared meridian"] = dict(pixels=int(np.count_nonzero(meridian)), visibleFraction=seam_coverage)
     results["Opposite meridian around hole"] = dict(pixels=int(np.count_nonzero(opposite)), visibleFraction=opposite_coverage)
     results["Clipped spherical shoulder"] = dict(pixels=int(np.count_nonzero(clipped)), visibleFraction=clipped_coverage)
+    results["Shared rim at the ordinary bound"] = dict(pixels=int(np.count_nonzero(single_rim)),
+                                                      visibleFraction=single_rim_coverage)
     return results
 
 
@@ -301,7 +347,7 @@ def main():
             results.append(record(renderer, output, model, sequence, frames, technique, taa, FIXTURE,
                                   expected_depth=expected_depth, check_image=check_pixels))
             save_json(output / "results.json", results)
-            print(f"PASS {technique}, TAA {taa}: spherical seams, clipped cap, hole, and {len(frames)} depth samples", flush=True)
+            print(f"PASS {technique}, TAA {taa}: spherical seams, clipped cap, hole, single bound, and {len(frames)} depth samples", flush=True)
     return 0
 
 

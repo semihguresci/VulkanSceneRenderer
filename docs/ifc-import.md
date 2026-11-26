@@ -47,7 +47,7 @@ checks are free of validation and synchronization errors.
 | `IFCPOLYGONALFACESET` | Planar convex/concave faces, indexed polygonal faces with voids, indexed colors, optional `PnIndex`. Authored outer-face winding is retained. |
 | `IFCFACETEDBREP` | Connected closed shells with planar `IFCFACE`/polyloop bounds, inner loops, bound orientation and per-face surface colors. Closed topology and outward shell orientation are checked before buffer mutation. |
 | `IFCFACETEDBREPWITHVOIDS` | Faceted outer shells with inward-facing cavity shells. Cavities must be strictly enclosed, disjoint and unnested. Repeated shells/faces, open shells and incorrect winding reject atomically. |
-| `IFCADVANCEDBREP`, `IFCADVANCEDBREPWITHVOIDS` | Planar and curved `IFCADVANCEDFACE` geometry on planes, cylinders, spheres, tori, explicit-knot polynomial/rational spline surfaces and supported extrusion/revolution surfaces. Shared `IFCEDGECURVE`/`IFCORIENTEDEDGE` topology, face holes, periodic bands with independent seams, seam curves and cavity validation are retained. Authored spline trims can use either periodic axis and primitive doubly periodic bands. Spherical pole vertex loops and pole-crossing edge loops mesh through regular local charts. Edge vertices trim their native 3D curves. The importer checks SameSense, boundary orientation, surface membership and opposite edge reuse. |
+| `IFCADVANCEDBREP`, `IFCADVANCEDBREPWITHVOIDS` | Planar and curved `IFCADVANCEDFACE` geometry on planes, cylinders, spheres, tori, explicit-knot polynomial/rational spline surfaces and supported extrusion/revolution surfaces. Shared `IFCEDGECURVE`/`IFCORIENTEDEDGE` topology, face holes, periodic bands with independent seams, seam curves and cavity validation are retained. Authored spline trims can use either periodic axis and primitive doubly periodic bands. Spherical pole vertex loops, pole-crossing edge loops and closed spherical faces with a single ordinary edge bound mesh through regular local charts. Edge vertices trim their native 3D curves. The importer checks SameSense, boundary orientation, surface membership and opposite edge reuse. |
 | `IFCEXTRUDEDAREASOLID` | Arbitrary supported closed 2D curves with voids, sharp/rounded/hollow rectangles, circles/hollow circles, ellipses, trapezia, capped straight and circular-arc centerlines, disjoint area composites and L/U/I/asymmetric I/C/T/Z sections. Caps and side walls face outward, including negative extrusion directions. |
 | Profile curves | Closed 2D polylines/indexed arcs, conics, B-splines, trims and composites use the shared curve evaluator, with at most 4,097 sampled points. Repeated consecutive polyline points are removed. Profiles must pass planarity, closure, intersection and triangulation checks. |
 | `IfcDerivedProfileDef`, `IfcMirroredProfileDef` | Transform already-supported parent profiles after their 2D placement. Translation, rotation, uniform/non-uniform positive scales and axis mirroring are supported, including nested chains. Extruded profiles retain inner loops and outward winding; swept-surface curves retain source domains, periods and section tags. Parent/profile types must agree. |
@@ -56,9 +56,9 @@ checks are free of validation and synchronization errors.
 | Boolean/clipping results | Nested union/difference/intersection of supported closed, oriented mesh solids; plane, boxed and polygon-bounded half-space difference/intersection honors IFC agreement flags. Cycles, invalid operators, open/nonmanifold operands and unbounded unions are rejected with diagnostics. Styled results override operand colors; otherwise source face colors are retained. |
 | `IfcSweptDiskSolid` | Solid/hollow disks on bounded 3D curves, including splines, closed loops and mitered C0 joins. Explicit extents retain the directrix's source parameter domain. Straight and open tangential line/arc paths retain their analytic conversion. Disconnected paths, detected tube overlaps, curvature folds, turns above 120 degrees and segments too short for their miters reject atomically. |
 | `IfcSweptDiskSolidPolygonal` | Polyline or omitted-segment indexed-polycurve directrices, optional circular fillets, hollow walls and closed seams. Omitted fillets retain mitered joins. Radius/segment constraints and tangent-extent overlap are checked; adjacent fillets may meet exactly. |
-| `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Tagged breaklines can appear and disappear at authored zero-width tips. Guides can bind to open cross profiles or to indexed profile point tags. Compatible planar, nonplanar and curved sharp joins use shared half-angle miters. |
+| `IfcSectionedSurface` | Drawable open meshes and pcurves between placed open cross sections on a 3D directrix. Tagged breaklines can appear and disappear at authored zero-width tips. Guides can bind to open cross profiles, including a contiguous temporary tag run, or to indexed profile point tags. Compatible planar, nonplanar and curved sharp joins use shared half-angle miters. |
 | `IfcSurfaceOfLinearExtrusion`, `IfcSurfaceOfRevolution` | Drawable open surface charts and pcurve/advanced-face bases. Centerlines, rounded rectangles, hollow circles and rectangles, and disjoint composite `CURVE` members retain their own domains and placements. A standalone revolution can include one certified smooth endpoint on the axis. |
-| Auxiliary curves | Native Vulkan line lists for the concrete IFC 4.3 curve families listed below, including curves inside `IFCGEOMETRICCURVESET`. Closed paths retain their final segment; independent paths remain separate. Mapped instances, placements, units, curve colors and product identity are retained. Unbounded curves require explicit trims or segments. |
+| Auxiliary curves | Native lines and authored metric strokes for the concrete IFC 4.3 curve families listed below, including curves inside `IFCGEOMETRICCURVESET`. Closed paths retain their final segment; independent paths remain separate. Mapped instances, placements, units, source fonts, numeric model-space widths, colors and product identity are retained. Unbounded curves require explicit trims or segments. |
 
 Polygon triangulation uses Mapbox Earcut, a header-only vcpkg dependency
 (`earcut-hpp`, tested with 3.2.4). It is ISC licensed; Windows packages include
@@ -132,7 +132,9 @@ spline bands can follow a primitive winding on both axes, such as two U turns
 and one V turn. The opposite trims can double back along their winding. Those
 bands use a cut between existing samples whose two ends join disjoint loops
 without crossing their periodic copies. The importer checks for a single cover
-before refining the surface. The companion of an authored winding loop can use
+before refining the surface. If a monotone band cannot cut from its first rail
+sample, a bounded search tries other pairs of original rail samples. The
+companion of an authored winding loop can use
 inferred coordinates throughout. A cut between existing samples preserves the
 original edge positions. Both copies of the artificial cut receive matching samples at
 sharp knot crossings. The importer also rejects overlapping translated interiors in
@@ -154,8 +156,8 @@ shared equator. Caps join their original ring to an interior latitude using a
 periodic band, so caps extending past the equator retain their source edges.
 The authored pole remains a mesh vertex. Placement, degree/millimetre units,
 boundary orientation and inward cavity normals are preserved. The same shell
-checks and one-million-triangle B-rep budget apply. Non-pole vertex loops,
-multiple vertex-loop bounds and non-spherical singular charts remain diagnosed.
+checks and one-million-triangle B-rep budget apply. Non-pole vertex loops and
+multiple vertex-loop bounds remain diagnosed.
 The source topology and angular/pole
 semantics follow the buildingSMART [vertex-loop](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcVertexLoop.htm)
 and [spherical-surface](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSphericalSurface.htm) definitions.
@@ -168,6 +170,9 @@ intervals. Every incident face reads the same samples. The face chart preserves
 source boundary positions and native angular pcurves. The importer tests up to
 six candidate charts and validates loop orientation, hole containment, chord
 error and closed-shell edge reuse before publishing geometry.
+The same oriented chart handles a single ordinary bound on a closed sphere
+without an explicit outer bound, even when the rim misses both poles. Face
+orientation selects the retained side of the rim.
 
 A full sphere can traverse a pole-to-pole meridian in both directions.
 A trimmed cap can use a pole-to-rim meridian with a single monotone rim. In
@@ -184,7 +189,8 @@ that meet the authored seam and faces with separate meridians remain diagnosed.
 
 Run `ifc_spherical_edge_loops_gpu_regression` with
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to check shared-edge hemispheres, a
-tilted cap and a sphere with a split seam and a disk filling its hole in
+tilted cap, a sphere with a split seam and a disk filling its hole, and a
+spherical face sharing its sole rim with a planar disk. The captures exercise
 Forward and Deferred raster with TAA off and on.
 
 An advanced face on a surface of revolution can use a Cartesian chart at a
@@ -351,8 +357,13 @@ support. Curve geometry stays outside surface and shadow passes, meshlet
 estimates and solid opening operands.
 
 [IFC model-space curve styles](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcCurveStyle.htm)
-resolve explicit font patterns and scale factors from styled items and
-presentation style assignments. Dash phase follows sampled arc length across
+resolve explicit font patterns, predefined fonts and scale factors from styled
+items and presentation style assignments. Dashed, chain, chain double dash and
+dotted use the predefined millimetre segment and gap lengths, converted to the
+source units before placement and mapping. [IFC predefined curve fonts](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcDraughtingPreDefinedCurveFont.htm)
+· [ISO segment and gap lengths](https://steptools.com/stds/smrl/data/resource_docs/visual_presentation/sys/6_schema.htm)
+
+Dash phase follows sampled arc length across
 curve vertices and restarts at each independent path. Source units and the
 mapping transform apply to both dash length and stroke width. A shared source
 can be instanced with different styles. A positive numeric width uses the same
@@ -369,8 +380,9 @@ Each mapped occurrence uses its own layer and scale. Conflicting layer styles
 for the same item are ignored. Layer visibility and editing flags are outside
 this coverage. [IFC presentation layer](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcPresentationLayerWithStyle.htm)
 
-Paper-space dimensions and other named drafting fonts fall back to the default
-model stroke. Dot patterns require an explicit or inherited numeric width.
+Paper-space dimensions require a plot scale and use the default model stroke.
+External font definitions use a solid pattern. Explicit zero-length dots require
+an authored or inherited numeric width.
 Invalid or over-budget optional style fields fall back independently where
 possible. Indexed render curves are limited to 65,536 source/sample points.
 Disconnected, invalid or nonfinite paths are rejected before buffer mutation.
@@ -478,8 +490,9 @@ standalone swept item may also appear inside an `IfcGeometricSet`.
 
 Enable `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` and run
 `ctest -R '^ifc_swept_surface_gpu_regression$' --output-on-failure` in the build
-directory. The fixture compares centerline creases, separated composite sheets
-and a trimmed circular sheet in Forward and Deferred raster with TAA off and on.
+directory. The fixture checks centerline creases, separated composite sheets,
+a trimmed circular sheet and the inner and outer walls of a trimmed hollow
+sweep in Forward and Deferred raster with TAA off and on.
 
 ### Derived and mirrored profiles
 
@@ -550,11 +563,15 @@ rounding differences are blended between consecutive authored sections so
 their positions remain exact. Contradictory anchors, duplicate matches, guides
 in different frames, and detected folds, crossings or gaps produce diagnostics
 with source IDs. A guide can control one point per cross section for each tag.
-While a breakline is collapsed, it follows any guide bound to its retained
-anchor. Direct guides on repeated or intermittent tags remain outside guide
-coverage. There is a 128-guide limit per surface and a 4,097-sample limit per
-guide. Independent guides on smooth directrices use chord-refined support and
-require a monotone projection on the section normal.
+On a smooth directrix, an intermittent tag on an open cross profile can take a
+guide on one contiguous run of at least two authored rows. The guide must match
+the authored branch tips and acts only between rows carrying the tag. Outside
+that span the collapsed breakline follows its retained anchor, including any
+guide bound to that anchor.
+Repeated tags and guides spanning disjoint runs remain outside this coverage.
+There is a 128-guide limit per surface and a 4,097-sample limit per guide.
+Independent guides on smooth directrices use chord-refined support and require
+a monotone projection on the section normal.
 
 An open profile backed by an indexed 2D polycurve can supply its tags in the
 point list's `TagList`. The importer looks up labels by point index and matches
@@ -586,7 +603,7 @@ tags in scrambled storage order, a quarter-arc profile and the shared bend
 edge of a guided planar miter. It runs Forward and Deferred raster with TAA
 off and on.
 Run `ifc_sectioned_tags_gpu_regression` with the same switch to check the
-authored breakline tips, lane and shoulders in those modes.
+authored breakline tips, a temporarily guided lane and the shoulders in those modes.
 
 Sharp joins use the half-angle miter prescribed by the
 [sectioned-surface construction rules](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSectionedSurface.htm).
@@ -734,7 +751,9 @@ Spline seam regressions check U-closed and V-closed rational cylinders and
 doubly periodic rational tori with non-unit knot domains, opposite face bounds
 and authored pcurves. The cylinders also exercise bare 3D rims between authored
 seam lifts. Independent volume, normal and exact-edge checks cover
-complementary winding bands on the torus. Conflicting lifts and periodic images
+complementary winding bands on the torus. A monotone band with a blocked first
+cut anchor checks analytic area, exact rail edges and paired cut edges.
+Conflicting lifts and periodic images
 reject without leaving mesh buffers. Sharp-knot cases check that matching and
 unequally sampled rings keep identical cut edges and one-sided normals.
 Detached trim cases check both periodic axes, a bare outer bound or hole, and
@@ -743,9 +762,9 @@ Use
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` with CTest's
 `ifc_periodic_spline_seams_gpu_regression` to verify depth, source colors and
 the torus bore in forward/deferred with TAA off/on.
-Curve style regressions check metric dashes and widths across metre and
-millimetre imports, reflected mapped placements, layer inheritance and
-through-corner phase. With the same opt-in, run
+Curve style regressions check predefined and explicit dash lengths across metre
+and millimetre imports, metric widths, reflected mapped placements, layer
+inheritance and through-corner phase. With the same opt-in, run
 `ifc_curve_style_gpu_regression` to compare projected stroke widths, direct
 styles and inherited styles on a shared curve, and verify that viewport
 selection follows visible dashes.
@@ -861,6 +880,10 @@ New-Item -ItemType Directory -Force out/ifc-review | Out-Null
 $env:CONTAINER_IFC_CURVED_FIXTURE_ROOT = "$PWD/out/ifc-review/curved-brep/fixtures"
 & out/build/visual-studio/tests/ifc_tessellated_loader_tests.exe --gtest_filter=IfcCurvedBrep.*
 
+$env:CONTAINER_RUN_GPU_IFC_AREA_PROFILES = '1'
+$env:CONTAINER_RUN_GPU_FORWARD_CULLING = '1'
+ctest --test-dir out/build/visual-studio -C Release --output-on-failure -R '^(ifc_.*_gpu_regression|forward_culling_gpu_regression)$'
+
 $exe = "$PWD/out/build/visual-studio/Release/VulkanSceneRenderer.exe"
 $sample = "$env:CONTAINER_IFC_SAMPLE_ROOT/Hello Wall/hello-wall.ifc"
 & $exe --model $sample --hidden --no-ui --no-taa --validation --msaa 1 --width 960 --height 540 --display-mode lit --no-bloom --directional-intensity 2 --environment-intensity 1 --exposure 0.25 --camera-position 12 7 14 --camera-target 5 1.5 -2 --screenshot "$PWD/out/ifc-review/hello-wall.png"
@@ -904,9 +927,8 @@ BIM loads use an exterior camera overview. The interior hall heuristic remains
 available for primary glTF scenes such as Sponza; applying it to a thin IFC wall
 could start the camera inside the model's bounds and show a blank-looking view.
 
-The remaining capabilities below and additional curve style cases are tracked
-in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67), with
-implementation tasks and independent geometry/rendering acceptance criteria.
+The native coverage review and its independent geometry and rendering criteria
+are tracked in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67).
 
 Ambiguous tag transitions, guides at curved or spatial miters, incompatible
 sharp joins, other singular charts and polar trims with separate meridians or holes meeting an authored
@@ -916,6 +938,10 @@ without enough 3D geometry to select their chart. IFC swept surfaces use
 `CURVE` profiles. An arbitrary `AREA` profile with voids can be used with an
 `IfcExtrudedAreaSolid`.
 [Swept surface](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSweptSurface.htm)
+Swept-area solids cover the IFC4 parameterized profile families listed above.
+The two IFC2x3 parameterized crane-rail profiles remain unsupported. IFC4
+replaced them with arbitrary closed or asymmetric I profiles. [IFC4 profile changes](https://standards.buildingsmart.org/IFC/RELEASE/IFC4/FINAL/HTML/schema/ifcprofileresource/lexical/ifcparameterizedprofiledef.htm)
+
 Periodic trims that need a cut through new boundary samples and layouts without
 a unique chart placement are diagnosed.
 Each omitted
