@@ -63,6 +63,7 @@
 struct GLFWwindow;
 
 namespace container::temporal {
+enum class CaptureFsrFailure : uint8_t;
 struct CaptureViewportPointer;
 struct CaptureSample;
 struct CaptureBimAnnotations;
@@ -211,8 +212,7 @@ public:
   // Full initialization: render passes → pipelines → scene → sync primitives.
   void initialize();
 
-  // Submit one frame. Returns false if swap chain needs recreation (caller
-  // should set framebufferResized = false and call handleResize()).
+  // Submit one scene frame. Returns false when the caller should retry after recovery.
   bool drawFrame(bool &framebufferResized);
 
   // Handle window resize / suboptimal swapchain.
@@ -356,8 +356,14 @@ private:
     bool infiniteFar{};
     bool operator==(const UpscaleResourceRequest&) const = default;
   };
+  struct FsrNativeFallback {
+    UpscaleSelection selection;
+    std::string status;
+  };
   UpscaleResourceRequest upscaleResourceRequest_{};
   std::string upscaleViewportStatus_{};
+  std::optional<FsrNativeFallback> fsrNativeFallback_;
+  std::optional<container::temporal::CaptureFsrFailure> captureFsrFailure_;
   float temporalFrameMilliseconds_{1000.0f / 60.0f};
   float pendingFsrFrameMilliseconds_{};
   std::optional<glm::vec4> captureSectionPlane_{};
@@ -1063,6 +1069,8 @@ private:
   void applyVolumetricFogSettings(const VolumetricFogSettings&);
   [[nodiscard]] VkExtent2D sceneRenderExtent() const;
   [[nodiscard]] UpscaleResourceRequest currentUpscaleResourceRequest() const;
+  void recreateSwapchain(std::optional<VkFormat> requestedFormat, bool rebuildSceneResources);
+  void recoverFsrFrame(uint32_t imageIndex, std::string_view reason);
   void reconcileUpscaleResources();
   void ensureCameraBuffers();
   void ensureObjectBuffers();

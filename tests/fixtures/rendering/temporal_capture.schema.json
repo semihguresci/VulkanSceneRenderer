@@ -18,6 +18,7 @@
       "frame": {"$ref": "#/$defs/frame"},
       "reset": {"type": "boolean"}, "skip": {"type": "boolean"}, "taa": {"type": "boolean"},
       "fsr": {"enum": ["native", "quality", "balanced", "performance"]},
+      "fsrFailure": {"enum": ["resources", "jitter", "dispatch"]},
       "dlss": {"enum": ["native", "quality", "balanced", "performance"]},
       "gpuTransforms": {"type": "boolean"},
       "referenceOidn": {"enum": ["off", "fast", "balanced", "high"]},

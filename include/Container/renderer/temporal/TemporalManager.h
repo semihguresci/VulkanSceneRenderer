@@ -7,8 +7,12 @@
 #include "Container/renderer/temporal/FsrUpscaler.h"
 #include "Container/renderer/temporal/TemporalState.h"
 #include <array>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
+#include <optional>
+#include <stdexcept>
+#include <string_view>
 #include <vector>
 
 namespace container::gpu {
@@ -22,6 +26,13 @@ struct FrameRecordParams;
 enum class RenderPassId : uint8_t;
 class RenderGraphBuilder;
 class FrameResourceManager;
+
+enum class FsrFrameStage : uint8_t { JitterQuery, Dispatch };
+
+class FsrFrameError final : public std::runtime_error {
+public:
+  FsrFrameError(FsrFrameStage stage, std::string_view detail);
+};
 
 // All histories use the graphics queue. Synchronization2 barriers order both
 // RAW and WAR accesses across submissions; descriptor sets are per
@@ -59,7 +70,8 @@ public:
   [[nodiscard]] std::string_view upscalingStatus() const { return upscalingStatus_; }
   void prepareCamera(container::gpu::CameraData& camera, glm::uvec2 extent,
                      const container::temporal::Settings& settings,
-                     const glm::mat4& projection, float frameMilliseconds);
+                     const glm::mat4& projection, float frameMilliseconds,
+                     std::optional<FsrFrameStage> injectedFailure = std::nullopt);
   [[nodiscard]] PreparedGraphicsPipelines prepareVelocityReload(const std::filesystem::path& root);
   void publishVelocityReload(PreparedGraphicsPipelines& candidate) noexcept;
   void prepare(FrameResourceManager &frames, VkExtent2D extent,

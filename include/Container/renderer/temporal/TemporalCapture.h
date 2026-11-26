@@ -234,6 +234,8 @@ struct CaptureEditorDiagnostics {
   bool normalValidation{};
 };
 
+enum class CaptureFsrFailure : uint8_t { Resources, Jitter, Dispatch };
+
 struct CaptureEvent {
   uint32_t frame{0};
   bool reset{false}, skip{false};
@@ -243,6 +245,7 @@ struct CaptureEvent {
   std::optional<uint32_t> guiWaitForUploadChunks;
   std::optional<bool> taa, orthographic, objectVisible, minimized;
   std::optional<container::renderer::UpscaleSelection> upscaling;
+  std::optional<CaptureFsrFailure> fsrFailure;
   std::optional<container::renderer::VolumetricFogMode> volumetricFogMode;
   std::optional<bool> rayShadowDenoise;
   std::optional<bool> ddgiPaused, ddgiEnabled;
@@ -719,6 +722,17 @@ public:
           throw std::invalid_argument(std::string("Capture ") + key + " expects native, quality, balanced, or performance");
         event.upscaling = container::renderer::UpscaleSelection{
             hasFsr ? container::renderer::UpscaleBackend::Fsr : container::renderer::UpscaleBackend::Dlss, *mode};
+      }
+      if (value.contains("fsrFailure")) {
+        const auto &failure = value.at("fsrFailure");
+        if (failure == "resources")
+          event.fsrFailure = CaptureFsrFailure::Resources;
+        else if (failure == "jitter")
+          event.fsrFailure = CaptureFsrFailure::Jitter;
+        else if (failure == "dispatch")
+          event.fsrFailure = CaptureFsrFailure::Dispatch;
+        else
+          throw std::invalid_argument("Capture fsrFailure expects resources, jitter, or dispatch");
       }
       boolean("orthographic", event.orthographic);
       boolean("objectVisible", event.objectVisible);

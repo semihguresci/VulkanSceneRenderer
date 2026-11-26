@@ -680,6 +680,7 @@ public:
   void createMeshletResidencyResources(const std::filesystem::path &shaderDir);
   void beginVisibilityFrame(uint32_t imageIndex);
   [[nodiscard]] bool beginViewportCulling(bool requested);
+  void discardViewportCulling(uint32_t imageIndex) noexcept;
   [[nodiscard]] bool viewportFrustumReady(uint32_t imageIndex) const;
   [[nodiscard]] bool viewportOcclusionReady(uint32_t imageIndex) const;
   void recordViewportOcclusionCull(VkCommandBuffer cmd, uint32_t imageIndex,

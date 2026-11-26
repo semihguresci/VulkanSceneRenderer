@@ -2334,6 +2334,19 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     telemetry->setCpuPhase(RendererTelemetryPhase::ImageFenceWait,
                            elapsedMilliseconds(phaseStart));
   }
+  const auto retryNativeFsrFrame = [&](const FsrFrameError& error) {
+    const auto recoveryStart = TelemetryClock::now();
+    recoverFsrFrame(imageIndex, error.what());
+    framebufferResized = false;
+    if (telemetry) {
+      telemetry->addCpuPhase(RendererTelemetryPhase::ResourceGrowth,
+                             elapsedMilliseconds(recoveryStart));
+      telemetry->setCpuPhase(RendererTelemetryPhase::Frame,
+                             elapsedMilliseconds(frameStart));
+      telemetry->endFrame(false);
+    }
+    return false;
+  };
   const auto readbackStart = TelemetryClock::now();
   if (subs_.gpuCullManager) {
     subs_.gpuCullManager->collectStats(imageIndex);
@@ -2501,10 +2514,20 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
                                           : temporalCamera->viewMatrix();
     updateTextureStreaming(view, projection, displayExtent);
   }
-  temporal.prepareCamera(
-      buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
-      frameTemporalSettings, projection,
-      temporal.fsrActive() ? pendingFsrFrameMilliseconds_ : temporalFrameMilliseconds_);
+  std::optional<FsrFrameStage> injectedFsrJitter;
+  if (temporal.fsrActive() && captureFsrFailure_ == container::temporal::CaptureFsrFailure::Jitter) {
+    injectedFsrJitter = FsrFrameStage::JitterQuery;
+    captureFsrFailure_.reset();
+  }
+  try {
+    temporal.prepareCamera(
+        buffers_.cameraData, {temporalExtent.width, temporalExtent.height},
+        frameTemporalSettings, projection,
+        temporal.fsrActive() ? pendingFsrFrameMilliseconds_ : temporalFrameMilliseconds_,
+        injectedFsrJitter);
+  } catch (const FsrFrameError& error) {
+    return retryNativeFsrFrame(error);
+  }
   SceneController::writeToBuffer(
       svc_.allocationManager, buffers_.cameras[imageIndex],
       &buffers_.cameraData, sizeof(buffers_.cameraData));
@@ -2637,6 +2660,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   bool pickIdWritten = false;
   FrameRecordParams frameRecordParams = buildFrameRecordParams(imageIndex);
   frameRecordParams.pickIdWritten = &pickIdWritten;
+  if (temporal.fsrActive() && captureFsrFailure_ == container::temporal::CaptureFsrFailure::Dispatch) {
+    frameRecordParams.injectedFsrFailure = FsrFrameStage::Dispatch;
+    captureFsrFailure_.reset();
+  }
   attachActiveTechniqueLifecycle(frameRecordParams);
   if (subs_.guiManager && subs_.guiManager->assetStreamingOverlay() != AssetStreamingOverlay::Off) {
     const auto view = gltfAnimationCamera_ ? gltfAnimationCamera_->view : temporalCamera->viewMatrix();
@@ -2660,8 +2687,12 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   vkResetCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), 0);
   if (subs_.exposureManager)
     subs_.exposureManager->beginFrame();
-  recordCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), imageIndex,
-                      &frameRecordParams);
+  try {
+    recordCommandBuffer(svc_.commandBufferManager.buffer(imageIndex), imageIndex,
+                        &frameRecordParams);
+  } catch (const FsrFrameError& error) {
+    return retryNativeFsrFrame(error);
+  }
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::CommandRecord,
                            elapsedMilliseconds(phaseStart));
@@ -3367,6 +3398,7 @@ void RendererFrontend::applyTemporalCapture(
     subs_.temporalManager->settings().enabled = *event.taa;
   if (event.upscaling)
     captureUpscaling_ = event.upscaling;
+  captureFsrFailure_ = event.fsrFailure;
   if (event.samples)
     recreateMsaaResources(sampleCountFromSamples(*event.samples));
   if (event.reset)
@@ -4415,6 +4447,11 @@ bool RendererFrontend::gfxCaptureComplete() const {
 }
 
 void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
+  recreateSwapchain(requestedFormat, false);
+}
+
+void RendererFrontend::recreateSwapchain(std::optional<VkFormat> requestedFormat,
+                                         bool rebuildSceneResources) {
   if (vkDeviceWaitIdle(svc_.ctx.deviceWrapper->device()) != VK_SUCCESS)
     throw std::runtime_error("Failed to retire frames before recreating the swapchain");
   if (subs_.rendererTelemetry)
@@ -4438,7 +4475,7 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
   const uint32_t imageCount = static_cast<uint32_t>(swapchain.imageCount());
   // Offscreen resources, including temporal and GI histories, still match a
   // format-only replacement with the same extent and image count.
-  if (previousFormat != swapchain.imageFormat() &&
+  if (!rebuildSceneResources && previousFormat != swapchain.imageFormat() &&
       previousExtent.width == extent.width && previousExtent.height == extent.height &&
       previousImageCount == imageCount)
     return;
@@ -4484,6 +4521,31 @@ void RendererFrontend::handleResize(std::optional<VkFormat> requestedFormat) {
     subs_.sceneManager->updateAuxiliaryDescriptorSets(
         buffers_.cameras, subs_.bimManager->objectBuffers());
   updateFrameDescriptorSets();
+}
+
+void RendererFrontend::recoverFsrFrame(uint32_t imageIndex, std::string_view reason) {
+  if (subs_.guiManager)
+    subs_.guiManager->endFrame();
+  const auto command = svc_.commandBufferManager.buffer(imageIndex);
+  if (vkResetCommandBuffer(command, 0) != VK_SUCCESS)
+    throw std::runtime_error("Failed to discard the unsubmitted FSR commands");
+  if (subs_.bimManager)
+    subs_.bimManager->discardViewportCulling(imageIndex);
+
+  // Retire the acquire signal without submitting the incomplete scene frame.
+  // Swapchain recreation waits for this operation before retiring the image.
+  VkSemaphoreSubmitInfo acquireWait{VK_STRUCTURE_TYPE_SEMAPHORE_SUBMIT_INFO};
+  acquireWait.semaphore = subs_.frameSyncManager->imageAvailable(frame_.currentFrame);
+  acquireWait.stageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  VkSubmitInfo2 release{VK_STRUCTURE_TYPE_SUBMIT_INFO_2};
+  release.waitSemaphoreInfoCount = 1;
+  release.pWaitSemaphoreInfos = &acquireWait;
+  if (vkQueueSubmit2(svc_.ctx.deviceWrapper->graphicsQueue(), 1, &release, VK_NULL_HANDLE) != VK_SUCCESS)
+    throw std::runtime_error("Failed to retire the acquired image after an FSR failure");
+
+  fsrNativeFallback_ = FsrNativeFallback{upscaleResourceRequest_.selection, std::string(reason)};
+  container::log::ContainerLogger::instance().renderer()->warn("{}; restoring native rendering", reason);
+  recreateSwapchain(std::nullopt, true);
 }
 
 void RendererFrontend::updateOpenVdbSequence() {
@@ -6920,6 +6982,8 @@ RendererFrontend::UpscaleResourceRequest RendererFrontend::currentUpscaleResourc
 
 void RendererFrontend::reconcileUpscaleResources() {
   const auto request = currentUpscaleResourceRequest();
+  if (fsrNativeFallback_ && fsrNativeFallback_->selection != request.selection)
+    fsrNativeFallback_.reset();
   if (request == upscaleResourceRequest_) return;
   if (!request.eligible && !subs_.temporalManager->upscalingActive()) {
     upscaleResourceRequest_ = request;
@@ -6946,7 +7010,11 @@ void RendererFrontend::createFrameResources() {
   upscaleResourceRequest_ = currentUpscaleResourceRequest();
   upscaleViewportStatus_.clear();
   const auto selection = upscaleResourceRequest_.selection;
-  if (upscaleResourceRequest_.eligible && subs_.temporalManager) {
+  if (fsrNativeFallback_ && fsrNativeFallback_->selection != selection)
+    fsrNativeFallback_.reset();
+  if (fsrNativeFallback_ && upscaleResourceRequest_.eligible) {
+    upscaleViewportStatus_ = fsrNativeFallback_->status;
+  } else if (upscaleResourceRequest_.eligible && subs_.temporalManager) {
     auto& temporal = *subs_.temporalManager;
     const auto root = container::util::executableDirectory();
     if (selection.backend == UpscaleBackend::Dlss) {
@@ -6975,19 +7043,27 @@ void RendererFrontend::createFrameResources() {
         resources_.renderPasses.transformGizmos, msaaSampleCount_, buffers_.cameras,
         objectBuffer, sceneExtent);
   };
-  if (subs_.temporalManager && subs_.temporalManager->dlssActive()) {
+  if (subs_.temporalManager && subs_.temporalManager->upscalingActive()) {
     auto& temporal = *subs_.temporalManager;
+    const bool fsr = temporal.fsrActive();
     try {
       createSceneGrid();
       temporal.createPipelines(activeShaderReload_ ? activeShaderReload_->directory :
           container::util::executableDirectory(), subs_.sceneManager->descriptorSetLayout(),
           resources_.gBufferFormats.depthStencil);
+      if (fsr && captureFsrFailure_ == container::temporal::CaptureFsrFailure::Resources) {
+        captureFsrFailure_.reset();
+        throw std::runtime_error("capture fault injection");
+      }
       temporal.prepare(*subs_.frameResourceManager, sceneExtent,
           static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
     } catch (const std::exception& error) {
       temporal.destroyImages();
       sceneExtent = displayExtent;
-      upscaleViewportStatus_ = std::string("DLSS resource setup failed: ") + error.what();
+      upscaleViewportStatus_ = std::string(fsr ? "FSR resource setup failed: " :
+                                           "DLSS resource setup failed: ") + error.what();
+      if (fsr)
+        fsrNativeFallback_ = FsrNativeFallback{selection, upscaleViewportStatus_};
       createSceneGrid();
     }
   } else {
