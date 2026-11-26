@@ -115,6 +115,7 @@ class GltfDeformationGpu : public ::testing::Test {
     deviceInfo.enableRayQueries = true;
     VkPhysicalDeviceVulkan12Features v12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     v12.bufferDeviceAddress = VK_TRUE;
+    v12.timelineSemaphore = VK_TRUE;
     deviceInfo.next = &v12;
     device = std::make_shared<VulkanDevice>(*instance, surfaceHandle, deviceInfo);
     memory = std::make_unique<VulkanMemoryManager>(instance->instance(), device->physicalDevice(), device->device());
@@ -254,6 +255,147 @@ TEST_F(GltfDeformationGpu, SharedMeshInstancesUseDifferentMorphAndSkinPoses) {
   compareVertices(std::span<const Vertex>(current).subspan(0, 1), gltf::EvaluatePrimitive(primitive, {}, first));
   compareVertices(std::span<const Vertex>(current).subspan(1, 1), gltf::EvaluatePrimitive(primitive, weights, second));
   compareVertices(previous, current);
+}
+
+TEST_F(GltfDeformationGpu, PendingImageSlotsKeepTheirOwnPoseDescriptorsAndOutputs) {
+  constexpr uint32_t imageCount = 3;
+  constexpr size_t vertexCount = 65;
+  constexpr uint64_t timeout = 10'000'000'000ull;
+  pass->createResources(shaderDir, imageCount);
+  gltf::DeformationPrimitive primitive;
+  primitive.meshDefaultWeights = {0};
+  primitive.morphTargets.resize(1);
+  for (size_t index = 0; index < vertexCount; ++index) {
+    primitive.bindVertices.push_back(bindVertex(index));
+    primitive.influences.push_back({{{0, 1}}});
+    primitive.morphTargets[0].positions.emplace_back(2, 0, 0);
+  }
+  std::vector<Vertex> initial(vertexCount + 2, bindVertex());
+  const std::array<GltfDeformationInstance, 1> instances{{{&primitive, 1}}};
+  pass->setScene(initial, instances);
+  const auto bytes = static_cast<VkDeviceSize>(initial.size() * sizeof(Vertex));
+  struct Readbacks {
+    VulkanMemoryManager& memory;
+    std::array<AllocatedBuffer, imageCount> values{};
+    ~Readbacks() {
+      for (auto& buffer : values)
+        if (buffer.buffer != VK_NULL_HANDLE) memory.destroyBuffer(buffer);
+    }
+  } readbacks{*memory};
+  auto commands = device->raii().allocateCommandBuffers(vk::CommandBufferAllocateInfo(
+      *pool, vk::CommandBufferLevel::ePrimary, imageCount));
+  std::vector<vk::raii::Fence> fences;
+  fences.reserve(imageCount);
+  std::array<VkFence, imageCount> submitted{};
+  std::array<BufferSlice, imageCount> currentSlices{}, previousSlices{};
+  for (uint32_t image = 0; image < imageCount; ++image) {
+    currentSlices[image] = pass->currentVertices(image);
+    previousSlices[image] = pass->previousVertices(image);
+    ASSERT_EQ(currentSlices[image].size, bytes);
+    ASSERT_EQ(previousSlices[image].size, bytes);
+    EXPECT_NE(currentSlices[image].buffer, previousSlices[image].buffer);
+    for (uint32_t other = 0; other < image; ++other) {
+      EXPECT_NE(currentSlices[image].buffer, currentSlices[other].buffer);
+      EXPECT_NE(currentSlices[image].buffer, previousSlices[other].buffer);
+      EXPECT_NE(previousSlices[image].buffer, currentSlices[other].buffer);
+      EXPECT_NE(previousSlices[image].buffer, previousSlices[other].buffer);
+    }
+    readbacks.values[image] = memory->createBuffer(bytes * 2, VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+        VMA_MEMORY_USAGE_AUTO_PREFER_HOST,
+        VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT);
+    ASSERT_NE(readbacks.values[image].allocation_info.pMappedData, nullptr);
+    fences.emplace_back(device->raii(), vk::FenceCreateInfo{});
+    submitted[image] = *fences.back();
+  }
+  const vk::SemaphoreTypeCreateInfo timelineType(vk::SemaphoreType::eTimeline, 0);
+  vk::SemaphoreCreateInfo semaphoreInfo;
+  semaphoreInfo.pNext = &timelineType;
+  const vk::raii::Semaphore gate(device->raii(), semaphoreInfo);
+  uint32_t submittedCount = 0;
+  // Declare after every resource referenced by queued work. Fatal assertions
+  // and exceptions release the gate and retire submissions before teardown.
+  struct RetirePendingSubmissions {
+    VkDevice device;
+    VkSemaphore gate;
+    const std::array<VkFence, imageCount>& fences;
+    const uint32_t& count;
+    bool released{false};
+    VkResult release() {
+      if (released) return VK_SUCCESS;
+      const VkSemaphoreSignalInfo signal{
+          .sType = VK_STRUCTURE_TYPE_SEMAPHORE_SIGNAL_INFO, .semaphore = gate, .value = 1};
+      const auto result = vkSignalSemaphore(device, &signal);
+      released = result == VK_SUCCESS;
+      return result;
+    }
+    ~RetirePendingSubmissions() {
+      if (count == 0) return;
+      EXPECT_EQ(release(), VK_SUCCESS);
+      EXPECT_EQ(vkWaitForFences(device, count, fences.data(), VK_TRUE, timeout), VK_SUCCESS);
+    }
+  } retirement{device->device(), *gate, submitted, submittedCount};
+  for (uint32_t image = 0; image < imageCount; ++image) {
+    const float displacement = static_cast<float>(image + 1);
+    const std::array<float, 1> currentWeights{displacement * .25f};
+    const std::array<float, 1> previousWeights{-displacement * .25f};
+    const std::array<glm::mat4, 1> currentPalette{
+        glm::translate(glm::mat4(1), glm::vec3(0, displacement, displacement * .5f))};
+    const std::array<glm::mat4, 1> previousPalette{
+        glm::translate(glm::mat4(1), glm::vec3(0, -displacement, -displacement * .5f))};
+    const std::array<GltfDeformationPose, 1> poses{{{
+        currentWeights, currentPalette, previousWeights, previousPalette, false}}};
+    // Earlier submissions cannot evaluate their poses until the gate opens.
+    // A shared upload or descriptor set would therefore consume a later pose.
+    pass->uploadFrame(image, poses);
+    commands[image].begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
+    pass->record(*commands[image], image);
+    const VkBufferCopy currentCopy{currentSlices[image].offset, 0, bytes};
+    const VkBufferCopy previousCopy{previousSlices[image].offset, bytes, bytes};
+    vkCmdCopyBuffer(*commands[image], currentSlices[image].buffer, readbacks.values[image].buffer, 1, &currentCopy);
+    vkCmdCopyBuffer(*commands[image], previousSlices[image].buffer, readbacks.values[image].buffer, 1, &previousCopy);
+    const VkMemoryBarrier host{.sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT, .dstAccessMask = VK_ACCESS_HOST_READ_BIT};
+    vkCmdPipelineBarrier(*commands[image], VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_HOST_BIT,
+        0, 1, &host, 0, nullptr, 0, nullptr);
+    commands[image].end();
+    const VkCommandBuffer handle = *commands[image];
+    const VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_ALL_COMMANDS_BIT;
+    const VkSemaphore semaphore = *gate;
+    const uint64_t waitValue = 1;
+    const VkTimelineSemaphoreSubmitInfo timeline{.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO,
+        .waitSemaphoreValueCount = 1, .pWaitSemaphoreValues = &waitValue};
+    const VkSubmitInfo submission{.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .pNext = &timeline,
+        .waitSemaphoreCount = 1, .pWaitSemaphores = &semaphore, .pWaitDstStageMask = &waitStage,
+        .commandBufferCount = 1, .pCommandBuffers = &handle};
+    const auto result = vkQueueSubmit(device->graphicsQueue(), 1, &submission, submitted[image]);
+    if (result == VK_SUCCESS) ++submittedCount;
+    ASSERT_EQ(result, VK_SUCCESS);
+    EXPECT_EQ(vkGetFenceStatus(device->device(), submitted[image]), VK_NOT_READY);
+  }
+  for (const auto fence : submitted)
+    EXPECT_EQ(vkGetFenceStatus(device->device(), fence), VK_NOT_READY);
+  ASSERT_EQ(retirement.release(), VK_SUCCESS);
+  ASSERT_EQ(vkWaitForFences(device->device(), imageCount, submitted.data(), VK_TRUE, timeout), VK_SUCCESS);
+  for (uint32_t image = 0; image < imageCount; ++image) {
+    SCOPED_TRACE(image);
+    auto& buffer = readbacks.values[image];
+    ASSERT_EQ(vmaInvalidateAllocation(memory->allocator(), buffer.allocation, 0, VK_WHOLE_SIZE), VK_SUCCESS);
+    std::vector<Vertex> current(initial.size()), previous(initial.size());
+    const auto* data = static_cast<const std::byte*>(buffer.allocation_info.pMappedData);
+    std::memcpy(current.data(), data, static_cast<size_t>(bytes));
+    std::memcpy(previous.data(), data + bytes, static_cast<size_t>(bytes));
+    auto expectedCurrent = initial;
+    auto expectedPrevious = initial;
+    const float displacement = static_cast<float>(image + 1);
+    for (size_t index = 0; index < vertexCount; ++index) {
+      expectedCurrent[index + 1] = expectedPrevious[index + 1] = primitive.bindVertices[index];
+      const glm::vec3 translation(displacement * .5f, displacement, displacement * .5f);
+      expectedCurrent[index + 1].position += translation;
+      expectedPrevious[index + 1].position -= translation;
+    }
+    compareVertices(current, expectedCurrent);
+    compareVertices(previous, expectedPrevious);
+  }
 }
 
 TEST_F(GltfDeformationGpu, ResetHistoryAndFrameReuseProduceCurrentPreviousEquality) {

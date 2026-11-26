@@ -45,9 +45,11 @@ Telemetry is split across focused components:
   results after the relevant fence wait, and publishes telemetry to the GUI.
 - `GuiManager` renders the live telemetry window.
 
-The renderer still runs with serialized GPU resource concurrency. Telemetry
-surfaces this explicitly so frame-time numbers are not mistaken for true
-multi-frame-in-flight behavior.
+Native Forward and Deferred raster retire the current CPU frame slot before
+acquire and the acquired image before reusing its writable resources. Forced
+serialization, reference path tracing, vendor upscaling, and hardware performance
+queries use the all-frame fence policy. Telemetry reports the policy and the
+observed pending graphics frame count separately.
 
 ## GPU Timing Backends
 
@@ -86,10 +88,10 @@ with availability flags.
 
 ## Data Latency
 
-GPU pass timings are collected at the start of the next frame after the frame
-fence wait. The GUI reports the GPU result latency in frames. With the current
-serialized frame policy, the expected latency is one completed frame after the
-first frame has produced queries.
+GPU pass timings are collected after the fence for the recorded submission
+signals. The GUI reports the collection latency in frames. With serialized
+graphics this normally takes one frame. The overlapping policy can collect
+later, depending on completion and slot reuse.
 
 The pass table distinguishes between missing GPU data and a valid zero-duration
 query result. A pass with a valid GPU query result displays `0.000`; a pass
@@ -145,6 +147,5 @@ belong in `GuiManager`, not in the telemetry storage type.
   `VkPerformanceQuerySubmitInfoKHR::counterPassIndex`.
 - The profiler selects the first nanosecond performance counter. More detailed
   vendor counters can be added later as named metrics.
-- CPU phase timings include CPU-side waiting caused by the current serialized
-  frame policy.
-- The telemetry history is in-memory only and is not exported to disk.
+- Wall-clock CPU frame time includes waits and presentation. Use the individual
+  phases to compare CPU processing and synchronization costs.

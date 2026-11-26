@@ -2134,9 +2134,8 @@ FrameConcurrencyPolicy RendererFrontend::graphicsConcurrencyPolicy() const {
   if (subs_.renderPassGpuProfiler &&
       subs_.renderPassGpuProfiler->usesPerformanceQueries())
     return FrameConcurrencyPolicy::serializedGpuResources("hardware performance queries");
-  if (subs_.gltfDeformationPass ||
-      (subs_.sceneManager && subs_.sceneManager->deformationData()))
-    return FrameConcurrencyPolicy::serializedGpuResources("glTF deformation resources");
+  // glTF deformation writes the acquired image's pose and vertex buffers.
+  // updateGltfDeformation retires all readers before replacing the shared scene.
   return FrameConcurrencyPolicy::currentFrameFence();
 }
 
