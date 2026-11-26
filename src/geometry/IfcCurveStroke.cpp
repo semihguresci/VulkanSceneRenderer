@@ -65,9 +65,35 @@ const Entity *referenced(const std::unordered_map<uint32_t, Entity> &entities,
   return found == entities.end() ? nullptr : &found->second;
 }
 
+std::vector<double> readPredefinedPattern(const Entity &font, double scale,
+                                          double metresPerUnit) {
+  const auto *name = argument(font, 0);
+  if (!name || name->kind != StepValue::Kind::String)
+    return {};
+
+  // ISO 10303-46, presentation appearance, Table 1 specifies millimetres.
+  std::vector<double> pattern;
+  if (name->text == "dashed")
+    pattern = {4., 1.5};
+  else if (name->text == "chain")
+    pattern = {7., 1., 1., 1.};
+  else if (name->text == "chain double dash")
+    pattern = {7., 1., 1., 1., 1., 1.};
+  else if (name->text == "dotted")
+    pattern = {1., 1.};
+
+  const double factor = scale * (.001 / metresPerUnit);
+  for (auto &length : pattern) {
+    length *= factor;
+    if (!positive(length))
+      return {};
+  }
+  return pattern;
+}
+
 std::vector<double>
 readPattern(const std::unordered_map<uint32_t, Entity> &entities,
-            const Entity *font) {
+            const Entity *font, double metresPerUnit) {
   if (!font)
     return {};
   double factor = 1;
@@ -80,7 +106,11 @@ readPattern(const std::unordered_map<uint32_t, Entity> &entities,
   }
   // The font select inside FontAndScaling has no further scaling wrapper.
   // Resolve only this finite schema path, including for cyclic input.
-  if (!font || font->type != "IFCCURVESTYLEFONT")
+  if (!font)
+    return {};
+  if (font->type == "IFCDRAUGHTINGPREDEFINEDCURVEFONT")
+    return readPredefinedPattern(*font, factor, metresPerUnit);
+  if (font->type != "IFCCURVESTYLEFONT")
     return {};
   const auto *pairs = argument(*font, 1);
   if (!pairs || pairs->kind != StepValue::Kind::List || pairs->list.empty() ||
@@ -119,7 +149,7 @@ glm::vec3 atDistance(glm::vec3 a, glm::vec3 b, double at, double length) {
 
 IfcCurveStroke
 readIfcCurveStroke(const std::unordered_map<uint32_t, Entity> &entities,
-                   const Entity &curveStyle) {
+                   const Entity &curveStyle, double metresPerUnit) {
   if (curveStyle.type != "IFCCURVESTYLE" ||
       curveStyle.args.kind != StepValue::Kind::List)
     return {};
@@ -145,7 +175,7 @@ readIfcCurveStroke(const std::unordered_map<uint32_t, Entity> &entities,
     return result; // Paper-space dimensions require a plotting scale.
   const double width = length(rawWidth).value_or(0.);
   if (positive(width)) result.width = width;
-  result.pattern = readPattern(entities, font);
+  result.pattern = readPattern(entities, font, metresPerUnit);
   return result;
 }
 

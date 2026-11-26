@@ -177,6 +177,118 @@ TEST(IfcTrimPlacement, MeshesBacktrackingBandsOnEitherSinglePeriodicAxis) {
   }
 }
 
+TEST(IfcTrimPlacement, MonotoneSplineBandFindsAnotherSharedCutAnchor) {
+  using container::geometry::ifc::detail::CurvedFaceChartLoop;
+  using container::geometry::ifc::detail::meshIfcCurvedFace;
+  using container::geometry::ifc::detail::ParametricSurface;
+  constexpr double tau = 2 * std::numbers::pi, major = .55, minor = .23;
+  constexpr double tip = .125, shoulder = .165, upper = .185;
+  constexpr double rampWidth = 1. / 1024.;
+  constexpr unsigned samples = 128, rampSteps = 4;
+  ParametricSurface surface;
+  surface.spline = true;
+  surface.periods = {1., 1.};
+  surface.point = [=](double u, double v) {
+    const double radial = major + minor * std::cos(tau * v);
+    return glm::dvec3(radial * std::cos(tau * u), radial * std::sin(tau * u),
+                      minor * std::sin(tau * v));
+  };
+  surface.derivatives = [=](double u, double v) {
+    const double c = std::cos(tau * u), s = std::sin(tau * u);
+    const double radial = major + minor * std::cos(tau * v);
+    const double dr = -minor * std::sin(tau * v);
+    return std::pair(glm::dvec3(-s * radial, c * radial, 0.) * tau,
+                     glm::dvec3(c * dr, s * dr, minor * std::cos(tau * v)) * tau);
+  };
+
+  std::array<CurvedFaceChartLoop, 2> chart;
+  std::vector<std::vector<glm::vec3>> points(2);
+  const auto append = [&](size_t rail, double u, double v) {
+    chart[rail].vertices.emplace_back(u, v);
+    points[rail].emplace_back(*surface.point(u, v));
+  };
+  // Both rails advance monotonically. The upper samples miss the notch,
+  // and a cut from its tip to even the nearest upper sample hits a shoulder.
+  for (unsigned i = 0; i <= rampSteps; ++i) {
+    const double t = double(i) / rampSteps;
+    append(0, rampWidth * t, std::lerp(tip, shoulder, t));
+  }
+  for (unsigned i = 1; i < samples; ++i)
+    append(0, double(i) / samples, shoulder);
+  for (unsigned i = 0; i < rampSteps; ++i) {
+    const double t = double(i) / rampSteps;
+    append(0, 1. - rampWidth * (1. - t), std::lerp(shoulder, tip, t));
+  }
+  for (unsigned i = 0; i < samples; ++i)
+    append(1, (.5 - i) / samples, upper);
+  chart[0].closure = chart[0].vertices.front() + glm::dvec2(1., 0.);
+  chart[1].closure = chart[1].vertices.front() - glm::dvec2(1., 0.);
+
+  std::string error;
+  const auto mesh = meshIfcCurvedFace(surface, points, false, true, 1., error,
+                                      {}, chart);
+  ASSERT_TRUE(mesh) << error;
+  using Key = std::array<float, 3>;
+  const auto key = [](glm::vec3 p) { return Key{p.x, p.y, p.z}; };
+  // Integrate the exact torus area along each lifted triangle's boundary.
+  // Flat facets can overestimate area even within the chord tolerance.
+  const auto meanAreaPrimitive = [=](double a, double b) {
+    const double middle = (a + b) * tau / 2., halfSpan = (b - a) * tau / 2.;
+    const double meanSine = std::sin(middle) *
+                            (halfSpan == 0. ? 1. : std::sin(halfSpan) / halfSpan);
+    return minor * tau * (major * middle + minor * meanSine);
+  };
+  std::map<std::pair<Key, Key>, std::pair<int, int>> edges;
+  double area = 0., maxCentroidError = 0., minNormalAgreement = 1.;
+  for (const auto &triangle : *mesh) {
+    const auto &p = triangle.positions;
+    std::array<glm::dvec2, 3> uv;
+    for (size_t i = 0; i < p.size(); ++i) {
+      const glm::dvec3 point(p[i]);
+      const double u = std::atan2(point.y, point.x),
+                   v = std::atan2(point.z, std::hypot(point.x, point.y) - major);
+      uv[i] = glm::dvec2(u, v) / tau;
+      if (i)
+        uv[i].x = uv[0].x + std::remainder(uv[i].x - uv[0].x, 1.);
+      const glm::dvec3 normal(std::cos(u) * std::cos(v),
+                              std::sin(u) * std::cos(v), std::sin(v));
+      minNormalAgreement = std::min(
+          minNormalAgreement, glm::dot(normal, glm::dvec3(triangle.normals[i])));
+    }
+    const glm::dvec3 flatCenter =
+        (glm::dvec3(p[0]) + glm::dvec3(p[1]) + glm::dvec3(p[2])) / 3.;
+    const auto centerUv = (uv[0] + uv[1] + uv[2]) / 3.;
+    maxCentroidError = std::max(
+        maxCentroidError,
+        glm::length(*surface.point(centerUv.x, centerUv.y) - flatCenter));
+    for (size_t i = 0; i < p.size(); ++i) {
+      const auto next = (i + 1) % p.size();
+      area += (uv[i].x - uv[next].x) * meanAreaPrimitive(uv[i].y, uv[next].y);
+      const auto a = key(p[i]), b = key(p[next]);
+      auto &use = edges[std::minmax(a, b)];
+      ++use.first;
+      use.second += a < b ? 1 : -1;
+    }
+  }
+  const double expectedArea =
+      meanAreaPrimitive(upper, upper) -
+      (1. - 2 * rampWidth) * meanAreaPrimitive(shoulder, shoulder) -
+      2 * rampWidth * meanAreaPrimitive(tip, shoulder);
+  EXPECT_NEAR(area, expectedArea, 1e-6);
+  EXPECT_LT(maxCentroidError, .001);
+  EXPECT_GT(minNormalAgreement, .99999);
+  for (const auto &rail : points)
+    for (size_t i = 0; i < rail.size(); ++i) {
+      const auto a = key(rail[i]), b = key(rail[(i + 1) % rail.size()]);
+      const auto use = edges.find(std::minmax(a, b));
+      ASSERT_NE(use, edges.end());
+      EXPECT_EQ(use->second, (std::pair(1, a < b ? 1 : -1)));
+      edges.erase(use);
+    }
+  for (const auto &[_, use] : edges)
+    EXPECT_EQ(use, (std::pair(2, 0)));
+}
+
 std::string polygonFixture(std::string_view points, std::string_view face,
                            std::string_view pnIndex = "$",
                            std::string_view extra = "") {

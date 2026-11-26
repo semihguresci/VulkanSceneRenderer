@@ -1722,8 +1722,12 @@ void Mesher::joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
       shortest = length;
     }
   }
-  if (!start)
-    throw std::runtime_error("Spline band has no valid cut at a shared sample");
+  if (!start) {
+    // A rail may turn tightly around its first sample and block every cut
+    // from that anchor. Search both rails before rejecting their shared samples.
+    joinNonmonotoneSplineBand(rings, turns * s_.periods, sameSense);
+    return;
+  }
   const size_t j = *start;
   const UV translation = transverse + (1 - std::round(b[j].x)) * winding;
   first.push_back({first.front().uv + winding, first.front().point});
@@ -2726,8 +2730,11 @@ meshIfcCurvedFace(const ParametricSurface &surface,
       return meshSphericalPoleFace(surface, boundaries, explicitOuter,
                                    sameSense, units);
     }
+    // A single ordinary bound on a closed sphere can enclose either side of
+    // its rim. The oriented stereographic chart selects the enclosed region.
     if (surface.sphere &&
-        meetsSphericalPole(*surface.sphere, boundaries, units))
+        ((!explicitOuter && boundaries.size() == 1) ||
+         meetsSphericalPole(*surface.sphere, boundaries, units)))
       return meshSphericalEdgeLoops(*surface.sphere, boundaries, explicitOuter,
                                     sameSense, units);
     const Point origin(boundaries.front().front());

@@ -2116,7 +2116,7 @@ private:
       if (style->type == "IFCCURVESTYLE") {
         const auto [entry, fresh] = curveStrokesByStyle_.try_emplace(*id);
         if (fresh)
-          entry->second = detail::readIfcCurveStroke(entities_, *style);
+          entry->second = detail::readIfcCurveStroke(entities_, *style, unitScale_);
         if (!firstStyle)
           firstStyle = *id;
         if (entry->second.width > 0 || !entry->second.pattern.empty())

@@ -746,6 +746,49 @@ void setMillimetreUnits(std::string &step) {
                ".LENGTHUNIT.,.MILLI.,.METRE.");
 }
 
+TEST(IfcCurveStyles, PredefinedFontsUseMetricLengthsAndFontScaling) {
+  struct Font {
+    std::string_view name;
+    std::vector<double> endpointsMm;
+  };
+  const std::array fonts{
+      Font{"dashed", {0, 4, 5.5, 9.5, 11, 11.75}},
+      Font{"chain", {0, 7, 8, 9, 10, 11.75}},
+      Font{"chain double dash", {0, 7, 8, 9, 10, 11}},
+      Font{"dotted", {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}},
+      Font{"continuous", {0, 11.75}},
+      Font{"unknown", {0, 11.75}},
+  };
+  for (const auto &font : fonts) {
+    SCOPED_TRACE(font.name);
+    for (const bool millimetres : {false, true}) {
+      for (const double scale : {1., 2.}) {
+        SCOPED_TRACE(::testing::Message() << "millimetres=" << millimetres
+                                          << " scale=" << scale);
+        const double unitPerMm = millimetres ? 1. : .001;
+        auto source = fixture(
+            "#2=IFCCARTESIANPOINT((0.,0.,0.)); "
+            "#3=IFCCARTESIANPOINT((" + std::to_string(11.75 * scale * unitPerMm) +
+                ",0.,0.)); #10=IFCPOLYLINE((#2,#3)); "
+                "#20=IFCDRAUGHTINGPREDEFINEDCURVEFONT('" + std::string(font.name) +
+                "'); #21=IFCCURVESTYLEFONTANDSCALING($,#20,2.); "
+                "#24=IFCCURVESTYLE($," + (scale == 1. ? "#20" : "#21") +
+                ",$,$,.T.); #25=IFCSTYLEDITEM(#10,(#24),$);");
+        if (millimetres)
+          setMillimetreUnits(source);
+        const auto model = container::geometry::ifc::LoadFromStep(source);
+        ASSERT_NO_FATAL_FAILURE(complete(model));
+        ASSERT_EQ(model.elements.size(), 1u);
+        std::vector<glm::dvec3> expected;
+        for (const auto x : font.endpointsMm)
+          expected.emplace_back(x * scale * .001, 0, 0);
+        expectCurveEndpoints(worldCurveEndpoints(model, model.elements.front()),
+                             expected);
+      }
+    }
+  }
+}
+
 TEST(IfcCurveStyles, MetricDashPhaseCarriesAcrossCornersAndMatchesPicking) {
   for (const bool millimetres : {false, true}) {
     SCOPED_TRACE(millimetres);
@@ -3354,7 +3397,94 @@ TEST(IfcCurveFamilies, InvalidSectionedTagTransitionsRejectAtomically) {
   }
 }
 
-TEST(IfcCurveFamilies, SectionedGuideRequiresTagPresentAtEveryAuthoredSection) {
+TEST(IfcCurveFamilies, SectionedTemporaryLaneGuideFollowsItsAuthoredSpan) {
+  for (const bool birth : {false, true}) {
+    SCOPED_TRACE(birth);
+    GuideSectionFixture step;
+    step.definitions =
+        transitionSections +
+        (birth ? "#40=IFCSECTIONEDSURFACE(#4,(#22,#27,#23),(#30,#31,#32));"
+               : "#40=IFCSECTIONEDSURFACE(#4,(#22,#27,#23),(#32,#31,#30));") +
+        "#41=IFCCARTESIANPOINT((0.1,0.66666666666666667));"
+        "#42=IFCCARTESIANPOINT((0.9,0.66666666666666667));"
+        "#43=IFCPOLYLINE((#41,#42)); #45=IFCPCURVE(#40,#43);";
+    const auto retained = step.guide(
+        "B", "#4", {{0, 0, 0}, {2, -.25, 0}, {4, 0, 0}, {7, -.25, 0},
+                    {10, 0, 0}});
+    std::string temporary;
+    if (birth) {
+      temporary = step.guide("D", "#4", {{4, 0, 0}, {7, .75, 0}, {10, 1, 0}});
+    } else {
+      const auto start = step.point(0, 1, 0);
+      const auto middle = step.point(2, .75, 0);
+      const auto tip = step.point(4, 0, 0);
+      const auto rail = step.add("IFCPOLYLINE((" + start + "," + middle + "," +
+                                 tip + "))");
+      temporary = step.guide("D", rail, {{0, 0, 0}});
+    }
+    step.product("guided-branch", retained + "," + temporary + ",#45");
+    const auto model = step.load();
+    const auto body = sectionedProductMesh(model, "guided-branch");
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Complete);
+    EXPECT_NEAR(checkSectionedMesh(body), 40., 1e-6);
+    const auto points = sectionedPoints(body);
+    const float activeStation = birth ? 7.f : 2.f;
+    const float collapsedStation = birth ? 2.f : 7.f;
+    EXPECT_TRUE(points.contains({activeStation, .75f, 0}));
+    EXPECT_TRUE(points.contains({collapsedStation, -.25f, 0}));
+    EXPECT_FALSE(points.contains({collapsedStation, 0, 0}));
+    EXPECT_TRUE(points.contains({4, 0, 0}));
+
+    size_t branchCurves = 0;
+    for (const auto &range : model.nativeCurveRanges) {
+      const auto pointAt = [&](size_t i) {
+        return model.vertices.at(model.indices.at(range.firstIndex + i))
+            .position;
+      };
+      if (pointAt(0).x != 1.f || pointAt(range.indexCount - 1).x != 9.f)
+        continue;
+      ++branchCurves;
+      std::set<std::array<float, 3>> samples;
+      for (size_t i = 0; i < range.indexCount; ++i) {
+        const auto p = pointAt(i);
+        samples.insert({p.x, p.y, p.z});
+      }
+      EXPECT_TRUE(samples.contains({activeStation, .75f, 0}));
+      EXPECT_TRUE(samples.contains({collapsedStation, -.25f, 0}));
+      EXPECT_TRUE(samples.contains({4, 0, 0}));
+    }
+    EXPECT_EQ(branchCurves, 1u);
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedTemporaryLaneGuideRequiresOneAuthoredRun) {
+  for (const bool disjoint : {false, true}) {
+    SCOPED_TRACE(disjoint);
+    GuideSectionFixture step;
+    step.definitions =
+        transitionSections +
+        "#35=IFCPOINTBYDISTANCEEXPRESSION(IFCLENGTHMEASURE(5.),$,$,$,#4);"
+        "#36=IFCAXIS2PLACEMENTLINEAR(#35,$,$);" +
+        std::string(disjoint ? "#40=IFCSECTIONEDSURFACE(#4,"
+                               "(#22,#27,#36,#28,#23),(#32,#31,#30,#31,#32));"
+                             : "#40=IFCSECTIONEDSURFACE(#4,"
+                               "(#22,#27,#23),(#30,#31,#30));");
+    const auto guide = step.guide("D", "#4", {{0, 0, 0}});
+    step.product("ambiguous-guide", guide);
+    const auto model = step.load();
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+    EXPECT_TRUE(sectionedProductMesh(model, "ambiguous-guide").indices.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    const auto &diagnostic = model.importReport.diagnostics.front();
+    EXPECT_EQ(diagnostic.entityId, 40u);
+    const auto reason = disjoint
+                            ? "intermittent tag 'D' requires one contiguous run"
+                            : "Ambiguous section tag order for 'B' and 'D'";
+    EXPECT_TRUE(diagnostic.reason.contains(reason)) << diagnostic.reason;
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedGuideMustAgreeWithItsAuthoredBranchTip) {
   for (bool temporary : {false, true}) {
     SCOPED_TRACE(temporary);
     GuideSectionFixture step;
@@ -3362,7 +3492,7 @@ TEST(IfcCurveFamilies, SectionedGuideRequiresTagPresentAtEveryAuthoredSection) {
         transitionSections +
         "#40=IFCSECTIONEDSURFACE(#4,(#22,#27,#23),(#30,#31,#32));";
     const auto guide =
-        temporary ? step.guide("D", "#4", {{0, 0, 0}, {4, 0, 0}, {10, 1, 0}})
+        temporary ? step.guide("D", "#4", {{4, .25, 0}, {10, 1, 0}})
                   : step.guide("B", "#4",
                                {{0, 0, 0},
                                 {2, -.25, 0},
@@ -3390,7 +3520,9 @@ TEST(IfcCurveFamilies, SectionedGuideRequiresTagPresentAtEveryAuthoredSection) {
       EXPECT_TRUE(body.indices.empty());
       ASSERT_EQ(result.importReport.diagnostics.size(), 1u);
       EXPECT_EQ(result.importReport.diagnostics.front().entityId, 40u);
-      EXPECT_FALSE(result.importReport.diagnostics.front().reason.empty());
+      EXPECT_TRUE(result.importReport.diagnostics.front().reason.contains(
+          "for tag 'D' disagrees with its authored cross-section point"))
+          << result.importReport.diagnostics.front().reason;
     } else {
       EXPECT_NEAR(checkSectionedMesh(body), 40., 1e-6);
       const auto points = sectionedPoints(body);

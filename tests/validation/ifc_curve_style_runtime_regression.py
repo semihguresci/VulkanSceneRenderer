@@ -22,6 +22,8 @@ CURVE_LENGTH_MM = 5600.
 # The second pair has different on/off lengths, so repeating only the first
 # authored entry cannot match the silhouette.
 PATTERN_MM = ((550., 360.), (270., 470.))
+# ISO chain double dash at the fixture's 240x font scale.
+CHAIN_PATTERN_MM = ((1680., 240.), (240., 240.), (240., 240.))
 STROKES = (
     ("Narrow cyan", 1.02, 160., 1., (.11, .77, .92)),
     ("Wide orange", -1.02, 200., 1.5, (.92, .36, .09)),
@@ -49,14 +51,18 @@ def pick_points():
     for index, stroke in enumerate(STROKES):
         _name, y, width, scale, _color = stroke
         radius = width * scale * .0005
+        if index == 0:
+            first_gap, short_dash, second_gap, outside, after_vertex = 720., 1050., 1385., 1900., 2745.
+        else:
+            first_gap, short_dash, second_gap, outside, after_vertex = 1800., 2040., 2280., 1200., 2745.
         for label, station, offset, hit in (
             ("dash center", 255., 0., True),
             ("dash wing", 330., radius * .70, True),
-            ("first gap", 720., 0., False),
-            ("short dash", 1050., 0., True),
-            ("second gap", 1385., 0., False),
-            ("outside stroke", 1900., radius + .065, False),
-            ("dash after polyline vertex", 2745., 0., True),
+            ("first gap", first_gap, 0., False),
+            ("short dash", short_dash, 0., True),
+            ("second gap", second_gap, 0., False),
+            ("outside stroke", outside, radius + .065, False),
+            ("dash phase after polyline vertex", after_vertex, 0., index == 0),
         ):
             points.append((f"{stroke[0]} {label}", index if hit else None,
                            project(world_x(stroke, station), y + offset)))
@@ -79,6 +85,8 @@ def write_fixture(path):
     context = step.add("IFCGEOMETRICREPRESENTATIONCONTEXT", "$", "'Model'", 3, 1e-6, model_frame, "$")
     pairs = [step.add("IFCCURVESTYLEFONTPATTERN", visible, gap) for visible, gap in PATTERN_MM]
     font = step.add("IFCCURVESTYLEFONT", "'Alternating long and short dashes'", f"({','.join(pairs)})")
+    named = step.add("IFCDRAUGHTINGPREDEFINEDCURVEFONT", "'chain double dash'")
+    chain = step.add("IFCCURVESTYLEFONTANDSCALING", "'Model-space chain'", named, 240.)
 
     def product(index, name, rep, y):
         shape = step.add("IFCPRODUCTDEFINITIONSHAPE", "$", "$", f"({rep})")
@@ -98,7 +106,8 @@ def write_fixture(path):
     assignments = []
     for index, (name, y, width, scale, color) in enumerate(STROKES):
         rgb = step.add("IFCCOLOURRGB", "$", *color)
-        style = step.add("IFCCURVESTYLE", f"'{name}'", font, f"IFCPOSITIVELENGTHMEASURE({width})", rgb, ".T.")
+        stroke_font = font if index == 0 else chain
+        style = step.add("IFCCURVESTYLE", f"'{name}'", stroke_font, f"IFCPOSITIVELENGTHMEASURE({width})", rgb, ".T.")
         transform = step.add("IFCCARTESIANTRANSFORMATIONOPERATOR3D", "$", "$", step.point(0., 0., 0.), scale, "$")
         mapped = step.add("IFCMAPPEDITEM", mapping, transform)
         assignments.append((mapped, style))
@@ -143,17 +152,17 @@ def write_sequence(path):
     return checks
 
 
-def projected_mask(stroke):
+def projected_mask(stroke, pattern):
     _name, y, width, scale, _color = stroke
     radius = width * scale * .0005
     yy, xx = np.mgrid[:HEIGHT, :WIDTH]
     x = (xx + .5 - WIDTH / 2.) / PIXELS_PER_METRE
     local_station = x / (scale * .001) + CURVE_LENGTH_MM / 2.
-    phase = np.mod(local_station, sum(dash + gap for dash, gap in PATTERN_MM))
+    phase = np.mod(local_station, sum(dash + gap for dash, gap in pattern))
     active = np.zeros_like(phase, dtype=bool)
     margin = np.full_like(phase, np.inf)
     offset = 0.
-    for dash, gap in PATTERN_MM:
+    for dash, gap in pattern:
         active |= (phase > offset) & (phase < offset + dash)
         margin = np.minimum(margin, np.abs(phase - offset))
         margin = np.minimum(margin, np.abs(phase - (offset + dash)))
@@ -177,7 +186,8 @@ def inspect_image(image):
     evidence = {}
     for index, stroke in enumerate(STROKES):
         name = stroke[0]
-        solid, gap, dy, radius = projected_mask(stroke)
+        pattern = PATTERN_MM if index == 0 else CHAIN_PATTERN_MM
+        solid, gap, dy, radius = projected_mask(stroke, pattern)
         dominant, opposite = (2, 0) if index == 0 else (0, 2)
         visible = lit & (pixels[:, :, dominant] > pixels[:, :, opposite] + 18)
         if index == 0:
@@ -192,7 +202,7 @@ def inspect_image(image):
         center = dy < 1.25 / PIXELS_PER_METRE
         on = np.count_nonzero(visible & center & solid)
         off = np.count_nonzero(visible & center & gap)
-        require(on == np.count_nonzero(center & solid) and off == 0,
+        require(on == np.count_nonzero(center & solid) and np.any(center & gap) and off == 0,
                 f"{name} dash mask differs from authored lengths: {on} on, {off} leaked into gaps")
         inside = dy < radius - .9 / PIXELS_PER_METRE
         outside = (dy > radius + 1.3 / PIXELS_PER_METRE) & (dy < .35)

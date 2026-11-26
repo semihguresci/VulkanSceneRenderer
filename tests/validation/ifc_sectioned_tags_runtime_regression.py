@@ -1,4 +1,4 @@
-"""Capture a widening IFC sectioned surface with tagged split and merge tips."""
+"""Capture an IFC sectioned surface with a guided lane between split and merge tips."""
 
 import argparse
 import math
@@ -21,6 +21,8 @@ LANE_RIDGE = .30
 LANE_EDGE = 1.12
 TIP = 2.65
 FULL = 1.16
+GUIDE_PLATEAU = .85
+GUIDED_EDGE = 1.36
 FIXTURE = Fixture((Profile("Tagged widening", (0., 0.), (.19, .70, .83)),), (
     (0, "flat pavement before split", (-3.53, LANE_RIDGE), True),
     (0, "rising lane during split", (-2.00, LANE_RIDGE + .12), True),
@@ -28,6 +30,7 @@ FIXTURE = Fixture((Profile("Tagged widening", (0., 0.), (.19, .70, .83)),), (
     (0, "lower transition face", (-.46, -.19), True),
     (0, "active widening lane", (.00, .58), True),
     (0, "outer half of widening lane", (.52, .91), True),
+    (0, "extension following the temporary guide", (.08, 1.17), True),
     (0, "upper outside pavement", (.13, 1.31), True),
     (0, "falling lane during merge", (1.90, LANE_RIDGE + .12), True),
     (0, "flat pavement after merge", (3.52, LANE_RIDGE), True),
@@ -66,11 +69,18 @@ def write_fixture(path):
     sections = (closed, tip, opened, opened, tip, closed)
     surface = step.add("IFCSECTIONEDSURFACE", directrix, f"({','.join(locations)})", f"({','.join(sections)})")
     body = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'SectionedSurface'", f"({surface})")
+    offsets = [section_point(step, x + HALF_LENGTH, directrix, lateral, 0.)
+               for x, lateral in ((-TIP, LANE_RIDGE), (-FULL, LANE_EDGE),
+                                  (-GUIDE_PLATEAU, GUIDED_EDGE), (GUIDE_PLATEAU, GUIDED_EDGE),
+                                  (FULL, LANE_EDGE), (TIP, LANE_RIDGE))]
+    guide = step.add("IFCOFFSETCURVEBYDISTANCES", directrix, f"({','.join(offsets)})", "'D'")
+    guide_set = step.add("IFCGEOMETRICCURVESET", f"({guide})")
+    axis = step.add("IFCSHAPEREPRESENTATION", context, "'Axis'", "'GeometricCurveSet'", f"({guide_set})")
     rgb = step.add("IFCCOLOURRGB", "$", *FIXTURE.products[0].color)
     appearance = step.add("IFCSURFACESTYLERENDERING", rgb, "0.", "$", "$", "$", "$", "$", "$", ".NOTDEFINED.")
     style = step.add("IFCSURFACESTYLE", "'Tagged widening'", ".BOTH.", f"({appearance})")
     step.add("IFCSTYLEDITEM", surface, f"({style})", "$")
-    shape = step.add("IFCPRODUCTDEFINITIONSHAPE", "$", "$", f"({body})")
+    shape = step.add("IFCPRODUCTDEFINITIONSHAPE", "$", "$", f"({body},{axis})")
     position = step.add("IFCAXIS2PLACEMENT3D", step.point(0., 0., 0.),
                         step.direction(0., -1., 0.), step.direction(1., 0., 0.))
     placement = step.add("IFCLOCALPLACEMENT", "$", position)
@@ -88,8 +98,10 @@ def lane_height(x, y):
         return 0.
     if y < LANE_RIDGE:
         return openness * LANE_HEIGHT * (y + OUTER_EDGE) / (LANE_RIDGE + OUTER_EDGE)
-    # The D edge moves laterally away from B while B gains elevation.
-    span = openness * (LANE_EDGE - LANE_RIDGE)
+    # The D edge follows its own lateral guide. It continues widening between
+    # the two fully open authored profiles while the ridge B stays fixed.
+    extra = min(1., max(0., (FULL - abs(x)) / (FULL - GUIDE_PLATEAU)))
+    span = openness * (LANE_EDGE - LANE_RIDGE) + extra * (GUIDED_EDGE - LANE_EDGE)
     return openness * LANE_HEIGHT * max(0., 1 - (y - LANE_RIDGE) / span)
 
 
@@ -162,7 +174,7 @@ def main():
             results.append(record(renderer, output, model, sequence, frames, technique, taa, FIXTURE,
                                   expected_depth=expected_depth, check_image=check_pixels))
             save_json(output / "results.json", results)
-            print(f"PASS {technique}, TAA {taa}: tagged lane transitions and {len(frames)} depth samples", flush=True)
+            print(f"PASS {technique}, TAA {taa}: guided lane transitions and {len(frames)} depth samples", flush=True)
     return 0
 
 

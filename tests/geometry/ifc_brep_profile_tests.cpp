@@ -2158,8 +2158,8 @@ double sphericalCapVolume(double plane) {
   return pi * height * height * (radius - height / 3.);
 }
 
-std::string sphericalSeamHoleAndDisk(CurvedBuilder &step, glm::dvec3 axis,
-                                     double plane) {
+std::string sphericalRimAndDisk(CurvedBuilder &step, glm::dvec3 axis,
+                                double plane) {
   constexpr double radius = 2.;
   const double ringRadius = std::sqrt(radius * radius - plane * plane);
   const glm::dvec3 tangent =
@@ -2174,8 +2174,8 @@ std::string sphericalSeamHoleAndDisk(CurvedBuilder &step, glm::dvec3 axis,
   return step.bound({{ring, false}}, false);
 }
 
-void expectSphericalSeamHoleDisk(const Model &model, glm::dvec3 axis,
-                                 double plane) {
+void expectSphericalRimAndDisk(const Model &model, glm::dvec3 axis,
+                               double plane) {
   using Point = std::array<float, 3>;
   using Edge = std::pair<Point, Point>;
   std::map<Edge, std::array<int, 2>> edges;
@@ -2212,6 +2212,35 @@ void expectSphericalSeamHoleDisk(const Model &model, glm::dvec3 axis,
   EXPECT_GT(mated, 32u);
 }
 
+TEST(IfcCurvedBrep, SphericalSingleEdgeBoundRetainsItsSharedDisk) {
+  struct Trim {
+    glm::dvec3 axis;
+    double plane;
+  };
+  constexpr std::array trims{Trim{{0, 0, 1}, -1.}, Trim{{1, 0, 0}, 1.}};
+  for (const auto &[axis, plane] : trims) {
+    SCOPED_TRACE(plane);
+    CurvedBuilder step;
+    const auto sphere = step.add("IFCSPHERICALSURFACE(" +
+                                 step.placement({0, 0, 0}) + ",2.)");
+    step.face({sphericalRimAndDisk(step, axis, plane)}, sphere);
+    const auto brep = step.finish();
+    const auto model = LoadFromStep(fixture(step.definitions, brep));
+    ASSERT_NO_FATAL_FAILURE(complete(model));
+    watertight(model);
+    EXPECT_NEAR(volume(model), sphericalCapVolume(-plane), .03);
+    expectSphericalRimAndDisk(model, axis, plane);
+    for (const auto &vertex : model.vertices) {
+      const glm::dvec3 p(vertex.position), normal(vertex.normal);
+      if (glm::dot(normal, axis) > .99999 &&
+          std::abs(glm::dot(p, axis) - plane) < 1e-6)
+        continue;
+      EXPECT_NEAR(glm::length(p), 2., .0011);
+      EXPECT_GT(glm::dot(p / 2., normal), .99999);
+    }
+  }
+}
+
 std::string sphericalFullSeamWithHole(glm::dvec3 axis, double plane) {
   CurvedBuilder step;
   const auto north = step.point({0, 0, 2}), south = step.point({0, 0, -2});
@@ -2219,7 +2248,7 @@ std::string sphericalFullSeamWithHole(glm::dvec3 axis, double plane) {
       step.add("IFCSPHERICALSURFACE(" + step.placement({0, 0, 0}) + ",2.)");
   const auto seam =
       sphericalMeridianSeam(step, surface, south, north, -90., 90.);
-  const auto hole = sphericalSeamHoleAndDisk(step, axis, plane);
+  const auto hole = sphericalRimAndDisk(step, axis, plane);
   step.face({step.bound({{seam, true}, {seam, false}}), hole}, surface);
   const auto brep = step.finish();
   return fixture(step.definitions + degrees(), brep);
@@ -2232,7 +2261,7 @@ TEST(IfcCurvedBrep, SphericalFullMeridianSeamRetainsAnOffCutHoleAndDisk) {
   ASSERT_NO_FATAL_FAILURE(complete(model));
   watertight(model);
   EXPECT_NEAR(volume(model), 32 * pi / 3 - sphericalCapVolume(plane), .06);
-  expectSphericalSeamHoleDisk(model, axis, plane);
+  expectSphericalRimAndDisk(model, axis, plane);
 }
 
 TEST(IfcCurvedBrep, SphericalFullMeridianSeamMovesGeneratedCutAroundHole) {
@@ -2244,7 +2273,7 @@ TEST(IfcCurvedBrep, SphericalFullMeridianSeamMovesGeneratedCutAroundHole) {
   ASSERT_NO_FATAL_FAILURE(complete(model));
   watertight(model);
   EXPECT_NEAR(volume(model), 32 * pi / 3 - sphericalCapVolume(plane), .06);
-  expectSphericalSeamHoleDisk(model, axis, plane);
+  expectSphericalRimAndDisk(model, axis, plane);
 
   std::set<float> authoredHeights;
   for (const auto &vertex : model.vertices) {
@@ -2272,8 +2301,8 @@ TEST(IfcCurvedBrep, SphericalTrimmedMeridianSeamMovesGeneratedCutAroundHoles) {
   const glm::dvec3 lowerAxis(-.6, 0, .8);
   const double polar = pi / 15, upperPlane = radius * std::cos(pi / 30);
   const glm::dvec3 upperAxis(-std::sin(polar), 0, std::cos(polar));
-  const auto lowerHole = sphericalSeamHoleAndDisk(step, lowerAxis, lowerPlane);
-  const auto upperHole = sphericalSeamHoleAndDisk(step, upperAxis, upperPlane);
+  const auto lowerHole = sphericalRimAndDisk(step, lowerAxis, lowerPlane);
+  const auto upperHole = sphericalRimAndDisk(step, upperAxis, upperPlane);
   step.face({step.bound({{seam, false}, {rim.edge, true}, {seam, true}}),
              lowerHole, upperHole},
             surface);
@@ -2288,8 +2317,8 @@ TEST(IfcCurvedBrep, SphericalTrimmedMeridianSeamMovesGeneratedCutAroundHoles) {
               sphericalCapVolume(rimHeight) - sphericalCapVolume(lowerPlane) -
                   sphericalCapVolume(upperPlane),
               .015);
-  expectSphericalSeamHoleDisk(model, lowerAxis, lowerPlane);
-  expectSphericalSeamHoleDisk(model, upperAxis, upperPlane);
+  expectSphericalRimAndDisk(model, lowerAxis, lowerPlane);
+  expectSphericalRimAndDisk(model, upperAxis, upperPlane);
   std::set<float> authoredHeights;
   for (const auto &vertex : model.vertices) {
     const auto p = vertex.position;

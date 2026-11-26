@@ -21,6 +21,10 @@ STRIPS = (
 CENTERLINE_THICKNESS = .22
 RADIUS = .98
 ANGLE = math.radians(64)
+HOLLOW_SWEEP = 3
+HOLLOW_OUTER_RADIUS, HOLLOW_THICKNESS = 1.04, .34
+HOLLOW_INNER_RADIUS = HOLLOW_OUTER_RADIUS - HOLLOW_THICKNESS
+HOLLOW_TRIM_END = 1.5 * math.pi
 WITNESSES = (
     (0, "left panel", (-.58, .45), True),
     (0, "right panel", (.53, .50), True),
@@ -34,12 +38,25 @@ WITNESSES = (
     (2, "right arc flank", (.60, .51), True),
     (2, "outside cylinder trim", (1.10, .42), False),
     (2, "above cylinder", (.04, 1.02), False),
+    (HOLLOW_SWEEP, "near exterior wall", (-.63, .40), True),
+    (HOLLOW_SWEEP, "near exterior flank", (-.36, .54), True),
+    (HOLLOW_SWEEP, "interior through open quarter", (.34, .40), True),
+    (HOLLOW_SWEEP, "interior flank", (.53, .52), True),
+    (HOLLOW_SWEEP, "outside hollow wall", (1.18, .43), False),
+    (HOLLOW_SWEEP, "above hollow sweep", (.36, 1.08), False),
 )
 FIXTURE = Fixture((
     Profile("Kinked centerline", (-2.78, -.45), (.16, .78, .68)),
     Profile("Two composite charts", (0., -.45), (.83, .22, .12)),
     Profile("Trimmed circular sweep", (2.76, -.45), (.68, .35, .89)),
+    Profile("Trimmed hollow sweep", (0., -1.65), (.94, .62, .10)),
 ), WITNESSES, None, None)
+INTERIOR_SPANS = (
+    ((-.68, -.26), (.27, .67)),
+    ((-.81, -.52), (.56, .86)),
+    ((-.58, .58),),
+    ((-.74, -.33), (.26, .48)),
+)
 
 
 def polyline(step, points):
@@ -60,12 +77,17 @@ def write_fixture(path):
     composite = step.add("IFCCOMPOSITEPROFILEDEF", ".CURVE.", "$",
                          "(" + ",".join(children) + ")", "$")
     circle = step.add("IFCCIRCLEPROFILEDEF", ".CURVE.", "$", "$", RADIUS)
-    for index, (product, profile) in enumerate(zip(FIXTURE.products, (centerline, composite, circle), strict=True)):
+    hollow = step.add("IFCCIRCLEHOLLOWPROFILEDEF", ".CURVE.", "$", "$", HOLLOW_OUTER_RADIUS, HOLLOW_THICKNESS)
+    profiles = (centerline, composite, circle, hollow)
+    for index, (product, profile) in enumerate(zip(FIXTURE.products, profiles, strict=True)):
         sweep = step.add("IFCSURFACEOFLINEAREXTRUSION", profile, world, z_axis, DEPTH)
         if index == 2:
             # This arc faces the camera after mapping source -Y to renderer +Z.
             sweep = step.add("IFCRECTANGULARTRIMMEDSURFACE", sweep, 1.5 * math.pi - ANGLE, 0.,
                              1.5 * math.pi + ANGLE, 1., ".T.", ".T.")
+        elif index == HOLLOW_SWEEP:
+            # Removing the front-right quarter exposes the far interior wall on the right.
+            sweep = step.add("IFCRECTANGULARTRIMMEDSURFACE", sweep, 0., 0., HOLLOW_TRIM_END, 1., ".T.", ".T.")
         rgb = step.add("IFCCOLOURRGB", "$", *product.color)
         rendering = step.add("IFCSURFACESTYLERENDERING", rgb, "0.", "$", "$", "$", "$", "$", "$", ".NOTDEFINED.")
         style = step.add("IFCSURFACESTYLE", f"'{product.name}'", ".BOTH.", f"({rendering})")
@@ -97,14 +119,20 @@ def world_ray(pixel, inverse):
 def expected_depth(index, point, pixel, matrix):
     import numpy as np
 
-    ray = world_ray(pixel, np.linalg.inv(matrix))
+    ray = world_ray((pixel[0], HEIGHT - 1 - pixel[1]), np.linalg.inv(matrix))
     cx, cy = FIXTURE.products[index].center
-    if index == 2:
-        # Front intersection with x² + z² = R² about the product's Y axis.
+    if index in (2, HOLLOW_SWEEP):
+        # Intersect the cylinder about the product's Y axis. The open quarter
+        # removes both near intersections on the right, leaving the far inner wall.
+        inner_wall = index == HOLLOW_SWEEP and point[0] > 0
+        radius = RADIUS
+        if index == HOLLOW_SWEEP:
+            radius = HOLLOW_INNER_RADIUS if inner_wall else HOLLOW_OUTER_RADIUS
         a = ray[0] ** 2 + ray[2] ** 2
         b = 2 * (-cx * ray[0] + DISTANCE * ray[2])
-        c = cx ** 2 + DISTANCE ** 2 - RADIUS ** 2
-        t = (-b - math.sqrt(b * b - 4 * a * c)) / (2 * a)
+        c = cx ** 2 + DISTANCE ** 2 - radius ** 2
+        root = math.sqrt(b * b - 4 * a * c)
+        t = (-b + (root if inner_wall else -root)) / (2 * a)
     else:
         edges = [(a, b) for path in STRIPS[index] for a, b in zip(path, path[1:])]
         a, b = next((a, b) for a, b in edges if a[0] < point[0] < b[0])
@@ -113,8 +141,22 @@ def expected_depth(index, point, pixel, matrix):
         t = (intercept - DISTANCE) / (ray[2] - slope * ray[0])
     hit = t * ray + [0., 0., DISTANCE]
     require(cy < hit[1] < cy + DEPTH, f"Depth witness leaves expected sweep: {point}")
+    if index == HOLLOW_SWEEP:
+        angle = math.atan2(-hit[2], hit[0] - cx) % math.tau
+        require(0 < angle < HOLLOW_TRIM_END, f"Depth witness leaves hollow sweep's angular trim: {point}")
     clip = matrix @ [*hit, 1.]
     return clip[2] / clip[3]
+
+
+def check_interior(pixels, visible, mask, label):
+    import numpy as np
+
+    lit = pixels[mask].mean(axis=0)
+    coverage = float(np.mean(visible[mask]))
+    contrast = float(lit.max() - lit.min())
+    require(coverage > .97 and contrast > 20., f"Missing or unstyled {label}: {coverage}, {lit.tolist()}")
+    return dict(interiorPixels=int(np.sum(mask)), visibleFraction=coverage,
+                meanRgb8=lit.tolist(), meanChannelContrast=contrast)
 
 
 def check_pixels(image, fixture):
@@ -133,16 +175,13 @@ def check_pixels(image, fixture):
         cx, cy = product.center
         # A conservative interior region excludes the perspective-scaled
         # endpoints, join, chart gap, and curved trim silhouette.
-        spans = ((-.68, -.26), (.27, .67)) if index == 0 else (
-            ((-.81, -.52), (.56, .86)) if index == 1 else ((-.58, .58),))
-        spans_mask = np.logical_or.reduce([(x > cx + left) & (x < cx + right) for left, right in spans])
-        inner = spans_mask & (y > cy + .13) & (y < cy + DEPTH - .13)
-        lit = pixels[inner].mean(axis=0)
-        coverage = float(np.mean(visible[inner]))
-        contrast = float(lit.max() - lit.min())
-        require(coverage > .97 and contrast > 20., f"Missing or unstyled {product.name}: {coverage}, {lit.tolist()}")
-        results[product.name] = dict(interiorPixels=int(np.sum(inner)), visibleFraction=coverage,
-                                     meanRgb8=lit.tolist(), meanChannelContrast=contrast)
+        height = (y > cy + .13) & (y < cy + DEPTH - .13)
+        regions = [height & (x > cx + left) & (x < cx + right) for left, right in INTERIOR_SPANS[index]]
+        result = check_interior(pixels, visible, np.logical_or.reduce(regions), product.name)
+        if index == HOLLOW_SWEEP:
+            for wall, region in zip(("outerWall", "innerWall"), regions, strict=True):
+                result[wall] = check_interior(pixels, visible, region, f"{product.name} {wall}")
+        results[product.name] = result
     return results
 
 
