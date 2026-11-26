@@ -276,8 +276,10 @@ statistics, submission-matched GPU timings and collection latency, and VMA
 allocations on device-local heaps. The whole-graphics timestamp span includes
 GPU waits within the command buffer. Presentation has its own CPU phase.
 The final screenshot writes the telemetry and is excluded from the steady sample.
-The hidden capture window does not process live viewport input, so desktop cursor
-hover cannot insert a synchronous pick readback into the measurement.
+The benchmark disables editor input, so desktop cursor hover cannot insert a
+synchronous pick readback into the measurement. Add `--visible` to measure
+presentation with a visible window. On a ray-query device, `--width 1920
+--height 1080 --soft-ray-samples 24` supplies a heavier graphics workload.
 
 For glTF deformation, the native playback regression exercises skinning and
 morph targets at the same three slot counts and compares the final pose with

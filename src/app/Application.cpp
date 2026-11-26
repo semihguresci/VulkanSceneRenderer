@@ -387,9 +387,9 @@ void Application::screenshotCaptureLoop() {
                             ? config_.screenshotFixedTimestepSeconds
                             : 1.0f / 60.0f;
   const bool scriptedViewport = sequence && (sequence->hasViewportPointer() || sequence->hasNodeGizmo());
-  // A hidden capture should not issue a synchronous hover readback for the
+  // Unattended captures should not issue a synchronous hover readback for the
   // desktop cursor. Explicit capture events still drive viewport interaction.
-  const bool useLiveViewportInput = config_.windowVisible && !scriptedViewport;
+  const bool useLiveViewportInput = config_.windowVisible && config_.enableGui && !scriptedViewport;
 
   for (uint32_t frameNumber = 1; !window_->shouldClose() &&
        (captureSampleSeries ? checkpoint != sampleSeries.end() : frameNumber <= captureFrame);
