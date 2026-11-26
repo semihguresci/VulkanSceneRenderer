@@ -29,13 +29,14 @@
 [[vk::binding(8, 3)]] Texture2D<uint4> previousReflection;
 [[vk::binding(9, 3)]] [[vk::image_format("rgba32ui")]] RWTexture2D<uint4> currentReflection;
 [[vk::binding(10, 3)]] Texture2D<float2> depthIntervals;
+[[vk::binding(11, 3)]] Texture2D<uint> opaqueObjectIds;
 
 struct ScreenReflectionConstants
 {
     uint2 extent;
     uint maxSteps;
     uint debugView;
-    uint4 history; // save, reproject, virtual depth mip count (zero uses the linear trace), reserved
+    uint4 history; // save, reproject, virtual depth mip count (zero uses the linear trace), opaque IDs available
 #if SCREEN_REFLECTION_RAY_QUERY
     uint4 rayLimits;
     float4 sectionPlane;
@@ -108,7 +109,7 @@ uint reflectionHash(uint value)
 
 float3 sampleRoughDirection(float3 direction, float roughness, uint2 pixel)
 {
-    if (settings.history.x == 0u || roughness <= 0.12)
+    if (settings.history.x == 0u || settings.history.w == 0u || roughness <= 0.12)
         return direction;
     uint seed = reflectionHash(pixel.x + pixel.y * settings.extent.x) ^ camera.temporalInfo.y;
     float2 noise = float2(reflectionHash(seed) & 0xffffu, reflectionHash(seed ^ 0x934ff631u) & 0xffffu) / 65536.0;
@@ -131,15 +132,26 @@ float3 unpackReflectionNormal(uint bits)
     return SafeNormalize(components * (2.0 / 31.0) - 1.0, float3(0, 1, 0));
 }
 
+uint reflectionHistoryFingerprint(uint2 receiver, uint2 screen, uint2 ray, float rayShare)
+{
+    uint key = reflectionHash(0xd9f5a1dbu ^ receiver.x);
+    key = reflectionHash(key ^ receiver.y);
+    key = reflectionHash(key ^ screen.x);
+    key = reflectionHash(key ^ screen.y);
+    key = reflectionHash(key ^ ray.x);
+    key = reflectionHash(key ^ ray.y);
+    return reflectionHash(key ^ uint(round(saturate(rayShare) * 8.0)));
+}
+
 // History stores the signed correction per unit of replacement confidence.
 // Only the current sample determines how much of the base lobe is replaced.
-float3 filterReflection(int2 pixel, float3 world, float3 normal, uint materialIndex, uint hitKey,
+float3 filterReflection(int2 pixel, float3 world, float3 normal, uint fingerprint,
     float hitDistance, float roughness, float confidence, float3 correction, out bool accepted,
     out uint4 stored)
 {
     accepted = false;
     stored = uint4(0);
-    if (settings.history.x == 0u || materialIndex > 0xffffu || hitKey > 0xffffu || confidence < 0.01)
+    if (confidence < 0.01)
         return correction;
     float depth = sceneDepth.Load(int3(pixel, 0));
     if (depth < 1e-5)
@@ -157,9 +169,9 @@ float3 filterReflection(int2 pixel, float3 world, float3 normal, uint materialIn
             float previousDepth = f16tof32(past.z & 0xffffu);
             float3 previousWorld;
             if (previousConfidence > 0.0 && abs(previousConfidence - confidence) < 0.25 &&
-                (past.z >> 16u) == materialIndex && (past.w >> 16u) == hitKey &&
+                past.w == fingerprint &&
                 abs(float(past.y >> 24u) - float(distanceCode)) <= 2.0 + 12.0 * roughness &&
-                dot(unpackReflectionNormal(past.w), normal) > 0.94 &&
+                dot(unpackReflectionNormal(past.z >> 16u), normal) > 0.94 &&
                 TryReconstructWorldPosition(reflectionPixelUv(address), previousDepth,
                     camera.previousInverseViewProj, previousWorld) &&
                 distance(world, previousWorld) < 0.02 + 0.012 * reflectionViewDepth(world))
@@ -184,7 +196,7 @@ float3 filterReflection(int2 pixel, float3 world, float3 normal, uint materialIn
     uint confidenceCode = uint(round(saturate(confidence) * 255.0));
     stored = uint4(f32tof16(correction.x) | (f32tof16(correction.y) << 16u),
         f32tof16(correction.z) | (confidenceCode << 16u) | (distanceCode << 24u),
-        f32tof16(depth) | (materialIndex << 16u), packReflectionNormal(normal) | (hitKey << 16u));
+        f32tof16(depth) | (packReflectionNormal(normal) << 16u), fingerprint);
     return correction;
 }
 
@@ -446,6 +458,10 @@ float3 roughReflectionColor(ReflectionHit hit, float roughness)
     float3 center;
     if (!reflectionPosition(hit.pixel, center))
         return result;
+    bool hasOpaqueIds = settings.history.w != 0u;
+    uint centerObject = hasOpaqueIds ? opaqueObjectIds.Load(int3(hit.pixel, 0)) : 0u;
+    if (hasOpaqueIds && centerObject == 0u)
+        return result;
     float centerDepth = reflectionViewDepth(center);
     float3 centerNormal = reflectionNormal(hit.pixel);
     uint centerMaterial = DecodeGBufferMaterialIndex(materialImage.Load(int3(hit.pixel, 0)).w);
@@ -455,6 +471,8 @@ float3 roughReflectionColor(ReflectionHit hit, float roughness)
     {
         int2 pixel = hit.pixel + offsets[i] * radius;
         if (any(pixel < 0) || any(pixel >= int2(settings.extent)))
+            continue;
+        if (hasOpaqueIds && opaqueObjectIds.Load(int3(pixel, 0)) != centerObject)
             continue;
         float3 world;
         if (!reflectionPosition(pixel, world) ||
@@ -518,6 +536,7 @@ void computeMain(uint3 id : SV_DispatchThreadID)
             float fallbackConfidence = 0.0;
             float fallbackDistance = 0.0;
             uint fallbackMaterial = 0u;
+            uint fallbackInstance = 0u;
 #if SCREEN_REFLECTION_RAY_QUERY
             ReflectionRayHit rayHit = {};
             float remainingConfidence = roughnessWeight - hit.confidence;
@@ -533,6 +552,7 @@ void computeMain(uint3 id : SV_DispatchThreadID)
             fallbackConfidence = remainingConfidence * saturate(rayHit.confidence);
             fallbackDistance = rayHit.distance;
             fallbackMaterial = rayHit.materialIndex;
+            fallbackInstance = rayHit.instanceIndex;
 #endif
             float replacementConfidence = hit.confidence + fallbackConfidence;
             if (settings.debugView == 1)
@@ -578,14 +598,27 @@ void computeMain(uint3 id : SV_DispatchThreadID)
                 float3 correction = change * SpecularIblReflectance(f0, brdf) * scale;
                 if (all(isfinite(correction)))
                 {
-                    bool fromRay = fallbackConfidence > hit.confidence;
-                    uint hitMaterial = fromRay ? fallbackMaterial :
-                        DecodeGBufferMaterialIndex(materialImage.Load(int3(hit.pixel, 0)).w);
-                    uint hitKey = hitMaterial < 0x8000u ? hitMaterial | (fromRay ? 0x8000u : 0u) : 0x10000u;
-                    bool accepted;
-                    correction = filterReflection(pixel, world, normal, materialIndex, hitKey,
-                        fromRay ? fallbackDistance : hit.distance, roughness,
-                        replacementConfidence, correction, accepted, stored);
+                    bool accepted = false;
+                    if (settings.history.x != 0u && settings.history.w != 0u)
+                    {
+                        uint2 receiverKey = uint2(opaqueObjectIds.Load(int3(pixel, 0)), materialIndex);
+                        uint2 screenKey = uint2(0u);
+                        if (hit.confidence > 0.0)
+                        {
+                            screenKey = uint2(opaqueObjectIds.Load(int3(hit.pixel, 0)),
+                                DecodeGBufferMaterialIndex(materialImage.Load(int3(hit.pixel, 0)).w));
+                        }
+                        if (receiverKey.x != 0u && (hit.confidence <= 0.0 || screenKey.x != 0u))
+                        {
+                            uint2 rayKey = fallbackConfidence > 0.0
+                                ? uint2(fallbackInstance + 1u, fallbackMaterial) : uint2(0u);
+                            uint fingerprint = reflectionHistoryFingerprint(receiverKey, screenKey, rayKey, rayShare);
+                            bool fromRay = fallbackConfidence > hit.confidence;
+                            correction = filterReflection(pixel, world, normal, fingerprint,
+                                fromRay ? fallbackDistance : hit.distance, roughness,
+                                replacementConfidence, correction, accepted, stored);
+                        }
+                    }
                     result.rgb = settings.debugView == 4u ? float(accepted).xxx :
                         clamp(base.rgb + correction * replacementConfidence, 0.0.xxx, 65504.0.xxx);
                 }

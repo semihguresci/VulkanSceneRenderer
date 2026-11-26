@@ -1589,6 +1589,16 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     pass->end(cmd);
   });
 
+  graph.addPass(RenderPassId::ReflectionSurfaceIds, {RenderPassId::GBuffer},
+      [](VkCommandBuffer cmd, const FrameRecordParams& p) {
+        p.services.screenReflectionPass->recordSurfaceIds(cmd, p);
+      });
+  graph.setPassReadiness(RenderPassId::ReflectionSurfaceIds, [](const FrameRecordParams& p) {
+    return p.services.screenReflectionPass && p.services.screenReflectionPass->wantsSurfaceIds(p)
+        ? renderPassReady() : renderPassNotNeeded();
+  });
+  graph.setPassResourceAccess(RenderPassId::ReflectionSurfaceIds, {RenderResourceId::PickId}, {},
+                              {RenderResourceId::ReflectionSurfaceIds});
   registerRasterTransparentPickPass(graph, deferred);
 
   graph.addPass(
@@ -1755,7 +1765,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
        RenderResourceId::GBufferMaterialLayers, RenderResourceId::GBufferMaterialSheen,
        RenderResourceId::CameraBuffer, RenderResourceId::LightingData, RenderResourceId::EnvironmentMaps},
       {RenderResourceId::AmbientOcclusion, RenderResourceId::GBufferAnisotropy,
-       RenderResourceId::GBufferDiffuseTransmission, RenderResourceId::RayScene}, {RenderResourceId::SceneColor});
+       RenderResourceId::GBufferDiffuseTransmission, RenderResourceId::RayScene,
+       RenderResourceId::ReflectionSurfaceIds}, {RenderResourceId::SceneColor});
 
   graph.addPass(RenderPassId::OpenVdbVolume, recordVolume);
   graph.setPassReadiness(RenderPassId::OpenVdbVolume,

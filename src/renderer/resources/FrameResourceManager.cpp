@@ -706,14 +706,14 @@ void FrameResourceManager::create(
           f.albedo.view, f.normal.view,   f.material.view, f.emissive.view,
           f.specular.view, f.pickId.view, f.materialLayers.view,
           f.materialSheen.view, f.depthStencil.view};
-      std::array<VkImageView, 17> msaaViews = {
+      std::array<VkImageView, 18> msaaViews = {
           f.albedoMsaa.view,   f.normalMsaa.view,   f.materialMsaa.view,
           f.emissiveMsaa.view, f.specularMsaa.view, f.pickIdMsaa.view,
           f.materialLayersMsaa.view, f.materialSheenMsaa.view,
           f.depthStencilMsaa.view,
           f.albedo.view,       f.normal.view,       f.material.view,
           f.emissive.view,     f.specular.view,     f.materialLayers.view,
-          f.materialSheen.view, f.depthStencil.view};
+          f.materialSheen.view, f.depthStencil.view, f.pickId.view};
       RenderingTargetCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = gBufferPass_;
       fbi.attachmentCount = useMsaa ? static_cast<uint32_t>(msaaViews.size())
@@ -732,14 +732,14 @@ void FrameResourceManager::create(
           f.albedo.view, f.normal.view,   f.material.view, f.emissive.view,
           f.specular.view, f.pickId.view, f.materialLayers.view,
           f.materialSheen.view, f.depthStencil.view};
-      std::array<VkImageView, 17> msaaViews = {
+      std::array<VkImageView, 18> msaaViews = {
           f.albedoMsaa.view,   f.normalMsaa.view,   f.materialMsaa.view,
           f.emissiveMsaa.view, f.specularMsaa.view, f.pickIdMsaa.view,
           f.materialLayersMsaa.view, f.materialSheenMsaa.view,
           f.depthStencilMsaa.view,
           f.albedo.view,       f.normal.view,       f.material.view,
           f.emissive.view,     f.specular.view,     f.materialLayers.view,
-          f.materialSheen.view, f.depthStencil.view};
+          f.materialSheen.view, f.depthStencil.view, f.pickId.view};
       RenderingTargetCreateInfo fbi{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
       fbi.renderPass      = bimGBufferPass_;
       fbi.attachmentCount = useMsaa ? static_cast<uint32_t>(msaaViews.size())

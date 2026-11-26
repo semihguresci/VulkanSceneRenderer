@@ -366,7 +366,8 @@ void RenderPassManager::create(VkFormat swapchainFormat,
       makeColor(materialSheenFormat, VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       gbDs};
-  std::array<VkAttachmentDescription, 17> gbMsaaAttachments = {{
+  constexpr uint32_t kResolvedPickAttachment = 17;
+  std::array<VkAttachmentDescription, 18> gbMsaaAttachments = {{
       makeColor(albedoFormat, msaaSamples,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
       makeColor(normalFormat, msaaSamples,
@@ -399,8 +400,10 @@ void RenderPassManager::create(VkFormat swapchainFormat,
       makeColor(materialSheenFormat, VK_SAMPLE_COUNT_1_BIT,
                 VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       ds,
+      makeColor(pickIdFormat, VK_SAMPLE_COUNT_1_BIT,
+                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
   }};
-  for (uint32_t i = 9u; i <= 16u; ++i) {
+  for (uint32_t i = 9u; i < gbMsaaAttachments.size(); ++i) {
     gbMsaaAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   }
   gbMsaaAttachments[16].initialLayout =
@@ -425,7 +428,9 @@ void RenderPassManager::create(VkFormat swapchainFormat,
       {11, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {12, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {13, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
-      {VK_ATTACHMENT_UNUSED, VK_IMAGE_LAYOUT_UNDEFINED},
+      // Integer object IDs resolve with sample zero, before the picking pass
+      // can replace the resolved attachment with transparent IDs.
+      {kResolvedPickAttachment, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {14, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
       {15, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL},
   }};
@@ -560,7 +565,7 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       bimGbDs};
-  std::array<VkAttachmentDescription, 17> bimGbMsaaAttachments = {{
+  std::array<VkAttachmentDescription, 18> bimGbMsaaAttachments = {{
       makeLoadedColor(albedoFormat, msaaSamples,
                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                       VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL),
@@ -608,8 +613,11 @@ void RenderPassManager::create(VkFormat swapchainFormat,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                       VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
       ds,
+      makeLoadedColor(pickIdFormat, VK_SAMPLE_COUNT_1_BIT,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL),
   }};
-  for (uint32_t i = 9u; i <= 16u; ++i) {
+  for (uint32_t i = 9u; i < bimGbMsaaAttachments.size(); ++i) {
     bimGbMsaaAttachments[i].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
   }
   bimGbMsaaAttachments[16].initialLayout =

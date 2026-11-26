@@ -470,6 +470,181 @@ def verify_energy(output, capture, evidence):
     return result
 
 
+def history_trail(previous, current, observed):
+    contrast = previous - current
+    error = observed - current
+    energy = np.square(contrast).sum(axis=-1)
+    changed = energy > .01
+    assert changed.mean() > .95, "Disocclusion fixture did not change enough pixels"
+    stale = np.maximum(np.sum(error * contrast, axis=-1)[changed], 0) / energy[changed]
+    return dict(pixels=int(changed.sum()), maxTrailFraction=float(stale.max()),
+                p95TrailFraction=float(np.percentile(stale, 95)), maxLinearError=float(np.abs(error).max()),
+                meanLinearError=float(np.abs(error).mean()))
+
+
+def verify_disocclusion(output, capture):
+    (x, y), receiver, _, distance = analytic_hit()
+    patch = np.s_[y - 4:y + 5, x - 4:x + 5]
+    direction = (receiver - EYE) * [1, -1, 1]
+    direction /= np.linalg.norm(direction)
+    rear = CARD_CENTER + direction * .045
+    samples = [1, 3, 4, 5, 6, 8]
+    motion = {"schemaVersion": 1, "frames": max(samples), "sampleFrames": samples,
+              "objectName": "Red card",
+              "objectTranslation": [{"frame": 1, "translation": [0, 0, 0]},
+                                    {"frame": 4, "translation": [0, 0, 0]},
+                                    {"frame": 5, "translation": [2.5, 0, 0]}],
+              "camera": [{"frame": 1, "position": EYE.tolist(), "target": TARGET.tolist()},
+                         {"frame": 8, "position": (EYE + [.035, 0, 0]).tolist(), "target": TARGET.tolist()}]}
+    cold_start = {**motion, "events": [{"frame": frame, "reset": True} for frame in samples]}
+    warm_color = [.72, .22, .12, 1.]
+    rear_color = [.56, .34, .20, 1.]
+
+    def tint_card(asset, primitive, _material):
+        primitive["attributes"]["COLOR_0"] = asset.accessor("VEC4", [warm_color] * 4)
+
+    def tint_rear(asset, primitive, _material):
+        primitive["material"] = asset.model["meshes"][1]["primitives"][0]["material"]
+        primitive["attributes"]["COLOR_0"] = asset.accessor("VEC4", [rear_color] * 4)
+
+    result = {}
+    for case in ("miss", "same-material"):
+        model = f"denoise-{case}.gltf"
+        options = {} if case == "miss" else dict(blocker=(rear, (.50, .61), 1), blocker_setup=tint_rear)
+        fixture(output / model, .045, card_color=(1, 1, 1, 1), card_size=(.25, .42), card_setup=tint_card, **options)
+        if case == "same-material":
+            asset = json.loads((output / model).read_bytes())
+            assert asset["meshes"][1]["primitives"][0]["material"] == asset["meshes"][2]["primitives"][0]["material"]
+
+        def render(label, mode, sequence=motion, **settings):
+            return capture(f"denoise-{case}-{label}", mode, model=model, no_query=True, linear=True,
+                           environment=.35 if case == "miss" else 0, bounce=0, sequence=sequence, **settings)
+
+        enabled, enabled_routes = render("history-on", "high")
+        reset, reset_routes = render("same-frame-reset", "high", cold_start)
+        reuse, _ = render("accepted", "history")
+        hits, _ = render("hit-uv", "hit-uv")
+        np.testing.assert_array_equal(enabled[1], reset[1])
+        assert enabled_routes[4]["route"]["historyReprojected"] and enabled_routes[5]["route"]["historyReprojected"]
+        assert all(not state["route"]["historyReprojected"] for state in reset_routes.values())
+        assert reuse[4][patch][..., 0].mean() > .90 and reuse[5][patch][..., 0].mean() < .08, (case, reuse[5][patch])
+        before, after = (image[patch][..., 2] for image in (hits[4], hits[5]))
+        assert abs(float(np.median(before)) - distance) < .14 and np.all(before > 0), (case, before)
+        if case == "miss":
+            assert np.all(after == 0), after
+        else:
+            assert np.all(after > 0) and .020 < float(np.median(after - before)) < .095, (before, after)
+            assert reuse[6][patch][..., 0].mean() > .85, (case, reuse[6][patch])
+
+        comparisons = {}
+        for frame in (5, 6, 8):
+            scores = history_trail(reset[4][patch], reset[frame][patch], enabled[frame][patch])
+            assert scores["maxTrailFraction"] < .015 and scores["maxLinearError"] < .006, (case, frame, scores)
+            comparisons[frame] = scores
+
+        disabled, disabled_routes = render("history-disabled", "high", no_history=True)
+        assert all(not state["route"]["historyAvailable"] and not state["route"]["historyReprojected"]
+                   for state in disabled_routes.values()), disabled_routes
+        for frame in samples:
+            np.testing.assert_array_equal(disabled[frame], reset[frame], err_msg=f"History fallback frame {frame} in {case}")
+        enabled_resources = enabled_routes[4]["route"]
+        disabled_resources = disabled_routes[4]["route"]
+        enabled_bytes = enabled_resources["historyAllocationBytes"]
+        disabled_bytes = disabled_resources["historyAllocationBytes"]
+        assert enabled_bytes >= WIDTH * HEIGHT * 32 and 0 < disabled_bytes < enabled_bytes // 100
+        id_bytes = enabled_resources["surfaceIdAllocationBytes"]
+        assert id_bytes >= WIDTH * HEIGHT * 4 and disabled_resources["surfaceIdAllocationBytes"] == id_bytes
+        for routes in (enabled_routes, disabled_routes):
+            snapshot = routes[4]["surfaceIdPass"]
+            assert snapshot and snapshot["active"] and snapshot["gpuTimed"] and snapshot["gpuMs"] > 0, snapshot
+        assert (enabled_resources["allocationBytes"] - disabled_resources["allocationBytes"]
+                == enabled_bytes - disabled_bytes), (case, enabled_resources, disabled_resources)
+        result[case] = dict(receiverPixel=[x, y], sampleCount=int(before.size), staleColor=comparisons,
+                            historyAccepted={f: float(reuse[f][patch][..., 0].mean()) for f in samples},
+                            warmHitDistance=float(np.median(before)), currentHitDistance=float(np.median(after)),
+                            historyBytes=enabled_bytes, fallbackHistoryBytes=disabled_bytes,
+                            surfaceIdBytes=id_bytes, disabledMatchesReset=True)
+        if case == "same-material" and 4 in enabled_routes[4]["supportedMsaaSamples"]:
+            live_msaa, live_routes = render("msaa4-history-on", "high", msaa=4)
+            reset_msaa, cold_routes = render("msaa4-same-frame-reset", "high", cold_start, msaa=4)
+            reuse_msaa, debug_routes = render("msaa4-accepted", "history", msaa=4)
+            for routes in (live_routes, cold_routes, debug_routes):
+                assert routes[4]["msaaSamples"] == 4 and routes[5]["msaaSamples"] == 4, routes
+                assert routes[5]["surfaceIdPass"]["active"], routes[5]
+            assert live_routes[5]["route"]["historyReprojected"] and not cold_routes[5]["route"]["historyReprojected"]
+            reused = {f: float(reuse_msaa[f][patch][..., 0].mean()) for f in (4, 5)}
+            assert reused[4] > .90 and reused[5] < .08, reused
+            scores = history_trail(reset_msaa[4][patch], reset_msaa[5][patch], live_msaa[5][patch])
+            assert scores["maxTrailFraction"] < .015 and scores["maxLinearError"] < .006, scores
+            result[case]["msaa4"] = dict(historyAccepted=reused, firstFrame=scores)
+    return result
+
+
+def verify_stationary_denoising(output, capture):
+    texture_name = "denoise-stripes.png"
+    stripes = np.where((np.arange(40) // 3) % 2 == 0, 148, 169).astype(np.uint8)
+    Image.fromarray(np.tile(stripes[np.newaxis, :, np.newaxis], (8, 1, 3))).save(output / texture_name)
+
+    def stripe_card(asset, primitive, material):
+        asset.model.update(images=[{"uri": texture_name}], textures=[{"source": 0, "sampler": 0}],
+                           samplers=[{"minFilter": 9728, "magFilter": 9728}])
+        primitive["attributes"]["TEXCOORD_0"] = asset.accessor("VEC2", [[0, 0], [1, 0], [1, 1], [0, 1]])
+        material["pbrMetallicRoughness"]["baseColorTexture"] = {"index": 0}
+
+    model = "denoise-stripes.gltf"
+    fixture(output / model, .42, card_color=(1, 1, 1, 1), card_size=(.83, .65), card_setup=stripe_card)
+    (x, y), _, _, _ = analytic_hit()
+    patch = np.s_[y - 5:y + 6, x - 7:x + 8]
+    samples = list(range(1, 17))
+    stationary = {"schemaVersion": 1, "frames": max(samples), "sampleFrames": samples}
+    cold_start = {**stationary, "events": [{"frame": frame, "reset": True} for frame in samples]}
+    settings = dict(model=model, linear=True, environment=0, bounce=0, no_query=True)
+    live, live_routes = capture("denoise-rough-history-on", "high", sequence=stationary, **settings)
+    spatial, spatial_routes = capture("denoise-rough-spatial-only", "high", sequence=cold_start, **settings)
+    np.testing.assert_array_equal(live[1], spatial[1])
+    assert all(live_routes[f]["route"]["historyReprojected"] for f in samples[1:])
+    assert not any(state["route"]["historyReprojected"] for state in spatial_routes.values())
+    live_patch, spatial_patch = (np.stack([images[f][patch] for f in samples[3:]]) for images in (live, spatial))
+    live_std, spatial_std = (float(np.sqrt(data.var(axis=0).mean())) for data in (live_patch, spatial_patch))
+    live_mean, spatial_mean = (float(data.mean()) for data in (live_patch, spatial_patch))
+    assert spatial_std > .003 and live_std <= .90 * spatial_std, (live_std, spatial_std)
+    assert spatial_mean > .1 and abs(live_mean - spatial_mean) < .012, (live_mean, spatial_mean)
+    return dict(receiverPixel=[x, y], comparedFrames=samples[3:], historySigma=live_std, spatialSigma=spatial_std,
+                historyMean=live_mean, spatialMean=spatial_mean)
+
+
+def verify_denoise_lifecycle(output, capture):
+    alternate_model = output / "denoise-reload.gltf"
+    fixture(alternate_model, .045, card_color=(.02, .24, .73, 1))
+    expected = {1: False, 3: True, 5: False, 6: True, 7: False, 8: False, 9: False,
+                10: True, 11: False, 12: True, 13: False, 15: True, 16: False, 17: True,
+                18: False, 19: True, 20: False, 21: True}
+    sequence = {"schemaVersion": 1, "frames": max(expected), "sampleFrames": list(expected),
+                "camera": [{"frame": 1, "position": EYE.tolist(), "target": TARGET.tolist()},
+                           {"frame": 6, "position": EYE.tolist(), "target": TARGET.tolist()},
+                           {"frame": 7, "position": (EYE + [6, 0, 0]).tolist(), "target": TARGET.tolist()}],
+                "events": [{"frame": 5, "reset": True}, {"frame": 8, "technique": "forward-raster"},
+                           {"frame": 9, "technique": "deferred-raster"},
+                           {"frame": 11, "materialEdit": {"sourceMaterial": 0, "values": [
+                               {"property": "pbrMetallicRoughness/roughnessFactor", "value": .22}]}},
+                           {"frame": 13, "resize": list(ODD_EXTENT)}, {"frame": 16, "lightAdd": {"type": "point"}},
+                           {"frame": 18, "sectionPlane": [0, 0, -1, .8]},
+                           {"frame": 20, "reload": str(alternate_model)}]}
+    frames, samples = capture("denoise-lifecycle", "history", sequence=sequence, no_query=True)
+    observed = {frame: sample["route"]["historyReprojected"] for frame, sample in samples.items()}
+    assert observed == expected, (observed, expected)
+    assert not samples[8]["pass"] or not samples[8]["pass"]["active"], samples[8]
+    assert samples[9]["pass"]["active"], samples[9]
+    assert frames[12].shape[:2] == (HEIGHT, WIDTH) and frames[13].shape[:2] == ODD_EXTENT[::-1]
+    assert samples[13]["route"]["historyAllocationBytes"] >= math.prod(ODD_EXTENT) * 32
+    return dict(historyAfterEvents=observed, originalExtent=[WIDTH, HEIGHT], resizedExtent=list(ODD_EXTENT))
+
+
+def verify_denoising(output, capture):
+    return dict(disocclusion=verify_disocclusion(output, capture), stationary=verify_stationary_denoising(output, capture),
+                lifecycle=verify_denoise_lifecycle(output, capture))
+
+
 def ray_policy_blocker(profile):
     def configure(asset, primitive, material):
         if profile == "textured":
@@ -705,6 +880,7 @@ def main():
     parser.add_argument("--missing-ray-renderer", type=Path,
                         help="With --ray-policy, check a staged runtime without the optional ray reflection shader")
     parser.add_argument("--temporal", action="store_true", help="Also verify reflection history with motion and cuts")
+    parser.add_argument("--denoise", action="store_true", help="Measure scene-linear disocclusion trails and denoising")
     parser.add_argument("--marcher", action="store_true", help="Run the focused raster-only Hi-Z and numeric EXR checks")
     parser.add_argument("--energy", action="store_true", help="Check scene-linear furnace energy and screen-edge fading")
     parser.add_argument("--mip-zero-renderer", type=Path,
@@ -722,6 +898,8 @@ def main():
         parser.error("--energy runs separately from --marcher, --temporal, and --ray-fallback")
     if args.ray_policy and (args.energy or args.marcher or args.temporal or args.ray_fallback):
         parser.error("--ray-policy runs separately from the other suites")
+    if args.denoise and (args.energy or args.marcher or args.temporal or args.ray_fallback or args.ray_policy):
+        parser.error("--denoise runs separately from the other suites")
     if args.missing_ray_renderer and not args.ray_policy:
         parser.error("--missing-ray-renderer requires --ray-policy")
     if args.mip_zero_renderer and not args.marcher:
@@ -742,11 +920,12 @@ def main():
 
     def capture(label, mode, *, model="mirror.gltf", forward=False, no_query=False, environment=0,
                 hybrid=False, target=TARGET, directional=0, sequence=None, taa=False, extent=(WIDTH, HEIGHT),
-                linear=False, alternate=None, hdr=None, bounce=None, ray_available=None, light_direction=(0, 0, -1)):
+                linear=False, alternate=None, hdr=None, bounce=None, ray_available=None, light_direction=(0, 0, -1),
+                no_history=False, msaa=1):
         executable = alternate if alternate else renderer
         image = output / (f"{label}.exr" if linear else f"{label}.png")
         command = [str(executable), "--hidden", "--no-ui", "--validation", "--import-scale", "1",
-                   "--width", str(extent[0]), "--height", str(extent[1]), "--msaa", "1", "--taa" if taa else "--no-taa",
+                   "--width", str(extent[0]), "--height", str(extent[1]), "--msaa", str(msaa), "--taa" if taa else "--no-taa",
                    "--no-bloom", "--no-ddgi", "--ray-shadows", "raster", "--display-mode", "lit",
                    "--environment-intensity", str(environment), "--directional-intensity", str(directional),
                    "--directional-direction", *map(str, light_direction), "--exposure", "1",
@@ -761,6 +940,8 @@ def main():
             command.extend(("--sky", "plain", "--sky-horizon", "1", "1", "1"))
         if bounce is not None:
             command.extend(("--bounce-intensity", str(bounce)))
+        if no_history:
+            command.append("--no-screen-reflections-history")
         if not linear:
             command.append("--screenshot-viewport")
         if sequence is None:
@@ -780,7 +961,7 @@ def main():
         log_path.write_text(log, encoding="utf-8")
         assert run.returncode == 0 and not validation_log_error(log), log_path
         layer = None
-        if args.marcher or args.energy or args.ray_policy or validation:
+        if args.marcher or args.energy or args.ray_policy or args.denoise or validation:
             matched = VALIDATION_INSERTED.search(log)
             assert matched, f"Could not confirm Khronos validation layer insertion: {log_path}"
             layer = file_identity(executable.parent / Path(matched[1]))
@@ -803,10 +984,16 @@ def main():
                 route = receipt["screenReflections"]
                 pass_state = next((p for p in receipt["passes"] if p["name"] == "ScreenReflections"), None)
                 routes[frame] = {"route": route, "pass": pass_state}
-                if linear:
-                    assert receipt["resolution"] == list(extent) and receipt["validationEnabled"], receipt
+                if args.denoise:
+                    routes[frame].update(msaaSamples=receipt["msaaSamples"], supportedMsaaSamples=receipt["supportedMsaaSamples"])
+                    routes[frame]["surfaceIdPass"] = next(
+                        (p for p in receipt["passes"] if p["name"] == "ReflectionSurfaceIds"), None)
+                if linear or args.denoise:
+                    assert receipt["validationEnabled"], receipt
                     routes[frame].update(image=str(path), telemetry=str(path.with_suffix(".telemetry.json")),
                                          log=str(log_path), command=command, validationLayer=layer)
+                if linear:
+                    assert receipt["resolution"] == list(extent), receipt
                     images[frame] = read_linear(path, extent)
                 else:
                     with Image.open(path) as result:
@@ -836,7 +1023,7 @@ def main():
         with Image.open(image) as result:
             return np.array(result.convert("RGB"))
 
-    if args.marcher or args.energy or args.ray_policy:
+    if args.marcher or args.energy or args.ray_policy or args.denoise:
         fallback = args.mip_zero_renderer.resolve(strict=True) if args.mip_zero_renderer else None
         missing = args.missing_ray_renderer.resolve(strict=True) if args.missing_ray_renderer else None
         renderer_id = file_identity(renderer)
@@ -861,8 +1048,10 @@ def main():
                 result["marcher"] = verify_marcher(output, capture, evidence, fallback)
             elif args.energy:
                 result["energy"] = verify_energy(output, capture, evidence)
-            else:
+            elif args.ray_policy:
                 result["rayPolicy"] = verify_ray_policy(output, capture, evidence, missing)
+            else:
+                result["denoise"] = verify_denoising(output, capture)
             assert file_identity(renderer) == renderer_id, "Renderer changed during SSR capture"
             if fallback:
                 assert file_identity(fallback) == fallback_id, "Staged mip-zero executable changed during capture"
@@ -878,8 +1067,10 @@ def main():
             print("PASS analytic SSR hit UV/distance, roughness, clipped exit, and Hi-Z at even and odd extents")
         elif args.energy:
             print("PASS constant-radiance dielectric and metal energy, roughness, and screen-edge fading")
-        else:
+        elif args.ray_policy:
             print("PASS off-screen ray coverage, section clipping, and requested raster fallback checks")
+        else:
+            print("PASS bounded linear reflection trails, stationary denoising, history fallback, and lifecycle")
         return
 
     base = capture("mirror-off", "off")

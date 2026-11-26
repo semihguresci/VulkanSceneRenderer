@@ -28,8 +28,9 @@ class ScreenReflectionPass {
   void createResources(const std::filesystem::path& shaderRoot,
                        const FrameResourceManager& frames, VkExtent2D extent,
                        VkDescriptorSetLayout lightLayout, VkDescriptorSetLayout sceneLayout,
-                       bool requestRayFallback, bool enableHistory);
+                       ScreenReflectionMode mode, bool requestRayFallback, bool enableHistory);
   [[nodiscard]] bool ready(const FrameRecordParams& frame) const;
+  [[nodiscard]] bool wantsSurfaceIds(const FrameRecordParams& frame) const;
   [[nodiscard]] bool wantsRayScene(const FrameRecordParams& frame) const;
   [[nodiscard]] bool rayFallbackAvailable() const;
   [[nodiscard]] bool rayFallbackActive() const;
@@ -37,8 +38,11 @@ class ScreenReflectionPass {
   [[nodiscard]] VkDeviceSize depthPyramidAllocationBytes() const;
   [[nodiscard]] uint32_t depthPyramidMipLevels() const;
   [[nodiscard]] bool depthPyramidUsed() const;
+  [[nodiscard]] VkDeviceSize historyAllocationBytes() const;
+  [[nodiscard]] VkDeviceSize surfaceIdAllocationBytes() const;
   [[nodiscard]] bool historyAvailable() const;
   [[nodiscard]] bool historyReprojected() const;
+  void recordSurfaceIds(VkCommandBuffer command, const FrameRecordParams& frame);
   void record(VkCommandBuffer command, const FrameRecordParams& frame);
   void onSubmitted(bool recorded) noexcept;
 

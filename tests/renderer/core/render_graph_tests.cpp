@@ -1135,6 +1135,29 @@ TEST(RenderGraphTests, DefaultScheduleModelsCurrentFrameFlow) {
                        RenderPassId::LocalShadowDepth));
 }
 
+TEST(RenderGraphTests, ReflectionIdsCaptureBothOpaqueWritersBeforeTransparentPicking) {
+  using Pass = RenderPassId;
+  using Resource = RenderResourceId;
+  RenderGraph graph;
+  graph.addPass(Pass::TransparentPick, {Pass::GBuffer}, noopRecord());
+  graph.addPass(Pass::ReflectionSurfaceIds, {Pass::GBuffer}, noopRecord());
+  graph.addPass(Pass::ScreenReflections, {Pass::TransparentPick}, noopRecord());
+  graph.addPass(Pass::BimGBuffer, {Pass::GBuffer}, noopRecord());
+  graph.addPass(Pass::GBuffer, {}, noopRecord());
+  ASSERT_TRUE(graph.setPassResourceAccess(Pass::GBuffer, {}, {}, {Resource::PickId}));
+  ASSERT_TRUE(graph.setPassResourceAccess(Pass::BimGBuffer, {Resource::PickId}, {}, {Resource::PickId}));
+  ASSERT_TRUE(graph.setPassResourceAccess(Pass::ReflectionSurfaceIds, {Resource::PickId}, {},
+                                          {Resource::ReflectionSurfaceIds}));
+  ASSERT_TRUE(graph.setPassResourceAccess(Pass::TransparentPick, {}, {}, {Resource::PickId}));
+  ASSERT_TRUE(graph.setPassResourceAccess(Pass::ScreenReflections, {}, {Resource::ReflectionSurfaceIds}, {}));
+
+  EXPECT_EQ(execute(graph), (std::vector{Pass::GBuffer, Pass::BimGBuffer, Pass::ReflectionSurfaceIds,
+                                        Pass::TransparentPick, Pass::ScreenReflections}));
+  ASSERT_TRUE(graph.setPassReadiness(Pass::ReflectionSurfaceIds, [](const FrameRecordParams&) { return notNeeded(); }));
+  EXPECT_EQ(execute(graph), (std::vector{Pass::GBuffer, Pass::BimGBuffer,
+                                        Pass::TransparentPick, Pass::ScreenReflections}));
+}
+
 TEST(RenderGraphTests, OpenVdbCompositesAfterScreenReflectionsAndBeforeFog) {
   RenderGraph graph;
   graph.addPass(RenderPassId::OitResolve, {RenderPassId::VolumetricFog},

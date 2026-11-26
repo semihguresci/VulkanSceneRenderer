@@ -21,6 +21,14 @@ constexpr bool screenReflectionModeUsesHistory(ScreenReflectionMode mode) {
          mode == ScreenReflectionMode::History;
 }
 
+inline constexpr uint64_t kScreenReflectionHistoryBudget = 128ull * 1024 * 1024;
+inline constexpr uint64_t kScreenReflectionHistoryBytesPerPixel = 2 * 4 * sizeof(uint32_t);
+
+constexpr bool screenReflectionHistoryFits(uint32_t width, uint32_t height) {
+  return width != 0 && height != 0 &&
+         uint64_t{width} * height <= kScreenReflectionHistoryBudget / kScreenReflectionHistoryBytesPerPixel;
+}
+
 constexpr bool screenReflectionModeIsTraceDiagnostic(ScreenReflectionMode mode) {
   return mode == ScreenReflectionMode::HitUv || mode == ScreenReflectionMode::MissReason;
 }

@@ -64,6 +64,7 @@ enum class RenderPassId : uint8_t {
   ScreenReflections,
   VolumetricFog,
   OpenVdbVolume,
+  ReflectionSurfaceIds,
   Count,
   Invalid = Count,
 };
@@ -117,6 +118,7 @@ enum class RenderResourceId : uint8_t {
   DdgiIrradiance,
   GBufferAnisotropy,
   GBufferDiffuseTransmission,
+  ReflectionSurfaceIds,
   Count,
   Invalid = Count,
 };
