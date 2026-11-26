@@ -22,10 +22,15 @@ SUN_COLOR = (1, .96, .9)
 OPT_IN = "CONTAINER_RUN_GPU_VOLUMETRIC_FOG"
 PERSPECTIVE_FOV = math.radians(120)
 PERSPECTIVE_DEPTH = 10
+FOG_DISTANCE = 15
+IES = "EXT_lights_ies"
+IES_PROFILE = (b"IESNA:LM-63-2002\n[TEST] Asymmetric fog fixture\nTILT=NONE\n"
+               b"1 -1 1 3 5 1 2 0 0 0\n1 1 12\n0 45 90\n0 90 180 270 360\n"
+               b"64 64 0\n8 8 0\n16 16 0\n24 24 0\n64 64 0\n")
 
 
 def fixture(path, *, step=False, blocker=False, punctual=False, transparent=False,
-            area=None, away=False, perspective=False):
+            area=None, away=False, perspective=False, ies_rotation=None):
     from gltf_accessor_runtime_regression import Asset
 
     asset = Asset()
@@ -42,15 +47,25 @@ def fixture(path, *, step=False, blocker=False, punctual=False, transparent=Fals
 
     back_depth = -2 if step or transparent else 6 - PERSPECTIVE_DEPTH
     back_width, back_height = (34, 22) if perspective else (3, 1.9)
-    quad("Back plate", [[-back_width, -back_height, back_depth], [back_width, -back_height, back_depth],
-                        [back_width, back_height, back_depth], [-back_width, back_height, back_depth]],
-         [0, 0, 1], 0)
+    if ies_rotation is None:
+        quad("Back plate", [[-back_width, -back_height, back_depth], [back_width, -back_height, back_depth],
+                            [back_width, back_height, back_depth], [-back_width, back_height, back_depth]],
+             [0, 0, 1], 0)
+    else:
+        # Leave the measured rays open beyond the nearby geometry so a shadow
+        # ending at the caster bounds produces a measurable far-end tail.
+        quad("Side reference plate", [[-3, -.25, 0], [-2.6, -.25, 0],
+                                       [-2.6, .25, 0], [-3, .25, 0]], [0, 0, 1], 0)
     if step:
         quad("Foreground plate", [[-3, -1.9, 3], [-.1, -1.9, 3], [-.1, 1.9, 3], [-3, 1.9, 3]], [0, 0, 1], 0)
     if transparent:
         quad("Alpha blend", [[-3, -1.9, 3], [.65, -1.9, 3], [.65, 1.9, 3], [-3, 1.9, 3]], [0, 0, 1], 2)
         quad("Transmissive glass", [[-.65, -1.9, 1], [3, -1.9, 1], [3, 1.9, 1], [-.65, 1.9, 1]], [0, 0, 1], 3)
-    if blocker:
+    if blocker and ies_rotation is not None:
+        # Intercept the +X lobe without covering the receiver pixels or the +Y lobe.
+        quad("IES beam blocker", [[.55, -.45, -3.75], [.55, .45, -3.75],
+                                  [.55, .45, 3], [.55, -.45, 3]], [1, 0, 0], 1)
+    elif blocker:
         quad("Side blocker", [[-1.4, -.7, -.4], [-1.4, .7, -.4], [-1.4, .7, 5.4], [-1.4, -.7, 5.4]], [1, 0, 0], 1)
     camera = len(model["nodes"])
     model["nodes"].append({"camera": 0, "translation": [0, 0, 6]})
@@ -73,6 +88,14 @@ def fixture(path, *, step=False, blocker=False, punctual=False, transparent=Fals
             extras={"areaLight": {"shape": area, "width": .8, "height": .8,
                                   "radius": .4, "range": 14}})
     model["extensionsUsed"] = ["KHR_lights_punctual", "KHR_materials_unlit"]
+    if ies_rotation is not None:
+        half_angle = math.radians(ies_rotation) / 2
+        model["nodes"][-1] = {"name": "Measured fog fixture", "translation": [0, 0, 3],
+                              "rotation": [0, 0, math.sin(half_angle), math.cos(half_angle)],
+                              "extensions": {IES: {"light": 0}}}
+        model["extensions"] = {IES: {"lights": [{"bufferView": asset.view(IES_PROFILE),
+                                                 "mimeType": "application/x-ies-lm-63"}]}}
+        model["extensionsUsed"][0] = IES
     back_color = 0 if perspective else .5
     model["materials"] = [
         {"extensions": {"KHR_materials_unlit": {}},
@@ -129,6 +152,78 @@ def expected_perspective_fog(density, albedo, sun):
     return np.broadcast_to(transmittance, scattering.shape), scattering
 
 
+def expected_ies_scattering(roi, rotation, density):
+    import numpy as np
+
+    # Integrate individual orthographic camera rays independently of the
+    # froxel grid. The unit-distance candela table depends on the emitter's
+    # polar and azimuth angles. Incoming light is unattenuated to match
+    # single scattering with geometry shadows, and the camera ray attenuates.
+    rows, columns = np.mgrid[roi[0].start:roi[0].stop, roi[1].start:roi[1].stop]
+    x = ((columns + .5) / WIDTH * 2 - 1) * 3.2
+    y = (1 - (rows + .5) / HEIGHT * 2) * 2
+    radius_sq = x * x + y * y
+    azimuth = np.mod(np.degrees(np.arctan2(y, x)) - rotation, 360)
+    candelas = np.interp(azimuth, [0, 90, 180, 270, 360], [64, 8, 16, 24, 64])
+    # The light is three units in front of the camera. Open rays integrate
+    # through the complete fog distance.
+    depth = (np.arange(4096) + .5) * (FOG_DISTANCE / 4096)
+    emitter_depth = depth - 3
+    polar = np.degrees(np.arctan2(np.sqrt(radius_sq)[..., None], emitter_depth))
+    vertical = np.interp(polar, [0, 45, 90], [1, 1, 0])
+    attenuation = np.exp(-density * depth) / (radius_sq[..., None] + emitter_depth**2)
+    scattering = candelas * np.mean(vertical * attenuation, axis=-1) * (FOG_DISTANCE * density * .9 / (4 * math.pi))
+    return float(scattering.mean())
+
+
+def verify_ies_scattering(capture, fixtures):
+    import numpy as np
+
+    regions = {"right": (slice(97, 103), slice(217, 223)),
+               "above": (slice(37, 43), slice(157, 163))}
+    cases = {"unrotated": (0, .2), "rotated": (90, .2), "lower-density": (0, .05),
+             "blocked": (0, .2)}
+    results = {}
+    for technique in TECHNIQUES:
+        result = {}
+        for name, (rotation, density) in cases.items():
+            label = f"{technique}-ies-fog-{name}"
+            pixels, state = capture(label, fixtures[name], technique, "scattering", density=density)
+            measured_lights = [light for light in state["lightEdits"]["lights"] if light.get("extension") == IES]
+            assert len(measured_lights) == state["lighting"]["pointLightCount"] == 1, (label, measured_lights)
+            assert measured_lights[0]["range"] == 0, (label, measured_lights)
+            assert state["lighting"]["directionalIntensity"] == state["lighting"]["environmentIntensity"] == 0, label
+            result[name] = {}
+            for region, roi in regions.items():
+                rgb = pixels[roi][..., ::-1].mean(axis=(0, 1))
+                entry = {"measuredRgb": rgb.tolist()}
+                if name != "blocked":
+                    expected = expected_ies_scattering(roi, rotation, density)
+                    assert np.allclose(rgb, expected, rtol=.08, atol=.0015), (label, region, rgb, expected)
+                    entry["expectedRgb"] = [expected] * 3
+                result[name][region] = entry
+            if name == "blocked":
+                assert next(record for record in state["passes"] if record["name"] == "LocalShadowDepth")["active"], label
+                assert state["lighting"]["activeLocalShadowLayers"] == 6, label
+                bright = np.array(result["unrotated"]["right"]["measuredRgb"])
+                dark = np.array(result[name]["right"]["measuredRgb"])
+                assert np.all(dark < .006 * bright + .0003), (label, bright, dark)
+                assert np.allclose(result[name]["above"]["measuredRgb"],
+                                   result["unrotated"]["above"]["measuredRgb"], rtol=.1, atol=.0015), label
+        unrotated = result["unrotated"]
+        rotated = result["rotated"]
+        assert unrotated["right"]["measuredRgb"][0] > 4 * unrotated["above"]["measuredRgb"][0], technique
+        assert rotated["above"]["measuredRgb"][0] > 2 * rotated["right"]["measuredRgb"][0], technique
+        assert result["lower-density"]["right"]["measuredRgb"][0] < .65 * unrotated["right"]["measuredRgb"][0], technique
+        results[technique] = result
+    deferred, forward = (results[technique] for technique in TECHNIQUES)
+    for name in cases:
+        for region in regions:
+            assert np.allclose(deferred[name][region]["measuredRgb"], forward[name][region]["measuredRgb"],
+                               rtol=.01, atol=.0005), (name, region, deferred[name][region], forward[name][region])
+    return results
+
+
 def read_pixels(path):
     import cv2
     import numpy as np
@@ -149,8 +244,10 @@ def main():
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true", help="Keep each run in a fresh output subdirectory")
     parser.add_argument("--require-opt-in", action="store_true", help=f"Require {OPT_IN}=1 for native runs")
-    parser.add_argument("--with-mode-switches", action="store_true",
-                        help="Also validate switching FSR raster, reference path tracing, and viewport size")
+    modes = parser.add_mutually_exclusive_group()
+    modes.add_argument("--with-mode-switches", action="store_true",
+                       help="Also validate switching FSR raster, reference path tracing, and viewport size")
+    modes.add_argument("--ies-only", action="store_true", help="Run just the measured-light fog captures")
     args = parser.parse_args()
     if args.require_opt_in and not args.generate_only and os.environ.get(OPT_IN) != "1":
         print(f"Set {OPT_IN}=1 to run native volumetric fog validation.", flush=True)
@@ -167,19 +264,24 @@ def main():
         output.mkdir(parents=True, exist_ok=False)
     print(f"Volumetric fog fixtures and captures {output}", flush=True)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
-    depth_scene = fixture(output / "depth-step.gltf", step=True)
-    perspective_scene = fixture(output / "perspective-plate.gltf", perspective=True)
-    layered_scene = fixture(output / "transparent-layers.gltf", transparent=True)
-    clear_directional = fixture(output / "clear-directional.gltf")
-    blocked_directional = fixture(output / "blocked-directional.gltf", blocker=True)
-    clear_local = fixture(output / "clear-local.gltf", punctual=True)
-    blocked_local = fixture(output / "blocked-local.gltf", blocker=True, punctual=True)
-    area_fixtures = {
-        shape: (fixture(output / f"{shape}-area-clear.gltf", area=shape),
-                fixture(output / f"{shape}-area-blocked.gltf", area=shape, blocker=True),
-                fixture(output / f"{shape}-area-away.gltf", area=shape, away=True))
-        for shape in ("rect", "disk")
-    }
+    ies_clear = fixture(output / "ies-clear.gltf", ies_rotation=0)
+    ies_fixtures = {"unrotated": ies_clear, "lower-density": ies_clear,
+                    "rotated": fixture(output / "ies-rotated.gltf", ies_rotation=90),
+                    "blocked": fixture(output / "ies-blocked.gltf", ies_rotation=0, blocker=True)}
+    if not args.ies_only:
+        depth_scene = fixture(output / "depth-step.gltf", step=True)
+        perspective_scene = fixture(output / "perspective-plate.gltf", perspective=True)
+        layered_scene = fixture(output / "transparent-layers.gltf", transparent=True)
+        clear_directional = fixture(output / "clear-directional.gltf")
+        blocked_directional = fixture(output / "blocked-directional.gltf", blocker=True)
+        clear_local = fixture(output / "clear-local.gltf", punctual=True)
+        blocked_local = fixture(output / "blocked-local.gltf", blocker=True, punctual=True)
+        area_fixtures = {
+            shape: (fixture(output / f"{shape}-area-clear.gltf", area=shape),
+                    fixture(output / f"{shape}-area-blocked.gltf", area=shape, blocker=True),
+                    fixture(output / f"{shape}-area-away.gltf", area=shape, away=True))
+            for shape in ("rect", "disk")
+        }
     if args.generate_only:
         return
 
@@ -196,7 +298,7 @@ def main():
                    "--environment-intensity", "0", "--directional-intensity", str(sun),
                    "--directional-direction", *map(str, sun_direction), "--directional-color", *map(str, SUN_COLOR),
                    "--volumetric-fog", mode, "--fog-density", str(density), "--fog-albedo", str(albedo),
-                   "--fog-anisotropy", str(anisotropy), "--fog-distance", "15",
+                   "--fog-anisotropy", str(anisotropy), "--fog-distance", str(FOG_DISTANCE),
                    "--screenshot", str(image)]
         if history:
             script = stem.with_suffix(".sequence.json")
@@ -248,8 +350,26 @@ def main():
             results.append((read_pixels(capture_image), state))
             evidence.append({"image": str(capture_image), "telemetry": str(telemetry), "pass": fog, "fog": settings,
                              "technique": active_technique, "renderExtent": render_extent})
-        captures[label] = {"frames": evidence, "log": str(log), "gpu": state["gpu"]}
+        captures[label] = {"frames": evidence, "log": str(log), "gpu": state["gpu"], "build": state["build"]}
         return results if history else results[0]
+
+    def write_report(report):
+        gpu_metrics = {}
+        for technique in TECHNIQUES:
+            active_frames = [frame for sample in captures.values() for frame in sample["frames"]
+                             if frame["technique"] == technique and frame["pass"]["active"]]
+            times = [frame["pass"]["gpuMs"] for frame in active_frames if frame["pass"]["gpuTimed"]]
+            gpu_metrics[technique] = {
+                "timedFrames": len(times), "minPassMs": min(times), "medianPassMs": median(times), "maxPassMs": max(times),
+                "allocationBytes": sorted({frame["fog"]["allocationBytes"] for frame in active_frames})}
+        report.update(passed=True, captures=captures, gpuMetrics=gpu_metrics)
+        (output / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    ies_scattering = verify_ies_scattering(capture, ies_fixtures)
+    if args.ies_only:
+        write_report({"iesScattering": ies_scattering})
+        print("PASS measured-light fog orientation, density, shadows, and GPU telemetry")
+        return
 
     measured = {}
     transparent = {}
@@ -400,9 +520,9 @@ def main():
     assert (trajectory[-1][1]["volumetricFog"]["allocationBytes"] <
             trajectory[0][1]["volumetricFog"]["allocationBytes"]), "Fog allocation did not shrink after resize"
 
-    report = {"passed": True, "analyticTransmittance": measured, "shadowScattering": shadows,
-              "phaseScattering": phase_scattering, "areaScattering": area_scattering, "transparentLayers": transparent,
-              "perspectiveFog": perspective, "historyReprojected": accepted, "captures": captures}
+    report = {"analyticTransmittance": measured, "shadowScattering": shadows, "phaseScattering": phase_scattering,
+              "areaScattering": area_scattering, "iesScattering": ies_scattering, "transparentLayers": transparent,
+              "perspectiveFog": perspective, "historyReprojected": accepted}
     if args.with_mode_switches:
         modes = {"schemaVersion": 1, "frames": 10, "sampleFrames": [2, 4, 6, 8, 10],
                  "camera": [{"frame": 1, "position": [0, 0, 6], "target": [0, 0, 0]}],
@@ -426,18 +546,9 @@ def main():
                             ["deferred-raster", "quality"], ["deferred-raster", "quality"]], observed
         assert trajectory[-1][0].shape[:2] == (160, 256), trajectory[-1][0].shape
         report["modeSwitches"] = observed
-    gpu_metrics = {}
-    for technique in TECHNIQUES:
-        active_frames = [frame for capture in captures.values() for frame in capture["frames"]
-                         if frame["technique"] == technique and frame["pass"]["active"]]
-        times = [frame["pass"]["gpuMs"] for frame in active_frames if frame["pass"]["gpuTimed"]]
-        gpu_metrics[technique] = {
-            "timedFrames": len(times), "minPassMs": min(times), "medianPassMs": median(times), "maxPassMs": max(times),
-            "allocationBytes": sorted({frame["fog"]["allocationBytes"] for frame in active_frames})}
-    report["gpuMetrics"] = gpu_metrics
-    (output / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
-    print("PASS froxel attenuation, perspective fog, phase scattering, transparent layers, area emitters, raster shadows, "
-          "zero-density bypass, fog history, and GPU telemetry")
+    write_report(report)
+    print("PASS froxel attenuation, perspective fog, phase scattering, transparent layers, area and measured lights, "
+          "raster shadows, zero-density bypass, fog history, and GPU telemetry")
 
 
 if __name__ == "__main__":

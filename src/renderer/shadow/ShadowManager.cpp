@@ -1,5 +1,6 @@
 #include "Container/renderer/shadow/ShadowManager.h"
 #include "Container/renderer/lighting/AreaLightShadowSampling.h"
+#include "Container/renderer/lighting/LocalShadowLayerAllocator.h"
 #include "Container/renderer/scene/SceneController.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/Camera.h"
@@ -43,10 +44,6 @@ constexpr float kLocalShadowNormalBiasMaxTexels = 1.0f;
 constexpr float kLocalShadowSoftFilterRadiusMultiplier = 28.0f;
 constexpr float kLocalShadowPointSourceRadiusFraction = 0.025f;
 constexpr float kDirectionalCascadeGuardTexels = 32.0f;
-
-[[nodiscard]] bool hasFiniteLocalShadowRange(float range) {
-  return std::isfinite(range) && range > 0.0f;
-}
 
 [[nodiscard]] float clampLocalShadowRange(float range) {
   return std::max(range, kLocalShadowNearPlane + 0.01f);
@@ -893,6 +890,7 @@ void ShadowManager::updateLocalShadows(
     std::span<const PointLightData> pointLights,
     std::span<const AreaLightData> areaLights,
     const container::gpu::ShadowSettings& shadowSettings,
+    const ShadowCasterSceneBounds* casterSceneBounds,
     uint32_t localShadowLayerBudget,
     uint32_t imageIndex) {
   localShadowData_ = {};
@@ -967,12 +965,16 @@ void ShadowManager::updateLocalShadows(
       continue;
     }
 
-    const bool isSpot = light.coneOuterCosType.y >= 0.5f;
-    const glm::vec3 position = glm::vec3(light.positionRadius);
-    if (!hasFiniteLocalShadowRange(light.positionRadius.w)) {
+    const bool measured = isUnboundedIesShadowLight(light);
+    // A nearby caster's shadow continues beyond the opaque scene bounds,
+    // including through fog with open background pixels.
+    const float coverageRange = measured ? kMaxIesRasterShadowDistance : light.positionRadius.w;
+    if (!hasFiniteLocalShadowRange(coverageRange)) {
       continue;
     }
-    const float range = clampLocalShadowRange(light.positionRadius.w);
+    const bool isSpot = light.coneOuterCosType.y >= 0.5f;
+    const glm::vec3 position(light.positionRadius);
+    const float range = clampLocalShadowRange(coverageRange);
     const float nearPlane = std::min(kLocalShadowNearPlane, range * 0.25f);
     const float farPlane = std::max(range, nearPlane + 0.01f);
     if (isSpot) {
@@ -1005,18 +1007,21 @@ void ShadowManager::updateLocalShadows(
     const glm::mat4 proj =
         container::math::perspectiveRH_ReverseZ(kHalfPi, 1.0f, nearPlane,
                                                 farPlane);
+    const float filterRange = measured
+        ? clampLocalShadowRange(localPointShadowFilterRange(light, casterSceneBounds))
+        : farPlane;
     const float texelSize =
-        2.0f * farPlane / static_cast<float>(kLocalShadowMapResolution);
+        2.0f * filterRange / static_cast<float>(kLocalShadowMapResolution);
     const float sourceRadius =
-        std::max(range * kLocalShadowPointSourceRadiusFraction,
+        std::max(filterRange * kLocalShadowPointSourceRadiusFraction,
                  texelSize * 2.0f);
     for (uint32_t faceIndex = 0u;
          faceIndex < kLocalShadowPointFaceCount && faceIndex < layerCount;
          ++faceIndex) {
       const glm::vec3 direction = pointDirs[faceIndex];
-      const glm::mat4 view =
-          container::math::lookAt(position, position + direction,
-                                  pointUps[faceIndex]);
+      const glm::mat4 view = measured
+          ? glm::translate(container::math::lookAt(glm::vec3(0.0f), direction, pointUps[faceIndex]), -position)
+          : container::math::lookAt(position, position + direction, pointUps[faceIndex]);
       writeLayer(baseLayer + faceIndex, lightIndex, faceIndex,
                  kLocalShadowPointFaceCount, position, range, direction,
                  kLocalShadowTypePoint, texelSize, farPlane - nearPlane,
@@ -1073,7 +1078,7 @@ void ShadowManager::updateLocalShadows(
     setPackedAreaRef(localShadowData_, areaIndex, baseLayer + 1u);
   }
 
-  localShadowData_.counts.x = usedLayerCount = std::max(usedLayerCount, nextLayer);
+  localShadowData_.counts.x = usedLayerCount;
   localShadowData_.counts.w = usedLayerCount > 0u ? 1u : 0u;
 
   if (imageIndex < localShadowUbos_.size()) {

@@ -32,6 +32,11 @@ PREVIEW_SAMPLES = {
     13: "initial", 19: "preview-half", 25: "preview-zero", 31: "cancel",
     37: "commit", 43: "undo", 49: "redo", 55: "source-node-transform-only",
 }
+PROFILE_RELOAD_SAMPLES = {
+    4: "first", 10: "second", 16: "third", 22: "fourth", 28: "fifth", 34: "first-reopened",
+}
+PROFILE_MERGE_SAMPLES = {4: "before", 13: "merged", 22: "undone", 31: "redone"}
+PROFILES_PER_RELOAD = 64
 
 
 def fixture(path, *, attachment, rotation=0, transparent=False, multiplier=1, profile=PROFILE, spot=False):
@@ -97,6 +102,60 @@ def write_light_sequence(path):
     path.write_text(json.dumps({"schemaVersion": 1, "frames": max(PREVIEW_SAMPLES),
                                "sampleFrames": list(PREVIEW_SAMPLES), "events": events},
                                indent=2) + "\n", encoding="utf-8")
+
+
+def write_profile_reload_sequence(directory, source):
+    # Successive assets cross the 256-entry cache limit together, while each
+    # individually fits. Distinct candela values prevent cross-asset aliasing.
+    models = []
+    for group in range(5):
+        model = json.loads(source.read_bytes())
+        profiles = []
+        for slot in range(PROFILES_PER_RELOAD):
+            gain = 1 + group + slot / PROFILES_PER_RELOAD
+            text = PROFILE.replace(b"64 64 0\n1 1 0",
+                                   f"{64 * gain:g} {64 * gain:g} 0\n{gain:g} {gain:g} 0".encode("ascii"))
+            profiles.append({"uri": "data:application/x-ies-lm-63;base64," + base64.b64encode(text).decode("ascii")})
+        model["extensions"][IES]["lights"] = profiles
+        model["nodes"][1]["rotation"] = [0, 0, math.sqrt(.5), math.sqrt(.5)] if group % 2 else [0, 0, 0, 1]
+        for slot in range(1, PROFILES_PER_RELOAD):
+            model["scenes"][0]["nodes"].append(len(model["nodes"]))
+            model["nodes"].append({"translation": [0, 0, 3],
+                                   "extensions": {IES: {"light": slot, "multiplier": 0}}})
+        path = directory / f"measured-profile-set-{group}.gltf"
+        path.write_text(json.dumps(model), encoding="utf-8")
+        models.append(path)
+    events = []
+    for index, model in enumerate([*models[1:], models[0]], start=1):
+        events.extend(({"frame": 1 + 6 * index, "reload": str(model)},
+                       {"frame": 2 + 6 * index, "cameraSelection": {"sourceNode": 2}}))
+    sequence = directory / "profile-reload-history.json"
+    sequence.write_text(json.dumps({"schemaVersion": 1, "frames": max(PROFILE_RELOAD_SAMPLES),
+                                    "sampleFrames": list(PROFILE_RELOAD_SAMPLES), "events": events}),
+                        encoding="utf-8")
+    return models[0], sequence
+
+
+def write_profile_merge_sequence(directory):
+    fixture_path = directory / "additional-measured-light.gltf"
+    profile = PROFILE.replace(b"64 64 0", b"160 160 0")
+    uri = "data:application/x-ies-lm-63;base64," + base64.b64encode(profile).decode("ascii")
+    fixture_path.write_text(json.dumps({
+        "asset": {"version": "2.0"}, "scene": 0, "scenes": [{"nodes": [0]}],
+        "nodes": [{"name": "Additional measured fixture", "translation": [0, 0, 3],
+                   "rotation": [0, 0, math.sqrt(.5), math.sqrt(.5)], "extensions": {IES: {"light": 0}}}],
+        "extensionsUsed": [IES], "extensions": {IES: {"lights": [{"uri": uri}]}},
+    }), encoding="utf-8")
+    sequence = directory / "profile-merge-history.json"
+    sequence.write_text(json.dumps({
+        "schemaVersion": 1, "frames": max(PROFILE_MERGE_SAMPLES), "sampleFrames": list(PROFILE_MERGE_SAMPLES),
+        "events": [
+            {"frame": 5, "guiWaitForLoad": True, "merge": {"path": str(fixture_path), "parentName": "Measured rig"}},
+            {"frame": 14, "sceneHistory": "undo"},
+            {"frame": 23, "sceneHistory": "redo"},
+        ],
+    }), encoding="utf-8")
+    return sequence
 
 
 def verify_preview_state(state, name, multiplier, gesture, publications, commits, replays, undo, redo):
@@ -199,6 +258,7 @@ def main():
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true", help="Keep each run in a fresh output subdirectory")
     parser.add_argument("--require-opt-in", action="store_true", help="Require CONTAINER_RUN_GPU_IES=1 for native runs")
+    parser.add_argument("--reload-only", action="store_true", help="Run only the repeated profile replacement captures")
     args = parser.parse_args()
     if args.require_opt_in and not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_IES") != "1":
         print("Set CONTAINER_RUN_GPU_IES=1 to run native IES lighting validation.", flush=True)
@@ -236,7 +296,10 @@ def main():
         signed_fixtures[quarter_turns] = signed
     light_sequence = output / "light-history.json"
     write_light_sequence(light_sequence)
-    fixtures = set(output.glob("*.gltf")) | set(output.glob("*.ies")) | {output / "vk_layer_settings.txt", light_sequence}
+    reload_source, reload_sequence = write_profile_reload_sequence(output, source)
+    merge_sequence = write_profile_merge_sequence(output)
+    fixtures = (set(output.glob("*.gltf")) | set(output.glob("*.ies")) |
+                {output / "vk_layer_settings.txt", light_sequence, reload_sequence, merge_sequence})
     captures = {}
     report = {"passed": None if args.generate_only else False, "generatedOnly": args.generate_only,
               "rendererExecuted": False, "nativeValidationPerformed": False, "captures": captures,
@@ -268,7 +331,7 @@ def main():
             require(sha(Path(name)) == expected_hash, "Portable IES export changed " + name)
         return actual
 
-    def capture(label, model, technique, *, save=None, camera_node=2, sequence=None):
+    def capture(label, model, technique, *, save=None, camera_node=2, sequence=None, samples=PREVIEW_SAMPLES):
         verify()
         stem = output / label
         image, log, telemetry = stem.with_suffix(".exr"), stem.with_suffix(".log"), stem.with_suffix(".telemetry.json")
@@ -293,8 +356,8 @@ def main():
         require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in text and not validation_log_error(text),
                 "Khronos layer loading or strict Vulkan validation failed " + str(log))
         if sequence:
-            for sample_frame, sample_name in PREVIEW_SAMPLES.items():
-                sample_image = image if sample_frame == max(PREVIEW_SAMPLES) else image.with_name(
+            for sample_frame, sample_name in samples.items():
+                sample_image = image if sample_frame == max(samples) else image.with_name(
                     f"{image.stem}.frame-{sample_frame:04d}{image.suffix}")
                 inspect_capture(f"{label}-{sample_name}", sample_image, sample_image.with_suffix(".telemetry.json"),
                                 technique, log, command)
@@ -329,7 +392,64 @@ def main():
                            "build": frame["build"]}
         return pixels
 
+    def verify_profile_reloads():
+        for technique in ("deferred-raster", "forward-raster"):
+            label = technique + "-profile-reload"
+            _, log = capture(label, reload_source, technique, sequence=reload_sequence, samples=PROFILE_RELOAD_SAMPLES)
+            counts = []
+            first_pixels = None
+            reference_luminance = None
+            for index, name in enumerate(PROFILE_RELOAD_SAMPLES.values()):
+                sample = captures[f"{label}-{name}"]
+                state = json.loads(Path(sample["telemetry"]).read_text(encoding="utf-8-sig"))
+                require(state["lighting"]["pointLightCount"] == PROFILES_PER_RELOAD,
+                        f"Measured fixtures went missing during {name} in {technique}")
+                pixels = image_pixels(Path(sample["image"]))
+                angle = angular_intensity_ratio(pixels, rotated=name in {"second", "fourth"})
+                # x and y have equal magnitude at this pixel, making the
+                # quadrant-symmetric profile's value independent of the roll.
+                luminance = float(pixels[159, 160].mean())
+                if index == 0:
+                    first_pixels = pixels
+                    reference_luminance = luminance
+                expected_luminance = reference_luminance * (index + 1 if index < 5 else 1)
+                require(math.isclose(luminance, expected_luminance, rel_tol=.005),
+                        f"Stale IES intensity during {name} in {technique}: {luminance}, expected {expected_luminance}")
+                if name == "first-reopened":
+                    image_agreement(pixels, first_pixels, exact=True)
+                counts.append(sample["vmaAllocationCount"])
+                report["checks"].append({"check": "profile-scene-replacement", "technique": technique,
+                                         "sample": name, "angularIntensity": angle, "luminance": luminance,
+                                         "expectedLuminance": expected_luminance})
+            require(max(counts) - min(counts) < PROFILES_PER_RELOAD,
+                    f"Retired IES buffers accumulated across replacements in {technique}: {counts}")
+            require("IES profile cache exceeded its resident" not in log, f"Unexpected IES fallback in {technique}")
+            report.setdefault("replacementVmaAllocationCounts", {})[technique] = counts
+
+    def verify_profile_merge_history():
+        label = "deferred-raster-profile-merge"
+        capture(label, source, "deferred-raster", sequence=merge_sequence, samples=PROFILE_MERGE_SAMPLES)
+        images = {}
+        for stage, count in (("before", 1), ("merged", 2), ("undone", 1), ("redone", 2)):
+            sample = captures[f"{label}-{stage}"]
+            state = json.loads(Path(sample["telemetry"]).read_text(encoding="utf-8-sig"))
+            require(state["lighting"]["pointLightCount"] == count, f"Wrong measured light count after {stage}")
+            images[stage] = image_pixels(Path(sample["image"]))
+        require(axis_luminance(images["merged"])[1] > 2 * axis_luminance(images["before"])[0],
+                "The merged profile did not light its expected axis")
+        report["checks"].append({"check": "profile-merge-undo",
+                                 **image_agreement(images["undone"], images["before"], exact=True)})
+        report["checks"].append({"check": "profile-merge-redo",
+                                 **image_agreement(images["redone"], images["merged"], exact=True)})
+
     try:
+        verify_profile_reloads()
+        if args.reload_only:
+            report["inputSha256After"] = verify()
+            report.update(passed=True, nativeValidationPerformed=True)
+            print(f"PASS IES profile retirement and replacement in {len(captures)} captures")
+            return 0
+        verify_profile_merge_history()
         saved = output / "portable.glb"
         for technique in ("deferred-raster", "forward-raster"):
             original, _ = capture(technique + "-measured", source, technique,
@@ -453,7 +573,8 @@ def main():
         camera = next(index for index, node in enumerate(saved_model["nodes"]) if "camera" in node)
         reloaded, _ = capture("portable-reload", saved, "deferred-raster", camera_node=camera)
         report["checks"].append({"check": "portable-reload", **image_agreement(full, reloaded, exact=True)})
-        require(len(captures) == 43, "Incomplete IES capture set")
+        require(len(captures) == 43 + 2 * len(PROFILE_RELOAD_SAMPLES) + len(PROFILE_MERGE_SAMPLES),
+                "Incomplete IES capture set")
         report["inputSha256After"] = verify()
         report.update(passed=True, nativeValidationPerformed=True)
     except Exception as error:

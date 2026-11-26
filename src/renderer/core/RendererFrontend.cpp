@@ -2618,6 +2618,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     subs_.shadowManager->updateLocalShadows(
         subs_.lightingManager->pointLightsSsbo(),
         subs_.lightingManager->areaLightsSsbo(), shadowSettings,
+        shadowCasterBounds ? &*shadowCasterBounds : nullptr,
         currentLightingSettings.localShadowLayerBudget, imageIndex);
   }
   if (telemetry) {

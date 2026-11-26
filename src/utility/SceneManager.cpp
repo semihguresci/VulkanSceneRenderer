@@ -956,44 +956,69 @@ container::gpu::GpuMaterial makeGpuMaterial(
 
 }  // namespace
 
-struct SceneManager::IesGpuProfileCache {
-  explicit IesGpuProfileCache(container::gpu::AllocationManager& allocation) : allocator(allocation) {}
-  ~IesGpuProfileCache() {
-    for (auto& [key, entry] : entries) allocator.destroyBuffer(entry.buffer);
+struct SceneManager::IesGpuProfile {
+  explicit IesGpuProfile(container::gpu::AllocationManager& allocation) : allocator(allocation) {}
+  IesGpuProfile(const IesGpuProfile&) = delete;
+  IesGpuProfile& operator=(const IesGpuProfile&) = delete;
+  ~IesGpuProfile() {
+    if (buffer.buffer != VK_NULL_HANDLE) allocator.destroyBuffer(buffer);
   }
 
-  VkDeviceAddress address(const std::string& uri, const container::gpu::VulkanDevice& device) {
-    if (const auto found = entries.find(uri); found != entries.end()) return found->second.address;
+  container::gpu::AllocationManager& allocator;
+  container::gpu::AllocatedBuffer buffer{};
+  VkDeviceAddress address{};
+};
+
+struct SceneManager::IesGpuProfileCache {
+  explicit IesGpuProfileCache(container::gpu::AllocationManager& allocation) : allocator(allocation) {}
+
+  void pruneExpired() noexcept {
+    std::erase_if(entries, [this](const auto& item) {
+      if (!item.second.profile.expired()) return false;
+      usedBytes -= item.second.chargedBytes;
+      return true;
+    });
+  }
+
+  std::shared_ptr<const IesGpuProfile> acquire(const std::string& uri,
+                                              const container::gpu::VulkanDevice& device) {
+    if (const auto found = entries.find(uri); found != entries.end()) {
+      if (auto profile = found->second.profile.lock()) return profile;
+    }
+    pruneExpired();
     const auto data = container::geometry::gltf::ParseIesProfile(
         container::geometry::gltf::DecodeGltfIesProfileUri(uri)).packedForGpu();
     const auto bytes = data.size() * sizeof(float);
-    constexpr size_t capacity = 32 * 1024 * 1024;
-    if (entries.size() >= 256 || uri.size() + bytes > capacity - usedBytes)
+    constexpr size_t capacity = 32u * 1024u * 1024u;
+    const size_t available = capacity - usedBytes;
+    if (entries.size() >= 256 || uri.size() > available || bytes > available - uri.size())
       throw std::length_error("IES profile cache exceeded its resident budget");
     // Point-light snapshots carry this address into DDGI hit shading.
     const auto families = device.asyncComputeSharingFamilies();
-    Entry entry;
-    entry.buffer = allocator.createBuffer(bytes,
+    auto profile = std::make_shared<IesGpuProfile>(allocator);
+    profile->buffer = allocator.createBuffer(bytes,
         VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT,
         VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
         VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT | VMA_ALLOCATION_CREATE_MAPPED_BIT,
         families.empty() ? VK_SHARING_MODE_EXCLUSIVE : VK_SHARING_MODE_CONCURRENT, families);
-    try {
-      writeHostVisibleBuffer(allocator, entry.buffer, data.data(), bytes);
-      VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
-      info.buffer = entry.buffer.buffer;
-      entry.address = vkGetBufferDeviceAddress(device.device(), &info);
-      if (!entry.address) throw std::runtime_error("IES profile buffer has no device address");
-      entries.emplace(uri, entry);
-    } catch (...) {
-      allocator.destroyBuffer(entry.buffer);
-      throw;
-    }
-    usedBytes += uri.size() + bytes;
-    return entry.address;
+    const auto allocationBytes = profile->buffer.allocation_info.size;
+    if (allocationBytes > available - uri.size())
+      throw std::length_error("IES profile cache exceeded its resident allocation budget");
+    writeHostVisibleBuffer(allocator, profile->buffer, data.data(), bytes);
+    VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    info.buffer = profile->buffer.buffer;
+    profile->address = vkGetBufferDeviceAddress(device.device(), &info);
+    if (!profile->address) throw std::runtime_error("IES profile buffer has no device address");
+    const size_t chargedBytes = uri.size() + static_cast<size_t>(allocationBytes);
+    entries.emplace(uri, Entry{profile, chargedBytes});
+    usedBytes += chargedBytes;
+    return profile;
   }
 
-  struct Entry { container::gpu::AllocatedBuffer buffer; VkDeviceAddress address{}; };
+  struct Entry {
+    std::weak_ptr<const IesGpuProfile> profile;
+    size_t chargedBytes{};
+  };
   container::gpu::AllocationManager& allocator;
   std::map<std::string, Entry, std::less<>> entries;
   size_t usedBytes{};
@@ -3369,7 +3394,7 @@ void SceneManager::loadGltfAssets(int requestedScene,
   exportMaterialTextureBindings_.clear();
   exportTextureIndices_.clear();
   authoredPointLights_.clear();
-  iesProfileAddresses_.clear();
+  iesProfiles_.clear();
   authoredDirectionalLights_.clear();
   authoredAreaLights_.clear();
   authoredPointBindings_.clear();
@@ -3622,7 +3647,7 @@ void SceneManager::appendSceneAsset(
 }
 
 void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph) {
-  if (iesProfileAddresses_.empty()) prepareIesProfileAddresses();
+  if (iesProfiles_.empty()) prepareIesProfiles();
   auto lights = evaluateAuthoredSceneLights(graph, selectedScene_);
   authoredPointLights_ = std::move(lights.points);
   authoredDirectionalLights_ = std::move(lights.directionals);
@@ -3632,20 +3657,22 @@ void SceneManager::collectAuthoredPunctualLights(const SceneGraph* graph) {
   authoredAreaBindings_ = std::move(lights.areaBindings);
 }
 
-void SceneManager::prepareIesProfileAddresses() {
+void SceneManager::prepareIesProfiles() {
   using container::geometry::gltf::GltfIesEmbeddedProfileUri;
   if (!deviceWrapper_->enabledVulkan12Features().bufferDeviceAddress) return;
+  std::vector<std::shared_ptr<const IesGpuProfile>> profiles;
   for (size_t index = 0; const auto* uri = GltfIesEmbeddedProfileUri(gltfModel_, index); ++index) {
-    VkDeviceAddress address{};
+    std::shared_ptr<const IesGpuProfile> profile;
     try {
-      address = iesProfileCache_->address(*uri, *deviceWrapper_);
+      profile = iesProfileCache_->acquire(*uri, *deviceWrapper_);
     } catch (const std::exception& error) {
       std::println(stderr, "EXT_lights_ies profile {} uses punctual fallback: {}", index, error.what());
       if (std::ranges::find(gltfModel_.extensionsRequired, container::geometry::gltf::kGltfIesExtension) !=
           gltfModel_.extensionsRequired.end()) throw;
     }
-    iesProfileAddresses_.push_back(address);
+    profiles.push_back(std::move(profile));
   }
+  iesProfiles_ = std::move(profiles);
 }
 
 AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
@@ -3743,15 +3770,15 @@ AuthoredSceneLights SceneManager::evaluateAuthoredSceneLights(
         using namespace container::geometry::gltf;
         bool authoredIes = false;
         if (const auto profile = node.extensions.find(kGltfIesExtension);
-            profile != node.extensions.end() && !iesProfileAddresses_.empty()) {
-          const auto binding = ParseGltfIesBinding(profile->second, iesProfileAddresses_.size());
-          if (const auto address = iesProfileAddresses_[binding.profile]) {
+            profile != node.extensions.end() && !iesProfiles_.empty()) {
+          const auto binding = ParseGltfIesBinding(profile->second, iesProfiles_.size());
+          if (const auto& residentProfile = iesProfiles_[binding.profile]) {
             container::gpu::PointLightData light;
             light.positionRadius = glm::vec4(glm::vec3(sceneLocalTransform[3]), 0.0f);
             light.colorIntensity = glm::vec4(binding.color[0], binding.color[1], binding.color[2], binding.multiplier);
             light.directionInnerCos = glm::vec4(gltfDirectionalLightDirection(sceneLocalTransform), 1.0f);
             light.iesTangent = glm::vec4(gltfAreaLightTangent(sceneLocalTransform), 1.0f);
-            light.iesProfileAddress = address;
+            light.iesProfileAddress = residentProfile->address;
             result.points.push_back(light);
             result.pointBindings.push_back({nodeIndex, kGltfIesExtension});
             authoredIes = true;
@@ -4493,7 +4520,8 @@ void SceneManager::resetLoadedAssets() {
   materialBaseColor_ = glm::vec4(1.0f);
   modelBounds_ = ModelBounds{};
   authoredPointLights_.clear();
-  iesProfileAddresses_.clear();
+  iesProfiles_.clear();
+  iesProfileCache_->pruneExpired();
   authoredDirectionalLights_.clear();
   authoredAreaLights_.clear();
   authoredPointBindings_.clear();

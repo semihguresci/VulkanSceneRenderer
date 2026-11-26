@@ -32,6 +32,9 @@ constexpr const char* kPunctual="KHR_lights_punctual";
 constexpr const char* kPointer="KHR_animation_pointer";
 constexpr const char* kInstancing="EXT_mesh_gpu_instancing";
 constexpr std::array kIndexedLights{"KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light",kGltfIesExtension};
+constexpr Names kNodeExtensions{kPunctual,kInstancing,kGltfIesExtension,kGltfXmpExtension,
+    "KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
+    "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"};
 
 [[noreturn]] void fail(std::string_view context,std::string_view reason) {
   throw std::runtime_error("glTF merge: "+std::string(context)+": "+std::string(reason));
@@ -366,8 +369,7 @@ Audit audit(const tinygltf::Model& model,Budget& b,std::string_view label,
     }
   }
   for(const auto& node:model.nodes) {
-    property(node,model,b,"node",{kPunctual,kInstancing,kGltfIesExtension,kGltfXmpExtension,"KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability",
-      "KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
+    property(node,model,b,"node",kNodeExtensions);
     if(node.emitter!=-1 || !node.lods.empty()) fail("node","audio/LOD references need a merge handler");
     index(node.mesh,model.meshes.size(),"node mesh",true);index(node.skin,model.skins.size(),"node skin",true);
     index(node.camera,model.cameras.size(),"node camera",true);index(node.light,model.lights.size(),"node light",true);b.refs(node.children.size()+4);
@@ -659,7 +661,7 @@ void placement(const tinygltf::Model& incoming,const Audit& audit,size_t selecte
   for(size_t n=0;n<size;++n) if(closure[n]) {
     if(next>INT_MAX || next>=b.limits.maxNodes) fail("placement","node limit exceeded");
     p.nodes[n]=int32_t(next++);p.contextOnly[n]=!visible[n];
-    property(incoming.nodes[n],incoming,b,"placement node",{kPunctual,kInstancing,kGltfXmpExtension,"KHR_node_visibility","KHR_node_selectability","KHR_node_hoverability","KHR_lights_area","EXT_lights_area","WEBGI_lights_area","WEBGI_area_light"});
+    property(incoming.nodes[n],incoming,b,"placement node",kNodeExtensions);
     b.refs(incoming.nodes[n].children.size()+incoming.nodes[n].matrix.size()+incoming.nodes[n].translation.size()+incoming.nodes[n].rotation.size()+incoming.nodes[n].scale.size()+incoming.nodes[n].weights.size()+4);
   }
   size_t nextSkin=canonicalSkinCount;
