@@ -39,6 +39,10 @@ namespace container::geometry {
 struct GltfLoadResult;
 }  // namespace container::geometry
 
+namespace container::material {
+struct PreparedGltfTextures;
+}  // namespace container::material
+
 namespace container::scene {
 class SceneGraph;
 class SceneManager;
@@ -341,7 +345,9 @@ class SceneController {
       const std::function<void()>& beforeCommit = {},
       VkDeviceSize releasingOptionalGeometry = 0,
       container::gpu::GeometryUploadResult* uploadedGeometry = nullptr,
-      RigidGeometryUploadSource* preparedRigid = nullptr);
+      RigidGeometryUploadSource* preparedRigid = nullptr,
+      VkDeviceSize releasingTextureTailBytes = 0,
+      const container::material::PreparedGltfTextures* incomingTextures = nullptr);
 
   [[nodiscard]] uint32_t pickRenderableNode(
       const container::gpu::CameraData& cameraData,

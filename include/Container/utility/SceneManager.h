@@ -61,6 +61,7 @@ struct AllocatedBuffer;
 
 namespace container::material {
 struct MaterialTextureSamplerDescription;
+struct PreparedGltfTextures;
 }
 
 namespace container::scene {
@@ -536,7 +537,9 @@ class SceneManager {
                    bool reusePrimaryArenas = true,
                    const std::function<void()>& beforeCommit = {},
                    VkDeviceSize releasingGeometryBytes = 0,
-                   bool geometryAlreadyUploaded = false);
+                   bool geometryAlreadyUploaded = false,
+                   VkDeviceSize releasingTextureTailBytes = 0,
+                   const container::material::PreparedGltfTextures* incomingTextures = nullptr);
 
   void updateDescriptorSets(
       std::span<const container::gpu::AllocatedBuffer> cameraBuffers,

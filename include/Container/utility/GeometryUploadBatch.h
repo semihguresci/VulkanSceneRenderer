@@ -70,6 +70,10 @@ class GeometryUploadBatch {
   GeometryUploadBatch(const GeometryUploadBatch&) = delete;
   GeometryUploadBatch& operator=(const GeometryUploadBatch&) = delete;
 
+  // Exact budget charge while the detached targets and shared staging are live.
+  [[nodiscard]] SceneAssetBytes requiredAssetBytes(
+      std::span<const GeometryUploadSource> sources, VkDeviceSize chunkCap) const;
+
   // Borrows immutable source bytes through the last chunk submission or
   // cancel(). Empty sources preserve their result slots without allocating.
   void begin(std::span<const GeometryUploadSource> sources, VkDeviceSize chunkCap);

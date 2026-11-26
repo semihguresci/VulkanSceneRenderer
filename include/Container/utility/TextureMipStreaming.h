@@ -4,6 +4,7 @@
 
 #include <memory>
 #include <optional>
+#include <stop_token>
 
 namespace container::material {
 
@@ -11,7 +12,7 @@ namespace container::material {
 // BGRA8 images receive a box-filtered pyramid with linear-light color and
 // linear alpha. An empty result keeps the image on the normal upload path.
 [[nodiscard]] std::shared_ptr<const TextureImageData> PrepareTextureMipSource(
-    const TextureImageData& image, uint64_t maxBytes);
+    const TextureImageData& image, uint64_t maxBytes, std::stop_token stop = {});
 
 // The finest authored level that fits the fallback extent, or the coarsest
 // authored level when the source pyramid ends at a larger resolution.
@@ -32,6 +33,7 @@ struct PreparedTextureMipFallback {
 
 // The combined retained source and fallback pixel storage fits maxBytes.
 [[nodiscard]] std::optional<PreparedTextureMipFallback> PrepareTextureMipFallback(
-    const TextureImageData& image, uint32_t maxExtent, uint64_t maxBytes);
+    const TextureImageData& image, uint32_t maxExtent, uint64_t maxBytes,
+    std::stop_token stop = {});
 
 } // namespace container::material

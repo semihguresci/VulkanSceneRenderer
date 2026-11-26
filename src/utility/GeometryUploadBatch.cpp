@@ -3,6 +3,7 @@
 #include "GeometryUploadPlan.h"
 
 #include <cstring>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -86,6 +87,25 @@ GeometryUploadBatch::GeometryUploadBatch(VulkanMemoryManager& memory, VkDevice d
 
 GeometryUploadBatch::~GeometryUploadBatch() {
   drain();
+}
+
+SceneAssetBytes GeometryUploadBatch::requiredAssetBytes(
+    std::span<const GeometryUploadSource> sources, VkDeviceSize chunkCap) const {
+  const auto plan = detail::planGeometryUpload(sources, chunkCap);
+  SceneAssetBytes request{};
+  for (const auto& source : sources) {
+    if (source.bytes.empty())
+      continue;
+    const auto bytes = memory_.bufferAllocationBytes(
+        detail::paddedGeometrySize(source.bytes.size()),
+        source.usage | VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+    if (bytes > (std::numeric_limits<VkDeviceSize>::max)() - request.residentBytes)
+      throw SceneAssetBudgetExceeded("Geometry upload admission bytes overflow");
+    request.residentBytes += bytes;
+  }
+  request.uploadBytes = memory_.bufferAllocationBytes(plan.stagingBytes,
+                                                      VK_BUFFER_USAGE_TRANSFER_SRC_BIT);
+  return request;
 }
 
 void GeometryUploadBatch::begin(std::span<const GeometryUploadSource> sources,

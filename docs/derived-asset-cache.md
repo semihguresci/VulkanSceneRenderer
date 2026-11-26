@@ -57,6 +57,14 @@ python -B tests/validation/large_scene_asset_benchmark.py `
 The runner compares full-detail reference, fresh-cache and populated-cache
 processes at matched cameras. It records startup and steady GPU timings, AS
 rebuilds, scene and VMA memory, triangle counts, mip residency, and PNG quality.
+
+Use `--asset-memory-mib` and `--asset-upload-mib` to set finite allocation
+limits. `--unbounded-reference` keeps the full-resident control while applying
+those limits to the streamed runs. `--interactive-reload` queues a model
+replacement through Scene Controls, checks that the previous scene keeps
+rendering during the first copy batch, and records the copy limit and longest
+model service call when the new scene publishes.
+
 It also changes a position in a private glTF copy and verifies a new cold entry
 followed by a warm hit. The cold run starts with an empty derived cache. The
 operating system file cache and the existing BIM metadata cache stay unmanaged.
@@ -66,3 +74,27 @@ Add `--validation-manifest PATH` to run Vulkan synchronization validation, or
 prepare the commands and check inputs without launching the renderer.
 Increase `--warmup` if a timed view arrives before its derived LODs or texture
 uploads settle. The Windows chess run used 900 warm-up frames at 640 × 360.
+
+### Bounded interactive runs
+
+On the RTX 2080 SUPER with Khronos synchronization validation, each scene
+continued to render the previous asset during CPU preparation and partial
+geometry upload. The next asset became visible after the last copy completed.
+The upload limit was 1 MiB per service tick. A Beautiful Game copied 34.6 MiB
+in 36 chunks and Tekla House copied 49.6 MiB in 50 chunks. The peak resident
+measurements include the overlap between old and new scene allocations.
+
+| Asset | Resident / upload limits, MiB | Peak resident, reference → warm, MiB | Peak upload, MiB | Warm initial scene / first submission, ms | Median detail graphics, reference → warm, ms | Detail image RMSE (0–255) |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| A Beautiful Game glTF | 160 / 32 | 773.33 → 111.77 | 28.06 | 8,528 / 11,445 | 2.795 → 2.497 | 0.771 |
+| Tekla House IFCX | 128 / 48 | 99.27 → 99.27 | 44.64 | 2,258 / 5,100 | 10.810 → 10.986 | 0 |
+
+Moving glTF texture preparation to the existing worker reduced the longest
+warm model-service call for A Beautiful Game from 6,656.74 ms to 205.71 ms
+at the same budgets. The renderer still installs GPU resources on the render
+thread. Tekla's longest warm service call was 38.61 ms. The final retired
+detail samples reported `OcclusionCull` and `Lighting` GPU times of
+0.0104 / 0.8900 ms for A Beautiful Game and 0.2924 / 1.8680 ms for Tekla.
+The reload AS builds took 10.075 ms and 2.506 ms respectively. The matched
+graphics medians use 24 retired submissions. Tekla used 144 warm-up frames
+per view at 960 × 540.

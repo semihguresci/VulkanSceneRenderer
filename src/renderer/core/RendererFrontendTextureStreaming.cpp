@@ -388,14 +388,28 @@ struct RendererFrontend::TextureStreaming {
     return upload.state() == TextureMipUploadState::Idle;
   }
 
-  bool prepareForModelCommit() {
+  VkDeviceSize prepareForModelAdmission() {
+    // The pending image has no sampled descriptor. Retire its reservations
+    // before checking the incoming model, without changing any live views.
     if (!retireForModelLoad()) {
       upload.drain();
       clearIdleUpload();
     }
     if (!frontend.svc_.allocationManager.sceneAssetBudget().limits.residentBytes)
+      return 0;
+    VkDeviceSize residentBytes = 0;
+    for (const auto& [key, entry] : entries) {
+      if (entry.tail)
+        residentBytes += entry.tail->residentBytes();
+    }
+    return residentBytes;
+  }
+
+  bool prepareForModelCommit() {
+    if (!prepareForModelAdmission())
       return false;
-    refreshCatalog();
+    // Clear sampled overrides and retire their readers before releasing the
+    // tail allocations credited by admission.
     std::vector<Entry*> removed;
     for (auto& [key, entry] : entries) {
       if (entry.tail)
@@ -449,6 +463,10 @@ void RendererFrontend::updateTextureStreaming(const glm::mat4& view, const glm::
 
 bool RendererFrontend::retireTextureStreamingForModelLoad() {
   return !textureStreaming_ || textureStreaming_->retireForModelLoad();
+}
+
+VkDeviceSize RendererFrontend::prepareTextureStreamingForModelAdmission() {
+  return textureStreaming_ ? textureStreaming_->prepareForModelAdmission() : 0;
 }
 
 bool RendererFrontend::prepareTextureStreamingForModelCommit() {

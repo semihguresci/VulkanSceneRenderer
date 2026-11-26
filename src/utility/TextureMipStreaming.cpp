@@ -1,4 +1,5 @@
 #include "Container/utility/TextureMipStreaming.h"
+#include "Container/utility/ModelImportCancellation.h"
 
 #include <algorithm>
 #include <array>
@@ -27,7 +28,9 @@ std::byte linearToSrgb(double x) {
   return std::byte(std::lround(std::clamp(srgb, 0.0, 1.0) * 255.0));
 }
 
-TextureMipLevel downsample(const TextureMipLevel& base, bool srgb) {
+TextureMipLevel downsample(const TextureMipLevel& base, bool srgb,
+                           const std::stop_token& stop) {
+  container::util::checkModelImportCancellation(stop);
   const auto width = std::max(base.width >> 1, 1u);
   const auto height = std::max(base.height >> 1, 1u);
   constexpr size_t channels = 4;
@@ -36,6 +39,7 @@ TextureMipLevel downsample(const TextureMipLevel& base, bool srgb) {
   const double scaleX = double(base.width) / width;
   const double scaleY = double(base.height) / height;
   for (uint32_t y = 0; y < height; ++y) {
+    container::util::checkModelImportCancellation(stop);
     const double top = y * scaleY, bottom = (y + 1) * scaleY;
     for (uint32_t x = 0; x < width; ++x) {
       const double left = x * scaleX, right = (x + 1) * scaleX;
@@ -62,13 +66,15 @@ TextureMipLevel downsample(const TextureMipLevel& base, bool srgb) {
       }
     }
   }
+  container::util::checkModelImportCancellation(stop);
   return result;
 }
 
 } // namespace
 
 std::shared_ptr<const TextureImageData> PrepareTextureMipSource(
-    const TextureImageData& image, uint64_t maxBytes) {
+    const TextureImageData& image, uint64_t maxBytes, std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
   if (image.mips.empty() || maxBytes == 0)
     return {};
   const auto& base = image.mips.front();
@@ -86,6 +92,7 @@ std::shared_ptr<const TextureImageData> PrepareTextureMipSource(
     return {};
 
   for (size_t level = 0; level < levelCount; ++level) {
+    container::util::checkModelImportCancellation(stop);
     const auto width = std::max(base.width >> level, 1u);
     const auto height = std::max(base.height >> level, 1u);
     const auto bytes = TextureMipByteSize(image.format, width, height);
@@ -99,10 +106,12 @@ std::shared_ptr<const TextureImageData> PrepareTextureMipSource(
     maxBytes -= bytes;
   }
   auto source = std::make_shared<TextureImageData>(image);
+  container::util::checkModelImportCancellation(stop);
   source->mips.reserve(levelCount);
   while (source->mips.size() < levelCount)
-    source->mips.push_back(downsample(source->mips.back(), srgb));
+    source->mips.push_back(downsample(source->mips.back(), srgb, stop));
   source->authoredMipChain = true;
+  container::util::checkModelImportCancellation(stop);
   return source;
 }
 
@@ -128,12 +137,14 @@ TextureImageData CopyTextureMipTail(const TextureImageData& source, uint32_t fir
 }
 
 std::optional<PreparedTextureMipFallback> PrepareTextureMipFallback(
-    const TextureImageData& image, uint32_t maxExtent, uint64_t maxBytes) {
+    const TextureImageData& image, uint32_t maxExtent, uint64_t maxBytes,
+    std::stop_token stop) {
+  container::util::checkModelImportCancellation(stop);
   if (!maxExtent || image.mips.empty() ||
       std::max(image.mips.front().width, image.mips.front().height) <= maxExtent) {
     return std::nullopt;
   }
-  auto source = PrepareTextureMipSource(image, maxBytes);
+  auto source = PrepareTextureMipSource(image, maxBytes, stop);
   if (!source) {
     return std::nullopt;
   }
@@ -153,6 +164,7 @@ std::optional<PreparedTextureMipFallback> PrepareTextureMipFallback(
     }
   }
   auto fallback = CopyTextureMipTail(*source, first);
+  container::util::checkModelImportCancellation(stop);
   return PreparedTextureMipFallback{std::move(source), std::move(fallback), first, retainedBytes};
 }
 

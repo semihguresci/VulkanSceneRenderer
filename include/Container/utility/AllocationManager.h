@@ -137,7 +137,8 @@ class AllocationManager {
       const container::material::TextureImageData&,
       std::span<const uint32_t> queueFamilies = {}) const;
   void checkSceneAssetAdmission(SceneAssetBytes request,
-      bool replacingSceneTextures = false, VkDeviceSize releasingGeometryBytes = 0);
+      bool replacingSceneTextures = false, VkDeviceSize releasingGeometryBytes = 0,
+      VkDeviceSize releasingTextureTailBytes = 0);
   struct SceneTextureAsset {
     uint64_t id{};
     VkDeviceSize residentBytes{};

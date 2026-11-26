@@ -455,8 +455,12 @@ SceneAssetBytes AllocationManager::geometryAssetBytes(VkDeviceSize vertices,
 }
 
 void AllocationManager::checkSceneAssetAdmission(SceneAssetBytes request,
-    bool replacingSceneTextures, VkDeviceSize releasingGeometryBytes) {
+    bool replacingSceneTextures, VkDeviceSize releasingGeometryBytes,
+    VkDeviceSize releasingTextureTailBytes) {
   request.residentBytes -= (std::min)(request.residentBytes, releasingGeometryBytes);
+  // The commit callback retires separate tail images before allocating any
+  // replacement scene resources.
+  request.residentBytes -= (std::min)(request.residentBytes, releasingTextureTailBytes);
   // Only a full SceneManager texture reset grants this credit. Persistent
   // resources, detached buffers, and arenas are still charged.
   if (replacingSceneTextures) {

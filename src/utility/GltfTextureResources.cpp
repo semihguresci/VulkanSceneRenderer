@@ -1,5 +1,6 @@
 #include <Container/utility/GltfTextureResources.h>
 #include <Container/geometry/GltfExtendedMaterials.h>
+#include <Container/utility/ModelImportCancellation.h>
 #include <Container/utility/TextureMipStreaming.h>
 
 #include <algorithm>
@@ -7,6 +8,7 @@
 #include <charconv>
 #include <map>
 #include <set>
+#include <span>
 #include <stdexcept>
 #include <string_view>
 #include <tuple>
@@ -86,7 +88,7 @@ std::vector<unsigned> roles(const tinygltf::Model& model, bool enableExperimenta
   // role is not invented: a later authoring assignment chooses it explicitly.
   return result;
 }
-std::string contentKey(const TextureImageData& image, bool color) {
+std::string contentKey(const TextureImageData& image, bool color, const std::stop_token& stop) {
   std::array<uint64_t, 2> hash{14695981039346656037ull, 7809847782465536322ull};
   const auto byte = [&](unsigned char value) {
     hash[0] = (hash[0] ^ value) * 1099511628211ull;
@@ -97,8 +99,15 @@ std::string contentKey(const TextureImageData& image, bool color) {
   word(image.componentMapping.r); word(image.componentMapping.g);
   word(image.componentMapping.b); word(image.componentMapping.a); word(image.mips.size());
   for (const auto& mip : image.mips) {
+    container::util::checkModelImportCancellation(stop);
     word(mip.width); word(mip.height); word(mip.bytes.size());
-    for (const auto value : mip.bytes) byte(std::to_integer<unsigned char>(value));
+    constexpr size_t hashChunkBytes = 64 * 1024;
+    const std::span bytes(mip.bytes);
+    for (size_t offset = 0; offset < bytes.size(); offset += hashChunkBytes) {
+      container::util::checkModelImportCancellation(stop);
+      for (const auto value : bytes.subspan(offset, std::min(hashChunkBytes, bytes.size() - offset)))
+        byte(std::to_integer<unsigned char>(value));
+    }
   }
   std::string result = "gltf-image:";
   for (const auto value : hash) {
@@ -123,9 +132,10 @@ bool sameImage(const TextureImageData& first, const TextureImageData& second) {
 
 PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
     const TextureDecodeOptions& deviceProfile, uint64_t maxPreparedBytes,
-    bool enableExperimentalMaterials, uint32_t streamingFallbackExtent) {
+    bool enableExperimentalMaterials, uint32_t streamingFallbackExtent, std::stop_token stop) {
   if (!maxPreparedBytes || maxPreparedBytes > kMaximumGltfTextureMemoryBytes)
     throw std::invalid_argument("glTF texture preparation budget must be finite and in [1,17179869184] bytes");
+  container::util::checkModelImportCancellation(stop);
   const auto plan = container::geometry::gltf::SelectTextureImageSources(model);
   const auto requiredRoles = roles(model, enableExperimentalMaterials);
   PreparedGltfTextures prepared;
@@ -137,6 +147,7 @@ PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
     if (selected.strictKhrBasisu()) strictImages[size_t(selected.imageIndex)] = true;
   uint64_t remaining = maxPreparedBytes;
   for (size_t texture = 0; texture < model.textures.size(); ++texture) {
+    container::util::checkModelImportCancellation(stop);
     MaterialSamplerKey sampler;
     const auto sourceSampler = model.textures[texture].sampler;
     if (sourceSampler < -1) throw std::runtime_error("glTF texture sampler index is out of range");
@@ -147,6 +158,7 @@ PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
     }
     for (const unsigned role : {kColor, kData}) {
       if (!(requiredRoles[texture] & role)) continue;
+      container::util::checkModelImportCancellation(stop);
       auto selection = plan.textures[texture];
       const bool strict = strictImages[size_t(selection.imageIndex)];
       const auto& source = model.images[size_t(selection.imageIndex)];
@@ -179,10 +191,12 @@ PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
       auto options = deviceProfile;
       options.strictKhrBasisu = strict;
       options.maxDecodedBytes = std::min(options.maxDecodedBytes, remaining);
+      container::util::checkModelImportCancellation(stop);
       auto decoded = container::geometry::gltf::DecodeSelectedTextureImage(model, selection,
           role == kColor ? container::geometry::gltf::TextureImageRole::Color : container::geometry::gltf::TextureImageRole::Data,
           options);
-      auto key = contentKey(decoded, role == kColor);
+      container::util::checkModelImportCancellation(stop);
+      auto key = contentKey(decoded, role == kColor, stop);
       auto existing = prepared.images.end();
       for (auto candidate = prepared.images.begin(); candidate != prepared.images.end(); ++candidate)
         if (candidate->contentKey == key && sameImage(candidate->image, decoded)) { existing = candidate; break; }
@@ -217,6 +231,7 @@ PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
       }
     }
     for (size_t i = 0; i < prepared.images.size(); ++i) {
+      container::util::checkModelImportCancellation(stop);
       if (pinned[i]) {
         continue;
       }
@@ -225,7 +240,7 @@ PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
       for (const auto& mip : image.image.mips) {
         available += mip.bytes.size();
       }
-      if (auto fallback = PrepareTextureMipFallback(image.image, streamingFallbackExtent, available)) {
+      if (auto fallback = PrepareTextureMipFallback(image.image, streamingFallbackExtent, available, stop)) {
         remaining = available - fallback->retainedBytes;
         image.mipSource = std::move(fallback->source);
         image.fallbackFirstMip = fallback->firstMip;
@@ -234,6 +249,7 @@ PreparedGltfTextures PrepareGltfTextures(const tinygltf::Model& model,
       }
     }
   }
+  container::util::checkModelImportCancellation(stop);
   return prepared;
 }
 

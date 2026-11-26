@@ -62,6 +62,9 @@ draw instance so differently placed instances can choose different levels.
 - Primary scenes using glTF skinning or morph deformation use the original
   topology. Rigid transforms are included in the projection used for level
   selection.
+- A glTF draw with active height displacement uses the original triangles.
+  The projected LOD error is measured on the source mesh before the material
+  samples the height texture. Other draws can still select reduced levels.
 - Ray-query acceleration structures and reference path tracing use the source
   geometry. Level selection does not require ray-query hardware.
 - Physics uses the existing collider inputs. The glTF box collider is fitted to

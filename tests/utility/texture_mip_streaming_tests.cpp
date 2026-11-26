@@ -1,4 +1,5 @@
 #include "Container/renderer/scene/TextureMipDemand.h"
+#include "Container/utility/ModelImportCancellation.h"
 #include "Container/utility/TextureMipStreaming.h"
 #include "Container/utility/TextureUploadPlan.h"
 #include "TextureMipUploadPlan.h"
@@ -8,6 +9,7 @@
 #include <array>
 #include <limits>
 #include <stdexcept>
+#include <stop_token>
 
 namespace container {
 namespace {
@@ -47,6 +49,19 @@ TEST(TextureMipDemand, RespectsOrthographicZoomAndMipHysteresis) {
 TextureMipLevel solidMip(VkFormat format, uint32_t width, uint32_t height, std::byte code) {
   return {width, height,
           std::vector<std::byte>(static_cast<size_t>(TextureMipByteSize(format, width, height)), code)};
+}
+
+TEST(TextureMipStreaming, CancelledPreparationDoesNotPublishAMipSourceOrFallback) {
+  constexpr auto format = VK_FORMAT_R8G8B8A8_SRGB;
+  const TextureImageData image{.format = format, .mips = {solidMip(format, 256, 256, std::byte{0x7f})}};
+  std::stop_source stop;
+  stop.request_stop();
+
+  EXPECT_THROW((void)PrepareTextureMipSource(image, 1024 * 1024, stop.get_token()),
+               util::ModelImportCancelled);
+  EXPECT_THROW((void)material::PrepareTextureMipFallback(image, 128, 1024 * 1024, stop.get_token()),
+               util::ModelImportCancelled);
+  EXPECT_EQ(image.mips.size(), 1u);
 }
 
 TEST(TextureMipStreaming, AveragesSrgbColorInLinearLightAndKeepsLinearAlpha) {

@@ -2268,7 +2268,9 @@ bool SceneController::reloadSceneModel(
     const std::function<void()>& beforeCommit,
     VkDeviceSize releasingOptionalGeometry,
     container::gpu::GeometryUploadResult* uploadedGeometry,
-    RigidGeometryUploadSource* preparedRigid) {
+    RigidGeometryUploadSource* preparedRigid,
+    VkDeviceSize releasingTextureTailBytes,
+    const container::material::PreparedGltfTextures* incomingTextures) {
   const std::array<container::gpu::AllocatedBuffer, 1> cameraBuffers = {
       cameraBuffer};
   const bool boundedUnload = path.empty() && config_.assetMemoryBytes != 0;
@@ -2295,7 +2297,8 @@ bool SceneController::reloadSceneModel(
   const bool result =
       sceneManager_.reloadModel(path, importScale, cameraBuffers, objectBuffer,
                                prepared, !ownedGenerationBuffers_ && !boundedUnload,
-                               commit, releasingGeometryBytes, uploadedGeometry != nullptr);
+                               commit, releasingGeometryBytes, uploadedGeometry != nullptr,
+                               releasingTextureTailBytes, incomingTextures);
   if (!result && sceneManager_.geometryRevision() == previousGeometryRevision) {
     if (guiManager_)
       guiManager_->setStatusMessage("Failed to load model: " + path);

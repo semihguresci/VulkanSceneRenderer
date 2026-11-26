@@ -305,7 +305,11 @@ void RendererFrontend::applyPrimaryGeometryLods(FrameRecordParams& frame,
     const auto node = object.temporalInfo.z;
     const auto primitive = object.temporalInfo.w;
     const auto previous = choice.node == node && choice.primitive == primitive ? choice.level : 0u;
-    const auto level = primitive < lod.ranges.size() ? geometry::selectGeometryLod(
+    // LOD errors are measured on bind vertices. A height map can make a
+    // removed vertex's raster position differ by more than that error.
+    const bool eligible = primitive < lod.ranges.size() &&
+                          subs_.sceneManager->rayGeometryCompatible(object.objectInfo.x);
+    const auto level = eligible ? geometry::selectGeometryLod(
         lod.ranges[primitive].levels, view, object.boundingSphere, object.model, pixelLimit, previous) : 0u;
     choice = {node, primitive, level};
     anyCoarse |= level != 0u;

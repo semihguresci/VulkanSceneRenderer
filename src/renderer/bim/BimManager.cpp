@@ -3261,7 +3261,7 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   } else if (extension == ".usd" || extension == ".usda" ||
              extension == ".usdc" || extension == ".usdz") {
     prepared.format = "USD";
-    prepared.model = container::geometry::usd::LoadFromFile(prepared.assetPath, importScale);
+    prepared.model = container::geometry::usd::LoadFromFile(prepared.assetPath, importScale, stop);
   } else if (extension == ".vdb") {
     prepared.format = "OpenVDB";
     prepared.model = container::geometry::vdb::LoadFromFile(prepared.assetPath, importScale,
@@ -3328,7 +3328,8 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
 
 void BimManager::checkPreparedSceneBudget(PreparedScene& prepared,
     bool replacingSceneTextures, VkDeviceSize releasingPrimaryLodBytes,
-    const gpu::GeometryUploadResult* stagedGeometry) const {
+    const gpu::GeometryUploadResult* stagedGeometry,
+    VkDeviceSize releasingTextureTailBytes) const {
   if (!prepared.drawData)
     throw std::invalid_argument("BIM asset admission requires prepared draw data");
   if (stagedGeometry) {
@@ -3382,7 +3383,7 @@ void BimManager::checkPreparedSceneBudget(PreparedScene& prepared,
         indexCount * sizeof(uint32_t), false);
     request.uploadBytes = (std::max)(request.uploadBytes, metadataStagingBytes);
     allocationManager_.checkSceneAssetAdmission(request, replacingSceneTextures,
-                                                 releasingGeometryBytes);
+                                                 releasingGeometryBytes, releasingTextureTailBytes);
   };
   try {
     checkIndexCount(prepared.uploadIndices.size());

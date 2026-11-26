@@ -893,6 +893,7 @@ private:
                               VkExtent2D extent);
   void refreshTextureStreamingDescriptors();
   [[nodiscard]] bool retireTextureStreamingForModelLoad();
+  [[nodiscard]] VkDeviceSize prepareTextureStreamingForModelAdmission();
   bool prepareTextureStreamingForModelCommit();
   void writeTextureStreamingTelemetry(nlohmann::json& json) const;
   void addPrimaryGeometryDiagnostics(AssetStreamingSummary& summary) const;

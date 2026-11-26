@@ -669,7 +669,8 @@ public:
   // Optional raster ranges may be dropped when the source geometry fits alone.
   void checkPreparedSceneBudget(PreparedScene&, bool replacingSceneTextures,
                                 VkDeviceSize releasingPrimaryLodBytes = 0,
-                                const gpu::GeometryUploadResult* stagedGeometry = nullptr) const;
+                                const gpu::GeometryUploadResult* stagedGeometry = nullptr,
+                                VkDeviceSize releasingTextureTailBytes = 0) const;
   void loadPreparedScene(PreparedScene &&prepared,
                          container::scene::SceneManager &sceneManager,
                          gpu::GeometryUploadResult* stagedGeometry = nullptr);

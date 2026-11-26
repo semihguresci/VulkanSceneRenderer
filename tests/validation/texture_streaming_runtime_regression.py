@@ -176,15 +176,103 @@ def pressure_sweep(path):
     return checkpoints
 
 
+def rejected_reload_sequence(path):
+    from scene_asset_budget_runtime_regression import panel_grid
+
+    invalid_gltf = path.parent / "rejected.gltf"
+    invalid_bim = path.parent / "rejected.bim"
+    for candidate in (invalid_gltf, invalid_bim):
+        candidate.write_text("{ invalid JSON", encoding="utf-8")
+    # Force full-resident images on both candidates. Two images cannot fit even
+    # after retirement. One image fits only after the live detail can retire.
+    images = [dict(uri=f"stream-{color}.ktx2", mimeType="image/ktx2") for color in ("a", "b")]
+    over_budget = path.parent / "oversized.gltf"
+    oversized = make_asset(MAIN, [color_material("a", texture=0), color_material("b", texture=1)], images)
+    oversized.model["samplers"][0]["minFilter"] = 9728
+    oversized.write(over_budget)
+    accepted = path.parent / "admitted.gltf"
+    panel = MAIN[0]
+    replacement = Panel("admitted panel", 0, panel.x, panel.y, panel.width, panel.height)
+    fitting = make_asset((replacement,), [color_material("replacement", texture=0)], images[1:])
+    fitting.model["samplers"][0]["minFilter"] = 9728
+    fitting.write(accepted)
+    rejected_upload = path.parent / "oversized-upload.bim"
+    points, indices = panel_grid(160)
+    write_json(rejected_upload, dict(schema_version="1.1.0",
+                                   meshes=[dict(mesh_id=1, coordinates=[component for x, y, z in points
+                                                                        for component in (x, -z, y)], indices=indices)],
+                                   elements=[dict(mesh_id=1, guid="oversized-upload-panel",
+                                                  type="IfcBuildingElementProxy",
+                                                  color=dict(r=66, g=207, b=103, a=255))]))
+    eye = (-8., 0., NEAR)
+    checkpoints = [Checkpoint(phase, frame, panel, (panel,), eye) for phase, frame in
+                   (("resident", 88), ("rejected-gltf", 89), ("rejected-bim", 90),
+                    ("rejected-budget", 91), ("rejected-upload", 93), ("after-rejections", 94))]
+    checkpoints.append(Checkpoint("admitted", 98, replacement, (replacement,), eye))
+    write_sequence(path, checkpoints, [(1, checkpoints[-1].frame, eye)])
+    sequence = json.loads(path.read_bytes())
+    rejected = {89: invalid_gltf, 90: invalid_bim, 91: over_budget}
+    reloads = {**rejected, 98: accepted}
+    for event in sequence["events"]:
+        if event["frame"] in reloads:
+            event["reload"] = str(reloads[event["frame"]])
+    sequence["events"].append(dict(frame=92, guiReload=str(rejected_upload), guiWaitForLoad=True))
+    sequence["events"].sort(key=lambda event: event["frame"])
+    write_json(path, sequence)
+    return checkpoints, (invalid_gltf, invalid_bim, rejected_upload), accepted
+
+
+def verify_rejected_reload(run, rejected, accepted):
+    from PIL import Image, ImageChops
+
+    log = Path(run["log"]).read_text(encoding="utf-8", errors="replace")
+    for candidate in rejected:
+        require(candidate.name in log, f"The renderer did not report the rejected reload: {candidate}")
+    require("glTF load failed: Scene asset memory budget exceeded" in log,
+            "The oversized glTF was not rejected by scene memory admission")
+    before, *following, after_commit = run["captures"].values()
+    row = texture_row(before["state"], 0)
+    require(row["residentFirstMip"] == 0, f"The initial texture did not promote before reload: {row}")
+    counters = before["state"]["textureStreaming"]
+    before_provider = before["state"]["assetResidency"]["providers"]
+    checkpoints = {sample.phase: entry["state"]["assetResidency"]["rejectedReservations"]
+                   for sample, entry in run["captures"].items()}
+    require(checkpoints["rejected-upload"] > checkpoints["rejected-budget"] > checkpoints["rejected-bim"],
+            f"The synchronous and interactive replacements did not exercise budget rejection: {checkpoints}")
+    with Image.open(before["image"]) as baseline:
+        for record in following:
+            current = texture_row(record["state"], 0)
+            require(current["imageId"] == row["imageId"] and current["residentFirstMip"] == 0,
+                    f"A rejected reload changed the resident texture: {row} -> {current}")
+            require(record["state"]["textureStreaming"]["evictions"] == counters["evictions"] and
+                    record["state"]["assetResidency"]["providers"] == before_provider,
+                    "A rejected reload evicted detail or replaced the current provider")
+            with Image.open(record["image"]) as pixels:
+                require(ImageChops.difference(baseline.convert("RGB"), pixels.convert("RGB")).getbbox() is None,
+                        f"A rejected reload changed the viewport pixels: {record['image']}")
+    committed = after_commit["state"]
+    committed_memory = committed["assetResidency"]
+    require(Path(committed["scene"]["primary"]) == accepted and committed_memory["providers"] != before_provider,
+            "The fitting replacement did not publish after the rejections")
+    resident_cap = RESIDENT_MIB * BYTES_PER_MIB
+    largest_image = max(texture["residentBytes"] for texture in committed_memory["textures"])
+    require(largest_image + before["state"]["assetResidency"]["used"]["residentBytes"] > resident_cap and
+            committed_memory["peak"]["residentBytes"] <= resident_cap,
+            "The fitting replacement did not prove admission under the live mip's budget credit")
+    assert_pick(committed, next(reversed(run["captures"])))
+    return dict(imageId=row["imageId"], residentFirstMip=row["residentFirstMip"],
+                images={sample.phase: record["image"] for sample, record in run["captures"].items()}, log=run["log"])
+
+
 def capture(renderer, directory, fixture, technique, sequence, checkpoints, flags=(), *, display="lit", lit=False,
-            force_uncompressed=False):
+            force_uncompressed=False, ui=False):
     from PIL import Image
 
     directory.mkdir()
     image = directory / "texture.png"
     log = directory / "renderer.log"
     (directory / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
-    command = [str(renderer), "--hidden", "--no-ui", "--screenshot-viewport", "--validation", "--import-scale", "1",
+    command = [str(renderer), "--hidden", "--screenshot-viewport", "--validation", "--import-scale", "1",
                "--model", str(fixture), "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1",
                "--render-technique", technique, "--display-mode", display, "--no-taa", "--no-bloom", "--no-ddgi",
                "--no-ray-query", "--ray-shadows", "raster", "--sky", "plain", "--sky-horizon", "0", "0", "0",
@@ -192,6 +280,8 @@ def capture(renderer, directory, fixture, technique, sequence, checkpoints, flag
                "--directional-intensity", "2" if lit else "0", "--directional-direction", "-.6", ".3", "-1",
                "--camera-fov", str(FOV), "--exposure", "1", "--tone-map", "neutral", "--fixed-dt", ".016666667",
                "--capture-sequence", str(sequence), "--screenshot", str(image), *flags]
+    if not ui:
+        command.append("--no-ui")
     env = dict(os.environ, VK_LAYER_SETTINGS_PATH=str(directory), VK_LOADER_DEBUG="layer")
     if force_uncompressed:
         env["CONTAINER_DISABLE_TEXTURE_COMPRESSION"] = "1"
@@ -620,7 +710,7 @@ def main():
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--technique", choices=TECHNIQUES, action="append")
-    parser.add_argument("--suite", choices=("all", "pressure", "semantics"), default="all")
+    parser.add_argument("--suite", choices=("all", "pressure", "reload", "semantics"), default="all")
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true")
     parser.add_argument("--require-opt-in", action="store_true")
@@ -638,10 +728,11 @@ def main():
     hash_before = None if args.generate_only else digest(renderer)
     techniques = args.technique or TECHNIQUES
     results = dict(passed=False, generateOnly=args.generate_only, rendererSha256=hash_before,
-                   residentCapMiB=RESIDENT_MIB, copyCapKiB=UPLOAD_KIB, pressure={}, semantics={})
+                   residentCapMiB=RESIDENT_MIB, copyCapKiB=UPLOAD_KIB, pressure={}, reload={}, semantics={})
     try:
-        if args.suite in ("all", "pressure"):
+        if args.suite in ("all", "pressure", "reload"):
             scene = write_pressure_fixture(output)
+        if args.suite in ("all", "pressure"):
             sequence = output / "pressure.sequence.json"
             checkpoints = pressure_sweep(sequence)
             if not args.generate_only:
@@ -657,6 +748,15 @@ def main():
                 contact = output / "comparison.png"
                 comparison(contact, results["pressure"])
                 results["comparison"] = str(contact)
+        if args.suite in ("all", "reload"):
+            sequence = output / "rejected-reload.sequence.json"
+            checkpoints, rejected, accepted = rejected_reload_sequence(sequence)
+            if not args.generate_only:
+                for technique in techniques:
+                    run = capture(renderer, output / f"{technique}-rejected-reload", scene, technique, sequence,
+                                  checkpoints, (*streaming_flags(RESIDENT_MIB, 6), "--geometry-upload-kb", "256"),
+                                  ui=True)
+                    results["reload"][technique] = verify_rejected_reload(run, rejected, accepted)
         if args.suite in ("all", "semantics"):
             fixtures = write_semantic_fixtures(output)
             mask_path = output / "mask.sequence.json"
