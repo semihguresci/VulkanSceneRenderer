@@ -47,11 +47,22 @@ As embeds the original IES text and keeps the per-instance color and multiplier.
 
 Forward opaque, transparent OIT and both deferred point-light routes use the
 same angular lookup. The reference renderer, DDGI and OpenVDB local-light
-evaluation use it as well. GPU memory uses four header floats followed by the
+evaluation use it as well. In the raster engines, a measured light can also
+use six cube layers from the local shadow atlas after finite point and spot
+lights have been assigned layers. The shadow map covers 5,000 scene units
+from the fixture, and the filter uses the active caster bounds to scale
+surface sampling. The light's measured intensity continues to follow
+inverse-square falloff outside the shadow coverage.
+
+GPU memory uses four header floats followed by the
 original angular vectors and candela samples. The light rows reserve 32 extra
 bytes per local light. Identical profile payloads share an immutable VMA
 allocation. The scene-manager cache limits combined resident profile payload
-and key storage to 32 MiB and 256 entries. Each input file is limited to
+and key storage to 32 MiB and 256 entries. It charges the actual VMA buffer
+allocations and the profile keys. Scene generations hold the buffers while
+their light tables can use them, including generations kept for undo and redo.
+After the last generation releases a profile, its buffer and cache capacity
+are available for the next scene. Each input file is limited to
 2 MiB, each glTF table to 64 profiles and 16 MiB of profile text, and each
 profile to 1,024 angles per axis and 262,144 measured values.
 
@@ -79,3 +90,11 @@ previews, cancellation, undo, redo and saving the edited profile.
 Environment, directional and preview bounce intensities are zero for these
 direct photometry checks. Symmetric receiver samples also check the expected
 interpolated candela ratio independently of the renderer's BRDF magnitude.
+
+The profile replacement regression opens five successive scenes with 64
+different profiles each in one renderer process. It checks rotation and
+absolute intensity at each replacement, checks that retired VMA allocations
+do not build up, and reopens the first scene for a pixel-exact comparison.
+Run the script directly with `--reload-only` to replay these cases.
+The full test also merges a light-only IES asset and checks that undo and
+redo restore the corresponding measured lighting pixel for pixel.

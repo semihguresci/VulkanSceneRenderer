@@ -2966,6 +2966,7 @@ target_compile_definitions(lighting_shadow_sampling_tests PRIVATE
 
 add_custom_test(local_shadow_layer_allocator_tests
     ${TEST_RENDERER_LIGHTING_DIR}/local_shadow_layer_allocator_tests.cpp  ""  ${TEST_RESULTS_DIR}
+    Dep_Math
 )
 
 add_custom_test(shadow_cascade_draw_planner_tests

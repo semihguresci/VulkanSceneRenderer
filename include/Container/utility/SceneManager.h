@@ -1039,7 +1039,7 @@ class SceneManager {
   [[nodiscard]] const container::gpu::AllocatedBuffer& sceneClipBuffer(size_t imageIndex) const;
   [[nodiscard]] std::shared_ptr<const uint8_t> sceneClipFrameIdentity() const noexcept;
   void collectAuthoredPunctualLights(const SceneGraph* graph = nullptr);
-  void prepareIesProfileAddresses();
+  void prepareIesProfiles();
   [[nodiscard]] AuthoredSceneLights evaluateAuthoredSceneLights(
       const SceneGraph* graph, size_t scene, bool includeHidden = false) const;
   [[nodiscard]] GltfSceneActivation planSceneSelection(
@@ -1191,9 +1191,12 @@ class SceneManager {
   uint64_t authoredMaterialRevision_{0};
   ModelBounds modelBounds_{};
   std::vector<container::gpu::PointLightData> authoredPointLights_{};
+  struct IesGpuProfile;
   struct IesGpuProfileCache;
   std::shared_ptr<IesGpuProfileCache> iesProfileCache_;
-  std::vector<VkDeviceAddress> iesProfileAddresses_;
+  // Keep every source profile alive for this scene generation, including
+  // inactive source scenes and generations retained for undo/redo.
+  std::vector<std::shared_ptr<const IesGpuProfile>> iesProfiles_;
   std::vector<AuthoredDirectionalLight> authoredDirectionalLights_{};
   std::vector<container::gpu::AreaLightData> authoredAreaLights_{};
   std::vector<AuthoredLightBinding> authoredPointBindings_{};

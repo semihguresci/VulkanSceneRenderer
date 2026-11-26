@@ -2,6 +2,7 @@
 
 #include "Container/renderer/lighting/LocalShadowLayerAllocator.h"
 
+#include <limits>
 #include <vector>
 
 namespace {
@@ -98,4 +99,50 @@ TEST(LocalShadowLayerAllocatorTests, MixedPointAndSpotLightsShareLayerBudget) {
   expectMetadata(lights[1], 2u, 6u);
   expectMetadata(lights[2], 8u, 1u);
   expectMetadata(lights[3], 0u, 0u);
+}
+
+TEST(LocalShadowLayerAllocatorTests, UnboundedIesUsesRemainingOmniShadows) {
+  auto ordinaryUnbounded = makeLocalShadowLight(false);
+  ordinaryUnbounded.positionRadius.w = 0.0f;
+  auto measured = ordinaryUnbounded;
+  measured.iesProfileAddress = 1u;
+  std::vector<container::gpu::PointLightData> lights{
+      ordinaryUnbounded, measured, makeLocalShadowLight(false)};
+
+  const auto capped = container::renderer::assignLocalShadowLayerMetadata(
+      lights, {.omniPointBudget = 1u, .layerBudget = 12u});
+  EXPECT_EQ(capped.assignedOmniPointCount, 1u);
+  expectMetadata(lights[0], 0u, 0u);
+  expectMetadata(lights[1], 0u, 0u);
+  expectMetadata(lights[2], 1u, 6u);
+
+  const auto expanded = container::renderer::assignLocalShadowLayerMetadata(
+      lights, {.omniPointBudget = 2u, .layerBudget = 12u});
+  EXPECT_EQ(expanded.assignedOmniPointCount, 2u);
+  expectMetadata(lights[0], 0u, 0u);
+  expectMetadata(lights[1], 7u, 6u);
+  expectMetadata(lights[2], 1u, 6u);
+  EXPECT_FLOAT_EQ(lights[1].positionRadius.w, 0.0f);
+}
+
+TEST(LocalShadowLayerAllocatorTests, IesCubeFilterFollowsBoundedCasterGeometry) {
+  using container::renderer::ShadowCasterSceneBounds;
+  using container::renderer::localPointShadowFilterRange;
+  using container::renderer::kMaxIesRasterShadowDistance;
+
+  auto light = makeLocalShadowLight(false);
+  light.positionRadius = {1.0f, 2.0f, 3.0f, 0.0f};
+  const ShadowCasterSceneBounds localScene{{0.0f, 0.0f, 0.0f}, {4.0f, 6.0f, 15.0f}};
+  EXPECT_FLOAT_EQ(localPointShadowFilterRange(light, &localScene), 0.0f);
+  light.iesProfileAddress = 1u;
+  EXPECT_FLOAT_EQ(localPointShadowFilterRange(light, &localScene), 14.3f);
+  EXPECT_FLOAT_EQ(localPointShadowFilterRange(light, nullptr), kMaxIesRasterShadowDistance);
+
+  const ShadowCasterSceneBounds oversizedScene{{-1.0e38f, -4.0f, -4.0f}, {1.0e38f, 4.0f, 4.0f}};
+  EXPECT_FLOAT_EQ(localPointShadowFilterRange(light, &oversizedScene), kMaxIesRasterShadowDistance);
+  const ShadowCasterSceneBounds invalidScene{{0.0f, 3.0f, 0.0f}, {1.0f, 2.0f, 1.0f}};
+  EXPECT_FLOAT_EQ(localPointShadowFilterRange(light, &invalidScene), kMaxIesRasterShadowDistance);
+  light.positionRadius.x = std::numeric_limits<float>::infinity();
+  EXPECT_FLOAT_EQ(localPointShadowFilterRange(light, &localScene), 0.0f);
+  EXPECT_FLOAT_EQ(localPointShadowFilterRange(makeLocalShadowLight(false), nullptr), 4.0f);
 }

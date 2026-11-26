@@ -612,6 +612,7 @@ uint64_t SceneManager::mergeHistoryResidentBytes() const {
     retainedText(bytes,textureSamplingFallback_->resource.contentKey);
   }
   RETAINED_MEMBER(authoredPointLights_); RETAINED_MEMBER(authoredDirectionalLights_); RETAINED_MEMBER(authoredAreaLights_);
+  RETAINED_MEMBER(iesProfiles_);
   RETAINED_MEMBER(authoredPointBindings_); RETAINED_MEMBER(authoredDirectionalBindings_); RETAINED_MEMBER(authoredAreaBindings_);
   RETAINED_MEMBER(materialSamplers_); RETAINED_MEMBER(materialSamplerSlots_.keys);
   RETAINED_MEMBER(descriptorSets_); RETAINED_MEMBER(auxiliaryDescriptorSets_);
@@ -1370,7 +1371,7 @@ void SceneManager::exchangeMergeGeneration(PreparedMergeGeneration& prepared,con
   EXCHANGE_ASSET(exportMaterialSources_); EXCHANGE_ASSET(exportMaterialTextureBindings_); EXCHANGE_ASSET(exportTextureIndices_);
   EXCHANGE_ASSET(vertices_); EXCHANGE_ASSET(indices_); EXCHANGE_ASSET(geometryRevision_); EXCHANGE_ASSET(materialRevision_);
   EXCHANGE_ASSET(modelBounds_); EXCHANGE_ASSET(authoredPointLights_); EXCHANGE_ASSET(authoredDirectionalLights_);
-  EXCHANGE_ASSET(iesProfileAddresses_);
+  EXCHANGE_ASSET(iesProfiles_);
   EXCHANGE_ASSET(authoredAreaLights_); EXCHANGE_ASSET(authoredPointBindings_); EXCHANGE_ASSET(authoredDirectionalBindings_);
   EXCHANGE_ASSET(authoredAreaBindings_); EXCHANGE_ASSET(indexType_); EXCHANGE_ASSET(materialBaseColor_);
   EXCHANGE_ASSET(defaultMaterialIndex_); EXCHANGE_ASSET(diagnosticMaterialIndex_); EXCHANGE_ASSET(sourceMaterialToRuntime_);

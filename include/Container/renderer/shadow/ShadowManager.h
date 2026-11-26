@@ -78,6 +78,7 @@ class ShadowManager {
       std::span<const container::gpu::PointLightData> pointLights,
       std::span<const container::gpu::AreaLightData> areaLights,
       const container::gpu::ShadowSettings& shadowSettings,
+      const ShadowCasterSceneBounds* casterSceneBounds,
       uint32_t localShadowLayerBudget,
       uint32_t imageIndex);
 
