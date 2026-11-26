@@ -36,7 +36,7 @@ GPU_OPT_IN = "CONTAINER_RUN_GPU_VISUAL_REGRESSION"
 def fixture(path, roughness, card_color=(1, .015, .008, 1), *, card_center=CARD_CENTER,
             card_size=(.63, .55), lit_card=False, blocker=None, floor_patch=None, blocker_color=(0, 0, 0),
             receiver_patches=None, blocker_setup=None, floor_normal=(0, 1, 0), floor_double_sided=False,
-            card_setup=None, card_back=False):
+            card_setup=None, card_back=False, blocker_back=False):
     asset = Asset()
 
     def quad(positions, normal, material, *, back=False):
@@ -83,7 +83,7 @@ def fixture(path, roughness, card_color=(1, .015, .008, 1), *, card_center=CARD_
         card_setup(asset, card, card_material)
     if blocker:
         center, half_size, alpha = blocker
-        primitive = panel(center, half_size, len(asset.model["materials"]))
+        primitive = panel(center, half_size, len(asset.model["materials"]), back=blocker_back)
         asset.model["meshes"].append({"primitives": [primitive]})
         asset.model["nodes"].append({"mesh": 2, "name": "Black blocker"})
         asset.model["scenes"][0]["nodes"].append(2)
@@ -645,6 +645,86 @@ def verify_denoising(output, capture):
                 lifecycle=verify_denoise_lifecycle(output, capture))
 
 
+def verify_bim_overlay(output, capture):
+    from bim_floor_plan_runtime_regression import panel, settings
+
+    # The wall's floor-plan line is on the same view ray as the visible card,
+    # but far enough behind the card that scene depth should hide the line.
+    px, py, pz = EYE + 1.035 * (CARD_CENTER - EYE)
+    wall = panel(1, (float(px - .8), float(py), float(px + .8), float(py + .35)), float(pz))
+    auxiliary = output / "reflection-floor-plan.bim"
+    auxiliary.write_text(json.dumps({
+        "schema_version": "1.1.0", "meshes": [wall],
+        "elements": [dict(mesh_id=1, guid="floor-plan-behind-card", type="IfcWall", storeyName="Overlay proof",
+                          color=dict(r=165, g=165, b=165, a=255))],
+    }), encoding="utf-8")
+    phases = {2: "off", 4: "no-depth", 6: "depth", 8: "off-again"}
+    events = []
+    for frame, name in phases.items():
+        style = settings(enabled=name in ("no-depth", "depth"), elevation="source-elevation", depth=name == "depth",
+                         color=(0, 1, 0), width=5)
+        events.append(dict(frame=frame - 1, bimFloorPlan=style))
+    sequence = dict(schemaVersion=1, frames=max(phases), sampleFrames=list(phases), events=events)
+
+    reflected_pixel, _, card_pixel, hit_distance = analytic_hit()
+    patches = {}
+    for label, (x, y) in (("card", tuple(map(int, card_pixel))), ("mirror", reflected_pixel)):
+        patches[label] = np.s_[y - 8:y + 9, x - 8:x + 9]
+
+    samples, route_reports = {}, {}
+    for mode in ("off", "high"):
+        frames, captures = capture(f"bim-overlay-{mode}", mode, environment=.05, no_query=True, no_history=True,
+                                   sequence=sequence, bim_model=auxiliary, tone_map="neutral")
+        samples[mode] = {name: frames[frame].astype(np.int16) for frame, name in phases.items()}
+        route_reports[mode] = {}
+        for frame, name in phases.items():
+            frame_evidence = captures[frame]
+            image = frame_evidence["image"]
+            metadata = json.loads(Path(f"{image}.capture.json").read_bytes())
+            state = json.loads(Path(frame_evidence["telemetry"]).read_bytes())
+            plan = state["bim"]["floorPlan"]
+            enabled = name in ("no-depth", "depth")
+            assert metadata["source"] == "viewport" and not metadata["includesUi"] and metadata["displayMode"] == 0, metadata
+            assert (metadata["width"], metadata["height"]) == (WIDTH, HEIGHT) and state["technique"] == "deferred-raster"
+            assert plan["requested"] == enabled and plan["enabled"] == enabled, (mode, name, plan)
+            if enabled:
+                assert plan["viewportRoute"] == "scene-color" and plan["depthTest"] == (name == "depth"), (mode, name, plan)
+            reflection_pass = frame_evidence["pass"]
+            assert bool(reflection_pass and reflection_pass["active"]) == (mode == "high"), (mode, name, reflection_pass)
+            post_pass = next((entry for entry in state["passes"] if entry["name"] == "BimReflectionDisplayOverlays"), None)
+            if mode == "off":
+                assert not post_pass or not post_pass["active"], (mode, name, post_pass)
+            elif enabled:
+                assert post_pass and post_pass["active"] and post_pass["gpuTimed"], (mode, name, post_pass)
+            if mode == "high":
+                route = frame_evidence["route"]
+                assert not route["historyAvailable"] and not route["rayFallbackActive"], route
+            route_reports[mode][name] = dict(floorPlan=plan, reflectionPass=reflection_pass, overlayPass=post_pass)
+
+    def compare(previous, current, patch):
+        delta = current[patch] - previous[patch]
+        return dict(maximumRgbDelta=int(np.abs(delta).max()),
+                    changedPixels=int(np.count_nonzero(np.abs(delta).max(axis=2) > 3)),
+                    maxGreenGain=int(delta[..., 1].max()), greenPixels=int(np.count_nonzero(delta[..., 1] > 12)))
+
+    off, high = samples["off"], samples["high"]
+    mirror_patch = patches["mirror"]
+    mirror_gain = int((high["off"][mirror_patch] - off["off"][mirror_patch])[..., 0].max())
+    assert mirror_gain > 30, ("Mirror has no red reflection", mirror_gain)
+    result = dict(reflectedPixel=list(reflected_pixel), projectedCardPixel=card_pixel.tolist(),
+                  reflectionHitDistance=hit_distance, mirrorRedGain=mirror_gain, routes=route_reports, pixels={})
+    for mode, frames in samples.items():
+        np.testing.assert_array_equal(frames["off"], frames["off-again"], err_msg=f"{mode} overlay toggle did not restore pixels")
+        deltas = {phase: {name: compare(frames["off"], frames[phase], patch) for name, patch in patches.items()}
+                  for phase in ("no-depth", "depth")}
+        result["pixels"][mode] = deltas
+        visible = deltas["no-depth"]["card"]
+        assert visible["greenPixels"] >= 3 and visible["maxGreenGain"] > 24, (mode, deltas)
+        assert deltas["depth"]["card"]["changedPixels"] == 0, (mode, deltas)
+        assert all(phase["mirror"]["maximumRgbDelta"] == 0 for phase in deltas.values()), (mode, deltas)
+    return result
+
+
 def ray_policy_blocker(profile):
     def configure(asset, primitive, material):
         if profile == "textured":
@@ -741,6 +821,48 @@ def verify_ray_materials(output, capture, center, card_size, target):
                 smoothRadianceGain=smooth, roughRadianceGain=rough),
                 tangentNormal=dict(frontRgb=front.mean(axis=(0, 1)).tolist(), backRgb=back.mean(axis=(0, 1)).tolist(),
                                    oppositeLightRgb=dark.mean(axis=(0, 1)).tolist()))
+
+
+def verify_reflected_shadow_facing(output, capture):
+    center, target = np.array([.35, 2.8, -1.5]), np.array([0., -.5, 0.])
+    card_size, caster_size = (.45, .30), (.28, .20)
+    caster = center + [0., 0., .7]
+    for point, size in ((center, card_size), (caster, caster_size)):
+        assert all(project_point(point + [dx, dy, 0.], target)[1] < 0
+                   for dx in (-size[0], size[0]) for dy in (-size[1], size[1])), point
+    (x, y), receiver, _, _ = analytic_hit(center, target)
+    direction = (receiver - EYE) * [1, -1, 1]
+    caster_intersection = receiver + direction * ((caster[2] - receiver[2]) / direction[2])
+    assert caster_intersection[1] < caster[1] - caster_size[1] - .15, caster_intersection
+    roi = np.s_[y - 3:y + 4, x - 3:x + 4]
+
+    def one_sided(_asset, _primitive, material):
+        material["doubleSided"] = False
+
+    captures = {}
+    for name in ("clear", "two-sided", "toward-light", "away-from-light"):
+        options = {}
+        if name != "clear":
+            options = dict(blocker=(caster, caster_size, 1), blocker_back=name == "away-from-light",
+                           blocker_setup=one_sided if name != "two-sided" else None)
+        label = f"ray-shadow-facing-{name}"
+        fixture(output / f"{label}.gltf", .045, card_color=(.9, .16, .07, 1), card_center=center,
+                card_size=card_size, lit_card=True, **options)
+        captures[name] = capture(label, "high", model=f"{label}.gltf", target=target, directional=3,
+                                 bounce=0, hybrid=True, linear=True)[roi]
+
+    means = {name: frame.mean(axis=(0, 1)).tolist() for name, frame in captures.items()}
+    clear, shaded = means["clear"][0], means["two-sided"][0]
+    assert clear > .2 and shaded < clear * .05, means
+    # The shadow ray travels toward +Z. A caster with +Z winding faces the
+    # light and must match the two-sided caster, despite being a query back face.
+    gain = {name: (clear - means[name][0]) / (clear - shaded) for name in ("toward-light", "away-from-light")}
+    error = {name: float(np.abs(captures[name] - captures[control]).max())
+             for name, control in (("toward-light", "two-sided"), ("away-from-light", "clear"))}
+    report = dict(receiverPixel=[x, y], receiverPixels=49, meanSceneLinearRgb=means, normalizedShadowGain=gain,
+                  maximumLinearError=error)
+    assert gain["toward-light"] > .95 and abs(gain["away-from-light"]) < .05 and max(error.values()) < .005, report
+    return report
 
 
 def verify_ray_policy(output, capture, evidence, missing_renderer):
@@ -849,6 +971,7 @@ def verify_ray_policy(output, capture, evidence, missing_renderer):
     assert np.all(self_source[y - 2:y + 3, x - 2:x + 3, 2] == 0.), (x, y, self_source[y, x])
     result = dict(probes=probes, sectionPlane=plane, capabilityFallbackPixelExact=True, rayScene=ray_receipt,
                   materials=verify_ray_materials(output, capture, center, card_size, target),
+                  reflectedShadowFacing=verify_reflected_shadow_facing(output, capture),
                   selfHit=dict(receiverPixel=[x, y], oldHitDistanceMeters=legacy_intersection,
                                rayConfidence=float(self_source[y, x, 2])))
 
@@ -877,6 +1000,8 @@ def main():
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--ray-fallback", action="store_true", help="Also verify off-screen ray hits on a ray-query device")
     parser.add_argument("--ray-policy", action="store_true", help="Check ray reflection coverage and raster fallback policy")
+    parser.add_argument("--ray-shadow-facing", action="store_true", help="Check reflected one-sided shadow casting")
+    parser.add_argument("--bim-overlay", action="store_true", help="Check that BIM floor plans stay out of reflections")
     parser.add_argument("--missing-ray-renderer", type=Path,
                         help="With --ray-policy, check a staged runtime without the optional ray reflection shader")
     parser.add_argument("--temporal", action="store_true", help="Also verify reflection history with motion and cuts")
@@ -898,8 +1023,13 @@ def main():
         parser.error("--energy runs separately from --marcher, --temporal, and --ray-fallback")
     if args.ray_policy and (args.energy or args.marcher or args.temporal or args.ray_fallback):
         parser.error("--ray-policy runs separately from the other suites")
+    if args.ray_shadow_facing and (args.ray_policy or args.energy or args.marcher or args.temporal or args.ray_fallback or args.denoise):
+        parser.error("--ray-shadow-facing runs separately from the other suites")
     if args.denoise and (args.energy or args.marcher or args.temporal or args.ray_fallback or args.ray_policy):
         parser.error("--denoise runs separately from the other suites")
+    if args.bim_overlay and (args.energy or args.marcher or args.temporal or args.ray_fallback or args.ray_policy
+                             or args.ray_shadow_facing or args.denoise):
+        parser.error("--bim-overlay runs separately from the other suites")
     if args.missing_ray_renderer and not args.ray_policy:
         parser.error("--missing-ray-renderer requires --ray-policy")
     if args.mip_zero_renderer and not args.marcher:
@@ -921,7 +1051,7 @@ def main():
     def capture(label, mode, *, model="mirror.gltf", forward=False, no_query=False, environment=0,
                 hybrid=False, target=TARGET, directional=0, sequence=None, taa=False, extent=(WIDTH, HEIGHT),
                 linear=False, alternate=None, hdr=None, bounce=None, ray_available=None, light_direction=(0, 0, -1),
-                no_history=False, msaa=1):
+                no_history=False, msaa=1, bim_model=None, tone_map=None):
         executable = alternate if alternate else renderer
         image = output / (f"{label}.exr" if linear else f"{label}.png")
         command = [str(executable), "--hidden", "--no-ui", "--validation", "--import-scale", "1",
@@ -942,6 +1072,10 @@ def main():
             command.extend(("--bounce-intensity", str(bounce)))
         if no_history:
             command.append("--no-screen-reflections-history")
+        if bim_model is not None:
+            command.extend(("--bim-model", str(bim_model), "--bim-import-scale", "1"))
+        if tone_map is not None:
+            command.extend(("--tone-map", tone_map))
         if not linear:
             command.append("--screenshot-viewport")
         if sequence is None:
@@ -961,7 +1095,7 @@ def main():
         log_path.write_text(log, encoding="utf-8")
         assert run.returncode == 0 and not validation_log_error(log), log_path
         layer = None
-        if args.marcher or args.energy or args.ray_policy or args.denoise or validation:
+        if args.marcher or args.energy or args.ray_policy or args.ray_shadow_facing or args.denoise or args.bim_overlay or validation:
             matched = VALIDATION_INSERTED.search(log)
             assert matched, f"Could not confirm Khronos validation layer insertion: {log_path}"
             layer = file_identity(executable.parent / Path(matched[1]))
@@ -981,14 +1115,14 @@ def main():
             for frame in sequence["sampleFrames"]:
                 path = image if frame == sequence["frames"] else output / f"{label}.frame-{frame:04d}{image.suffix}"
                 receipt = read_receipt(path)
-                route = receipt["screenReflections"]
+                route = receipt.get("screenReflections")
                 pass_state = next((p for p in receipt["passes"] if p["name"] == "ScreenReflections"), None)
                 routes[frame] = {"route": route, "pass": pass_state}
                 if args.denoise:
                     routes[frame].update(msaaSamples=receipt["msaaSamples"], supportedMsaaSamples=receipt["supportedMsaaSamples"])
                     routes[frame]["surfaceIdPass"] = next(
                         (p for p in receipt["passes"] if p["name"] == "ReflectionSurfaceIds"), None)
-                if linear or args.denoise:
+                if linear or args.denoise or args.bim_overlay:
                     assert receipt["validationEnabled"], receipt
                     routes[frame].update(image=str(path), telemetry=str(path.with_suffix(".telemetry.json")),
                                          log=str(log_path), command=command, validationLayer=layer)
@@ -1023,7 +1157,7 @@ def main():
         with Image.open(image) as result:
             return np.array(result.convert("RGB"))
 
-    if args.marcher or args.energy or args.ray_policy or args.denoise:
+    if args.marcher or args.energy or args.ray_policy or args.ray_shadow_facing or args.denoise or args.bim_overlay:
         fallback = args.mip_zero_renderer.resolve(strict=True) if args.mip_zero_renderer else None
         missing = args.missing_ray_renderer.resolve(strict=True) if args.missing_ray_renderer else None
         renderer_id = file_identity(renderer)
@@ -1050,6 +1184,10 @@ def main():
                 result["energy"] = verify_energy(output, capture, evidence)
             elif args.ray_policy:
                 result["rayPolicy"] = verify_ray_policy(output, capture, evidence, missing)
+            elif args.ray_shadow_facing:
+                result["reflectedShadowFacing"] = verify_reflected_shadow_facing(output, capture)
+            elif args.bim_overlay:
+                result["bimOverlay"] = verify_bim_overlay(output, capture)
             else:
                 result["denoise"] = verify_denoising(output, capture)
             assert file_identity(renderer) == renderer_id, "Renderer changed during SSR capture"
@@ -1069,6 +1207,10 @@ def main():
             print("PASS constant-radiance dielectric and metal energy, roughness, and screen-edge fading")
         elif args.ray_policy:
             print("PASS off-screen ray coverage, section clipping, and requested raster fallback checks")
+        elif args.ray_shadow_facing:
+            print("PASS directional shadows on reflected one-sided geometry")
+        elif args.bim_overlay:
+            print("PASS BIM floor-plan display, depth occlusion, and reflection isolation")
         else:
             print("PASS bounded linear reflection trails, stationary denoising, history fallback, and lifecycle")
         return

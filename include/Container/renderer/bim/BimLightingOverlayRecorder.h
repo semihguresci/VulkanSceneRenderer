@@ -131,7 +131,12 @@ recordBimLightingOverlayCommands(VkCommandBuffer cmd,
 [[nodiscard]] bool recordBimLightingOverlayFrameCommands(
     VkCommandBuffer cmd, const BimLightingOverlayFrameRecordInputs &inputs);
 
+enum class BimRasterOverlayPhase { All, Native, Display };
+
+[[nodiscard]] bool hasBimRasterDisplayOverlays(const FrameRecordParams &p);
+
 void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
-                             const BimRasterOverlayRecordInputs &inputs);
+                             const BimRasterOverlayRecordInputs &inputs,
+                             BimRasterOverlayPhase phase = BimRasterOverlayPhase::All);
 
 } // namespace container::renderer

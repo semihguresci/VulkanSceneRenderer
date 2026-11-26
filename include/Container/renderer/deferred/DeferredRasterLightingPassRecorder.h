@@ -33,6 +33,8 @@ struct DeferredRasterLightingPassServices {
   bool tileCullPassActive{false};
 };
 
+[[nodiscard]] bool hasDeferredRasterBimDisplayOverlays(const FrameRecordParams &p);
+
 class DeferredRasterLightingPassRecorder {
 public:
   explicit DeferredRasterLightingPassRecorder(
@@ -41,7 +43,10 @@ public:
   void record(VkCommandBuffer cmd, const FrameRecordParams &p,
               VkDescriptorSet sceneSet,
               const std::array<VkDescriptorSet, 2> &lightingSets,
-              const std::array<VkDescriptorSet, 4> &transparentSets) const;
+              const std::array<VkDescriptorSet, 4> &transparentSets,
+              bool deferBimDisplayOverlays = false) const;
+
+  void recordBimDisplayOverlays(VkCommandBuffer cmd, const FrameRecordParams &p) const;
 
 private:
   DeferredRasterLightingPassServices services_{};

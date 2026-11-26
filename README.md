@@ -129,7 +129,7 @@ with the build/release identity, GPU, driver, launch command and console output.
 | Topic | Guides |
 | --- | --- |
 | Start here | [Editor controls](docs/current-editor-controls.md), [Build and test](docs/build-and-test.md), [Architecture](docs/architecture.md), [Project overview](docs/project-overview.md) |
-| Rendering | [Reference path tracing](docs/reference-path-tracing.md), [Ray-query shadows](docs/ray-query-rendering.md), [Diffuse GI](docs/ddgi-probe-foundation.md), [LTC area lights](docs/ltc-area-lighting.md), [MSAA](docs/msaa.md), [TAA](docs/temporal-rendering.md) |
+| Rendering | [Reference path tracing](docs/reference-path-tracing.md), [Screen-space reflections](docs/screen-space-reflections.md), [Ray-query shadows](docs/ray-query-rendering.md), [Diffuse GI](docs/ddgi-probe-foundation.md), [LTC area lights](docs/ltc-area-lighting.md), [MSAA](docs/msaa.md), [TAA](docs/temporal-rendering.md) |
 | Reconstruction and images | [FSR](docs/fsr-upscaling.md), [DLSS](docs/dlss-upscaling.md), [Display grading and image export](docs/display-and-image-export.md), [Telemetry](docs/renderer-telemetry.md), [GFXReconstruct](docs/gfxreconstruct.md) |
 | glTF scenes | [Capabilities](docs/gltf-capabilities.md), [Scene export](docs/gltf-scene-export.md), [Edit history](docs/editor-history.md), [Animation](docs/gltf-animation.md), [Camera authoring](docs/gltf-camera-authoring.md), [Skin/morph deformation](docs/gltf-deformation.md) |
 | Materials and assets | [Extended materials](docs/gltf-extended-materials.md), [Texture data](docs/texture-image-data.md), [Instancing](docs/gltf-instancing.md), [Material variants](docs/gltf-material-variants.md), [Interactivity](docs/gltf-interactivity.md) |

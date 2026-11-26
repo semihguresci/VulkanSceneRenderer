@@ -81,12 +81,14 @@ float reflectionDirectVisibility(float3 position, float3 geometricNormal, float3
     RayDesc ray = reflectionRay(position, geometricNormal, direction, distance);
     RayQuery<RAY_FLAG_FORCE_NON_OPAQUE | RAY_FLAG_ACCEPT_FIRST_HIT_AND_END_SEARCH> query;
     query.TraceRayInline(reflectionScene, RAY_FLAG_NONE, 0xffu, ray);
+    // This ray travels toward the light. The raster shadow camera sees the
+    // opposite face, so use its facing for single-sided shadow casters.
     while (query.Proceed())
     {
         if (query.CandidateType() == CANDIDATE_NON_OPAQUE_TRIANGLE &&
             reflectionCandidateAccepted(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(),
                 query.CandidateTriangleBarycentrics(), ray.Origin + ray.Direction * query.CandidateTriangleRayT(),
-                query.CandidateTriangleFrontFace()))
+                !query.CandidateTriangleFrontFace()))
             query.CommitNonOpaqueTriangleHit();
     }
     return query.CommittedStatus() == COMMITTED_TRIANGLE_HIT ? 0.0 : 1.0;

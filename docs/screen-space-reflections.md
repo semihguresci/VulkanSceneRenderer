@@ -47,6 +47,30 @@ the reflected opaque scene before fog and temporal resolve. Transmission
 receivers and aerial perspective use the existing lighting route. Forward
 rendering and ray-shadow visibility views bypass the reflection pass.
 
+### BIM display overlays
+
+In the deferred Lit view, floor plans and other BIM display overlays draw
+after reflection shading. Native points, curves, and strokes contribute to
+the scene during lighting. The separate display pass reuses the same color
+and depth attachments and applies the floor plan's selected depth test.
+
+In the 480×360 floor-plan capture, the direct green line remained visible on
+85 pixels over the red card. The unwanted line covered 68 pixels in the
+mirror before the change. The mirror patch now matches the frame with the
+overlay disabled pixel-for-pixel. With depth testing enabled, the card hides
+the plan line behind it. Both 1× and 4× MSAA captures showed the same result.
+Run `--bim-overlay` for the toggle sequence.
+
+On the RTX 2080 SUPER with synchronization validation, median combined time
+for lighting, opaque IDs, reflections, and display overlays went from
+0.360 ms to 0.372 ms over 24 frames at 480×360. The new display pass took
+0.032 ms median, and total reflection allocation stayed at 8,613,376 bytes
+with history disabled.
+
+| Floor-plan line in the reflection | Floor-plan line drawn after the reflection |
+| --- | --- |
+| ![The green plan line appears on the red card and in its mirror image](images/screen-space-reflections/bim-floor-plan-reflection-before.png) | ![The green line remains on the card, with a clean red mirror image](images/screen-space-reflections/bim-floor-plan-reflection-after.png) |
+
 ## Trace diagnostics
 
 Use `--screen-reflections hit-uv --screenshot hit.exr` to read the
@@ -233,6 +257,7 @@ It uses one reflected ray per eligible pixel. Lit hits sample the existing IBL
 and shadow one directional light, up to four or eight punctual lights, and up
 to two or four area lights in low or high mode. Area lights use their centers
 for this visibility estimate. Directional shadow tests use the 40 m range.
+Single-sided casters use the same light-facing winding as raster shadows.
 Alpha masks use the material cutoff, including equality, with coverage sampled
 from base-mip textures at the transformed UV set. Section and box clipping
 apply to hit and shadow queries. The reflection-only scene contains opaque
@@ -286,6 +311,26 @@ In the lit fixtures, the glossy specular-glossiness card returned about
 2.25 times the reflected radiance of the rough card. The tangent-space
 normal-map fixtures gave identical off-screen radiance for the front and
 double-sided back views under the same light.
+
+The winding fixture uses an off-screen lit card and a single-sided panel in
+the light path. Before the fix, the caster facing the light produced full
+illumination and the reversed caster produced full shadow. After the fix,
+the light-facing caster matches the two-sided shadow control and the reversed
+caster matches the unobstructed control across all 49 pixels. Run
+`--ray-shadow-facing` for the four scene-linear captures alone.
+
+![Reflected receiver patches before and after correcting single-sided shadow facing](images/screen-space-reflections/ray-caster-facing.png)
+
+### Raster capability validation
+
+On the RTX 2080 SUPER, the ray-enabled run reflected the off-screen card.
+The Khronos Profiles layer was then used to remove `VK_KHR_ray_query`,
+`VK_KHR_acceleration_structure`, and `VK_KHR_ray_tracing_pipeline` from device
+extension enumeration. With ray fallback still requested, the renderer
+selected screen-only reflections. Both the on-screen reflection and the
+off-screen miss matched the explicit `--no-ray-query` controls pixel-for-pixel
+under Khronos synchronization validation. This validates the extension gate
+on the same Vulkan device. [Khronos Profiles layer](https://github.com/KhronosGroup/Vulkan-Profiles/blob/main/layer/TUTORIAL.md)
 
 The history run passed 57 captures across 28 Vulkan processes. The thin red
 target fell from a mean red value of 190 to 47 on the first frame after

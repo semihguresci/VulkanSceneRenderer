@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import pathlib
+import re
 import subprocess
 
 
@@ -18,8 +19,14 @@ def main():
     info = json.loads((root / "build-info.json").read_text(encoding="utf-8-sig"))
     shader_count = len(list((root / "spv_shaders").glob("*.spv")))
     assert shader_count == info["compiled_shader_count"] and shader_count >= 73
-    for name in ("ray_shadow_trace.comp.spv", "ray_shadow_filter.comp.spv"):
+    for name in ("ray_shadow_trace.comp.spv", "ray_shadow_filter.comp.spv", "screen_reflections.comp.spv",
+                 "screen_reflections_ray.comp.spv", "screen_reflections_hiz.comp.spv"):
         assert (root / "spv_shaders" / name).is_file(), name
+    guide = (root / "screen-space-reflections.md").read_text(encoding="utf-8")
+    reflection_images = re.findall(r"!\[[^\]]+\]\((images/screen-space-reflections/[^)]+\.png)\)", guide)
+    assert reflection_images, "The packaged reflection guide has no examples"
+    for relative in reflection_images:
+        assert (root / relative).is_file(), f"Missing packaged reflection guide image: {relative}"
     for name in ["taa_coverage.gltf", "taa_scene.gltf", "taa_equivalent.gltf", "taa_equivalent.bim",
                  "taa_equivalent.usda", "taa_lifecycle.json", "taa_reset.json"]:
         assert (root / "models/validation" / name).is_file(), name
@@ -43,12 +50,19 @@ def main():
                    "--render-technique", technique, "--display-mode", "lit", "--screenshot", str(output / (name + ".png")),
                    "--fixed-dt", "0.016666667", "--exposure", "0.25", "--no-bloom"]
         command += ["--capture-sequence", str(root / "models/validation" / sequence)] if sequence else ["--capture-frame", "3"]
+        if name == "deferred-taa":
+            command += ["--screen-reflections", "high", "--screen-reflections-ray-query"]
         with (output / (name + ".log")).open("w", encoding="utf-8") as log:
             completed = subprocess.run(command, cwd=output, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=120)
         if completed.returncode or not (output / (name + ".png")).is_file():
             raise RuntimeError("Package capture failed: " + name)
         telemetry = json.loads((output / (name + ".telemetry.json")).read_text())
         assert telemetry["taa"]["enabled"] == taa and telemetry["msaaSamples"] == msaa
+        if name == "deferred-taa":
+            reflection_pass = next(p for p in telemetry["passes"] if p["name"] == "ScreenReflections")
+            route = telemetry["screenReflections"]
+            assert reflection_pass["active"] and route["depthPyramidUsed"] and route["rayFallbackRequested"], route
+            results["screenReflections"] = route
         results["captures"].append({"name": name, "technique": technique, "model": model, "taa": taa, "msaa": msaa,
                                    "submittedFrame": telemetry["taa"]["submittedFrame"], "exitCode": completed.returncode,
                                    "imageProduced": True, "gpu": telemetry["gpu"], "imagePayloadBytes": telemetry["taa"]["imagePayloadBytes"]})
