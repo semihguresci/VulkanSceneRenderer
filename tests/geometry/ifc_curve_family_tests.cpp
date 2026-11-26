@@ -3958,7 +3958,7 @@ TEST(IfcCurveFamilies, SectionedMiterGuidesRejectSharedBasisLateralOffset) {
   EXPECT_EQ(diagnostic.entityId, 40u);
   EXPECT_NE(diagnostic.reason.find(guide), std::string::npos)
       << diagnostic.reason;
-  EXPECT_NE(diagnostic.reason.find("can only offset vertically"),
+  EXPECT_NE(diagnostic.reason.find("shared-basis point leaves the section plane"),
             std::string::npos)
       << diagnostic.reason;
 }
@@ -4174,6 +4174,95 @@ TEST(IfcCurveFamilies, SectionedArcToLineRetainsCenterlineAndSharesMiter) {
   }
 }
 
+TEST(IfcCurveFamilies, SectionedCurvedMiterKeepsSharedBasisVerticalCrown) {
+  GuideSectionFixture step;
+  step.definitions = curvedSharpSections;
+  replace(step.definitions, "((-1.,0.))", "((-1.,0.25))");
+  replace(step.definitions, "(2.),(0.),$,#24",
+          "(1.,1.),(0.,0.),('left','crown','right'),#24");
+  const double arcLength = 6. * std::numbers::pi_v<double>;
+  const auto guide = step.guide("crown", "#4",
+                                {{0, 0, .25}, {arcLength / 2, 0, 1.},
+                                 {arcLength, 0, .25}, {arcLength + 6, 0, .6},
+                                 {arcLength + 9, 0, .25}});
+  step.definitions +=
+      "#41=IFCCARTESIANPOINT((0.,0.5)); #42=IFCCARTESIANPOINT((2.,0.5));"
+      "#43=IFCPOLYLINE((#41,#42)); #45=IFCPCURVE(#40,#43);";
+  step.product("shared-vertical-arc-miter", guide + ",#45");
+  const auto model = step.load();
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  const auto body = sectionedProductMesh(model, "shared-vertical-arc-miter");
+  EXPECT_GT(checkSectionedMesh(body), 60.);
+  const auto points = sectionedPoints(body);
+  const double mid = 6. * std::sqrt(2.);
+  const glm::dvec3 crown(mid, 12. - mid, 1.);
+  for (const auto expected : {crown, glm::dvec3(12, 12, .25),
+                              glm::dvec3(13, 11, .25), glm::dvec3(11, 13, .25),
+                              glm::dvec3(18, 12, .6)})
+    EXPECT_TRUE(std::ranges::any_of(points, [&](const auto &p) {
+      return glm::length(glm::dvec3(p[0], p[1], p[2]) - expected) < 1e-6;
+    })) << expected.x << ',' << expected.y << ',' << expected.z;
+
+  size_t crownRanges = 0;
+  for (const auto &range : model.nativeCurveRanges) {
+    const auto indices = std::span(model.indices).subspan(range.firstIndex,
+                                                            range.indexCount);
+    crownRanges += std::ranges::any_of(indices, [&](uint32_t index) {
+      return glm::length(glm::dvec3(model.vertices.at(index).position) - crown) <
+             1e-6;
+    });
+  }
+  EXPECT_EQ(crownRanges, 2u); // Authored guide and the surface pcurve.
+}
+
+TEST(IfcCurveFamilies, SectionedSpatialMiterRejectsSharedBasisGradeBreak) {
+  GuideSectionFixture step;
+  step.definitions = nonplanarSharpSections;
+  replace(step.definitions, "((-1.,0.))", "((-1.,1.))");
+  replace(step.definitions, "(2.),(0.),$, #24",
+          "(1.,1.),(0.,0.),('left','crown','right'),#24");
+  // The nonzero vertical offset follows each incident basis frame. The
+  // grade changes at parameter 2, so those offsets give different points.
+  const auto guide = step.guide("crown", "#4", {{0, 0, 1}});
+  step.product("discontinuous-grade-guide", guide);
+  step.product("unguided-spatial-miter");
+  const auto model = step.load();
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+  EXPECT_TRUE(sectionedProductMesh(model, "discontinuous-grade-guide").indices.empty());
+  EXPECT_FALSE(sectionedProductMesh(model, "unguided-spatial-miter").indices.empty());
+  EXPECT_TRUE(std::ranges::any_of(model.importReport.diagnostics,
+      [&](const auto &diagnostic) {
+        return diagnostic.entityId == 40u &&
+               diagnostic.productGuid == "discontinuous-grade-guide" &&
+               diagnostic.reason.contains(guide) &&
+               diagnostic.reason.contains("is discontinuous at miter parameter 2.");
+      }));
+}
+
+TEST(IfcCurveFamilies, SectionedCurvedMiterFollowsContinuousSharedBasisLateralGuide) {
+  GuideSectionFixture step;
+  step.definitions = curvedSharpSections;
+  replace(step.definitions, "(2.),(0.),$,#24",
+          "(1.,1.),(0.,0.),('left','center','right'),#24");
+  const double arcLength = 6. * std::numbers::pi_v<double>;
+  const auto guide = step.guide("center", "#4",
+                               {{0, 0, 0}, {arcLength / 2, .25, 0},
+                                {arcLength / 2 + 3., 0, 0}});
+  step.product("shared-lateral-arc-miter", guide);
+  const auto model = step.load();
+  ASSERT_NO_FATAL_FAILURE(complete(model));
+  const auto body = sectionedProductMesh(model, "shared-lateral-arc-miter");
+  EXPECT_GT(checkSectionedMesh(body), 60.);
+  const auto points = sectionedPoints(body);
+  // The left offset moves the center toward the circular basis origin.
+  const double mid = (12. - .25) / std::sqrt(2.);
+  for (const auto expected : {glm::dvec3(mid, 12. - mid, 0),
+                              glm::dvec3(12, 12, 0)})
+    EXPECT_TRUE(std::ranges::any_of(points, [&](const auto &p) {
+      return glm::length(glm::dvec3(p[0], p[1], p[2]) - expected) < 1e-6;
+    })) << expected.x << ',' << expected.y << ',' << expected.z;
+}
+
 TEST(IfcCurveFamilies, SectionedCurvedMiterFollowsIndependentGuide) {
   const double arcMidpoint = 13 / std::sqrt(2.);
   for (bool badAnchor : {false, true}) {
@@ -4284,6 +4373,102 @@ TEST(IfcCurveFamilies, SectionedSpatialMiterRejectsFoldedGuideProjection) {
   EXPECT_TRUE(model.importReport.diagnostics.front().reason.contains(
       "independent guide intersection is tangent or folded"))
       << model.importReport.diagnostics.front().reason;
+}
+
+TEST(IfcCurveFamilies, SectionedSpatialMiterKeepsTemporaryGuideOnAuthoredRun) {
+  for (const bool birth : {false, true}) {
+    for (const bool malformed : {false, true}) {
+      SCOPED_TRACE(testing::Message() << "birth=" << birth
+                                     << " malformed=" << malformed);
+      GuideSectionFixture step;
+      step.definitions = nonplanarSharpSections;
+      replace(step.definitions, "(2.),(0.),$, #24", "(1.,1.),(0.,0.),('A','B','C'),#24");
+      step.definitions +=
+          "#25=IFCPOINTBYDISTANCEEXPRESSION(IFCPARAMETERVALUE(2.),$,$,$,#4);"
+          "#26=IFCAXIS2PLACEMENTLINEAR(#25,$,$);"
+          "#31=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(1.,0.,1.),(0.,0.,0.),('A','B','D','C'),#24);"
+          "#32=IFCOPENCROSSPROFILEDEF(.CURVE.,$,.T.,(1.,0.5,0.5),(0.,0.,0.),('A','B','D','C'),#24);";
+      replace(step.definitions, "(#22,#23),(#30,#30)",
+              birth ? "(#22,#26,#23),(#30,#31,#32)"
+                    : "(#22,#26,#23),(#32,#31,#30)");
+      const auto polyline = [&](std::initializer_list<glm::dvec3> points) {
+        std::string refs;
+        for (const auto &point : points) {
+          if (!refs.empty())
+            refs += ',';
+          refs += step.point(point.x, point.y, point.z);
+        }
+        return step.add("IFCPOLYLINE((" + refs + "))");
+      };
+      const auto retainedBasis = polyline({{0, 0, 0}, {4, 0, .15}, {8, 0, 0},
+                                           {8, 6, 0}, {8, 12, 8}});
+      const auto retained = step.guide("B", retainedBasis, {{0, 0, 0}});
+      // The first corner lies 8 m into the 14 m interpolated approach.
+      // The dying D column there is offset by (.5 * 6/14) in both plan axes.
+      const double offset = .5 * 6 / 14;
+      const glm::dvec3 firstJoin(8 - offset, offset, 0);
+      const glm::dvec3 tip(8, 6, 0);
+      const glm::dvec3 guideKnot = birth ? glm::dvec3(7.6, 8.6, 4.3)
+                                       : glm::dvec3(7.9, 4., .25);
+      const auto rail = birth
+                            ? polyline({tip + glm::dvec3(malformed ? .25 : 0., 0, 0),
+                                        guideKnot, {7.5, 12, 8}})
+                            : polyline({{0, .5, 0},
+                                        firstJoin + glm::dvec3(0, 0, malformed ? .25 : 0.),
+                                        guideKnot, tip});
+      auto guides = retained + ',' + step.guide("D", rail, {{0, 0, 0}});
+      if (!malformed) {
+        step.definitions +=
+            "#41=IFCCARTESIANPOINT((0.25,0.66666666666666667));"
+            "#42=IFCCARTESIANPOINT((2.875,0.66666666666666667));"
+            "#43=IFCPOLYLINE((#41,#42)); #45=IFCPCURVE(#40,#43);";
+        guides += ",#45";
+      }
+      step.product("spatial-temporary-guide", guides);
+      const auto model = step.load();
+      const auto body = sectionedProductMesh(model, "spatial-temporary-guide");
+      if (malformed) {
+        EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+        EXPECT_TRUE(body.indices.empty());
+        ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+        EXPECT_EQ(model.importReport.diagnostics.front().entityId, 40u);
+        EXPECT_TRUE(model.importReport.diagnostics.front().reason.contains(
+            "for tag 'D' disagrees with its shared half-angle row"))
+            << model.importReport.diagnostics.front().reason;
+        continue;
+      }
+      complete(model);
+      EXPECT_GT(checkSectionedMesh(body), 44.);
+      const auto matches = [](const glm::dvec3 &point, const glm::dvec3 &witness) {
+        return glm::length(point - witness) < 1e-6;
+      };
+      const std::array witnesses{tip, guideKnot,
+                                 birth ? glm::dvec3(4, 0, .15) : firstJoin};
+      const auto bodyPoints = sectionedPoints(body);
+      for (const auto &witness : witnesses) {
+        EXPECT_TRUE(std::ranges::any_of(bodyPoints, [&](const auto &point) {
+          return matches({point[0], point[1], point[2]}, witness);
+        })) << witness.x << ' ' << witness.y;
+      }
+      size_t pcurves = 0;
+      for (const auto &range : model.nativeCurveRanges) {
+        const auto pointAt = [&](size_t i) {
+          return glm::dvec3(model.vertices.at(model.indices.at(range.firstIndex + i))
+                                .position);
+        };
+        if (pointAt(0).x <= .5 || pointAt(0).x >= 4. ||
+            pointAt(range.indexCount - 1).z <= 5.)
+          continue;
+        ++pcurves;
+        std::array<bool, witnesses.size()> found{};
+        for (size_t i = 0; i < range.indexCount; ++i)
+          for (size_t j = 0; j < witnesses.size(); ++j)
+            found[j] |= matches(pointAt(i), witnesses[j]);
+        EXPECT_TRUE(std::ranges::all_of(found, [](bool hit) { return hit; }));
+      }
+      EXPECT_EQ(pcurves, 1u);
+    }
+  }
 }
 
 TEST(IfcCurveFamilies, InvalidCurvedAndNonplanarSectionedJoinsAreAtomic) {

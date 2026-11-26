@@ -22,6 +22,7 @@ ARC_WIDTH = .75
 GUIDE_RADIUS = ARC_RADIUS + ARC_WIDTH + .55
 ARC_SCALE = .26
 ARC_CENTER = (1.28, -2.26)
+EXIT_CROWN_HEIGHT = .8
 
 
 def spatial_point(x, y, z):
@@ -41,6 +42,10 @@ def arc_at(angle, radius=ARC_RADIUS):
 def probe(point):
     scale = (DISTANCE - DEPTH) / (DISTANCE - point[2])
     return (scale * point[0], scale * point[1])
+
+
+EXIT_CROWN_PROBE = probe(arc_point(ARC_RADIUS + 3.75, ARC_RADIUS + .25,
+                                   EXIT_CROWN_HEIGHT * (1. - .25 / ARC_WIDTH)))
 
 
 def spatial_row(index, r):
@@ -71,7 +76,8 @@ FIXTURE = Fixture((
     (1, "clear outside swept arc", probe(arc_at(-math.radians(55), ARC_RADIUS + 1.6)), False),
     (1, "before circular miter", probe(arc_at(-math.radians(18))), True),
     (1, "after circular miter", probe(arc_point(ARC_RADIUS + 1.74, ARC_RADIUS + .37)), True),
-    (1, "far straight exit", probe(arc_point(ARC_RADIUS + 4.6, ARC_RADIUS - .26)), True),
+    (1, "vertical crown guided on the directrix", EXIT_CROWN_PROBE, True),
+    (1, "far straight exit", probe(arc_point(ARC_RADIUS + 5.4, ARC_RADIUS - .26)), True),
 ), None, None)
 
 
@@ -126,7 +132,14 @@ def write_fixture(path):
             rail = polyline(step, knots)
             position = section_point(step, 0., rail, 0., 0.)
             guide = step.add("IFCOFFSETCURVEBYDISTANCES", rail, f"({position})", "'left'")
-            guides = step.add("IFCGEOMETRICCURVESET", f"({guide})")
+            arc_length = ARC_RADIUS * math.pi / 2.
+            crown_knots = [section_point(step, arc_length + s, directrix, 0., height)
+                           for s, height in ((2.4, 0.), (3.1, EXIT_CROWN_HEIGHT),
+                                             (4.4, EXIT_CROWN_HEIGHT), (4.75, 0.))]
+            crown_knots.insert(0, section_point(step, 0., directrix, 0., 0.))
+            crown = step.add("IFCOFFSETCURVEBYDISTANCES", directrix,
+                             f"({','.join(crown_knots)})", "'center'")
+            guides = step.add("IFCGEOMETRICCURVESET", f"({guide},{crown})")
             axis = step.add("IFCSHAPEREPRESENTATION", context, "'Axis'", "'GeometricCurveSet'", f"({guides})")
             axis_map = step.add("IFCREPRESENTATIONMAP", world, axis)
             axis_item = step.add("IFCMAPPEDITEM", axis_map, target)
@@ -169,7 +182,16 @@ def expected_depth(index, point, pixel, matrix):
 
     camera = np.array([0., 0., DISTANCE])
     ray = world_ray((pixel[0], HEIGHT - 1 - pixel[1]), np.linalg.inv(matrix))
-    t = spatial_hit(camera, ray) if index == 0 else -DISTANCE / ray[2]
+    if index == 0:
+        t = spatial_hit(camera, ray)
+    elif point == EXIT_CROWN_PROBE:
+        # On the right half of the plateau the guided cross section runs
+        # linearly from the raised center to the original rail at zero height.
+        slope = EXIT_CROWN_HEIGHT / ARC_WIDTH
+        center_y = arc_point(0., ARC_RADIUS)[1]
+        t = (ARC_SCALE * EXIT_CROWN_HEIGHT + slope * center_y - DISTANCE) / (ray[2] + slope * ray[1])
+    else:
+        t = -DISTANCE / ray[2]
     require(t is not None, f"Probe outside analytic miter polygons: {point}")
     clip = matrix @ [*(camera + t * ray), 1.]
     return clip[2] / clip[3]

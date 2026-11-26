@@ -714,6 +714,133 @@ TEST(IfcStructuralProfiles,
   }
 }
 
+std::string craneRailFixture(std::string_view type, const std::string &fields,
+                            double scale = 1.,
+                            std::string_view schema = "IFC2X3") {
+  auto source = fixture(
+      "#2=IFCCARTESIANPOINT((" + number(7 * scale) + "," +
+          number(-4 * scale) + ")); #3=IFCDIRECTION((0.,1.));"
+          "#4=IFCAXIS2PLACEMENT2D(#2,#3); #5=IFCCRANERAIL" +
+          std::string(type) + "SHAPEPROFILEDEF(" + fields +
+          "); #10=IFCEXTRUDEDAREASOLID(#5,$,$," + number(2 * scale) + ");",
+      "#10", "'Body','SweptSolid'");
+  if (!schema.empty())
+    source.insert(source.find("DATA;"),
+                  "HEADER; FILE_SCHEMA(('" + std::string(schema) + "')); ENDSEC; ");
+  if (scale == 1000.) {
+    constexpr std::string_view metre = ".LENGTHUNIT.,$,.METRE.";
+    source.replace(source.find(metre), metre.size(), ".LENGTHUNIT.,.MILLI.,.METRE.");
+  }
+  return source;
+}
+
+TEST(IfcStructuralProfiles, Ifc2x3CraneRailsPreserveNominalStationsAndCrown) {
+  for (bool typeA : {false, true})
+    for (double scale : {1., 1000.}) {
+      const double radius = scale == 1. ? 0. : .60;
+      SCOPED_TRACE(::testing::Message() << "Type " << (typeA ? 'A' : 'F')
+                                       << ", length multiplier " << scale);
+      const auto fields = [scale](std::initializer_list<double> dimensions) {
+        std::string result;
+        for (double length : dimensions) {
+          if (!result.empty())
+            result += ',';
+          result += number(length * scale);
+        }
+        return result;
+      };
+      const std::string radiusField = radius == 0 ? "$" : number(radius * scale);
+      const auto source = craneRailFixture(
+          typeA ? "A" : "F",
+          ".AREA.,$,#4," + fields(typeA ? std::initializer_list<double>{8., 8.}
+                                        : std::initializer_list<double>{8., 6.}) +
+              "," + radiusField + "," +
+              fields(typeA ? std::initializer_list<double>{4., 2., 1., 2., 6., 1., 2.5, 1.5, 1.25}
+                           : std::initializer_list<double>{3., 2., 3., 1., 1.5, .75}),
+          scale);
+      const auto model = LoadFromStep(source);
+      complete(model);
+      ASSERT_FALSE(model.indices.empty());
+      watertight(model);
+      EXPECT_NEAR(model.unitMetadata.metersPerUnit, 1. / scale, 1e-9);
+      const double halfWidth = typeA ? 4. : 3.;
+      expectProfileBounds(model, {3., -4. - halfWidth, 0.},
+                          {11., -4. + halfWidth, 2.}, scale);
+
+      const auto hasStation = [&](double x, double y) {
+        const glm::vec3 point((7. - y) * scale, (-4. + x) * scale, 2. * scale);
+        return std::ranges::any_of(model.vertices, [&](const auto &vertex) {
+          return vertex.position == point;
+        });
+      };
+      for (double sign : {-1., 1.}) {
+        EXPECT_TRUE(hasStation(sign * halfWidth, -3.));
+        EXPECT_TRUE(hasStation(sign * (typeA ? 1. : 1.5), typeA ? -1.5 : -2.5));
+        EXPECT_TRUE(hasStation(sign * (typeA ? 2. : 3.), typeA ? 3. : 2.));
+        if (typeA)
+          EXPECT_TRUE(hasStation(sign * 3., -2.5));
+        EXPECT_EQ(hasStation(sign * (typeA ? 2. : 3.), 4.), radius == 0.);
+        if (radius > 0) {
+          const glm::dvec2 center(3. + radius,
+                                  -4. + sign * ((typeA ? 2. : 3.) - radius));
+          EXPECT_TRUE(std::ranges::any_of(model.vertices, [&](const auto &vertex) {
+            const auto radial = glm::dvec2(vertex.position) / scale - center;
+            return std::abs(glm::length(radial) - radius) < 1e-5 &&
+                   glm::dot(radial, glm::dvec2(-1., sign)) > 1.3 * radius;
+          }));
+        }
+      }
+
+      // Integrate the independent horizontal strips from the six station
+      // heights. The crown cuts two squares minus two quarter disks.
+      const double area = (typeA ? 8. + 3.5 + 4. + 7. + 3. + 4.
+                                 : 6. + 2.25 + 10.5 + 4.5 + 12.) -
+                          (2. - pi / 2.) * radius * radius;
+      double capArea = 0.;
+      for (size_t i = 0; i < model.indices.size(); i += 3) {
+        const auto at = [&](size_t index) {
+          return glm::dvec3(model.vertices.at(model.indices.at(index)).position) / scale;
+        };
+        const auto a = at(i), b = at(i + 1), c = at(i + 2);
+        if (a.z == 2. && b.z == 2. && c.z == 2.)
+          capArea += glm::cross(b - a, c - a).z / 2.;
+      }
+      EXPECT_NEAR(capArea, area, .004);
+      EXPECT_NEAR(volume(model) / (scale * scale * scale), 2. * area, .008);
+    }
+}
+
+TEST(IfcStructuralProfiles, InvalidCraneRailProfilesRejectAtomically) {
+  struct Case {
+    const char *type, *fields, *reason;
+    const char *schema = "IFC2X3";
+  };
+  for (const auto &[type, fields, reason, schema] : std::array{
+           Case{"A", ".AREA.,$,#4,8.,8.,$,4.,2.,1.,2.,9.,1.,2.5,1.5,$", "BaseWidth4"},
+           Case{"A", ".AREA.,$,#4,8.,8.,$,4.,2.,1.,2.,6.,1.,2.5,3.,$", "BaseDepth3"},
+           Case{"A", ".AREA.,$,#4,8.,8.,$,4.,2.,1.,2.,6.,1.,7.,1.5,$", "stations overlap"},
+           Case{"A", ".AREA.,$,#4,8.,8.,1.1,4.,2.,1.,2.,6.,1.,2.5,1.5,$", "crown Radius"},
+           Case{"A", ".AREA.,$,#4,8.,8.,$,4.,2.,1.,2.,6.,1.,2.5,$,$", "BaseDepth3"},
+           Case{"F", ".AREA.,$,#4,8.,6.,-1.,3.,2.,3.,1.,1.5,$", "Radius"},
+           Case{"F", ".AREA.,$,#4,8.,6.,$,3.,2.,3.,1.,1.5,-.75", "CentreOfGravityInY"},
+           Case{"F", ".AREA.,$,$,8.,6.,$,3.,2.,3.,1.,1.5,$", "missing 2D placement"},
+           Case{"F", ".CURVE.,$,#4,8.,6.,$,3.,2.,3.,1.,1.5,$", "AREA profile"},
+           Case{"F", ".AREA.,$,#4,8.,6.,$,3.,2.,3.,1.,1.5,$", "IFC2X3 FILE_SCHEMA", "IFC4"}}) {
+    SCOPED_TRACE(fields);
+    const auto model = LoadFromStep(craneRailFixture(type, fields, 1., schema));
+    EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(model.vertices.empty());
+    EXPECT_TRUE(model.indices.empty());
+    EXPECT_TRUE(model.meshRanges.empty());
+    ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+    const auto &diagnostic = model.importReport.diagnostics.front();
+    EXPECT_EQ(diagnostic.entityId, 10u);
+    EXPECT_NE(diagnostic.reason.find(std::string("IFCCRANERAIL") + type +
+                                     "SHAPEPROFILEDEF #5"), std::string::npos);
+    EXPECT_NE(diagnostic.reason.find(reason), std::string::npos);
+  }
+}
+
 TEST(IfcStructuralProfiles, RoundedAndHollowRectanglesPreserveIndependentCornerRadii) {
   const auto roundedArea = [](double width, double height, double radius) {
     return width * height - (4 - pi) * radius * radius;
@@ -2752,6 +2879,131 @@ std::string addParaboloidShell(CurvedBuilder &step, const Paraboloid &shape,
   const std::vector<std::string> faces(step.faces.begin() + firstFace,
                                        step.faces.end());
   return step.add("IFCCLOSEDSHELL((" + step.refs(faces) + "))");
+}
+
+struct RevolvedEllipsoid {
+  glm::dvec3 center;
+  double equatorialRadius, polarRadius;
+  static constexpr glm::dvec3 radial{1, 0, 0}, axis{0, .6, .8};
+
+  std::string shell(CurvedBuilder &step, bool outward, bool reversed = false,
+                    bool offsetAxis = false) const {
+    const bool prolate = polarRadius > equatorialRadius;
+    const double a = std::max(equatorialRadius, polarRadius);
+    const double b = std::min(equatorialRadius, polarRadius);
+    const auto origin2d = step.add("IFCCARTESIANPOINT((0.,0.))");
+    const auto direction2d = step.add(prolate ? "IFCDIRECTION((0.,1.))"
+                                             : "IFCDIRECTION((1.,0.))");
+    const auto plane =
+        step.add("IFCAXIS2PLACEMENT2D(" + origin2d + "," + direction2d + ")");
+    const auto ellipse = step.add("IFCELLIPSE(" + plane + "," + number(a) +
+                                  "," + number(b) + ")");
+    const double lower = prolate ? 180. : -90., upper = lower + 180.;
+    const auto trim = step.add(
+        "IFCTRIMMEDCURVE(" + ellipse + ",(IFCPARAMETERVALUE(" +
+        number(reversed ? upper : lower) + ")),(IFCPARAMETERVALUE(" +
+        number(reversed ? lower : upper) + "))," +
+        (reversed ? ".F." : ".T.") + ",.PARAMETER.)");
+    const auto profile = step.add("IFCARBITRARYOPENPROFILEDEF(.CURVE.,$," + trim + ")");
+    const auto axisOrigin = step.point({offsetAxis ? .05 : 0., 0, 0});
+    const auto axisPlacement = step.add("IFCAXIS1PLACEMENT(" + axisOrigin +
+                                        "," + step.direction({0, 1, 0}) + ")");
+    const auto normal = glm::cross(radial, axis);
+    const auto sweptFrame = step.placement(center, normal, radial);
+    const auto surface = step.add("IFCSURFACEOFREVOLUTION(" + profile + "," +
+                                  sweptFrame + "," + axisPlacement + ")");
+
+    // Both poles lie inside the same native conic trim, away from its
+    // adaptive dyadic samples. The two faces use its one edge in reverse.
+    const auto edgeFrame = step.placement(center, normal, prolate ? axis : radial);
+    const auto meridian = step.add("IFCELLIPSE(" + edgeFrame + "," + number(a) +
+                                    "," + number(b) + ")");
+    constexpr double startAngle = .137;
+    const auto start = step.point(center + equatorialRadius * std::cos(startAngle) * radial +
+                                  polarRadius * std::sin(startAngle) * axis);
+    const auto edge = step.edge(start, start, meridian);
+    for (const bool forward : {true, false})
+      step.face({step.bound({{edge, forward}})}, surface, outward != reversed);
+    return step.add("IFCCLOSEDSHELL((" + step.faces[step.faces.size() - 2] + "," +
+                    step.faces.back() + "))");
+  }
+
+  double volume() const {
+    return (4 * pi / 3) * equatorialRadius * equatorialRadius * polarRadius;
+  }
+
+  size_t checkNormalsAndPoleEdges(const Model &model, bool outward) const {
+    const auto meridianNormal = glm::cross(radial, axis);
+    for (const double sign : {-1., 1.}) {
+      const auto pole = glm::vec3(center + sign * polarRadius * axis);
+      expectPolarMeridianJoin(model, pole, [&](glm::vec3 p) {
+        return std::abs(glm::dot(glm::dvec3(p) - center, meridianNormal)) < 1e-6;
+      }, 0);
+    }
+    size_t count = 0;
+    for (const auto &vertex : model.vertices) {
+      const auto p = glm::dvec3(vertex.position) - center;
+      const auto height = glm::dot(p, axis) * axis;
+      const auto equatorial = p - height;
+      const double equatorialSquared = equatorialRadius * equatorialRadius;
+      const double axialSquared = polarRadius * polarRadius;
+      const double level = glm::dot(equatorial, equatorial) / equatorialSquared +
+                           glm::dot(height, height) / axialSquared;
+      if (std::abs(level - 1.) > 1e-5)
+        continue;
+      ++count;
+      const auto normal = glm::normalize(equatorial / equatorialSquared +
+                                         height / axialSquared);
+      EXPECT_GT((outward ? 1. : -1.) * glm::dot(normal, glm::dvec3(vertex.normal)),
+                .99999);
+    }
+    EXPECT_GT(count, 100u);
+    return count;
+  }
+};
+
+TEST(IfcCurvedBrep, RevolvedHalfEllipseSharesAnExactMeridianAtBothPoles) {
+  const RevolvedEllipsoid outer{{.25, -.5, .75}, 1.6, 2.4};
+  const RevolvedEllipsoid cavity{outer.center + .2 * RevolvedEllipsoid::axis,
+                                  .9, .55};
+  for (const bool withCavity : {false, true}) {
+    SCOPED_TRACE(withCavity);
+    CurvedBuilder step;
+    const auto exterior = outer.shell(step, true);
+    std::string brep;
+    if (withCavity) {
+      const auto interior = cavity.shell(step, false, true);
+      brep = step.add("IFCADVANCEDBREPWITHVOIDS(" + exterior + ",(" + interior + "))");
+    } else {
+      brep = step.add("IFCADVANCEDBREP(" + exterior + ")");
+    }
+    const auto source = fixture(step.definitions + degrees(), brep);
+    if (withCavity)
+      exportCurvedFixture("revolved-ellipsoid-poles-cavity", source);
+    const auto model = LoadFromStep(source);
+    ASSERT_NO_FATAL_FAILURE(complete(model));
+    watertight(model);
+    EXPECT_NEAR(volume(model), outer.volume() - (withCavity ? cavity.volume() : 0.), .055);
+    auto vertices = outer.checkNormalsAndPoleEdges(model, true);
+    if (withCavity)
+      vertices += cavity.checkNormalsAndPoleEdges(model, false);
+    EXPECT_EQ(vertices, model.vertices.size());
+  }
+}
+
+TEST(IfcCurvedBrep, RevolvedHalfEllipseRejectsAnOffsetAxisAtomically) {
+  const RevolvedEllipsoid shape{{0, 0, 0}, 1.6, 2.4};
+  CurvedBuilder step;
+  const auto shell = shape.shell(step, true, false, true);
+  const auto brep = step.add("IFCADVANCEDBREP(" + shell + ")");
+  const auto model = LoadFromStep(fixture(step.definitions + degrees(), brep));
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Failed);
+  EXPECT_TRUE(model.elements.empty());
+  EXPECT_TRUE(model.vertices.empty());
+  EXPECT_TRUE(model.indices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  EXPECT_NE(model.importReport.diagnostics.front().reason.find("Singular revolution"),
+            std::string::npos);
 }
 
 TEST(IfcCurvedBrep, SmoothRevolutionApexClosesParaboloidSectorsAndVertexLoop) {

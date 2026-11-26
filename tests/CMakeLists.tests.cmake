@@ -1331,6 +1331,14 @@ set_tests_properties(ifc_structural_area_profiles_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 650
     LABELS "bim;requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME ifc_legacy_crane_rails_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ifc_area_profiles_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>" --fixture legacy-rails
+            --output "${TEST_RESULTS_DIR}/ifc-legacy-crane-rails" --managed-output)
+set_tests_properties(ifc_legacy_crane_rails_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 650
+    LABELS "bim;requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME ifc_swept_surface_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ifc_swept_surface_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
@@ -1368,6 +1376,14 @@ add_test(NAME ifc_spherical_edge_loops_gpu_regression
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
             --output "${TEST_RESULTS_DIR}/ifc-spherical-edge-loops" --managed-output)
 set_tests_properties(ifc_spherical_edge_loops_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 650
+    LABELS "bim;requires-vulkan;requires-display;visual-regression")
+
+add_test(NAME ifc_revolved_ellipsoid_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/ifc_spherical_edge_loops_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>" --fixture revolved-ellipsoid
+            --output "${TEST_RESULTS_DIR}/ifc-revolved-ellipsoid" --managed-output)
+set_tests_properties(ifc_revolved_ellipsoid_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 650
     LABELS "bim;requires-vulkan;requires-display;visual-regression")
 

@@ -2005,25 +2005,34 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
   return result;
 }
 
-ParametricSurface sphericalChart(const SphericalSurface &sphere,
+Point unscaleSpheroid(const SpheroidalSurface &shape, Point p) {
+  const auto d = p - shape.frame.origin;
+  const auto axis = shape.frame.z;
+  return d + (shape.radius / shape.polarRadius - 1.) * glm::dot(d, axis) * axis;
+}
+
+ParametricSurface sphericalChart(const SpheroidalSurface &sphere,
                                  const CurveFrame &axes, double tolerance) {
   const auto origin = sphere.frame.origin;
   const double radius = sphere.radius;
+  const double axialScale = sphere.polarRadius / radius;
   const auto x = axes.x, y = axes.y, z = axes.z;
   ParametricSurface chart;
   // Project from the antipode of z. The right-handed basis keeps the
-  // parameter normal outward, regardless of the sphere's authored pole.
+  // parameter normal outward. Axial scaling gives a regular spheroid chart.
   chart.point = [=](double u, double v) -> std::optional<Point> {
     const double squared = u * u + v * v, denominator = 1 + squared;
     if (!std::isfinite(denominator))
       return std::nullopt;
-    return origin +
-           (radius / denominator) * (2 * u * x + 2 * v * y + (1 - squared) * z);
+    const auto d =
+        (radius / denominator) * (2 * u * x + 2 * v * y + (1 - squared) * z);
+    const auto axis = sphere.frame.z;
+    return origin + d + (axialScale - 1.) * glm::dot(d, axis) * axis;
   };
   chart.inverse = [=](Point p) -> std::optional<UV> {
-    const auto d = p - origin;
+    const auto d = unscaleSpheroid(sphere, p);
     const double denominator = radius + glm::dot(d, z);
-    if (std::abs(glm::length(d) - radius) > tolerance ||
+    if (std::abs(glm::length(d) - radius) * std::max(1., axialScale) > tolerance ||
         denominator <= radius * 1e-12)
       return std::nullopt;
     return UV(glm::dot(d, x), glm::dot(d, y)) / denominator;
@@ -2156,7 +2165,7 @@ meshSphericalPoleFace(const ParametricSurface &surface,
   return north;
 }
 
-bool meetsSphericalPole(const SphericalSurface &sphere,
+bool meetsSphericalPole(const SpheroidalSurface &sphere,
                         const std::vector<std::vector<glm::vec3>> &loops,
                         double units) {
   const auto &f = sphere.frame;
@@ -2174,13 +2183,14 @@ bool meetsSphericalPole(const SphericalSurface &sphere,
 }
 
 std::vector<CurvedFaceTriangle>
-meshSphericalEdgeLoops(const SphericalSurface &sphere,
+meshSphericalEdgeLoops(const SpheroidalSurface &sphere,
                        const std::vector<std::vector<glm::vec3>> &boundaries,
                        bool explicitOuter, bool sameSense, double units,
                        std::optional<Point> sectorCenter = {}) {
   const auto &f = sphere.frame;
   const double radius = sphere.radius;
-  const double tolerance = std::max(1e-7 / units, radius * 4e-7);
+  const double extent = std::max(radius, sphere.polarRadius);
+  const double tolerance = std::max(1e-7 / units, extent * 4e-7);
   const double sense = sameSense ? 1. : -1.;
   std::vector<std::vector<Point>> directions;
   std::vector<Point> centers{f.x, -f.x, f.y, -f.y, f.z, -f.z};
@@ -2193,10 +2203,10 @@ meshSphericalEdgeLoops(const SphericalSurface &sphere,
     auto &ring = directions.emplace_back();
     ring.reserve(loop.size());
     for (auto p : loop) {
-      const auto relative = Point(p) - f.origin;
+      const auto relative = unscaleSpheroid(sphere, Point(p));
       const auto length = glm::length(relative);
       if (!std::isfinite(length) || length <= 0 ||
-          std::abs(length - radius) > tolerance)
+          std::abs(length - radius) * (extent / radius) > tolerance)
         throw std::runtime_error("Spherical edge loop leaves its face surface");
       ring.push_back(relative / length);
     }
@@ -2295,7 +2305,7 @@ meshSphericalEdgeLoops(const SphericalSurface &sphere,
       auto ordered = boundaries;
       std::swap(ordered.front(), ordered[choice.outer]);
       const auto chart = sphericalChart(sphere, choice.axes, tolerance);
-      return Mesher(chart, units, 2 * radius).run(ordered, true, sameSense);
+      return Mesher(chart, units, 2 * extent).run(ordered, true, sameSense);
     } catch (const std::runtime_error &error) {
       reason = error.what();
     }
@@ -2486,7 +2496,7 @@ Point polarDirection(const CurveFrame &frame, PolarAzimuth azimuth, double angle
 }
 
 std::vector<CurvedFaceTriangle>
-meshSphericalSectors(const SphericalSurface &sphere, const PolarSeamParts &parts,
+meshSphericalSectors(const SpheroidalSurface &sphere, const PolarSeamParts &parts,
                       PolarAzimuth azimuth, bool sameSense, double units) {
   // The antipode of a sector's angular midpoint lies outside that sector,
   // including when it is wider than a hemisphere.
@@ -2500,7 +2510,7 @@ meshSphericalSectors(const SphericalSurface &sphere, const PolarSeamParts &parts
 }
 
 std::vector<CurvedFaceTriangle>
-meshTrimmedSphericalSeam(const SphericalSurface &sphere,
+meshTrimmedSphericalSeam(const SpheroidalSurface &sphere,
                          const FaceLoops &boundaries,
                          std::span<const glm::vec3> seam, bool sameSense,
                          double units, double sign, double tolerance) {
@@ -2531,7 +2541,7 @@ meshTrimmedSphericalSeam(const SphericalSurface &sphere,
 }
 
 std::vector<CurvedFaceTriangle>
-meshSphericalSeam(const SphericalSurface &sphere,
+meshSphericalSeam(const SpheroidalSurface &sphere,
                   const std::vector<std::vector<glm::vec3>> &boundaries,
                   std::span<const glm::vec3> seam, bool sameSense,
                   double units) {
@@ -2745,6 +2755,11 @@ meshIfcCurvedFace(const ParametricSurface &surface,
         throw std::runtime_error("Unsupported vertex-loop surface chart");
       return meshSphericalPoleFace(surface, boundaries, explicitOuter,
                                    sameSense, units);
+    }
+    if (surface.revolvedSpheroid) {
+      const auto &shape = *surface.revolvedSpheroid;
+      return meshSphericalEdgeLoops(shape, boundaries, explicitOuter,
+                                    sameSense == shape.nativeOutward, units);
     }
     // A single ordinary bound on a closed sphere can enclose either side of
     // its rim. The oriented stereographic chart selects the enclosed region.

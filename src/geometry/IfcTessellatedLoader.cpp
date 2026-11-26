@@ -1152,7 +1152,9 @@ private:
         profile->type == "IFCTRAPEZIUMPROFILEDEF") {
       return readExtendedAreaProfile(*profile, error, samplingScale);
     }
-    if (profile->type == "IFCCSHAPEPROFILEDEF" ||
+    const bool craneRail = profile->type == "IFCCRANERAILASHAPEPROFILEDEF" ||
+                           profile->type == "IFCCRANERAILFSHAPEPROFILEDEF";
+    if (craneRail || profile->type == "IFCCSHAPEPROFILEDEF" ||
         profile->type == "IFCZSHAPEPROFILEDEF" ||
         profile->type == "IFCTSHAPEPROFILEDEF" ||
         profile->type == "IFCASYMMETRICISHAPEPROFILEDEF") {
@@ -1160,7 +1162,10 @@ private:
         error = "expected a structural AREA profile";
         return {};
       }
-      auto loop = readAdditionalStructuralProfile(*profile, error, samplingScale);
+      auto loop = craneRail
+                      ? readCraneRailProfile(*profile, error, samplingScale)
+                      : readAdditionalStructuralProfile(*profile, error,
+                                                        samplingScale);
       if (loop.empty())
         return {};
       ProfileLoops loops{std::move(loop)};
@@ -1507,6 +1512,93 @@ private:
     }
     std::string error;
     return sampleStructuralProfile({std::move(corners), std::move(radii)}, samplingScale, error);
+  }
+
+  std::vector<glm::vec3> readCraneRailProfile(
+      const Entity &profile, std::string &error, double samplingScale) const {
+    const bool typeA = profile.type == "IFCCRANERAILASHAPEPROFILEDEF";
+    if (profileSchema_ != ProfileSchema::Ifc2x3) {
+      error = "crane rail profiles require an IFC2X3 FILE_SCHEMA";
+      return {};
+    }
+    if (profile.args.list.size() != (typeA ? 15u : 12u) ||
+        !firstRef(profile, 2)) {
+      error = "invalid IFC2X3 crane rail fields or missing 2D placement";
+      return {};
+    }
+
+    const auto length = [&](size_t index, std::string_view name,
+                            bool optional = false) {
+      const auto *arg = argAt(profile, index);
+      if (optional && arg->kind == StepValue::Kind::Omitted)
+        return 0.;
+      const auto value = numberValue(arg);
+      if (value && std::isfinite(*value) && *value > 0)
+        return *value;
+      if (error.empty())
+        error = std::string(name) + " must be a finite positive length";
+      return 0.;
+    };
+    const double height = length(3, "OverallHeight");
+    const double headWidth = length(typeA ? 6 : 4, "HeadWidth");
+    const double radius = length(5, "Radius", true);
+    const size_t head = typeA ? 7 : 6;
+    const double innerHeadDepth = length(head, "HeadDepth2");
+    const double outerHeadDepth = length(head + 1, "HeadDepth3");
+    const double webWidth = length(head + 2, "WebThickness");
+    const size_t base = typeA ? 11 : 9;
+    const double outerBaseDepth = length(base, "BaseDepth1");
+    const double innerBaseDepth = length(base + 1, "BaseDepth2");
+    const double baseWidth = typeA ? length(4, "BaseWidth2") : headWidth;
+    const double middleBaseWidth = typeA ? length(10, "BaseWidth4") : 0.;
+    const double middleBaseDepth = typeA ? length(13, "BaseDepth3") : 0.;
+    // In IFC2X3 this value describes mass properties rather than placement.
+    length(typeA ? 14 : 11, "CentreOfGravityInY", true);
+    if (!error.empty())
+      return {};
+    if (!(webWidth < headWidth && webWidth < baseWidth &&
+          outerHeadDepth <= innerHeadDepth && outerBaseDepth <= innerBaseDepth &&
+          innerHeadDepth < height - innerBaseDepth)) {
+      error = "crane rail head, web and base stations overlap or are reversed";
+      return {};
+    }
+    if (typeA && !(webWidth < middleBaseWidth && middleBaseWidth < baseWidth &&
+                   outerBaseDepth <= middleBaseDepth &&
+                   middleBaseDepth <= innerBaseDepth)) {
+      error = "BaseWidth4 and BaseDepth3 must locate the intermediate base station";
+      return {};
+    }
+
+    const double halfHeight = height / 2.;
+    const double halfHead = headWidth / 2.;
+    const double halfBase = baseWidth / 2.;
+    const double halfWeb = webWidth / 2.;
+    if (radius > std::min(halfHead, outerHeadDepth)) {
+      error = "crane rail crown Radius exceeds the head half-width or depth";
+      return {};
+    }
+    // The IFC2X3 drawings locate the shoulder and foot stations but give
+    // no other curve dimensions. Join these stations by straight segments.
+    detail::IfcStructuralAreaShape outline;
+    outline.corners.reserve(typeA ? 14 : 12);
+    outline.corners.emplace_back(halfBase, -halfHeight);
+    outline.corners.emplace_back(halfBase, -halfHeight + outerBaseDepth);
+    if (typeA)
+      outline.corners.emplace_back(middleBaseWidth / 2.,
+                                   -halfHeight + middleBaseDepth);
+    outline.corners.emplace_back(halfWeb, -halfHeight + innerBaseDepth);
+    outline.corners.emplace_back(halfWeb, halfHeight - innerHeadDepth);
+    outline.corners.emplace_back(halfHead, halfHeight - outerHeadDepth);
+    outline.corners.emplace_back(halfHead, halfHeight);
+    const size_t rightCount = outline.corners.size();
+    for (size_t i = rightCount; i > 0; --i) {
+      const auto station = outline.corners[i - 1];
+      outline.corners.emplace_back(-station.x, station.y);
+    }
+    outline.radii.resize(outline.corners.size());
+    outline.radii[rightCount - 1] = radius;
+    outline.radii[rightCount] = radius;
+    return sampleStructuralProfile(outline, samplingScale, error);
   }
 
   std::vector<glm::vec3> readAdditionalStructuralProfile(
@@ -3953,11 +4045,11 @@ private:
       for (const auto &chart : surfaceCharts.at(*surfaceRef)) {
         hasCreases |=
             spline && (!chart.creaseU.empty() || !chart.creaseV.empty());
-        if (chart.sphere) {
-          const auto &sphere = *chart.sphere;
-          const auto &f = sphere.frame;
-          poles.push_back(f.origin + sphere.radius * f.z);
-          poles.push_back(f.origin - sphere.radius * f.z);
+        const auto &spheroid = chart.sphere ? chart.sphere : chart.revolvedSpheroid;
+        if (spheroid) {
+          const auto &f = spheroid->frame;
+          poles.push_back(f.origin + spheroid->polarRadius * f.z);
+          poles.push_back(f.origin - spheroid->polarRadius * f.z);
         }
         if (chart.radialGraph)
           poles.push_back(chart.radialGraph->frame.origin);
