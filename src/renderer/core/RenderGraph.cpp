@@ -2,6 +2,7 @@
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
+#include "Container/renderer/deferred/DeferredRasterLightingPassRecorder.h"
 #include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 
 #include <algorithm>
@@ -66,6 +67,7 @@ constexpr std::array<std::string_view, kRenderPassIdCount> kRenderPassNames = {
     "VolumetricFog",
     "OpenVdbVolume",
     "ReflectionSurfaceIds",
+    "BimReflectionDisplayOverlays",
 };
 
 static_assert(kRenderPassNames.size() == kRenderPassIdCount);
@@ -155,6 +157,7 @@ constexpr std::array kGtaoDependencies{
 constexpr std::array kBimGBufferDependencies{
     RenderPassId::BimDepthPrepass,
 };
+constexpr std::array kBimReflectionDisplayOverlaysDependencies{RenderPassId::ScreenReflections};
 constexpr std::array kExposureAdaptationDependencies{
     RenderPassId::Lighting,
 };
@@ -228,6 +231,7 @@ constexpr std::array kLightingScheduleDependencies{
 constexpr std::array kOpenVdbVolumeDependencies{RenderPassId::Lighting};
 constexpr std::array kOpenVdbVolumeOptionalScheduleDependencies{
     RenderPassId::ScreenReflections,
+    RenderPassId::BimReflectionDisplayOverlays,
 };
 constexpr std::array kTransformGizmosScheduleDependencies{
     RenderPassId::Lighting,
@@ -686,6 +690,7 @@ bool isProtectedRenderPass(RenderPassId id) {
   case RenderPassId::DepthPrepass:
   case RenderPassId::GBuffer:
   case RenderPassId::ReflectionSurfaceIds:
+  case RenderPassId::BimReflectionDisplayOverlays:
   case RenderPassId::PbrAuxiliary:
   case RenderPassId::OitClear:
   case RenderPassId::TransparentPick:
@@ -705,6 +710,8 @@ bool isProtectedRenderPass(RenderPassId id) {
 
 std::span<const RenderPassId> renderPassDependencies(RenderPassId id) {
   switch (id) {
+    case RenderPassId::BimReflectionDisplayOverlays:
+      return kBimReflectionDisplayOverlaysDependencies;
     case RenderPassId::HiZGenerate:
       return kHiZDependencies;
     case RenderPassId::OcclusionCull:
@@ -1667,6 +1674,11 @@ uint64_t RenderGraph::computePreparedFrameSignature(
     mix(params.bim.floorPlan.enabled);
     mix(params.bim.floorPlan.depthTest);
     mixDrawList(params.bim.floorPlanDrawCommands);
+  }
+  if (params.runtime.activeTechnique == RenderTechniqueId::DeferredRaster &&
+      params.debug.screenReflections != ScreenReflectionMode::Off &&
+      screenReflectionDebugView(params.debug.screenReflections) == 0u) {
+    mix(hasDeferredRasterBimDisplayOverlays(params));
   }
   mix(params.shadows.localShadowLayerCount);
   mix(params.shadows.useGpuShadowCull ? 1u : 0u);

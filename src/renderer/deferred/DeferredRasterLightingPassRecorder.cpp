@@ -25,6 +25,7 @@
 
 #include <array>
 #include <span>
+#include <utility>
 #include <vector>
 
 namespace container::renderer {
@@ -383,7 +384,105 @@ void syncOverlaySectionPlanePushConstants(
   }
 }
 
+BimRasterOverlayRecordInputs bimRasterOverlayInputs(
+    const FrameRecordParams &p, const DeferredRasterLightingPassServices &services) {
+  return {.sceneDescriptorSet = deferredRasterSceneDescriptorSet(p),
+         .bimDescriptorSet = deferredRasterBimSceneDescriptorSet(p),
+         .extent = services.framebufferExtent,
+         .wireframeLayout = deferredRasterPipelineLayout(
+             p, DeferredRasterPipelineLayoutId::Wireframe),
+         .pipelines = bimLightingOverlayPipelineHandles(p),
+         .pointCloudNoDepth = deferredRasterPipelineHandle(
+             p, DeferredRasterPipelineId::BimPointCloudNoDepth),
+         .curveNoDepth = deferredRasterPipelineHandle(
+             p, DeferredRasterPipelineId::BimCurveNoDepth),
+         .curveStrokeNoDepth = deferredRasterPipelineHandle(
+             p, DeferredRasterPipelineId::BimCurveStrokeNoDepth),
+         .capFill = deferredRasterPipelineHandle(
+             p, DeferredRasterPipelineId::BimSectionClipCapFill),
+         .capHatch = deferredRasterPipelineHandle(
+             p, DeferredRasterPipelineId::BimSectionClipCapHatch),
+         .wireframePushConstants = p.pushConstants.wireframe,
+         .debugOverlay = services.debugOverlay};
+}
+
+void transitionBimDisplayAttachments(VkCommandBuffer cmd, VkImage color,
+                                     VkImage depth, VkImageLayout depthLayout,
+                                     bool hasStencil, bool begin) {
+  constexpr auto shaderStages =
+      VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+  constexpr auto depthStages =
+      VK_PIPELINE_STAGE_2_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT;
+  constexpr auto colorStages = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  constexpr auto depthAccess = VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_READ_BIT |
+                               VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
+  VkImageAspectFlags depthAspects = VK_IMAGE_ASPECT_DEPTH_BIT;
+  if (hasStencil)
+    depthAspects |= VK_IMAGE_ASPECT_STENCIL_BIT;
+
+  // The reflection dispatch writes SceneColor through storage. LOAD and blending
+  // must see those writes, and the depth transition must follow its sampled reads.
+  std::array barriers{
+      VkImageMemoryBarrier2{
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+          .srcStageMask = shaderStages | colorStages,
+          .srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT |
+                           VK_ACCESS_2_SHADER_SAMPLED_READ_BIT |
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+          .dstStageMask = colorStages,
+          .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT |
+                           VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+          .oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+          .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .image = color,
+          .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1},
+      },
+      VkImageMemoryBarrier2{
+          .sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+          .srcStageMask = shaderStages | depthStages,
+          .srcAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT | depthAccess,
+          .dstStageMask = depthStages,
+          .dstAccessMask = depthAccess,
+          .oldLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL,
+          .newLayout = depthLayout,
+          .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+          .image = depth,
+          .subresourceRange = {depthAspects, 0, 1, 0, 1},
+      }};
+  if (!begin) {
+    for (auto &barrier : barriers) {
+      std::swap(barrier.oldLayout, barrier.newLayout);
+      std::swap(barrier.srcStageMask, barrier.dstStageMask);
+      std::swap(barrier.srcAccessMask, barrier.dstAccessMask);
+    }
+  }
+  const VkDependencyInfo dependency{
+      .sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .imageMemoryBarrierCount = static_cast<uint32_t>(barriers.size()),
+      .pImageMemoryBarriers = barriers.data(),
+  };
+  vkCmdPipelineBarrier2(cmd, &dependency);
+}
+
 } // namespace
+
+bool hasDeferredRasterBimDisplayOverlays(const FrameRecordParams &p) {
+  if (!hasBimRasterDisplayOverlays(p) ||
+      deferredRasterPipelineLayout(p, DeferredRasterPipelineLayoutId::Wireframe) == VK_NULL_HANDLE)
+    return false;
+  const auto *lighting = deferredRasterRenderPass(p, DeferredRasterFramebufferId::Lighting);
+  const auto *color = deferredRasterImageBinding(p, DeferredRasterImageId::SceneColor);
+  const auto *depth = deferredRasterImageBinding(p, DeferredRasterImageId::DepthStencil);
+  return lighting && color && color->image && color->view && depth && depth->image && depth->view &&
+      lighting->samples == VK_SAMPLE_COUNT_1_BIT && color->samples == lighting->samples &&
+      depth->samples == lighting->samples && lighting->colorFormats.size() == 1 &&
+      color->format == lighting->colorFormats.front() && depth->format == lighting->depthFormat &&
+      color->extent.width && color->extent.height && color->extent.width == depth->extent.width &&
+      color->extent.height == depth->extent.height;
+}
 
 DeferredRasterLightingPassRecorder::DeferredRasterLightingPassRecorder(
     DeferredRasterLightingPassServices services)
@@ -392,7 +491,8 @@ DeferredRasterLightingPassRecorder::DeferredRasterLightingPassRecorder(
 void DeferredRasterLightingPassRecorder::record(
     VkCommandBuffer cmd, const FrameRecordParams &p, VkDescriptorSet sceneSet,
     const std::array<VkDescriptorSet, 2> &lightingDescriptorSets,
-    const std::array<VkDescriptorSet, 4> &transparentDescriptorSets) const {
+    const std::array<VkDescriptorSet, 4> &transparentDescriptorSets,
+    bool deferBimDisplayOverlays) const {
   const LightingManager *lightingManager = services_.lightingManager;
   const uint32_t pointLightCount =
       lightingManager
@@ -607,28 +707,66 @@ void DeferredRasterLightingPassRecorder::record(
         cmd, debugOverlayRecordInputs);
   }
 
-  recordBimRasterOverlays(
-      cmd, p,
-      {.sceneDescriptorSet = deferredRasterSceneDescriptorSet(p),
-       .bimDescriptorSet = deferredRasterBimSceneDescriptorSet(p),
-       .extent = lightingExtent,
-       .wireframeLayout = deferredRasterPipelineLayout(
-           p, DeferredRasterPipelineLayoutId::Wireframe),
-       .pipelines = bimLightingOverlayPipelineHandles(p),
-       .pointCloudNoDepth = deferredRasterPipelineHandle(
-           p, DeferredRasterPipelineId::BimPointCloudNoDepth),
-       .curveNoDepth = deferredRasterPipelineHandle(
-           p, DeferredRasterPipelineId::BimCurveNoDepth),
-       .curveStrokeNoDepth = deferredRasterPipelineHandle(
-           p, DeferredRasterPipelineId::BimCurveStrokeNoDepth),
-       .capFill = deferredRasterPipelineHandle(
-           p, DeferredRasterPipelineId::BimSectionClipCapFill),
-       .capHatch = deferredRasterPipelineHandle(
-           p, DeferredRasterPipelineId::BimSectionClipCapHatch),
-       .wireframePushConstants = p.pushConstants.wireframe,
-       .debugOverlay = services_.debugOverlay});
+  recordBimRasterOverlays(cmd, p, bimRasterOverlayInputs(p, services_),
+      deferBimDisplayOverlays ? BimRasterOverlayPhase::Native : BimRasterOverlayPhase::All);
 
   static_cast<void>(recordRenderPassEndCommands(cmd));
+}
+
+void DeferredRasterLightingPassRecorder::recordBimDisplayOverlays(
+    VkCommandBuffer cmd, const FrameRecordParams &p) const {
+  if (!hasDeferredRasterBimDisplayOverlays(p))
+    return;
+
+  const auto *lighting = deferredRasterRenderPass(p, DeferredRasterFramebufferId::Lighting);
+  const auto &color = *deferredRasterImageBinding(p, DeferredRasterImageId::SceneColor);
+  const auto &depth = *deferredRasterImageBinding(p, DeferredRasterImageId::DepthStencil);
+  const bool hasStencil = lighting->stencilFormat != VK_FORMAT_UNDEFINED;
+  const auto depthLayout = hasStencil
+      ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_STENCIL_ATTACHMENT_OPTIMAL
+      : VK_IMAGE_LAYOUT_DEPTH_STENCIL_READ_ONLY_OPTIMAL;
+  const VkExtent2D extent{color.extent.width, color.extent.height};
+  const VkRenderingAttachmentInfo colorAttachment{
+      .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .imageView = color.view,
+      .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+  };
+  const VkRenderingAttachmentInfo depthAttachment{
+      .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .imageView = depth.view,
+      .imageLayout = depthLayout,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_LOAD,
+      .storeOp = VK_ATTACHMENT_STORE_OP_STORE,
+  };
+  const VkRenderingAttachmentInfo stencilAttachment{
+      .sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .imageView = depth.view,
+      .imageLayout = depthLayout,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR,
+      .storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE,
+      .clearValue = VkClearValue{.depthStencil = {0.0f, 0u}},
+  };
+  const VkRenderingInfo rendering{
+      .sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+      .renderArea = {{0, 0}, extent},
+      .layerCount = 1,
+      .viewMask = lighting->viewMask,
+      .colorAttachmentCount = 1,
+      .pColorAttachments = &colorAttachment,
+      .pDepthAttachment = &depthAttachment,
+      .pStencilAttachment = hasStencil ? &stencilAttachment : nullptr,
+  };
+
+  transitionBimDisplayAttachments(cmd, color.image, depth.image, depthLayout, hasStencil, true);
+  vkCmdBeginRendering(cmd, &rendering);
+  recordSceneViewportAndScissor(cmd, extent);
+  syncOverlaySectionPlanePushConstants(p.pushConstants);
+  recordBimRasterOverlays(cmd, p, bimRasterOverlayInputs(p, services_),
+                          BimRasterOverlayPhase::Display);
+  vkCmdEndRendering(cmd);
+  transitionBimDisplayAttachments(cmd, color.image, depth.image, depthLayout, hasStencil, false);
 }
 
 } // namespace container::renderer

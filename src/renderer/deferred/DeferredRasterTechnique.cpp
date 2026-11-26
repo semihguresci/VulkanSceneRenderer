@@ -1720,6 +1720,10 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     return screenReflectionDebugView(p.debug.screenReflections) != 0u &&
            canRecordReflections(p);
   };
+  const auto deferBimDisplayOverlays = [canRecordReflections](const FrameRecordParams& p) {
+    return screenReflectionDebugView(p.debug.screenReflections) == 0u &&
+           canRecordReflections(p) && hasDeferredRasterBimDisplayOverlays(p);
+  };
   const auto recordVolume = [deferred](VkCommandBuffer cmd, const FrameRecordParams &p) {
     if (p.services.openVdbVolumeRenderer) {
       p.services.openVdbVolumeRenderer->record(
@@ -1743,7 +1747,8 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
             p, DeferredRasterDescriptorSetId::FrameLighting)};
     deferred->lightingPassRecorder(p).record(cmd, p,
                                             deferredRasterSceneDescriptorSet(p),
-                                            lightingSets, transparentSets);
+                                            lightingSets, transparentSets,
+                                            deferred->isPassActive(RenderPassId::BimReflectionDisplayOverlays));
     // The SSR diagnostic writes its own RGB. Composite media first so the
     // diagnostic stays readable while retaining volume coverage for temporal.
     if (volumeBeforeReflectionDebug(p))
@@ -1767,6 +1772,17 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
       {RenderResourceId::AmbientOcclusion, RenderResourceId::GBufferAnisotropy,
        RenderResourceId::GBufferDiffuseTransmission, RenderResourceId::RayScene,
        RenderResourceId::ReflectionSurfaceIds}, {RenderResourceId::SceneColor});
+
+  graph.addPass(RenderPassId::BimReflectionDisplayOverlays, {RenderPassId::ScreenReflections},
+      [deferred](VkCommandBuffer cmd, const FrameRecordParams& p) {
+        deferred->lightingPassRecorder(p).recordBimDisplayOverlays(cmd, p);
+      });
+  graph.setPassReadiness(RenderPassId::BimReflectionDisplayOverlays,
+      [deferBimDisplayOverlays](const FrameRecordParams& p) {
+        return deferBimDisplayOverlays(p) ? renderPassReady() : renderPassNotNeeded();
+      });
+  graph.setPassResourceAccess(RenderPassId::BimReflectionDisplayOverlays,
+      {RenderResourceId::SceneColor, RenderResourceId::SceneDepth}, {}, {RenderResourceId::SceneColor});
 
   graph.addPass(RenderPassId::OpenVdbVolume, recordVolume);
   graph.setPassReadiness(RenderPassId::OpenVdbVolume,

@@ -1158,13 +1158,14 @@ TEST(RenderGraphTests, ReflectionIdsCaptureBothOpaqueWritersBeforeTransparentPic
                                         Pass::TransparentPick, Pass::ScreenReflections}));
 }
 
-TEST(RenderGraphTests, OpenVdbCompositesAfterScreenReflectionsAndBeforeFog) {
+TEST(RenderGraphTests, PresentationOverlaysAndOpenVdbFollowScreenReflections) {
   RenderGraph graph;
   graph.addPass(RenderPassId::OitResolve, {RenderPassId::VolumetricFog},
                 noopRecord());
   graph.addPass(RenderPassId::VolumetricFog, {RenderPassId::OpenVdbVolume},
                 noopRecord());
   graph.addPass(RenderPassId::OpenVdbVolume, noopRecord());
+  graph.addPass(RenderPassId::BimReflectionDisplayOverlays, {RenderPassId::ScreenReflections}, noopRecord());
   graph.addPass(RenderPassId::ScreenReflections, {RenderPassId::Lighting},
                 noopRecord());
   graph.addPass(RenderPassId::Lighting, {}, noopRecord());
@@ -1175,12 +1176,16 @@ TEST(RenderGraphTests, OpenVdbCompositesAfterScreenReflectionsAndBeforeFog) {
   ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::ScreenReflections,
                                           {RenderResourceId::SceneColor}, {},
                                           {RenderResourceId::SceneColor}));
+  ASSERT_TRUE(graph.setPassResourceAccess(RenderPassId::BimReflectionDisplayOverlays,
+                                          {RenderResourceId::SceneColor}, {},
+                                          {RenderResourceId::SceneColor}));
   ASSERT_TRUE(graph.setPassResourceAccess(
       RenderPassId::VolumetricFog, {RenderResourceId::SceneColor},
       {RenderResourceId::OitStorage}, {RenderResourceId::SceneColor}));
 
   EXPECT_EQ(execute(graph), (std::vector{RenderPassId::Lighting,
                                         RenderPassId::ScreenReflections,
+                                        RenderPassId::BimReflectionDisplayOverlays,
                                         RenderPassId::OpenVdbVolume,
                                         RenderPassId::VolumetricFog,
                                         RenderPassId::OitResolve}));
@@ -1198,6 +1203,7 @@ TEST(RenderGraphTests, OpenVdbCompositesAfterScreenReflectionsAndBeforeFog) {
                                      }));
   EXPECT_EQ(execute(graph), (std::vector{RenderPassId::Lighting,
                                         RenderPassId::ScreenReflections,
+                                        RenderPassId::BimReflectionDisplayOverlays,
                                         RenderPassId::VolumetricFog,
                                         RenderPassId::OitResolve}));
 }

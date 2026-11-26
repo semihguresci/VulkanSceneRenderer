@@ -12,6 +12,12 @@ panel reports support, memory and build/query/filter timings. Transparent
 receivers retain raster shadows; blended/transmissive blockers do not cast binary
 ray shadows. Height-displaced meshes trigger raster fallback.
 
+Use `VulkanSceneRenderer.exe --screen-reflections high --display-mode lit` for
+screen-space reflections in Deferred Raster. Add `--screen-reflections-ray-query`
+to reflect off-screen geometry on compatible devices. See the included
+[reflection guide](screen-space-reflections.md) for quality settings,
+diagnostics, and capture examples.
+
 Rectangular and disk lights use LTC integration when the packaged lookup tables
 are valid. Compare the integration modes from the extracted directory:
 

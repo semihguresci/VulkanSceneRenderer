@@ -65,6 +65,7 @@ enum class RenderPassId : uint8_t {
   VolumetricFog,
   OpenVdbVolume,
   ReflectionSurfaceIds,
+  BimReflectionDisplayOverlays,
   Count,
   Invalid = Count,
 };
