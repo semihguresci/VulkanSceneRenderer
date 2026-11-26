@@ -1601,10 +1601,23 @@ void Mesher::joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
   // follow a primitive lattice vector. Choose an integral progress
   // coordinate with one unit of advance along that vector.
   constexpr int maxTurns = 8;
-  const UV turns = glm::round(winding / s_.periods);
+  UV scale = s_.periods;
+  const bool doublyPeriodic = scale.x && scale.y;
+  if (!doublyPeriodic) {
+    const unsigned transverseAxis = scale.x ? 1 : 0;
+    const auto coordinate = [=](const Vertex &v) { return v.uv[transverseAxis]; };
+    const auto a = std::ranges::minmax_element(rings[0], {}, coordinate);
+    const auto b = std::ranges::minmax_element(rings[1], {}, coordinate);
+    scale[transverseAxis] = std::max(coordinate(*a.max), coordinate(*b.max)) -
+                             std::min(coordinate(*a.min), coordinate(*b.min));
+    if (winding[transverseAxis] || !(scale[transverseAxis] > 0) ||
+        !std::isfinite(scale[transverseAxis]))
+      throw std::runtime_error("Invalid transverse extent of a spline band");
+  }
+  const UV turns = glm::round(winding / scale);
   if (!std::isfinite(turns.x) || !std::isfinite(turns.y) ||
       glm::any(glm::greaterThan(glm::abs(turns), UV(maxTurns))) ||
-      glm::length(winding / s_.periods - turns) > 1e-8 ||
+      glm::length(winding / scale - turns) > 1e-8 ||
       std::gcd(static_cast<int>(turns.x), static_cast<int>(turns.y)) != 1)
     throw std::runtime_error("Spline band requires bounded primitive winding");
 
@@ -1618,7 +1631,7 @@ void Mesher::joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
 
   const UV origin = first.front().uv;
   const auto periodCoordinates = [&](UV uv) {
-    return (uv - origin) / s_.periods;
+    return (uv - origin) / scale;
   };
   constexpr double epsilon = 1e-10;
   const auto monotone = [&](const std::vector<Vertex> &ring, UV basis) {
@@ -1650,8 +1663,8 @@ void Mesher::joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
   }
 
   // The transform has determinant one. Each boundary now forms a
-  // period-one graph. A single cover exists precisely when the graphs
-  // remain ordered between the same two consecutive transverse images.
+  // period-one graph. The graphs must stay ordered and, when the transverse
+  // axis is periodic, remain between the same two consecutive images.
   const auto graph = [&](const std::vector<Vertex> &ring) {
     std::vector<UV> points;
     points.reserve(ring.size() + 1);
@@ -1675,14 +1688,17 @@ void Mesher::joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
                      (position - prior->x) / (next->x - prior->x));
   };
   const double sense = sameSense ? 1 : -1;
-  const double shift = -std::floor(sense * height(b, 0)) * sense;
+  const double shift =
+      doublyPeriodic ? -std::floor(sense * height(b, 0)) * sense : 0.;
   const auto separated = [&](UV vertex) {
     const double gap =
         sense * (height(b, vertex.x) + shift - height(a, vertex.x));
-    return gap > epsilon && gap < 1 - epsilon;
+    return gap > epsilon && (!doublyPeriodic || gap < 1 - epsilon);
   };
   if (!std::ranges::all_of(a, separated) || !std::ranges::all_of(b, separated))
-    throw std::runtime_error("Spline band bounds intersect a periodic image");
+    throw std::runtime_error(
+        doublyPeriodic ? "Spline band bounds intersect a periodic image"
+                       : "Spline band bounds cross or reverse their order");
 
   // Cut at existing shared samples. The second cut is the first translated
   // by the full winding vector; both copies refine with identical positions.
@@ -1732,7 +1748,7 @@ void Mesher::joinSplineBand(std::vector<std::vector<Vertex>> &rings, UV winding,
   const UV translation = transverse + (1 - std::round(b[j].x)) * winding;
   first.push_back({first.front().uv + winding, first.front().point});
   bandFirstSize_ = first.size();
-  bandProgress_ = progress / s_.periods;
+  bandProgress_ = progress / scale;
   bandDirection_ = winding;
   for (size_t step = 0; step <= forward.size(); ++step) {
     auto v = forward[(j + forward.size() - step) % forward.size()];
@@ -1926,7 +1942,7 @@ Mesher::run(const std::vector<std::vector<glm::vec3>> &boundaries,
             1e-8 * glm::length(windingCoordinates(winding[0])))
       throw std::runtime_error(
           "Closed curved face requires two opposite periodic band bounds");
-    if (!authoredChart.empty() && s_.periods.x && s_.periods.y) {
+    if (!authoredChart.empty() && (s_.spline || (s_.periods.x && s_.periods.y))) {
       joinSplineBand(rings, winding[0], sameSense);
     } else {
       joinAxialBand(rings, winding[0], winding[1], sameSense);

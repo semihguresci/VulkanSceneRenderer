@@ -1656,26 +1656,42 @@ private:
         return {};
       }
     }
-    for (size_t i = 0; i < corners.size(); ++i)
-      if (tangentDistance[i] + tangentDistance[(i + 1) % corners.size()] >=
-          glm::length(corners[(i + 1) % corners.size()] - corners[i])) {
-        error = "fillet or edge radii consume a profile edge";
+    std::vector<std::optional<glm::dvec2>> tangentJoins(corners.size());
+    for (size_t i = 0; i < corners.size(); ++i) {
+      const size_t next = (i + 1) % corners.size();
+      const double extent = glm::length(corners[next] - corners[i]);
+      const double used = tangentDistance[i] + tangentDistance[next];
+      const double remaining = extent - used;
+      const double roundoff = 64 * std::numeric_limits<double>::epsilon() *
+                              std::max(extent, used);
+      if (!(extent > 0) || !std::isfinite(extent) || !std::isfinite(used) ||
+          remaining < -roundoff) {
+        error = "fillet or edge radii overlap on a profile edge";
         return {};
       }
+      // At equality the two ends share one point and there is no straight
+      // span. An unrounded corner is the meeting point when one trim is zero.
+      if (used > 0 && remaining <= roundoff)
+        tangentJoins[i] = glm::mix(corners[i], corners[next],
+                                  tangentDistance[i] / used);
+    }
     std::vector<glm::vec3> loop;
     for (size_t i = 0; i < corners.size(); ++i) {
       checkCancellation();
       const auto &corner = corners[i];
+      const size_t previous = (i + corners.size() - 1) % corners.size();
+      const auto &startJoin = tangentJoins[previous];
       if (radii[i] == 0) {
-        loop.emplace_back(corner.x, corner.y, 0);
+        if (!startJoin)
+          loop.emplace_back(corner.x, corner.y, 0);
         continue;
       }
-      const auto incoming = glm::normalize(
-          corners[(i + corners.size() - 1) % corners.size()] - corner);
+      const auto incoming = glm::normalize(corners[previous] - corner);
       const auto outgoing =
           glm::normalize(corners[(i + 1) % corners.size()] - corner);
-      const auto a = corner + incoming * tangentDistance[i];
-      const auto b = corner + outgoing * tangentDistance[i];
+      const auto a = startJoin.value_or(corner + incoming * tangentDistance[i]);
+      const auto b =
+          tangentJoins[i].value_or(corner + outgoing * tangentDistance[i]);
       const auto center =
           corner +
           glm::normalize(incoming + outgoing) *
@@ -1692,7 +1708,7 @@ private:
       const size_t segments = std::max(
           size_t(1), size_t(std::ceil(*circleSegments * std::abs(sweep) /
                                       (2 * std::acos(-1.0)))));
-      for (size_t j = 0; j <= segments; ++j) {
+      for (size_t j = startJoin ? 1 : 0; j <= segments; ++j) {
         // Use the computed tangent endpoints exactly to retain shared topology.
         const auto point =
             j == 0 ? a

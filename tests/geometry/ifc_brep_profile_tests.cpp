@@ -442,6 +442,55 @@ TEST(IfcStructuralProfiles, CollapsedAndAmbiguousSlopesRejectAtomically) {
   EXPECT_TRUE(invalidUnits.vertices.empty());
 }
 
+TEST(IfcStructuralProfiles, IShapeFilletsCanMeetAtWebAndFlangeLimits) {
+  constexpr double extrusion = 2.;
+  for (const auto &[width, depth, tangentX, tangentY] :
+       std::array<std::array<double, 4>, 2>{{{10., 6., 1., 0.},
+                                            {6., 8., 3., 3.}}}) {
+    SCOPED_TRACE(::testing::Message() << width << " x " << depth);
+    const auto source = [&](double radius) {
+      return fixture("#5=IFCISHAPEPROFILEDEF(.AREA.,$,$," + number(width) +
+                         "," + number(depth) + ",2.,1.," + number(radius) +
+                         ",0.,0.); #10=IFCEXTRUDEDAREASOLID(#5,$,$," +
+                         number(extrusion) + ");",
+                     "#10", "'Body','SweptSolid'");
+    };
+    const auto model = LoadFromStep(source(2.));
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    expectProfileBounds(model, {-width / 2, -depth / 2, 0.},
+                        {width / 2, depth / 2, extrusion});
+
+    for (double x : {-tangentX, tangentX})
+      for (double y : {-tangentY, tangentY}) {
+        const glm::vec3 tangent(x, y, extrusion);
+        EXPECT_TRUE(std::ranges::any_of(model.vertices, [&](const auto &v) {
+          return v.position == tangent;
+        })) << "Missing tangent at " << x << ", " << y;
+      }
+
+    // Four concave fillets each add a radius-2 square minus a quarter disk.
+    const double area = 2 * width + 2 * (depth - 2) + 16 - 4 * pi;
+    double capArea = 0.;
+    for (size_t i = 0; i < model.indices.size(); i += 3) {
+      const glm::dvec3 a(model.vertices.at(model.indices.at(i)).position);
+      const glm::dvec3 b(model.vertices.at(model.indices.at(i + 1)).position);
+      const glm::dvec3 c(model.vertices.at(model.indices.at(i + 2)).position);
+      if (a.z == extrusion && b.z == extrusion && c.z == extrusion)
+        capArea += glm::cross(b - a, c - a).z / 2;
+    }
+    EXPECT_NEAR(capArea, area, .01);
+    EXPECT_NEAR(volume(model), area * extrusion, .02);
+
+    const auto overlap = LoadFromStep(source(2.01));
+    EXPECT_EQ(overlap.importReport.completeness, ImportCompleteness::Failed);
+    EXPECT_TRUE(overlap.vertices.empty());
+    EXPECT_TRUE(overlap.indices.empty());
+    EXPECT_TRUE(overlap.meshRanges.empty());
+  }
+}
+
 TEST(IfcStructuralProfiles, CShapeBendsPreserveWallThicknessAndGirth) {
   constexpr double corner = 1 - pi / 4;
   for (const std::string radius : {"$", "0.", "0.4"}) {
@@ -2587,6 +2636,18 @@ struct Paraboloid {
     return step.add("IFCCARTESIANPOINT((" + number(x) + "," + number(y) + "))");
   }
 
+  std::string surfaceFromMeridian(CurvedBuilder &step,
+                                   const std::string &curve) const {
+    const auto profile =
+        step.add("IFCARBITRARYOPENPROFILEDEF(.CURVE.,$," + curve + ")");
+    const auto sweepAxis =
+        step.add("IFCAXIS1PLACEMENT(" + step.point({0, 0, 0}) + "," +
+                 step.direction({0, 1, 0}) + ")");
+    return step.add("IFCSURFACEOFREVOLUTION(" + profile + "," +
+                    step.placement(origin, side, radial) + "," + sweepAxis +
+                    ")");
+  }
+
   std::string surface(CurvedBuilder &step, double middleHeight = 0.,
                       double firstRadius = 0., bool reversed = false) const {
     std::vector controls{profilePoint(step, firstRadius * scale, 0),
@@ -2597,14 +2658,26 @@ struct Paraboloid {
     const auto curve =
         step.add("IFCBSPLINECURVEWITHKNOTS(2,(" + step.refs(controls) +
                  "),.UNSPECIFIED.,.F.,.F.,(3,3),(2.,5.),.UNSPECIFIED.)");
-    const auto profile =
-        step.add("IFCARBITRARYOPENPROFILEDEF(.CURVE.,$," + curve + ")");
-    const auto sweepAxis =
-        step.add("IFCAXIS1PLACEMENT(" + step.point({0, 0, 0}) + "," +
-                 step.direction({0, 1, 0}) + ")");
-    return step.add("IFCSURFACEOFREVOLUTION(" + profile + "," +
-                    step.placement(origin, side, radial) + "," + sweepAxis +
-                    ")");
+    return surfaceFromMeridian(step, curve);
+  }
+
+  std::string rationalSurface(CurvedBuilder &step, bool reversed) const {
+    // The parabola has normalized meridian parameter s = t / (2 - t).
+    // One internal knot at t = 1/2 splits its rational quadratic into two
+    // spans, while the known surface remains y = r^2 / 4 in local units.
+    std::vector controls{profilePoint(step, 0., 0.),
+                         profilePoint(step, scale / 3, 0.),
+                         profilePoint(step, 4 * scale / 3, scale / 3),
+                         profilePoint(step, 2 * scale, scale)};
+    if (reversed)
+      std::ranges::reverse(controls);
+    const std::string weights = reversed ? "(0.25,0.375,0.75,1.)"
+                                         : "(1.,0.75,0.375,0.25)";
+    const auto curve = step.add(
+        "IFCRATIONALBSPLINECURVEWITHKNOTS(2,(" + step.refs(controls) +
+        "),.UNSPECIFIED.,.F.,.F.,(3,1,3),(2.,3.5,5.),.UNSPECIFIED.," +
+        weights + ")");
+    return surfaceFromMeridian(step, curve);
   }
 
   std::string meridian(CurvedBuilder &step, const std::string &apex,
@@ -2642,8 +2715,10 @@ void expectParaboloidNormals(const Model &model, const Paraboloid &shape,
 }
 
 std::string addParaboloidShell(CurvedBuilder &step, const Paraboloid &shape,
-                               bool vertexLoop, bool outward) {
-  const auto surface = shape.surface(step, 0., 0., vertexLoop);
+                               bool vertexLoop, bool outward,
+                               bool rationalMeridian = false) {
+  const auto surface = rationalMeridian ? shape.rationalSurface(step, vertexLoop)
+                                       : shape.surface(step, 0., 0., vertexLoop);
   const auto apex = step.point(shape.origin);
   const auto ring = step.add(
       "IFCCIRCLE(" +
@@ -2705,6 +2780,35 @@ TEST(IfcCurvedBrep, SmoothRevolutionApexClosesParaboloidSectorsAndVertexLoop) {
     expectParaboloidNormals(model, shape, true);
     exportCurvedFixture(vertexLoop ? "revolution-apex-millimetres"
                                    : "revolution-apex-sectors",
+                        source);
+  }
+}
+
+TEST(IfcCurvedBrep, SmoothRationalMultiSpanRevolutionPreservesParaboloidShell) {
+  for (bool reversed : {false, true}) {
+    SCOPED_TRACE(reversed);
+    CurvedBuilder step;
+    const Paraboloid shape = reversed ? Paraboloid{{3000, 5000, -2000},
+                                                   {0, 1, 0},
+                                                   {0, 0, 1},
+                                                   {1, 0, 0}, 1000.}
+                                      : standardParaboloid;
+    const auto shell = addParaboloidShell(step, shape, reversed, true, true);
+    const auto brep = step.add("IFCADVANCEDBREP(" + shell + ")");
+    auto source = fixture(step.definitions + degrees(), brep);
+    if (reversed) {
+      constexpr std::string_view metres = ".LENGTHUNIT.,$,.METRE.";
+      source.replace(source.find(metres), metres.size(),
+                     ".LENGTHUNIT.,.MILLI.,.METRE.");
+    }
+    const auto model = LoadFromStep(source);
+    complete(model);
+    ASSERT_FALSE(model.indices.empty());
+    watertight(model);
+    EXPECT_NEAR(volume(model) / std::pow(shape.scale, 3.), 2 * pi, .025);
+    expectParaboloidNormals(model, shape, true);
+    exportCurvedFixture(reversed ? "rational-revolution-apex-millimetres"
+                                  : "rational-revolution-apex-sectors",
                         source);
   }
 }
@@ -2861,13 +2965,18 @@ TEST(IfcCurvedBrep, SmoothRevolutionApexPreservesSplitMeridianJoin) {
 }
 
 TEST(IfcCurvedBrep, SmoothRevolutionKeepsNativeAngleAndMeridianAtApex) {
-  for (double angle : {0., 90.}) {
-    SCOPED_TRACE(angle);
+  const std::array cases{std::pair(0., false), std::pair(90., false),
+                         std::pair(0., true), std::pair(90., true)};
+  for (const auto &[angle, rational] : cases) {
+    SCOPED_TRACE(::testing::Message() << angle << ", rational=" << rational);
     CurvedBuilder step;
-    const auto surface = standardParaboloid.surface(step);
+    const auto surface = rational ? standardParaboloid.rationalSurface(step, false)
+                                  : standardParaboloid.surface(step);
     const auto uvStart = Paraboloid::profilePoint(step, angle, 2.);
+    const auto uvMiddle = Paraboloid::profilePoint(step, angle, 3.5);
     const auto uvEnd = Paraboloid::profilePoint(step, angle, 5.);
-    const auto curve = step.add("IFCPOLYLINE((" + uvStart + "," + uvEnd + "))");
+    const auto curve = step.add("IFCPOLYLINE((" + uvStart + "," + uvMiddle +
+                                "," + uvEnd + "))");
     const auto pcurve = step.add("IFCPCURVE(" + surface + "," + curve + ")");
     const auto model = LoadFromStep(
         fixture(step.definitions + degrees(), pcurve, "'Axis','Curve3D'"));
@@ -2883,13 +2992,19 @@ TEST(IfcCurvedBrep, SmoothRevolutionKeepsNativeAngleAndMeridianAtApex) {
     EXPECT_LT(glm::length(point(line.firstIndex + line.indexCount - 1) -
                           (2. * radial + glm::dvec3(0, 1, 0))),
               1e-6);
+    const double middleRadius = rational ? 2. / 3. : 1.;
+    const auto expectedMiddle = middleRadius * radial +
+                                glm::dvec3(0, middleRadius * middleRadius / 4., 0);
+    bool foundMiddle = false;
     for (size_t i = line.firstIndex;
          i < size_t(line.firstIndex) + line.indexCount; ++i) {
       const auto p = point(i);
       const double r = glm::dot(p, radial);
       EXPECT_NEAR(p.y, r * r / 4, 1e-6);
       EXPECT_LE(glm::length(p - r * radial - glm::dvec3(0, p.y, 0)), 1e-6);
+      foundMiddle |= glm::length(p - expectedMiddle) < 1e-6;
     }
+    EXPECT_TRUE(foundMiddle);
   }
 }
 

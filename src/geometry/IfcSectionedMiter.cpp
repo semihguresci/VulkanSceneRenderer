@@ -60,6 +60,7 @@ struct Side {
   IfcSectionMiterFrame frame;
   double displacement = 0;
   bool linear = false;
+  double frameLimit = 0;
 };
 
 struct Join {
@@ -187,6 +188,46 @@ public:
     if (next != joins_.begin() && u < (next - 1)->sides[1].limit)
       result += correction(*(next - 1), (next - 1)->sides[1], f, u, v);
     return result;
+  }
+
+  std::optional<IfcSectionMiterFrame> guideFrame(double u) const {
+    if (!validParameters(u, 0.))
+      return std::nullopt;
+    container::util::checkModelImportCancellation(stop_);
+    const auto next = std::ranges::lower_bound(joins_, u, {}, &Join::parameter);
+    glm::dvec3 origin, lateral, up;
+    if (next != joins_.end() && next->parameter == u) {
+      origin = next->origin;
+      lateral = next->miterX;
+      up = next->miterY;
+    } else {
+      const auto f = frame(u);
+      origin = f.origin;
+      lateral = f.lateral;
+      up = f.up;
+      const auto transport = [&](const Join &join, const Side &side) {
+        // A flat profile parallel to the bend axis may need no point
+        // correction. Its guide planes still turn through the bisector.
+        const double limit = side.length > 0 ? side.limit : side.frameLimit;
+        if (u <= std::min(limit, join.parameter) ||
+            u >= std::max(limit, join.parameter))
+          return;
+        const double weight = side.length > 0
+                                  ? correctionWeight(join, side, u)
+                                  : 1 - (u - join.parameter) /
+                                            (limit - join.parameter);
+        lateral += weight * transportedCorrection(join, side, f, {1, 0});
+        up += weight * transportedCorrection(join, side, f, {0, 1});
+      };
+      if (next != joins_.end())
+        transport(*next, next->sides[0]);
+      if (next != joins_.begin())
+        transport(*(next - 1), (next - 1)->sides[1]);
+    }
+    const auto normal = unit(glm::cross(lateral, up), u);
+    lateral = unit(lateral, u);
+    return IfcSectionMiterFrame{origin, lateral, glm::cross(normal, lateral),
+                                normal};
   }
 
   std::optional<glm::dvec3> normal(double u, double v) const {
@@ -356,12 +397,13 @@ private:
     }
     for (size_t index = 0; index < join.sides.size(); ++index) {
       auto &side = join.sides[index];
+      const double selection = index == 0 ? *previous : *next;
+      side.frameLimit = selection;
       if (displacement[index] <= roundoff * offsetScale) {
         // The profile already meets the half-angle row on this side.
         side.limit = t;
         continue;
       }
-      const double selection = index == 0 ? *previous : *next;
       const double available = length(t, selection, t);
       side.displacement = displacement[index];
       const double sign = index == 0 ? -1. : 1.;
@@ -435,19 +477,27 @@ private:
   glm::dvec3 correction(const Join &join, const Side &side,
                         const IfcSectionMiterFrame &f, double u,
                         double v) const {
-    const auto atJoin = profile(join.parameter, v);
-    const auto shared = atJoin.x * join.miterX + atJoin.y * join.miterY;
-    const auto difference = shared - profileOffset(side.frame, atJoin);
+    return correctionWeight(join, side, u) *
+           transportedCorrection(join, side, f, profile(join.parameter, v));
+  }
+
+  static glm::dvec3 transportedCorrection(const Join &join, const Side &side,
+                                          const IfcSectionMiterFrame &f,
+                                          glm::dvec2 point) {
+    const auto shared = point.x * join.miterX + point.y * join.miterY;
+    const auto difference = shared - profileOffset(side.frame, point);
     // Transport the same correction in the side's actual section frame.
-    const auto moved = glm::dot(difference, side.frame.lateral) * f.lateral +
-                       glm::dot(difference, side.frame.up) * f.up +
-                       glm::dot(difference, side.frame.normal) * f.normal;
+    return glm::dot(difference, side.frame.lateral) * f.lateral +
+           glm::dot(difference, side.frame.up) * f.up +
+           glm::dot(difference, side.frame.normal) * f.normal;
+  }
+
+  double correctionWeight(const Join &join, const Side &side, double u) const {
     const double fraction = std::clamp(
         length(u, join.parameter, join.parameter) / side.length, 0., 1.);
-    const double weight =
-        side.linear ? 1 - fraction
-                    : (1 - fraction) * (1 - fraction) * (1 + 2 * fraction);
-    return weight * moved;
+    return side.linear
+               ? 1 - fraction
+               : (1 - fraction) * (1 - fraction) * (1 + 2 * fraction);
   }
 
   std::optional<glm::dvec3> normalAt(double u, double v, bool atJoin) const {
@@ -566,7 +616,8 @@ IfcSectionMiterResult buildIfcSectionedMiter(
                    allowDefaultFrameTransport);
   return {[surface](double u, double v) { return surface->point(u, v); },
           surface->breaks(),
-          [surface](double u, double v) { return surface->normal(u, v); }};
+          [surface](double u, double v) { return surface->normal(u, v); },
+          [surface](double u) { return surface->guideFrame(u); }};
 }
 
 } // namespace container::geometry::ifc::detail

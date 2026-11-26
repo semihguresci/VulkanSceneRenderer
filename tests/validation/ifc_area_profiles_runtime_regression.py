@@ -42,6 +42,8 @@ CENTERLINE_RADIUS, CENTERLINE_THICKNESS = .60, .36
 CENTERLINE_INNER = CENTERLINE_RADIUS - CENTERLINE_THICKNESS / 2.
 CENTERLINE_OUTER = CENTERLINE_RADIUS + CENTERLINE_THICKNESS / 2.
 CENTERLINE_SWEEP = 1.5 * math.pi
+TOUCHING_I_SIZE, TOUCHING_I_WEB, TOUCHING_I_FLANGE = 2., .50, .25
+TOUCHING_I_ROOT_RADIUS = TOUCHING_I_SIZE / 2. - TOUCHING_I_FLANGE
 AREA_WITNESSES = (
     (0, "flat center", (0., 0.), True), (0, "rounded corner", (.99, .76), False),
     (1, "mapped right rim", (.94, 0.), True), (1, "mapped top rim", (0., .69), True),
@@ -75,6 +77,13 @@ STRUCTURAL_WITNESSES = (
     (4, "inside ending butt", (-.575, .095), True), (4, "past ending butt", (-.60, -.10), False),
     (4, "open arc center", (0., 0.), False), (4, "inside clear bore", (.308, .075), False),
     (4, "outside outer radius", (.867, .08), False), (4, "open angular sector", (-.45, -.43), False),
+    (5, "web at meeting point", (.17, 0.), True),
+    (5, "open side of web", (.36, 0.), False),
+    (5, "top root fillet", (.46, .62), True),
+    (5, "bottom root fillet", (-.46, -.62), True),
+    (5, "beside root fillet", (.52, .52), False),
+    (5, "flange tip", (.85, .89), True),
+    (5, "outside flange", (-.81, 1.06), False),
 )
 
 
@@ -138,6 +147,8 @@ def structural_step_profiles(step):
                  1.2, .35, .12, .07, .27, .05, -.43),
         step.add("IFCTSHAPEPROFILEDEF", ".AREA.", "$", "$", 1.9, 2.2, .55, .31, .24, .12, .07, .17, .13),
         step.add("IFCCENTERLINEPROFILEDEF", ".AREA.", "$", arc, CENTERLINE_THICKNESS),
+        step.add("IFCISHAPEPROFILEDEF", ".AREA.", "$", "$", TOUCHING_I_SIZE, TOUCHING_I_SIZE,
+                 TOUCHING_I_WEB, TOUCHING_I_FLANGE, TOUCHING_I_ROOT_RADIUS, 0., 0.),
     )
 
 
@@ -237,6 +248,12 @@ def structural_footprint(index, x, y):
         r = np.hypot(x, y)
         return (r >= CENTERLINE_INNER) & (r <= CENTERLINE_OUTER) & ((x >= 0.) | (y >= 0.))
 
+    if index == 5:
+        # The four quarter arcs form two half circles centered on the sides.
+        half = TOUCHING_I_SIZE / 2.
+        cutout = np.sqrt(np.maximum(0., TOUCHING_I_ROOT_RADIUS ** 2 - y ** 2))
+        return (np.abs(x) <= half - cutout) & (np.abs(y) <= half)
+
     if index == 0:
         cavity = rounded_rectangle(x, y, .62, .62, .22)
         opening = (x >= .62) & (np.abs(y) < .24)
@@ -283,6 +300,7 @@ FIXTURES = {
         Profile("Asymmetric I section", (-1.85, -1.35), (.7, .19, .79)),
         Profile("Sloped T section", (1.85, -1.35), (.18, .82, .31)),
         Profile("Curved butt-ended centreline", (0., 0.), (.89, .57, .10)),
+        Profile("I section with touching fillets", (4.8, 0.), (.26, .47, .89)),
     ), STRUCTURAL_WITNESSES, structural_step_profiles, structural_footprint),
 }
 

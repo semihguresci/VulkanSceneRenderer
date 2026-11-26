@@ -129,13 +129,13 @@ outer bound or hole against its authored loops. The importer translates only
 inferred loops by whole periods and requires a unique placement with all holes
 strictly inside the outer bound and disjoint from one another. Doubly periodic
 spline bands can follow a primitive winding on both axes, such as two U turns
-and one V turn. The opposite trims can double back along their winding. Those
-bands use a cut between existing samples whose two ends join disjoint loops
-without crossing their periodic copies. The importer checks for a single cover
-before refining the surface. If a monotone band cannot cut from its first rail
-sample, a bounded search tries other pairs of original rail samples. The
-companion of an authored winding loop can use
-inferred coordinates throughout. A cut between existing samples preserves the
+and one V turn. The opposite trims can double back along their winding. Spline
+bands on either single periodic axis and on both axes use a cut between existing
+samples that stays between the ordered trim rails and avoids their periodic
+copies. The importer checks for a single cover before refining the surface.
+If a monotone band cannot cut from its first rail sample, a bounded search
+tries other pairs of original rail samples. The companion of an authored
+winding loop can use inferred coordinates throughout. Such a cut preserves the
 original edge positions. Both copies of the artificial cut receive matching samples at
 sharp knot crossings. The importer also rejects overlapping translated interiors in
 explicit trims. Inconsistent lifts, intersecting periodic images and ambiguous
@@ -194,9 +194,10 @@ spherical face sharing its sole rim with a planar disk. The captures exercise
 Forward and Deferred raster with TAA off and on.
 
 An advanced face on a surface of revolution can use a Cartesian chart at a
-smooth axis endpoint. Clamped polynomial splines and single-span rational
-Bézier meridians qualify when their projected control points prove strictly
-monotone radius and the axis endpoint has a radial tangent. The chart uses
+smooth axis endpoint. Clamped polynomial and positive-weight rational splines
+qualify when their projected control points prove strictly monotone radius,
+their interior knots retain a continuous tangent, and the axis endpoint has
+a radial tangent. The chart uses
 analytic derivatives at the apex, honors the native surface sense and keeps
 the original angular and profile parameters for pcurves. The edge cache
 retains an apex inside a shared trim when it can verify its native parameter.
@@ -219,7 +220,7 @@ the rim and at both sides of a partial angular trim. Run
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` for analytic depth and coverage
 comparisons in Forward and Deferred raster with TAA off and on.
 Run `ifc_revolution_axis_gpu_regression` with
-`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` for the analytic paraboloid fixtures in
+`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` for the multi-span rational paraboloid in
 Forward and Deferred raster with TAA off and on.
 
 Sloped L/U/I profiles keep their bounding-box-centred coordinate systems. L-leg
@@ -253,9 +254,11 @@ widths, thicknesses, and IFC4 radii and slopes. IFC2X3 uses the bottom flange
 values for omitted top thickness and fillet radius. Declare `FILE_SCHEMA`
 for the twelve-field form when its final field is present so that the importer
 can distinguish IFC2X3 centroid metadata from an IFC4 edge radius.
-Signed slopes honor project angle units. Folded sections and fillets that
-consume an edge produce profile diagnostics.
+Signed slopes honor project angle units. When an I-section root fillet reaches
+the web or flange limit, the coincident tangent stations use one vertex.
+Folded sections and overlapping fillets produce profile diagnostics.
 [T profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcTShapeProfileDef.htm)
+· [I-section fillet limits](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcIShapeProfileDef.htm)
 · [Asymmetric I profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcAsymmetricIShapeProfileDef.htm)
 
 Hollow rectangles keep the inner and outer corner radii and the authored
@@ -592,9 +595,9 @@ an unoffset polyline or a line-only indexed polycurve. It must reach each row
 and cross its plane exactly once in consistent order. The importer checks
 changes in the intersection at guide vertices and preserves those vertices as
 sampling stations for the mesh and pcurves. Guides on the same horizontal
-polyline directrix can offset vertically. Curved or spatial miters, changing
-lateral columns, explicit section directions at the corner, and lateral
-offsets from the same kinked directrix are outside this guide coverage.
+polyline directrix can offset vertically. Changing lateral columns, explicit
+section directions at the corner and shared-basis lateral offsets remain
+outside this planar guide construction.
 
 Enable `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` and run
 `ctest -R '^ifc_sectioned_guides_gpu_regression$' --output-on-failure` in the
@@ -622,12 +625,20 @@ The maximum half-angle extension factor is ten. The converter checks regular
 incident tangents, authored frame compatibility, curvature, progress along
 the join, and detected crossings of the directrix and the mesh. Both directrix
 and triangle validation have eight-million pair budgets. The station and
-profile axes are each limited to 4,097 samples. Guided sharp joins and
-incompatible or strongly twisted authored join frames remain outside coverage.
+profile axes are each limited to 4,097 samples. Incompatible or strongly
+twisted authored join frames remain outside coverage.
+
+Curved and spatial miters can follow independently based guides on continuous
+profile tags. Each tag uses its transported transverse plane through the
+authored or mitered point. A guide must agree with the authored stations and
+shared half-angle rows. Between these rows its displacement controls the
+cross-section interpolation and the mesh and pcurve retain the guide stations.
+Shared-basis guides and intermittent tags at these miters remain diagnosed.
 
 Run `ifc_sectioned_miters_gpu_regression` with
-`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to compare the spatial and curved
-fixtures in Forward and Deferred raster with TAA off and on.
+`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to compare the spatial miter and the
+independently guided curved miter in Forward and Deferred raster with TAA off
+and on.
 
 Sectioned meshes seed the grid from curve samples, authored stations and profile
 breaks. Adaptive quarter-point probes measure distance to the output triangles,
@@ -930,11 +941,11 @@ could start the camera inside the model's bounds and show a blank-looking view.
 The native coverage review and its independent geometry and rendering criteria
 are tracked in [#67](https://github.com/semihguresci/VulkanSceneRenderer/issues/67).
 
-Ambiguous tag transitions, guides at curved or spatial miters, incompatible
-sharp joins, other singular charts and polar trims with separate meridians or holes meeting an authored
-seam remain outside native coverage. Swept surface limits include standalone
-revolutions with cusps, axis crossings, or uncertified singular meridians and multi-chart boundaries
-without enough 3D geometry to select their chart. IFC swept surfaces use
+Ambiguous tag transitions, incompatible sharp joins, uncertified singular
+charts and polar trims with separate meridians or holes meeting an authored seam
+remain outside native coverage. Swept surface limits include standalone
+revolutions with cusps or axis crossings and multi-chart boundaries without
+enough 3D geometry to select their chart. IFC swept surfaces use
 `CURVE` profiles. An arbitrary `AREA` profile with voids can be used with an
 `IfcExtrudedAreaSolid`.
 [Swept surface](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSweptSurface.htm)
@@ -942,11 +953,9 @@ Swept-area solids cover the IFC4 parameterized profile families listed above.
 The two IFC2x3 parameterized crane-rail profiles remain unsupported. IFC4
 replaced them with arbitrary closed or asymmetric I profiles. [IFC4 profile changes](https://standards.buildingsmart.org/IFC/RELEASE/IFC4/FINAL/HTML/schema/ifcprofileresource/lexical/ifcparameterizedprofiledef.htm)
 
-Periodic trims that need a cut through new boundary samples and layouts without
-a unique chart placement are diagnosed.
-Each omitted
-representation is reported. A full IFC backend remains an option if future
-assets need these capabilities.
+Periodic trims without a valid connector at shared samples, ambiguous chart
+lifts and inputs that exceed the search budgets produce diagnostics. Each
+omitted representation is reported.
 
 The Hello Wall body surfaces agree across STEP/IFCX at sampled triangle corners,
 edge midpoints and centroids in both directions within 0.01 mm, allowing

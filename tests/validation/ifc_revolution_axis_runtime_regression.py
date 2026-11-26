@@ -139,7 +139,17 @@ def revolution_surface():
     x_axis, z_axis = (1., 0., 0.), (0., 0., 1.)
     world = placement(step, origin, z_axis, x_axis)
     context = step.add("IFCGEOMETRICREPRESENTATIONCONTEXT", "$", "'Model'", 3, 1e-6, world, "$")
-    generatrix = spline(step, ((0., APEX), (RADIUS / 2., APEX), (RADIUS, height(RADIUS))))
+    # Apply s = t / (2 - t) to the analytic parabola and insert its midpoint
+    # knot. Both positive-weight spline spans still trace the same parabola.
+    controls = ((0., APEX), (RADIUS / 6., APEX),
+                (2. * RADIUS / 3., APEX + (height(RADIUS) - APEX) / 3.),
+                (RADIUS, height(RADIUS)))
+    points = [step.point(*point) for point in controls]
+    middle = (PROFILE_START + PROFILE_END) / 2.
+    generatrix = step.add("IFCRATIONALBSPLINECURVEWITHKNOTS", 2, f"({','.join(points)})",
+                          ".UNSPECIFIED.", ".F.", ".F.", "(3,1,3)",
+                          f"({PROFILE_START},{middle},{PROFILE_END})", ".UNSPECIFIED.",
+                          "(1.,0.75,0.375,0.25)")
     profile = step.add("IFCARBITRARYOPENPROFILEDEF", ".CURVE.", "$", generatrix)
     axis = step.add("IFCAXIS1PLACEMENT", step.point(*origin), step.direction(0., 1., 0.))
     sweep_frame = placement(step, origin, (0., -1., 0.), x_axis)

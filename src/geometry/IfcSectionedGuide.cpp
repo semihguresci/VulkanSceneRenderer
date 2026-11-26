@@ -106,10 +106,10 @@ class GuideIntersection {
 public:
   GuideIntersection(uint32_t id, ParametricCurve guide,
                     IfcSectionPlaneAt sectionPlane, double tolerance,
-                    std::stop_token stop)
+                    std::stop_token stop, IfcSectionedGuideMode mode)
       : id_(id), guide_(std::move(guide)),
         sectionPlane_(std::move(sectionPlane)), tolerance_(tolerance),
-        stop_(stop) {}
+        stop_(stop), mode_(mode) {}
 
   [[noreturn]] void fail(const char *reason) const {
     throw std::runtime_error("Sectioned guide #" + std::to_string(id_) + ": " +
@@ -650,6 +650,8 @@ private:
     const double sense = last > first ? 1. : -1.;
     if (sense * first > tolerance_ || sense * last < -tolerance_)
       fail("independent guide does not reach a section plane");
+    if (mode_ == IfcSectionedGuideMode::Polyline)
+      return polylineIntersection(section, sense, first, last);
     size_t bracket = 0;
     double low = first, high = first, previous = first;
     for (size_t i = 1; i < samples_.size(); ++i) {
@@ -700,6 +702,54 @@ private:
     return parameter;
   }
 
+  double polylineIntersection(const IfcSectionPlane &section, double sense,
+                              double first, double last) const {
+    const double epsilon = std::min(
+        tolerance_ * .001,
+        roundoff * (maxCoordinate_ + glm::length(section.origin)));
+    std::optional<double> intersection;
+    double before = first;
+    for (size_t i = 1; i < samples_.size(); ++i) {
+      if ((i & 255u) == 0)
+        container::util::checkModelImportCancellation(stop_);
+      const auto &a = samples_[i - 1], &b = samples_[i];
+      const double after = project(b.point, section);
+      const bool onA = std::abs(before) <= epsilon;
+      const bool onB = std::abs(after) <= epsilon;
+      if (onA && onB)
+        fail("independent guide has a span in the section plane");
+      if (onA || onB || oppositeSigns(before, after)) {
+        const double projection = glm::dot(b.point - a.point, section.normal);
+        if (sense * projection <= glm::length(b.point - a.point) * 1e-10)
+          fail("independent guide intersection is tangent or folded");
+        const double parameter = onA ? a.parameter
+                                    : onB ? b.parameter
+                                          : std::lerp(a.parameter, b.parameter,
+                                                      before / (before - after));
+        if (intersection && *intersection != parameter)
+          fail("independent guide has multiple section-plane intersections");
+        intersection = parameter;
+      }
+      before = after;
+    }
+    if (intersection) {
+      if (std::abs(project(evaluate(*intersection), section)) > tolerance_)
+        fail("independent guide intersection exceeds section-plane precision");
+      return *intersection;
+    }
+    for (const size_t index : {size_t(0), samples_.size() - 1}) {
+      if (std::abs(index == 0 ? first : last) > tolerance_)
+        continue;
+      const size_t neighbor = index == 0 ? 1 : index - 1;
+      const double parameter = samples_[index].parameter;
+      verifyTransverse(parameter,
+                       std::abs(samples_[neighbor].parameter - parameter) * 1e-4,
+                       section.normal, sense);
+      return parameter;
+    }
+    fail("no unique independent guide intersection with a section plane");
+  }
+
   void verifyTransverse(double parameter, double step, glm::dvec3 normal,
                         double sense) const {
     const auto [first, last] = *guide_.domain;
@@ -715,6 +765,7 @@ private:
   IfcSectionPlaneAt sectionPlane_;
   double tolerance_;
   std::stop_token stop_;
+  IfcSectionedGuideMode mode_;
   std::vector<CurveSample> samples_;
   std::vector<Witness> witnesses_;
   std::vector<Witness> mappedKnots_;
@@ -730,11 +781,11 @@ private:
 IfcSectionedGuide resolveIfcSectionedGuide(
     uint32_t sourceId, ParametricCurve guide, bool sharedBasis,
     std::span<const double> stationBreaks, IfcSectionPlaneAt sectionPlane,
-    double pointTolerance, std::stop_token stop, bool piecewiseLinear) {
+    double pointTolerance, std::stop_token stop, IfcSectionedGuideMode mode) {
   container::util::checkModelImportCancellation(stop);
   auto resolver = std::make_shared<GuideIntersection>(
       sourceId, std::move(guide), std::move(sectionPlane), pointTolerance,
-      stop);
+      stop, mode);
   resolver->validate(stationBreaks);
   const double first = stationBreaks.front(), last = stationBreaks.back();
   IfcSectionedGuide result{sourceId, {}, {}};
@@ -750,7 +801,7 @@ IfcSectionedGuide resolveIfcSectionedGuide(
         return std::nullopt;
       return resolver->sharedPoint(station);
     };
-  } else if (piecewiseLinear) {
+  } else if (mode == IfcSectionedGuideMode::AffinePlanes) {
     result.breaks = resolver->prepareLinear(stationBreaks);
     result.point = [resolver, first,
                     last](double station) -> std::optional<glm::dvec3> {

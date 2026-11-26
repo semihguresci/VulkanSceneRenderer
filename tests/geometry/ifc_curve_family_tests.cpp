@@ -4174,6 +4174,118 @@ TEST(IfcCurveFamilies, SectionedArcToLineRetainsCenterlineAndSharesMiter) {
   }
 }
 
+TEST(IfcCurveFamilies, SectionedCurvedMiterFollowsIndependentGuide) {
+  const double arcMidpoint = 13 / std::sqrt(2.);
+  for (bool badAnchor : {false, true}) {
+    SCOPED_TRACE(badAnchor);
+    GuideSectionFixture step;
+    step.definitions = curvedSharpSections;
+    replace(step.definitions, "(2.),(0.),$,#24", "(2.),(0.),('outer','inner'),#24");
+    const auto start = step.point(0, -1, 0);
+    const auto arcKnot = step.point(arcMidpoint, 12 - arcMidpoint, .75);
+    const auto corner = step.point(13, 11, badAnchor ? .35 : 0.);
+    const auto lineKnot = step.point(18, 11, .55);
+    const auto end = step.point(24, 11, 0);
+    const auto basis = step.add("IFCPOLYLINE((" + start + "," + arcKnot + "," +
+                                corner + "," + lineKnot + "," + end + "))");
+    const auto guide = step.guide("outer", basis, {{0, 0, 0}});
+    step.definitions +=
+        "#41=IFCCARTESIANPOINT((0.25,0.)); #42=IFCCARTESIANPOINT((1.75,0.));"
+        "#43=IFCPOLYLINE((#41,#42)); #45=IFCPCURVE(#40,#43);";
+    step.product("guided-arc-miter", badAnchor ? guide : guide + ",#45");
+    const auto model = step.load();
+    const auto body = sectionedProductMesh(model, "guided-arc-miter");
+    if (badAnchor) {
+      EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+      EXPECT_TRUE(body.indices.empty());
+      ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+      EXPECT_EQ(model.importReport.diagnostics.front().entityId, 40u);
+      EXPECT_TRUE(model.importReport.diagnostics.front().reason.contains(
+          "disagrees with its shared half-angle row"))
+          << model.importReport.diagnostics.front().reason;
+      continue;
+    }
+    complete(model);
+    EXPECT_GT(checkSectionedMesh(body), 35.);
+    const auto bodyPoints = sectionedPoints(body);
+    const std::array witnesses{glm::dvec3(arcMidpoint, 12 - arcMidpoint, .75),
+                               glm::dvec3(13, 11, 0),
+                               glm::dvec3(18, 11, .55)};
+    for (const auto &witness : witnesses) {
+      EXPECT_TRUE(std::ranges::any_of(bodyPoints, [&](const auto &point) {
+        return glm::length(glm::dvec3(point[0], point[1], point[2]) - witness) <
+               1e-6;
+      })) << witness.x;
+    }
+    size_t liftedCurves = 0;
+    for (const auto &range : model.nativeCurveRanges) {
+      const auto pointAt = [&](size_t i) {
+        return glm::dvec3(model.vertices.at(model.indices.at(range.firstIndex + i))
+                              .position);
+      };
+      if (pointAt(0).x <= 0. || pointAt(range.indexCount - 1).x >= 24.)
+        continue;
+      ++liftedCurves;
+      std::array<bool, witnesses.size()> found{};
+      for (size_t i = 0; i < range.indexCount; ++i)
+        for (size_t j = 0; j < witnesses.size(); ++j)
+          found[j] |= glm::length(pointAt(i) - witnesses[j]) < 1e-6;
+      EXPECT_TRUE(std::ranges::all_of(found, [](bool hit) { return hit; }));
+    }
+    EXPECT_EQ(liftedCurves, 1u);
+  }
+}
+
+TEST(IfcCurveFamilies, SectionedSpatialMiterFollowsGuideAcrossBothBendPlanes) {
+  GuideSectionFixture step;
+  step.definitions = nonplanarSharpSections;
+  replace(step.definitions, "(2.),(0.),$, #24", "(2.),(0.),('outer','inner'),#24");
+  const auto start = step.point(0, -1, 0);
+  const auto firstKnot = step.point(4, -1, .35);
+  const auto firstJoin = step.point(9, -1, 0);
+  const auto secondJoin = step.point(9, 6, 0);
+  const auto nextKnot = step.point(9, 8.6, 4.3);
+  const auto end = step.point(9, 12, 8);
+  const auto basis = step.add("IFCPOLYLINE((" + start + "," + firstKnot + "," +
+                              firstJoin + "," + secondJoin + "," + nextKnot +
+                              "," + end + "))");
+  const auto guide = step.guide("outer", basis, {{0, 0, 0}});
+  step.product("guided-spatial-miter", guide);
+  const auto model = step.load();
+  complete(model);
+  const auto body = sectionedProductMesh(model, "guided-spatial-miter");
+  EXPECT_GT(checkSectionedMesh(body), 46.);
+  const auto points = sectionedPoints(body);
+  for (const auto &witness : {glm::dvec3(4, -1, .35), glm::dvec3(9, -1, 0),
+                             glm::dvec3(9, 6, 0), glm::dvec3(9, 8.6, 4.3)})
+    EXPECT_TRUE(std::ranges::any_of(points, [&](const auto &p) {
+      return glm::length(glm::dvec3(p[0], p[1], p[2]) - witness) < 1e-6;
+    })) << witness.x << ' ' << witness.y;
+}
+
+TEST(IfcCurveFamilies, SectionedSpatialMiterRejectsFoldedGuideProjection) {
+  GuideSectionFixture step;
+  step.definitions = nonplanarSharpSections;
+  replace(step.definitions, "(2.),(0.),$, #24", "(2.),(0.),('outer','inner'),#24");
+  const auto start = step.point(0, -1, 0);
+  const auto firstJoin = step.point(9, -1, 0);
+  const auto reversal = step.point(2, .5, 0);
+  const auto secondJoin = step.point(9, 6, 0);
+  const auto end = step.point(9, 12, 8);
+  const auto basis = step.add("IFCPOLYLINE((" + start + "," + firstJoin + "," +
+                              reversal + "," + secondJoin + "," + end + "))");
+  const auto guide = step.guide("outer", basis, {{0, 0, 0}});
+  step.product("folded-spatial-guide", guide);
+  const auto model = step.load();
+  EXPECT_EQ(model.importReport.completeness, ImportCompleteness::Partial);
+  EXPECT_TRUE(sectionedProductMesh(model, "folded-spatial-guide").indices.empty());
+  ASSERT_EQ(model.importReport.diagnostics.size(), 1u);
+  EXPECT_EQ(model.importReport.diagnostics.front().entityId, 40u);
+  EXPECT_TRUE(model.importReport.diagnostics.front().reason.contains(
+      "independent guide intersection is tangent or folded"))
+      << model.importReport.diagnostics.front().reason;
+}
+
 TEST(IfcCurveFamilies, InvalidCurvedAndNonplanarSectionedJoinsAreAtomic) {
   auto tightRadius = curvedSharpSections;
   replace(tightRadius, "((-1.,0.))", "((-12.,0.))");
