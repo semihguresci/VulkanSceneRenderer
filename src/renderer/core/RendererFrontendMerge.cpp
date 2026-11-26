@@ -502,6 +502,7 @@ bool RendererFrontend::publishSceneMerge(SceneMergeHistory& state,
           pushConstants_.bindless.sectionPlaneEnabled,pushConstants_.bindless.sectionPlane,clip,
           [&manager](uint32_t material) { return manager.temporalMaterialRevision(material); },compatible);
       svc_.allocationManager.executeStagedCommands([&](VkCommandBuffer command) { ray->recordBuild(command,i); });
+      ray->commit();
       lighting.updateRayShadowDescriptors(i,ray->readSettings(i),ray->readSettingsSize(),ray->visibilityView());
     }
   }

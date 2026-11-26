@@ -242,6 +242,7 @@ protected:
         device->raii(), device->queueFamilyIndices().graphicsFamily.value(), 0);
     queue.submit(submit, nullptr);
     queue.waitIdle();
+    manager->commit();
   }
 
   void verifyUnloadAndReload(bool surfaces) {

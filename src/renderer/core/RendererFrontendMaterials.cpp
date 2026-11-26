@@ -847,6 +847,7 @@ bool RendererFrontend::publishMaterialTransaction(MaterialPublication& publicati
           sources,lighting.lightingData(),lighting.pointLightsSsbo(),lighting.areaLightsSsbo(),pushConstants_.bindless.sectionPlaneEnabled,
           pushConstants_.bindless.sectionPlane,manager.sceneClipState(),[&](uint32_t id){return material?material->temporalMaterialRevision(id):manager.temporalMaterialRevision(id);},compatible);
       svc_.allocationManager.executeStagedCommands([&](VkCommandBuffer cmd){ray->recordBuild(cmd,i);});
+      ray->commit();
       lightBindings->updateRayShadowDescriptors(i,ray->readSettings(i),ray->readSettingsSize(),ray->visibilityView());
     }
   }

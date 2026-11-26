@@ -922,6 +922,7 @@ TEST_F(DdgiManagerGpu, DetachedSurfaceRequestCanChangeWhileSourceControlProofRem
     command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
     ASSERT_NO_THROW(candidate->recordBuild(*command, image));
     submit();
+    candidate->commit();
   }
   const auto staged = candidate->surfaceBindings(0);
   ASSERT_TRUE(staged);
@@ -992,6 +993,7 @@ TEST_F(DdgiManagerGpu, DetachedRaySceneExchangeRetainsStableManagerAndUndoResour
     command.begin(vk::CommandBufferBeginInfo(vk::CommandBufferUsageFlagBits::eOneTimeSubmit));
     ASSERT_NO_THROW(candidate->recordBuild(*command, image));
     submit();
+    candidate->commit();
   }
   const auto staged = candidate->surfaceBindings(0);
   ASSERT_TRUE(staged);
