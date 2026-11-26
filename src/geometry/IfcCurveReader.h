@@ -23,9 +23,11 @@ struct ProfileTransform2D {
 [[nodiscard]] std::optional<ProfileTransform2D>
 readIfcProfileTransform(const std::unordered_map<uint32_t, Entity> &entities,
                         uint32_t id, std::string &error);
-struct SphericalSurface {
+struct SpheroidalSurface {
   CurveFrame frame;
   double radius;
+  double polarRadius = radius;
+  bool nativeOutward = true;
 };
 using SurfaceDerivatives =
     std::function<std::optional<std::pair<glm::dvec3, glm::dvec3>>(double,
@@ -57,7 +59,8 @@ struct ParametricSurface {
   // Analytic inverses return a canonical parameter; callers unwrap periods.
   std::function<std::optional<glm::dvec2>(glm::dvec3)> inverse;
   // Polar topology needs regular local charts instead of angular coordinates.
-  std::optional<SphericalSurface> sphere;
+  std::optional<SpheroidalSurface> sphere;
+  std::optional<SpheroidalSurface> revolvedSpheroid;
   std::optional<RevolvedRadialGraph> radialGraph;
   std::string radialGraphError;
   SurfaceDerivatives derivatives;

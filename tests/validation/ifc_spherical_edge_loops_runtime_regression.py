@@ -35,6 +35,9 @@ EAST_COLOR = (.91, .31, .09)
 CAP_BASE_COLOR = (.66, .20, .78)
 HOLE_DISK_COLOR = (.95, .36, .10)
 SINGLE_DISK_COLOR = (.12, .78, .34)
+ELLIPSOID_RADIAL, ELLIPSOID_AXIAL = 1.75, 2.4
+ELLIPSOID = Profile("Revolved ellipsoid", (0., 0.), (.12, .59, .92))
+ELLIPSOID_EAST_COLOR = (.95, .34, .09)
 
 
 def surface_probe(index, name, x, y, *, z=None):
@@ -73,6 +76,25 @@ FIXTURE = Fixture(PRODUCTS, (
     surface_probe(3, "spherical face below the disk", .78, -.99),
     surface_probe(3, "spherical face on the unlit side", -1.05, -.90),
     (3, "clear outside singly bounded sphere", (1.85, -.12), False),
+), None, None)
+
+
+def ellipsoid_probe(name, x, y):
+    z = ELLIPSOID_RADIAL * math.sqrt(1. - (x / ELLIPSOID_RADIAL) ** 2 - (y / ELLIPSOID_AXIAL) ** 2)
+    scale = (DISTANCE - DEPTH) / (DISTANCE - z)
+    return 0, name, (x * scale, y * scale), True
+
+
+ELLIPSOID_FIXTURE = Fixture((ELLIPSOID,), (
+    ellipsoid_probe("west face", -.8, .4),
+    ellipsoid_probe("east face", .8, -.4),
+    ellipsoid_probe("shared meridian", 0., 0.),
+    ellipsoid_probe("shared meridian near the north pole", 0., 2.15),
+    ellipsoid_probe("shared meridian near the south pole", 0., -2.15),
+    ellipsoid_probe("west of the north meridian", -.10, 2.02),
+    ellipsoid_probe("east of the south meridian", .10, -2.02),
+    (0, "clear beyond the equatorial silhouette", (2.05, 0.), False),
+    (0, "clear beyond the north silhouette", (0., 2.65), False),
 ), None, None)
 
 
@@ -192,7 +214,40 @@ def write_fixture(path):
     disk = advanced_face(step, base_surface, (tuple((edge, False) for edge in reversed(cap_rim)),),
                          "Tilted disk", CAP_BASE_COLOR)
     shells = ((west, east), (cap, disk), opposite_hole(step, context), single_bound_sphere(step))
-    for index, (product, faces) in enumerate(zip(PRODUCTS, shells, strict=True)):
+    write_shells(path, step, context, PRODUCTS, shells)
+
+
+def write_ellipsoid_fixture(path):
+    step = StepFixture()
+    step.add("IFCSIUNIT", "*", ".LENGTHUNIT.", "$", ".METRE.")
+    step.add("IFCSIUNIT", "*", ".PLANEANGLEUNIT.", "$", ".RADIAN.")
+    center, axis, radial = (0., 0., 0.), (0., 1., 0.), (0., 0., 1.)
+    origin = placement(step, center, radial, (1., 0., 0.))
+    context = step.add("IFCGEOMETRICREPRESENTATIONCONTEXT", "$", "'Model'", 3, 1e-6, origin, "$")
+    center2d = step.add("IFCCARTESIANPOINT", "(0.,0.)")
+    axial2d = step.add("IFCDIRECTION", "(0.,1.)")
+    profile_frame = step.add("IFCAXIS2PLACEMENT2D", center2d, axial2d)
+    ellipse = step.add("IFCELLIPSE", profile_frame, ELLIPSOID_AXIAL, ELLIPSOID_RADIAL)
+    trim = step.add("IFCTRIMMEDCURVE", ellipse, f"(IFCPARAMETERVALUE({math.pi}))",
+                    f"(IFCPARAMETERVALUE({math.tau}))", ".T.", ".PARAMETER.")
+    profile = step.add("IFCARBITRARYOPENPROFILEDEF", ".CURVE.", "$", trim)
+    axis_position = step.add("IFCAXIS1PLACEMENT", step.point(*center), step.direction(*axis))
+    meridian_normal = (-1., 0., 0.)
+    swept_frame = placement(step, center, meridian_normal, radial)
+    surface = step.add("IFCSURFACEOFREVOLUTION", profile, swept_frame, axis_position)
+    edge_frame = placement(step, center, meridian_normal, axis)
+    edge_curve = step.add("IFCELLIPSE", edge_frame, ELLIPSOID_AXIAL, ELLIPSOID_RADIAL)
+    angle = .137
+    vertex = step.add("IFCVERTEXPOINT", step.point(0., ELLIPSOID_AXIAL * math.sin(angle),
+                                                  ELLIPSOID_RADIAL * math.cos(angle)))
+    edge = step.add("IFCEDGECURVE", vertex, vertex, edge_curve, ".T.")
+    west = advanced_face(step, surface, (((edge, True),),), "West ellipsoid face", ELLIPSOID.color)
+    east = advanced_face(step, surface, (((edge, False),),), "East ellipsoid face", ELLIPSOID_EAST_COLOR)
+    write_shells(path, step, context, (ELLIPSOID,), ((west, east),))
+
+
+def write_shells(path, step, context, products, shells):
+    for index, (product, faces) in enumerate(zip(products, shells, strict=True)):
         shell = step.add("IFCCLOSEDSHELL", f"({','.join(faces)})")
         brep = step.add("IFCADVANCEDBREP", shell)
         rep = step.add("IFCSHAPEREPRESENTATION", context, "'Body'", "'AdvancedBrep'", f"({brep})")
@@ -319,12 +374,77 @@ def check_pixels(image, _fixture):
     return results
 
 
+def ellipsoid_hits(ray):
+    import numpy as np
+
+    inverse_radii = np.array((1. / ELLIPSOID_RADIAL, 1. / ELLIPSOID_AXIAL, 1. / ELLIPSOID_RADIAL))
+    camera = np.array((0., 0., DISTANCE))
+    scaled_ray, scaled_camera = ray * inverse_radii, camera * inverse_radii
+    a = np.sum(scaled_ray * scaled_ray, axis=-1)
+    b = scaled_ray @ scaled_camera
+    c = scaled_camera @ scaled_camera - 1.
+    discriminant = b * b - a * c
+    distance = (-b - np.sqrt(np.maximum(0., discriminant))) / a
+    return discriminant, camera + distance[..., None] * ray
+
+
+def ellipsoid_depth(_index, point, pixel, matrix):
+    import numpy as np
+
+    ray = world_ray((pixel[0], HEIGHT - 1 - pixel[1]), np.linalg.inv(matrix))
+    discriminant, hit = ellipsoid_hits(ray)
+    require(discriminant > 0., f"Positive depth probe outside the analytic ellipsoid: {point}")
+    clip = matrix @ [*hit, 1.]
+    return clip[2] / clip[3]
+
+
+def check_ellipsoid_pixels(image, _fixture):
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(image) as source:
+        pixels = np.asarray(source.convert("RGB"), dtype=np.int16)
+    require(pixels.shape == (HEIGHT, WIDTH, 3), "Wrong revolved ellipsoid image extent")
+    visible = pixels.max(axis=2) > int(np.max(pixels[:12, :12])) + 16
+    scale = 2. * math.tan(math.radians(FOV / 2.)) / HEIGHT
+    yy, xx = np.mgrid[:HEIGHT, :WIDTH]
+    ray = np.stack(((xx + .5 - WIDTH / 2.) * scale,
+                    (HEIGHT / 2. - yy - .5) * scale, np.full_like(xx, -1.)), axis=-1)
+    discriminant, hit = ellipsoid_hits(ray)
+    interior = (discriminant > 0.) & (hit[..., 2] > .92)
+    normal = hit / np.square((ELLIPSOID_RADIAL, ELLIPSOID_AXIAL, ELLIPSOID_RADIAL))
+    light = np.array((.3, .35, 1.))
+    lit = (normal @ light) > .20 * np.linalg.norm(normal, axis=-1) * np.linalg.norm(light)
+    results = {}
+    masks = (
+        ("West ellipsoid face", interior & lit & (hit[..., 0] < -.14), 2, 0),
+        ("East ellipsoid face", interior & lit & (hit[..., 0] > .14), 0, 2),
+    )
+    for label, mask, dominant, opposite in masks:
+        colors = pixels[mask]
+        require(len(colors) >= 450, f"Insufficient analytic interior for {label}")
+        styled = float(np.mean(colors[:, dominant] > colors[:, opposite] + 18))
+        coverage = float(np.mean(visible[mask]))
+        require(coverage >= .98 and styled >= .98, f"Missing or incorrectly styled {label}: {coverage}, {styled}")
+        results[label] = dict(pixels=len(colors), visibleFraction=coverage, styledFraction=styled)
+    for label, sign in (("North polar meridian", 1.), ("South polar meridian", -1.)):
+        mask = interior & (sign * hit[..., 1] > 1.6) & (np.abs(hit[..., 0]) < .1)
+        count = int(np.count_nonzero(mask))
+        require(count >= 50, f"Insufficient pixels along the {label}")
+        coverage = float(np.mean(visible[mask]))
+        require(coverage == 1., f"Open shared {label}: {coverage}")
+        results[label] = dict(pixels=count, visibleFraction=coverage)
+    return results
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--managed-output", action="store_true")
     parser.add_argument("--generate-only", action="store_true")
+    parser.add_argument("--fixture", choices=("spherical-edge-loops", "revolved-ellipsoid"),
+                        default="spherical-edge-loops")
     args = parser.parse_args()
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_IFC_AREA_PROFILES") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1 to run IFC geometry captures")
@@ -335,19 +455,25 @@ def main():
         output = Path(tempfile.mkdtemp(prefix="run-", dir=output))
     else:
         output.mkdir(parents=True)
-    model, sequence = output / "spherical-edge-loops.ifc", output / "depth-witnesses.json"
-    write_fixture(model)
-    frames = write_sequence(sequence, FIXTURE)
+    model, sequence = output / f"{args.fixture}.ifc", output / "depth-witnesses.json"
+    if args.fixture == "revolved-ellipsoid":
+        writer, fixture = write_ellipsoid_fixture, ELLIPSOID_FIXTURE
+        depth, image = ellipsoid_depth, check_ellipsoid_pixels
+    else:
+        writer, fixture = write_fixture, FIXTURE
+        depth, image = expected_depth, check_pixels
+    writer(model)
+    frames = write_sequence(sequence, fixture)
     if args.generate_only:
         return 0
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     results = []
     for technique in TECHNIQUES:
         for taa in (False, True):
-            results.append(record(renderer, output, model, sequence, frames, technique, taa, FIXTURE,
-                                  expected_depth=expected_depth, check_image=check_pixels))
+            results.append(record(renderer, output, model, sequence, frames, technique, taa, fixture,
+                                  expected_depth=depth, check_image=image))
             save_json(output / "results.json", results)
-            print(f"PASS {technique}, TAA {taa}: spherical seams, clipped cap, hole, single bound, and {len(frames)} depth samples", flush=True)
+            print(f"PASS {technique}, TAA {taa}: {args.fixture} with {len(frames)} depth samples", flush=True)
     return 0
 
 

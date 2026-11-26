@@ -193,6 +193,18 @@ tilted cap, a sphere with a split seam and a disk filling its hole, and a
 spherical face sharing its sole rim with a planar disk. The captures exercise
 Forward and Deferred raster with TAA off and on.
 
+Revolving an exact half-ellipse about a principal axis through its center gives
+an analytic ellipsoid. Advanced faces on this surface use a scaled polar chart
+for ordinary edge loops through either or both poles. The edge cache inserts
+verified pole samples in the native trim and reuses them on both incident
+faces. Analytic scaled normals preserve face sense and cavity winding. The
+ellipsoid route supports ordinary edge bounds. Spherical vertex-loop and
+authored meridian seam handling are described above. Run
+`ifc_revolved_ellipsoid_gpu_regression` with
+`CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` for analytic depth and shared-pole checks
+in forward and deferred raster with TAA off and on.
+[IFC surface of revolution](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSurfaceOfRevolution.htm)
+
 An advanced face on a surface of revolution can use a Cartesian chart at a
 smooth axis endpoint. Clamped polynomial and positive-weight rational splines
 qualify when their projected control points prove strictly monotone radius,
@@ -260,6 +272,17 @@ Folded sections and overlapping fillets produce profile diagnostics.
 [T profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcTShapeProfileDef.htm)
 · [I-section fillet limits](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcIShapeProfileDef.htm)
 · [Asymmetric I profile](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcAsymmetricIShapeProfileDef.htm)
+
+IFC2X3 A- and F-shaped crane rails use the authored head, web and foot stations
+with straight segments between stations and the specified radius at the two crown
+corners. Type F uses the common head and foot width shown in the IFC drawing.
+The nominal profile is centered on the bounding box before the authored 2D
+placement. Its centroid offset is metadata. Exact rolled geometry with additional
+rounds or camber requires an explicit outline. Run
+`ifc_legacy_crane_rails_gpu_regression` with `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1`
+to check both forms in forward and deferred raster with TAA off and on.
+[IFC2X3 A rail](https://standards.buildingsmart.org/IFC/RELEASE/IFC2x3/TC1/HTML/ifcprofileresource/lexical/ifccranerailashapeprofiledef.htm)
+· [IFC2X3 F rail](https://standards.buildingsmart.org/IFC/RELEASE/IFC2x3/TC1/HTML/ifcprofileresource/lexical/ifccranerailfshapeprofiledef.htm)
 
 Hollow rectangles keep the inner and outer corner radii and the authored
 wall thickness. Rounded rectangles allow radii up to the smaller half-extent.
@@ -595,8 +618,8 @@ an unoffset polyline or a line-only indexed polycurve. It must reach each row
 and cross its plane exactly once in consistent order. The importer checks
 changes in the intersection at guide vertices and preserves those vertices as
 sampling stations for the mesh and pcurves. Guides on the same horizontal
-polyline directrix can offset vertically. Changing lateral columns, explicit
-section directions at the corner and shared-basis lateral offsets remain
+polyline directrix can use offsets that remain in the ruled section planes.
+Changing lateral columns and explicit section directions at the corner remain
 outside this planar guide construction.
 
 Enable `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` and run
@@ -628,17 +651,25 @@ and triangle validation have eight-million pair budgets. The station and
 profile axes are each limited to 4,097 samples. Incompatible or strongly
 twisted authored join frames remain outside coverage.
 
-Curved and spatial miters can follow independently based guides on continuous
-profile tags. Each tag uses its transported transverse plane through the
-authored or mitered point. A guide must agree with the authored stations and
-shared half-angle rows. Between these rows its displacement controls the
-cross-section interpolation and the mesh and pcurve retain the guide stations.
-Shared-basis guides and intermittent tags at these miters remain diagnosed.
+Curved and spatial miters can follow independent guides on continuous profile
+tags or on one contiguous authored run. Each tag uses its transported transverse
+plane through the authored or mitered point. The guide must agree with the
+authored stations and shared half-angle rows within its run, including any
+branch tip at a join. Outside that run the collapsed column follows its retained
+anchor. The mesh and pcurve retain the guide stations.
+
+A guide on the directrix can use authored offsets when the curve stays
+continuous through the join and its points lie on the transported section
+planes. This includes a vertical crown through a horizontal bend and a lateral
+offset that returns to the shared row before a bend. The importer compares
+incident points at sharp joins, so a grade break that gives conflicting
+positions for the same offset produces a source guide diagnostic.
+[IFC offset directions](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcPointByDistanceExpression.htm)
 
 Run `ifc_sectioned_miters_gpu_regression` with
 `CONTAINER_RUN_GPU_IFC_AREA_PROFILES=1` to compare the spatial miter and the
-independently guided curved miter in Forward and Deferred raster with TAA off
-and on.
+curved miter with an independent outer rail and a shared-basis crown in Forward
+and Deferred raster with TAA off and on.
 
 Sectioned meshes seed the grid from curve samples, authored stations and profile
 breaks. Adaptive quarter-point probes measure distance to the output triangles,
@@ -950,8 +981,8 @@ enough 3D geometry to select their chart. IFC swept surfaces use
 `IfcExtrudedAreaSolid`.
 [Swept surface](https://standards.buildingsmart.org/IFC/RELEASE/IFC4_3/HTML/lexical/IfcSweptSurface.htm)
 Swept-area solids cover the IFC4 parameterized profile families listed above.
-The two IFC2x3 parameterized crane-rail profiles remain unsupported. IFC4
-replaced them with arbitrary closed or asymmetric I profiles. [IFC4 profile changes](https://standards.buildingsmart.org/IFC/RELEASE/IFC4/FINAL/HTML/schema/ifcprofileresource/lexical/ifcparameterizedprofiledef.htm)
+IFC4 replaced the legacy crane-rail types with arbitrary closed or asymmetric I
+profiles. [IFC4 profile changes](https://standards.buildingsmart.org/IFC/RELEASE/IFC4/FINAL/HTML/schema/ifcprofileresource/lexical/ifcparameterizedprofiledef.htm)
 
 Periodic trims without a valid connector at shared samples, ambiguous chart
 lifts and inputs that exceed the search budgets produce diagnostics. Each

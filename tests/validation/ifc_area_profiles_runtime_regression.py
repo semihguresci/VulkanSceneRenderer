@@ -32,6 +32,7 @@ class Fixture:
     witnesses: tuple[tuple[int, str, tuple[float, float], bool], ...]
     step_profiles: Callable
     footprint: Callable
+    schema: str = "IFC4"
 
 
 # Analytic outer/inner path envelopes around an orthogonal, open, 0.32 m strip.
@@ -84,6 +85,16 @@ STRUCTURAL_WITNESSES = (
     (5, "beside root fillet", (.52, .52), False),
     (5, "flange tip", (.85, .89), True),
     (5, "outside flange", (-.81, 1.06), False),
+)
+RAIL_WITNESSES = (
+    (0, "narrow web", (.13, 0.), True), (0, "open side of web", (.54, 0.), False),
+    (0, "crown inside fillet", (.38, .94), True), (0, "outside crown fillet", (-.49, .98), False),
+    (0, "outer foot", (.74, -.83), True), (0, "intermediate foot shoulder", (.34, -.48), True),
+    (0, "outside sloped foot", (.80, -.50), False),
+    (1, "wide head", (.66, .90), True), (1, "outside crown fillet", (.73, .99), False),
+    (1, "head shoulder", (.55, .40), True), (1, "outside head shoulder", (.67, .32), False),
+    (1, "foot shoulder", (.54, -.70), True), (1, "outside foot shoulder", (.71, -.65), False),
+    (1, "below foot", (0., -1.12), False),
 )
 
 
@@ -152,6 +163,16 @@ def structural_step_profiles(step):
     )
 
 
+def rail_step_profiles(step):
+    position = step.profile_placement((0., 0.))
+    return (
+        step.add("IFCCRANERAILASHAPEPROFILEDEF", ".AREA.", "$", position,
+                 2., 2., .15, 1., .50, .25, .50, 1.50, .25, .625, .375, .30),
+        step.add("IFCCRANERAILFSHAPEPROFILEDEF", ".AREA.", "$", position,
+                 2., 1.50, .15, .75, .50, .75, .25, .375, .20),
+    )
+
+
 def write_fixture(path, fixture):
     step = StepFixture()
     step.add("IFCSIUNIT", "*", ".LENGTHUNIT.", "$", ".METRE.")
@@ -180,9 +201,10 @@ def write_fixture(path, fixture):
         local = step.add("IFCLOCALPLACEMENT", "$", placement)
         guid = f"{index + 1:022d}"
         step.add("IFCBUILDINGELEMENTPROXY", f"'{guid}'", "$", f"'{name}'", "$", "$", local, shape, "$", "$")
-    header = "ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('ViewDefinition [DesignTransferView]'),'2;1');\n"
+    view = "CoordinationView_V2.0" if fixture.schema == "IFC2X3" else "DesignTransferView"
+    header = f"ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION(('ViewDefinition [{view}]'),'2;1');\n"
     header += (f"FILE_NAME('{path.name}','2026-11-14T00:00:00',(''),(''),'Container','','');\n"
-               "FILE_SCHEMA(('IFC4'));\nENDSEC;\nDATA;\n")
+               f"FILE_SCHEMA(('{fixture.schema}'));\nENDSEC;\nDATA;\n")
     path.write_text(header + "\n".join(step.elements) + "\nENDSEC;\nEND-ISO-10303-21;\n", encoding="ascii")
 
 
@@ -285,6 +307,21 @@ def structural_footprint(index, x, y):
     return (np.abs(y) <= .95) & (flange | web) & ~flange_tip & ~web_tip
 
 
+def rail_footprint(index, x, y):
+    import numpy as np
+
+    if index == 0:
+        heights = (-1., -.75, -.625, -.375, .50, .75, 1.)
+        half_widths = (1., 1., .75, .25, .25, .50, .50)
+    else:
+        heights = (-1., -.75, -.625, .25, .50, 1.)
+        half_widths = (.75, .75, .375, .375, .75, .75)
+    half_width = np.interp(y, heights, half_widths)
+    crown_width = half_widths[-1] - .15 + np.sqrt(np.maximum(0., .15**2 - (y - .85)**2))
+    return ((np.abs(y) <= 1.) &
+            (np.abs(x) <= np.where(y > .85, crown_width, half_width)))
+
+
 FIXTURES = {
     "area": Fixture((
         Profile("Rounded rectangle", (-2.8, 1.25), (.12, .72, .83)),
@@ -302,6 +339,10 @@ FIXTURES = {
         Profile("Curved butt-ended centreline", (0., 0.), (.89, .57, .10)),
         Profile("I section with touching fillets", (4.8, 0.), (.26, .47, .89)),
     ), STRUCTURAL_WITNESSES, structural_step_profiles, structural_footprint),
+    "legacy-rails": Fixture((
+        Profile("IFC2X3 type A crane rail", (-1.55, 0.), (.12, .72, .83)),
+        Profile("IFC2X3 type F crane rail", (1.55, 0.), (.85, .25, .09)),
+    ), RAIL_WITNESSES, rail_step_profiles, rail_footprint, schema="IFC2X3"),
 }
 
 
@@ -470,7 +511,7 @@ def main():
         for taa in (False, True):
             results.append(record(renderer, output, model, sequence, frames, technique, taa, fixture))
             save_json(output / "results.json", results)
-            print(f"PASS {technique}, TAA {taa}: {len(fixture.products)} {args.fixture} IFC4 profile footprints and "
+            print(f"PASS {technique}, TAA {taa}: {len(fixture.products)} {args.fixture} {fixture.schema} profile footprints and "
                   f"{len(frames)} depth samples", flush=True)
     return 0
 

@@ -643,6 +643,9 @@ private:
   ParametricCurve offset(const Entity &);
   ParametricCurve pcurve(const Entity &, CurveWitness);
   Surface surfaceImpl(uint32_t id);
+  std::optional<SpheroidalSurface>
+  revolvedHalfEllipse(const IfcSweptProfileBoundary &, const CurveFrame &,
+                      glm::dvec3 axisOrigin, glm::dvec3 axis);
   std::vector<Surface> sweptSurfaceCharts(const Entity &);
   std::vector<Surface> trimmedSurfaceCharts(const Entity &);
   ParametricCurve profile(uint32_t id, IndexedSectionTags *sectionTags = nullptr);
@@ -2053,6 +2056,62 @@ std::optional<RevolvedRadialGraph> makeRevolvedRadialGraph(
   return result;
 }
 
+std::optional<SpheroidalSurface> Reader::revolvedHalfEllipse(
+    const IfcSweptProfileBoundary &boundary, const CurveFrame &placement3d,
+    glm::dvec3 axisOrigin, glm::dvec3 axis) {
+  const auto &profile = get(boundary.sourceId);
+  if (profile.type != "IFCARBITRARYOPENPROFILEDEF")
+    return std::nullopt;
+  const auto &trim = referenced(profile, 2);
+  if (trim.type != "IFCTRIMMEDCURVE")
+    return std::nullopt;
+  const auto &ellipse = referenced(trim, 0);
+  if (ellipse.type != "IFCELLIPSE")
+    return std::nullopt;
+
+  unsigned dimension = 0;
+  const auto frame = placement(reference(arg(ellipse, 0)), dimension);
+  const auto &curve = boundary.curve;
+  const auto [first, last] = *curve.domain;
+  constexpr double epsilon = 64 * std::numeric_limits<double>::epsilon();
+  if (dimension != 2 || std::abs((last - first) * *angle_ - pi) > epsilon)
+    return std::nullopt;
+  const double a = number(arg(ellipse, 1)), b = number(arg(ellipse, 2));
+  const bool axialX = glm::length(glm::cross(axis, frame.x)) <= epsilon;
+  if (!axialX && glm::length(glm::cross(axis, frame.y)) > epsilon)
+    return std::nullopt;
+  const double axial = axialX ? a : b, radial = axialX ? b : a;
+  const auto centerOffset = frame.origin - axisOrigin;
+  const double tolerance = epsilon *
+      std::max({a, b, glm::length(frame.origin), glm::length(axisOrigin)});
+  if (glm::length(centerOffset - glm::dot(centerOffset, axis) * axis) > tolerance)
+    return std::nullopt;
+
+  const auto start = curve.point(first), finish = curve.point(last),
+             middle = curve.point(std::midpoint(first, last));
+  if (!start || !finish || !middle)
+    return std::nullopt;
+  const bool outward = glm::dot(*finish - *start, axis) > 0;
+  const auto pole = (outward ? axial : -axial) * axis;
+  if (glm::length(*start - (frame.origin - pole)) > tolerance ||
+      glm::length(*finish - (frame.origin + pole)) > tolerance)
+    return std::nullopt;
+
+  // These exact principal-axis and half-turn checks certify the whole conic,
+  // including both axis tangents. The midpoint selects its radial direction.
+  const auto middleOffset = *middle - frame.origin;
+  const auto radiusDirection = normalized(
+      middleOffset - glm::dot(middleOffset, axis) * axis);
+  const auto vector = [&placement3d](glm::dvec3 direction) {
+    return placement3d.x * direction.x + placement3d.y * direction.y +
+           placement3d.z * direction.z;
+  };
+  return SpheroidalSurface{
+      {placement3d.origin + vector(frame.origin), vector(radiusDirection),
+       vector(glm::cross(axis, radiusDirection)), vector(axis)},
+      radial, axial, outward};
+}
+
 std::vector<Surface> Reader::sweptSurfaceCharts(const Entity &e) {
   const IfcSweptProfileCallbacks callbacks{
       .entity = [&](uint32_t id) -> const Entity & { return get(id); },
@@ -2197,6 +2256,12 @@ std::vector<Surface> Reader::sweptSurfaceCharts(const Entity &e) {
     // Retain point evaluation for earlier pcurves that revolve nonmeridians.
     surface.standaloneRegular = false;
     if (std::abs(axis.z) <= 1e-12 && std::abs(origin.z) <= tolerance) {
+      if (boundaries.size() == 1) {
+        surface.revolvedSpheroid =
+            revolvedHalfEllipse(boundary, frame, origin, axis);
+        if (surface.revolvedSpheroid)
+          continue;
+      }
       auto radial = normalized(glm::cross(axis, glm::dvec3(0, 0, 1)));
       const double frontRadius =
           glm::dot(samples.front().point - origin, radial);
@@ -2983,10 +3048,6 @@ Surface Reader::surfaceImpl(uint32_t id) {
                                  "' uses a different representation frame");
     }
     if (!matchingGuides.empty()) {
-      if (miterGuideFrame && !tagLayout.intermittentTags.empty())
-        throw std::runtime_error(
-            "Guide #" + std::to_string(matchingGuides.begin()->second) +
-            " at a curved or spatial miter requires continuous profile tags");
       if (matchingGuides.size() > 128)
         throw std::runtime_error(
             "Sectioned surface exceeds its guide count budget");
@@ -3151,10 +3212,6 @@ Surface Reader::surfaceImpl(uint32_t id) {
                                          return segment.text == "IFCLINEINDEX";
                                        })));
         };
-        if (miterGuideFrame && sharedBasis)
-          throw std::runtime_error(
-              "Guide #" + std::to_string(ref) +
-              " at a curved or spatial miter requires an independent basis");
         if (planarMiterPlane) {
           if (!linearBasis())
             throw std::runtime_error("Guide #" + std::to_string(ref) +
@@ -3171,16 +3228,16 @@ Surface Reader::surfaceImpl(uint32_t id) {
           } else {
             mode = IfcSectionedGuideMode::AffinePlanes;
           }
+        }
+        if (planarMiterPlane && !sharedBasis) {
           for (const auto &offsetRef : list(arg(source, 1), 4096)) {
             const auto &offset = get(reference(&offsetRef));
             for (size_t component : {1u, 2u, 3u}) {
               const auto *value = arg(offset, component);
-              if (!(sharedBasis && component == 2) &&
-                  !omitted(value) && number(value) != 0.)
+              if (!omitted(value) && number(value) != 0.)
                 throw std::runtime_error(
                     "Guide #" + std::to_string(ref) +
-                    (sharedBasis ? " at a miter can only offset vertically"
-                                 : " at a miter requires an unoffset independent polyline"));
+                    " at a miter requires an unoffset independent polyline");
             }
           }
         }
@@ -3209,11 +3266,43 @@ Surface Reader::surfaceImpl(uint32_t id) {
                          : std::nullopt;
           };
         }
+        auto guideCurve = read(ref);
+        if ((planarMiterPlane || miterGuideFrame) && sharedBasis) {
+          // An offset is expressed in the basis curve frame. At a grade break
+          // that frame can rotate even for a vertical-only offset. Check that
+          // the authored point and each incident side of the guide agree.
+          for (const auto &corner : sharpCorners) {
+            const double u = corner.parameter;
+            if (u < guideStations.front() || u > guideStations.back())
+              continue;
+            const auto point = guideCurve.point(u);
+            const auto continuousSide = [&](double end) {
+              if (end == u)
+                return true;
+              const auto limit = guideCurve.point(std::nextafter(u, end));
+              return limit && glm::length(*limit - *point) <= planeTolerance;
+            };
+            if (!point || !continuousSide(guideStations.front()) ||
+                !continuousSide(guideStations.back()))
+              throw std::runtime_error(
+                  "Guide #" + std::to_string(ref) +
+                  " on the directrix is discontinuous at miter parameter " +
+                  std::to_string(u));
+          }
+        }
         auto guide = resolveIfcSectionedGuide(
-            ref, read(ref), sharedBasis, guideStations, std::move(columnPlane),
-            planeTolerance, stop_, mode);
-        auto guideAnchors = miterAnchors;
-        if (!miterGuideFrame) {
+            ref, std::move(guideCurve), sharedBasis, guideStations,
+            std::move(columnPlane), planeTolerance, stop_, mode);
+        std::vector<GuideAnchor> guideAnchors;
+        if (miterGuideFrame) {
+          // Sharp joins pin the guide only where its tag is authored. The
+          // collapsed continuation uses the retained column at other joins.
+          const auto lower = std::ranges::lower_bound(
+              miterAnchors, guideStations.front(), {}, &GuideAnchor::parameter);
+          const auto upper = std::ranges::upper_bound(
+              miterAnchors, guideStations.back(), {}, &GuideAnchor::parameter);
+          guideAnchors.assign(lower, upper);
+        } else {
           guideAnchors.reserve(lastSection - firstSection + 1);
           for (size_t i = firstSection; i <= lastSection; ++i)
             guideAnchors.push_back(anchorAtSection((*sections)[i]));
@@ -3860,7 +3949,7 @@ Surface Reader::surfaceImpl(uint32_t id) {
                   type == "IFCTOROIDALSURFACE" ? 2 * pi / radians : 0}};
   if (type == "IFCSPHERICALSURFACE") {
     result.vDomain = {{-pi / (2 * radians), pi / (2 * radians)}};
-    result.sphere = SphericalSurface{f, radius};
+    result.sphere = SpheroidalSurface{f, radius};
   }
   result.inverse = [=](glm::dvec3 p) -> std::optional<glm::dvec2> {
     const auto d = p - f.origin;
