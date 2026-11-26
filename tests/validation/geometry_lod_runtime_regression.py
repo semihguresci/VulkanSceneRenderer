@@ -381,6 +381,72 @@ def verify_bim_budget_fallback(renderer, output, technique):
                                             ("capped", limited_lod, limited_budget, limited))}
 
 
+def write_displacement_fixtures(directory):
+    from PIL import Image, ImageDraw
+
+    height_map = directory / "height.png"
+    image = Image.new("RGBA", (32, 4), (0, 0, 0, 255))
+    ImageDraw.Draw(image).rectangle((8, 0, 23, 3), fill=(255, 255, 255, 255))
+    image.save(height_map)
+
+    asset = Asset()
+    asset.model.update(scenes=[dict(nodes=[0, 1])], nodes=[], images=[dict(uri=height_map.name)],
+                       textures=[dict(source=0, sampler=0)],
+                       samplers=[dict(minFilter=9728, magFilter=9728, wrapS=33071, wrapT=33071)])
+    for panel, center in enumerate(PANEL_CENTERS):
+        points, indices = folded_panel(center)
+        uvs = [((x - center) / 3 + .5, y / 2.25 + .5) for x, y, _ in points]
+        attributes = dict(POSITION=asset.accessor("VEC3", points),
+                          NORMAL=asset.accessor("VEC3", [(0, 0, 1)] * len(points)),
+                          TEXCOORD_0=asset.accessor("VEC2", uvs))
+        asset.model["nodes"].append(dict(name=PANEL_GUIDS[panel], mesh=panel))
+        asset.model["meshes"].append(dict(primitives=[dict(attributes=attributes, material=panel,
+            indices=asset.accessor("SCALAR", indices, 5123, indices=True))]))
+        asset.model["materials"].append(dict(name=PANEL_GUIDS[panel], heightTexture=dict(index=0),
+            heightScale=0.0, pbrMetallicRoughness=dict(baseColorFactor=[*PANEL_COLORS[panel], 1],
+                                                     metallicFactor=0, roughnessFactor=.85)))
+
+    flat = directory / "zero-height-scale.gltf"
+    asset.write(flat)
+    displaced = directory / "active-height-scale.gltf"
+    asset.model["materials"][0]["heightScale"] = 1.5
+    asset.write(displaced)
+    return flat, displaced
+
+
+def verify_displacement_fallback(renderer, output, techniques):
+    flat, displaced = write_displacement_fixtures(output)
+    sample = Sample(0, "displacement", 25.0, 0, 8)
+    sequence = output / "displacement.sequence.json"
+    write_json(sequence, dict(schemaVersion=1, frames=sample.frame, sampleFrames=[sample.frame],
+        camera=[dict(frame=1, position=[0, 0, sample.distance], target=[0, 0, 0])],
+        events=[dict(frame=sample.frame, depthProbe=list(sample.pixel))]))
+    captures = (("zero-scale", flat, "0"), ("full-displaced", displaced, "0"),
+                ("lod-displaced", displaced, "64"))
+    results = {}
+    for technique in techniques:
+        entries = {}
+        for label, fixture, tolerance in captures:
+            entry = capture(renderer, output / f"{technique}-{label}", fixture, technique,
+                            sequence, [sample], ("--geometry-upload-kb", "0", "--geometry-lod-error", tolerance))[sample]
+            state = entry["state"]
+            entries[label] = dict(depth=state["depthProbe"]["opaque"], pick=identity(state, sample, "gltf"),
+                                  lod=lod_stats(state, "gltf"), image=str(entry["image"]),
+                                  telemetry=str(entry["telemetry"]))
+        zero_scale, full, active = (entries[label] for label, _, _ in captures)
+        require(full["depth"] > zero_scale["depth"] * 1.02,
+                f"Height texture did not visibly displace the reference panel: {entries}")
+        require(active["lod"]["extraIndexBytes"] > 0 and active["lod"]["levels"][0] == 1 and
+                sum(active["lod"]["levels"][1:]) == 1 and
+                FULL_TRIANGLES < active["lod"]["triangles"] < full["lod"]["triangles"],
+                f"Only the zero-scale panel should use a reduced draw: {active['lod']}")
+        require(active["pick"] == full["pick"] and
+                math.isclose(active["depth"], full["depth"], rel_tol=1e-6, abs_tol=1e-8),
+                f"LOD changed the displaced panel's depth or pick: {entries}")
+        results[technique] = entries
+    return results
+
+
 def comparison(path, cases):
     from PIL import Image, ImageDraw
 
@@ -413,6 +479,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--provider", choices=("gltf", "bim", "usd"), action="append")
     parser.add_argument("--technique", choices=TECHNIQUES, action="append")
+    parser.add_argument("--displacement-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true")
     parser.add_argument("--require-opt-in", action="store_true")
     args = parser.parse_args()
@@ -426,11 +493,13 @@ def main():
         output = Path(tempfile.mkdtemp(prefix="run-", dir=output))
     else:
         output.mkdir(parents=True, exist_ok=False)
-    fixtures = write_fixtures(output)
+    fixtures = {} if args.displacement_only else write_fixtures(output)
+    providers = () if args.displacement_only else (args.provider or fixtures)
+    techniques = args.technique or TECHNIQUES
     checksum = digest(renderer)
     report = dict(passed=False, rendererSha256=checksum, pixelError=PIXEL_ERROR, cases={})
     try:
-        for provider in args.provider or fixtures:
+        for provider in providers:
             control_sequence = output / f"{provider}-control.sequence.json"
             active_sequence = output / f"{provider}-active.sequence.json"
             # Give primary geometry's background worker and bounded index upload
@@ -441,22 +510,26 @@ def main():
                                              warmup_frames=warmup)
             active_samples = write_sequence(active_sequence, 2, bim_checkpoints=provider != "gltf",
                                             warmup_frames=warmup)
-            for technique in args.technique or TECHNIQUES:
+            for technique in techniques:
                 name = f"{provider}-{technique}"
                 control = capture(renderer, output / f"{name}-full", fixtures[provider], technique,
                                   control_sequence, control_samples, ("--geometry-lod-error", "0"))
                 active = capture(renderer, output / f"{name}-lod", fixtures[provider], technique,
                                  active_sequence, active_samples, ("--geometry-lod-error", str(PIXEL_ERROR)))
                 report["cases"][name] = verify(control, active, provider)
-        if "bim" in (args.provider or fixtures):
-            report["bimBudgetFallback"] = verify_bim_budget_fallback(renderer, output, (args.technique or TECHNIQUES)[0])
-        comparison_path = output / "comparison.png"
-        comparison(comparison_path, report["cases"])
+        if "bim" in providers:
+            report["bimBudgetFallback"] = verify_bim_budget_fallback(renderer, output, techniques[0])
+        if args.displacement_only or "gltf" in providers:
+            report["displacementFallback"] = verify_displacement_fallback(renderer, output, techniques)
+        if report["cases"]:
+            comparison_path = output / "comparison.png"
+            comparison(comparison_path, report["cases"])
+            report["comparison"] = str(comparison_path)
         require(digest(renderer) == checksum, "Renderer binary changed during the captures")
-        report.update(passed=True, comparison=str(comparison_path))
+        report["passed"] = True
     finally:
         write_json(output / "results.json", report)
-    print(f"PASS {len(report['cases'])} validated geometry LOD sweeps in {output}", flush=True)
+    print(f"PASS geometry LOD validation in {output}", flush=True)
     return 0
 
 

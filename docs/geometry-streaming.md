@@ -49,11 +49,14 @@ ranges may be dropped if the source geometry fits on its own. [Scene asset resid
   buffer is ready to publish. A model replacement takes priority over that
   optional upload. [Geometry level of detail](geometry-lod.md)
 - Startup model loads, direct synchronous reloads, scene merges, and glTF skin
-  and morph geometry use their existing installation paths. Texture and volume
-  uploads, material and descriptor creation, and ray structure builds also
-  follow their existing paths. Model publication can still retire previous
-  readers and install model resources on the render thread. The copy limit
-  bounds the geometry transfer work per service tick.
+  and morph geometry use their existing geometry installation paths. For an
+  interactive glTF replacement, the same worker decodes textures and prepares
+  mip tails under the configured decoded-memory limit. Model publication can
+  still retire previous readers and upload material resources on the render
+  thread. The geometry copy limit applies per service tick.
+- A superseding request cancels native USD file reads, parsing and geometry
+  conversion at cooperative checkpoints. The TinyUSDZ backend checks for
+  cancellation after each synchronous vendor stage finishes.
 
 ## Reproduce the checks
 
@@ -71,8 +74,9 @@ ctest --test-dir $buildDir -C Release -R '^geometry_streaming_gpu_regression$' -
 The correctness suite stages a glTF, dotBIM, and USD replacement in each
 raster technique. It uses 256 KiB copies and a 2 MiB staging cap. Captures
 check visible geometry and picking identities while the candidate is pending,
-cancel a partially uploaded replacement by superseding it and by unloading,
-and verify that a final replacement publishes and retires its staging memory.
+resize to an odd extent and back during a pending batch, cancel a partially
+uploaded replacement by superseding it and by unloading, and verify that a
+final replacement publishes and retires its staging memory.
 The culling probes cover primary frustum and Hi-Z counts, BIM/USD viewport
 frustum and Hi-Z readiness, and BIM/USD draws with and without a semantic
 filter. Ray queries are disabled for these checks.
@@ -99,9 +103,10 @@ correctness run also writes `comparison.png`. The Windows package includes
 On a GeForce RTX 2080 SUPER, the matched runs produced 84 captures across
 forward and deferred raster with Khronos synchronization validation enabled.
 All six provider and technique pairs kept the previous scene and pick
-identities during partial upload. Each passed cancellation by superseding the
-request and by unloading, then installed the accepted replacement. BIM and USD
-had active viewport frustum and Hi-Z compaction in both techniques.
+identities during partial upload. Each passed both viewport resizes, then
+cancellation by superseding the request and by unloading. The accepted
+replacement published after the final copy completed. BIM and USD had active
+viewport frustum and Hi-Z compaction in both techniques.
 
 ![Previous, pending, cancelled, and published raster captures](images/geometry-streaming-comparison.png)
 

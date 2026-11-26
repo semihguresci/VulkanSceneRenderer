@@ -20,6 +20,7 @@
 #include "Container/geometry/GltfMerge.h"
 #include "Container/geometry/GltfSky.h"
 #include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
+#include "Container/utility/GltfTextureResources.h"
 #include <fstream>
 
 #include <algorithm>
@@ -137,6 +138,7 @@ using container::gpu::LightingData;
 struct RendererFrontend::ModelLoadState {
   struct Prepared {
     std::optional<container::geometry::GltfLoadResult> gltf;
+    std::optional<container::material::PreparedGltfTextures> gltfTextures;
     std::optional<BimManager::PreparedScene> bim;
     std::optional<SceneController::RigidGeometryUploadSource> rigidGeometry;
   };
@@ -5700,7 +5702,6 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                                         float importScale) {
   if (!subs_.sceneController || !subs_.sceneManager)
     return false;
-  prepareTextureStreamingForModelCommit();
   finishEditGestures();
 
   ensureObjectBuffers();
@@ -5711,12 +5712,15 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
                                 ? container::gpu::AllocatedBuffer{}
                                 : buffers_.cameras.front();
   const uint64_t previousGraphIdentity = sceneGraph_.identity();
+  auto releasingTextureTailBytes = prepareTextureStreamingForModelAdmission();
   auto reloadPrimary = [&](const std::string &modelPath, float scale,
                            bool* commitStarted = nullptr) {
     auto *prepared = modelLoad_ && modelLoad_->committing && modelLoad_->ready &&
                              modelLoad_->request && modelLoad_->request->path == modelPath &&
                              modelLoad_->ready->gltf
                          ? &*modelLoad_->ready->gltf : nullptr;
+    const auto* preparedTextures = prepared && modelLoad_->ready->gltfTextures
+        ? &*modelLoad_->ready->gltfTextures : nullptr;
     auto* streamed = prepared && modelLoad_->uploadedGeometry ? &*modelLoad_->uploadedGeometry : nullptr;
     auto* bindSource = streamed && modelLoad_->ready->rigidGeometry ? &*modelLoad_->ready->rigidGeometry : nullptr;
     return subs_.sceneController->reloadSceneModel(
@@ -5724,12 +5728,15 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
         buffers_.objectCapacities.front(),
         cameraBuffer, sceneState_.indexType, sceneState_.rootNode,
         sceneState_.selectedMeshNode, sceneState_.cubeNode, prepared,
-        [this, commitStarted] {
+        [this, commitStarted, &releasingTextureTailBytes] {
+          prepareTextureStreamingForModelCommit();
+          releasingTextureTailBytes = 0;
           deactivateRenderSetup();
           clearPrimaryGeometryLods();
           if (commitStarted)
             *commitStarted = true;
-        }, primaryGeometryLods_.buffer.allocation_info.size, streamed, bindSource);
+        }, primaryGeometryLods_.buffer.allocation_info.size, streamed, bindSource,
+        releasingTextureTailBytes, preparedTextures);
   };
   auto refreshSceneState = [&](bool replacedModel) {
     // reloadPrimary can replace the first object buffer before
@@ -5816,7 +5823,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
       auto* stagedGeometry = !localPrepared && modelLoad_->uploadedGeometry
           ? &*modelLoad_->uploadedGeometry : nullptr;
       subs_.bimManager->checkPreparedSceneBudget(
-          *prepared, true, primaryGeometryLods_.buffer.allocation_info.size, stagedGeometry);
+          *prepared, true, primaryGeometryLods_.buffer.allocation_info.size, stagedGeometry,
+          releasingTextureTailBytes);
       if (!reloadPrimary("", 1.0f, &retiredPreviousScene))
         throw std::runtime_error("Failed to clear the primary scene");
       subs_.bimManager->loadPreparedScene(std::move(*prepared), *subs_.sceneManager, stagedGeometry);
@@ -5872,7 +5880,10 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
 
   const uint64_t previousGeometryRevision =
       subs_.sceneManager->geometryRevision();
-  const bool result = reloadPrimary(path, importScale);
+  bool beganCommit = false;
+  const bool result = reloadPrimary(path, importScale, &beganCommit);
+  if (!beganCommit)
+    return false; // A preflight rejection keeps the live descriptors and providers.
   if (result) {
     activePrimaryModelPath_ = path;
     activePrimaryImportScale_ = importScale;
@@ -5922,6 +5933,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
   auto queuedRequest=subs_.guiManager?subs_.guiManager->consumeModelLoadRequest()
       : std::optional<container::ui::ModelLoadRequest>{};
   bool remote = false;
+  bool startPreparation = false;
   if (!queuedRequest && modelLoad_ && modelLoad_->queued) {
     queuedRequest = std::exchange(modelLoad_->queued, {});
     remote = std::exchange(modelLoad_->queuedRemote, false);
@@ -5973,30 +5985,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
         action.path == container::app::kDefaultSceneModelToken) {
       modelLoad_->ready = std::make_unique<ModelLoadState::Prepared>();
     } else {
-      (void)modelLoad_->worker.start([path = action.path, scale = action.importScale,
-                                    openVdbOptions = action.openVdbOptions,
-                                    merge = action.merge.has_value(),
-                                    linked = svc_.config.experimentalGltfLinkedAssets && !remote,
-                                    generateGeometryLods = svc_.config.geometryLodErrorPixels > 0.0f,
-                                    derivedCacheDirectory = svc_.config.assetCacheDirectory,
-                                    streamGeometry = svc_.config.geometryUploadChunkKiB != 0,
-                                    micromaps = svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !remote,
-                                    experimental = svc_.config.experimentalGltfMaterials, remote](std::stop_token stop) {
-        auto prepared = std::make_unique<ModelLoadState::Prepared>();
-        if (isAuxiliaryRenderModelPath(path))
-          prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions, stop,
-                                                   {}, {}, generateGeometryLods, derivedCacheDirectory);
-        else {
-          prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
-              merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
-              linked, remote, experimental, micromaps && !merge, merge, stop);
-          if (streamGeometry && !merge)
-            prepared->rigidGeometry = SceneController::prepareRigidGeometryUpload(*prepared->gltf, stop);
-        }
-        return prepared;
-      });
-      // Keep at least the request frame interactive, even for tiny models.
-      return;
+      startPreparation = true;
     }
   }
   if (!modelLoad_) return;
@@ -6012,6 +6001,47 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
   const auto request = *state.request;
   const std::string statusLabel = request.label.empty() ? request.path : request.label;
   try {
+    if (startPreparation) {
+      const bool auxiliary = isAuxiliaryRenderModelPath(request.path);
+      // Only the owner thread queries Vulkan. The worker uses the same
+      // decoded-memory and fallback policy as the synchronous loader.
+      auto textureDecode = !auxiliary && !request.merge
+          ? std::optional{svc_.allocationManager.textureDecodeOptions(false)} : std::nullopt;
+      (void)state.worker.start([path = request.path, scale = request.importScale,
+                               openVdbOptions = request.openVdbOptions,
+                               merge = request.merge.has_value(), auxiliary,
+                               linked = svc_.config.experimentalGltfLinkedAssets && !remote,
+                               generateGeometryLods = svc_.config.geometryLodErrorPixels > 0.0f,
+                               derivedCacheDirectory = svc_.config.assetCacheDirectory,
+                               streamGeometry = svc_.config.geometryUploadChunkKiB != 0,
+                               micromaps = svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !remote,
+                               experimental = svc_.config.experimentalGltfMaterials,
+                               textureDecode = std::move(textureDecode),
+                               textureMemoryMiB = svc_.config.textureMemoryMiB,
+                               fallbackExtent = svc_.config.textureStreamingFallbackExtent,
+                               remote](std::stop_token stop) {
+        auto prepared = std::make_unique<ModelLoadState::Prepared>();
+        if (auxiliary) {
+          prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions, stop,
+                                                   {}, {}, generateGeometryLods, derivedCacheDirectory);
+        } else {
+          prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
+              merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),
+              linked, remote, experimental, micromaps && !merge, merge, stop);
+          if (streamGeometry && !merge)
+            prepared->rigidGeometry = SceneController::prepareRigidGeometryUpload(*prepared->gltf, stop);
+          if (textureDecode) {
+            prepared->gltfTextures.emplace(container::material::PrepareGltfTextures(
+                prepared->gltf->gltfModel, *textureDecode,
+                container::material::GltfTextureMemoryBytes(textureMemoryMiB),
+                experimental, fallbackExtent, stop));
+          }
+        }
+        return prepared;
+      });
+      // Keep at least the request frame interactive, even for tiny models.
+      return;
+    }
     // The active scene can change while the CPU worker is preparing the source.
     if (request.merge && (!state.mergeDestination || !subs_.sceneManager ||
         sceneGraph_.identity() != state.mergeDestination->graphIdentity ||
@@ -6051,6 +6081,13 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
           try {
             upload.begin(sources, chunkBytes);
           } catch (const gpu::SceneAssetBudgetExceeded&) {
+            const auto releasingTailBytes = prepareTextureStreamingForModelAdmission();
+            if (!releasingTailBytes)
+              throw;
+            // The detached upload overlaps the visible scene. Only the finer
+            // texture tails that this retry retires can be credited.
+            svc_.allocationManager.checkSceneAssetAdmission(
+                upload.requiredAssetBytes(sources, chunkBytes), false, 0, releasingTailBytes);
             if (!prepareTextureStreamingForModelCommit())
               throw;
             upload.begin(sources, chunkBytes);
@@ -6070,7 +6107,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
             beginUpload(bim.geometryUploadSources());
           } catch (const gpu::SceneAssetBudgetExceeded&) {
             if (!bim.discardGeometryLods()) throw;
-            upload.begin(bim.geometryUploadSources(), chunkBytes);
+            beginUpload(bim.geometryUploadSources());
           }
         }
         state.stage = "Streaming model geometry";

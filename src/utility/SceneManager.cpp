@@ -1960,7 +1960,9 @@ bool SceneManager::reloadModel(
     container::geometry::GltfLoadResult* prepared,
     bool reusePrimaryArenas,
     const std::function<void()>& beforeCommit,
-    VkDeviceSize releasingGeometryBytes, bool geometryAlreadyUploaded) {
+    VkDeviceSize releasingGeometryBytes, bool geometryAlreadyUploaded,
+    VkDeviceSize releasingTextureTailBytes,
+    const container::material::PreparedGltfTextures* incomingTextures) {
   const std::string previousModelPath = config_.modelPath;
   const float previousImportScale = config_.importScale;
   const int previousScene = static_cast<int>(selectedScene_);
@@ -1970,7 +1972,7 @@ bool SceneManager::reloadModel(
   // Check the incoming textures, samplers and geometry before retiring live assets.
   // Rejected loads must leave runtime edits and auxiliary registrations intact.
   std::optional<container::geometry::GltfLoadResult> locallyPrepared;
-  std::optional<container::material::PreparedGltfTextures> incomingTextures;
+  std::optional<container::material::PreparedGltfTextures> locallyPreparedTextures;
   const bool experimental = config_.experimentalGltfMaterials;
   try {
     const auto limits = allocationManager_->sceneAssetBudget().limits;
@@ -2007,6 +2009,7 @@ bool SceneManager::reloadModel(
         locallyPrepared = prepareGltfModel(path, std::numeric_limits<uintmax_t>::max(),
             config_.experimentalGltfLinkedAssets, false, experimental, deviceWrapper_->opacityMicromapsEnabled());
         prepared = &*locallyPrepared;
+        incomingTextures = nullptr;
       }
       incomingSamplerKeys = container::material::CollectGltfMaterialSamplerKeys(prepared->gltfModel);
       (void)container::geometry::gltf::ParseMaterialVariants(prepared->gltfModel);
@@ -2017,9 +2020,15 @@ bool SceneManager::reloadModel(
         if (checkAssetBudget)
           geometry = gltfReloadGeometryCounts(*prepared, hierarchy);
       }
-      incomingTextures = container::material::PrepareGltfTextures(prepared->gltfModel,
-          allocationManager_->textureDecodeOptions(false), container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB),
-          experimental, config_.textureStreamingFallbackExtent);
+      if (!incomingTextures) {
+        locallyPreparedTextures.emplace(container::material::PrepareGltfTextures(prepared->gltfModel,
+            allocationManager_->textureDecodeOptions(false),
+            container::material::GltfTextureMemoryBytes(config_.textureMemoryMiB),
+            experimental, config_.textureStreamingFallbackExtent));
+        incomingTextures = &*locallyPreparedTextures;
+      }
+      if (incomingTextures->textureCount != prepared->gltfModel.textures.size())
+        throw std::runtime_error("Prepared glTF texture identity table differs from the source");
       if(container::material::CountPreparedGltfTextureResources(*incomingTextures)>textureDescriptorCapacity_)
         throw std::runtime_error("Incoming glTF textures exceed the scene image descriptor capacity");
       if (checkAssetBudget) {
@@ -2063,9 +2072,11 @@ bool SceneManager::reloadModel(
       // Retiring idle geometry on unload grants credit only for the later
       // mesh upload. Scene texture publication completes while it is live.
       if (releasingGeometryBytes)
-        allocationManager_->checkSceneAssetAdmission(textures, resetTextureAllocationsOnReset_);
+        allocationManager_->checkSceneAssetAdmission(
+            textures, resetTextureAllocationsOnReset_, 0, releasingTextureTailBytes);
       allocationManager_->checkSceneAssetAdmission(
-          total, resetTextureAllocationsOnReset_, releasingGeometryBytes);
+          total, resetTextureAllocationsOnReset_, releasingGeometryBytes,
+          releasingTextureTailBytes);
     }
   } catch (const std::exception& error) {
     std::println(stderr, "glTF load failed: {}", error.what());
@@ -2086,7 +2097,7 @@ bool SceneManager::reloadModel(
     resetForLoad();
     config_.modelPath = path;
     config_.importScale = sanitizeImportScale(importScale);
-    loadGltfAssets(replacementScene, prepared, incomingTextures ? &*incomingTextures : nullptr);
+    loadGltfAssets(replacementScene, prepared, incomingTextures);
     resetCameraProjectionNamespace();
     resetMaterialLifecycle();
     uploadMaterialBuffer();

@@ -1,4 +1,5 @@
 #include "Container/geometry/UsdLoader.h"
+#include "Container/utility/ModelImportCancellation.h"
 #include "Container/utility/SceneData.h"
 
 #include <gtest/gtest.h>
@@ -389,6 +390,16 @@ void expectVertexColorNear(const container::geometry::Vertex &vertex, float red,
 }
 
 } // namespace
+
+TEST(UsdLoader, CancelledImportStopsBeforeReadingOrParsing) {
+  std::stop_source cancellation;
+  cancellation.request_stop();
+  const auto stop = cancellation.get_token();
+  EXPECT_THROW((void)container::geometry::usd::LoadFromFile("missing.usd", 1.0f, stop),
+               container::util::ModelImportCancelled);
+  EXPECT_THROW((void)container::geometry::usd::LoadFromText("invalid source", 1.0f, stop),
+               container::util::ModelImportCancelled);
+}
 
 TEST(UsdLoader, ParsesUsdMeshTransformColorAndPolygonTriangulation) {
   const auto model = container::geometry::usd::LoadFromText(kTriangleUsd, 2.0f);

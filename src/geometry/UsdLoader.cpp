@@ -1,10 +1,12 @@
 #include "Container/geometry/UsdLoader.h"
 
 #include "Container/geometry/CoordinateSystem.h"
+#include "Container/utility/ModelImportCancellation.h"
 #include "Container/utility/Platform.h"
 #include "Container/utility/SceneData.h"
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <cstddef>
@@ -126,10 +128,25 @@ bool isNumberStart(std::string_view text, size_t offset) {
   return false;
 }
 
-std::vector<Token> tokenize(std::string_view text) {
+using container::util::checkModelImportCancellation;
+
+void checkImportProgress(size_t index, const std::stop_token &stop) {
+  if (index % 1024u == 0u)
+    checkModelImportCancellation(stop);
+}
+
+std::vector<Token> tokenize(std::string_view text, const std::stop_token &stop) {
   std::vector<Token> tokens;
   size_t cursor = 0;
+  size_t nextCheckpoint = 0;
+  const auto checkCursor = [&] {
+    if (cursor >= nextCheckpoint) {
+      checkModelImportCancellation(stop);
+      nextCheckpoint = cursor + 4096u;
+    }
+  };
   while (cursor < text.size()) {
+    checkCursor();
     const char c = text[cursor];
     if (std::isspace(static_cast<unsigned char>(c))) {
       ++cursor;
@@ -137,6 +154,7 @@ std::vector<Token> tokenize(std::string_view text) {
     }
     if (c == '#') {
       while (cursor < text.size() && text[cursor] != '\n') {
+        checkCursor();
         ++cursor;
       }
       continue;
@@ -145,6 +163,7 @@ std::vector<Token> tokenize(std::string_view text) {
       ++cursor;
       std::string value;
       while (cursor < text.size()) {
+        checkCursor();
         const char current = text[cursor++];
         if (current == '"') {
           break;
@@ -181,6 +200,7 @@ std::vector<Token> tokenize(std::string_view text) {
            !std::isspace(static_cast<unsigned char>(text[cursor])) &&
            !isSymbol(text[cursor]) && text[cursor] != '"' &&
            text[cursor] != '#') {
+      checkCursor();
       ++cursor;
     }
     tokens.push_back({TokenKind::Identifier,
@@ -436,10 +456,12 @@ dotbim::ModelUnitMetadata makeUnitMetadata(StageUnitMetadata stageUnits,
   return metadata;
 }
 
-std::string stageUpAxisFromText(std::string_view usdText) {
-  const std::vector<Token> tokens = tokenize(usdText);
+std::string stageUpAxisFromText(std::string_view usdText,
+                                const std::stop_token &stop) {
+  const std::vector<Token> tokens = tokenize(usdText, stop);
   int braceDepth = 0;
   for (size_t i = 0; i < tokens.size(); ++i) {
+    checkImportProgress(i, stop);
     const Token &token = tokens[i];
     if (token.kind == TokenKind::End) {
       break;
@@ -480,10 +502,12 @@ void applySourceUpAxis(dotbim::Model& model, std::string upAxis) {
   model.georeferenceMetadata.sourceUpAxis = std::move(upAxis);
 }
 
-StageUnitMetadata stageMetersPerUnitFromText(std::string_view usdText) {
-  const std::vector<Token> tokens = tokenize(usdText);
+StageUnitMetadata stageMetersPerUnitFromText(std::string_view usdText,
+                                            const std::stop_token &stop) {
+  const std::vector<Token> tokens = tokenize(usdText, stop);
   int braceDepth = 0;
   for (size_t i = 0; i < tokens.size(); ++i) {
+    checkImportProgress(i, stop);
     const Token &token = tokens[i];
     if (token.kind == TokenKind::End) {
       break;
@@ -562,34 +586,39 @@ makeVertex(const glm::vec3 &position, const glm::vec3 &normal,
 }
 
 std::pair<glm::vec3, float>
-computeBounds(const std::vector<glm::vec3> &points) {
+computeBounds(const std::vector<glm::vec3> &points, const std::stop_token &stop) {
   if (points.empty()) {
     return {glm::vec3(0.0f), 0.0f};
   }
 
   glm::vec3 minBounds = points.front();
   glm::vec3 maxBounds = points.front();
-  for (const glm::vec3 &point : points) {
+  for (size_t i = 0; i < points.size(); ++i) {
+    checkImportProgress(i, stop);
+    const auto &point = points[i];
     minBounds = glm::min(minBounds, point);
     maxBounds = glm::max(maxBounds, point);
   }
 
   const glm::vec3 center = (minBounds + maxBounds) * 0.5f;
   float radius = 0.0f;
-  for (const glm::vec3 &point : points) {
-    radius = std::max(radius, glm::length(point - center));
+  for (size_t i = 0; i < points.size(); ++i) {
+    checkImportProgress(i, stop);
+    radius = std::max(radius, glm::length(points[i] - center));
   }
   return {center, radius};
 }
 
 std::vector<uint32_t> triangulateIndices(const MeshData &mesh,
-                                         std::string_view path) {
+                                         std::string_view path,
+                                         const std::stop_token &stop) {
   if (mesh.points.empty() || mesh.faceVertexIndices.empty()) {
     return {};
   }
 
-  for (uint32_t index : mesh.faceVertexIndices) {
-    if (index >= mesh.points.size()) {
+  for (size_t i = 0; i < mesh.faceVertexIndices.size(); ++i) {
+    checkImportProgress(i, stop);
+    if (mesh.faceVertexIndices[i] >= mesh.points.size()) {
       throw std::runtime_error("USD mesh '" + std::string(path) +
                                "' has a face vertex index outside points");
     }
@@ -605,7 +634,9 @@ std::vector<uint32_t> triangulateIndices(const MeshData &mesh,
 
   std::vector<uint32_t> triangles;
   size_t cursor = 0;
-  for (uint32_t count : mesh.faceVertexCounts) {
+  for (size_t face = 0; face < mesh.faceVertexCounts.size(); ++face) {
+    checkImportProgress(face, stop);
+    const uint32_t count = mesh.faceVertexCounts[face];
     if (count < 3u ||
         cursor + static_cast<size_t>(count) > mesh.faceVertexIndices.size()) {
       throw std::runtime_error("USD mesh '" + std::string(path) +
@@ -613,6 +644,7 @@ std::vector<uint32_t> triangulateIndices(const MeshData &mesh,
     }
     const uint32_t first = mesh.faceVertexIndices[cursor];
     for (uint32_t i = 1; i + 1u < count; ++i) {
+      checkImportProgress(i, stop);
       triangles.push_back(first);
       triangles.push_back(mesh.faceVertexIndices[cursor + i]);
       triangles.push_back(mesh.faceVertexIndices[cursor + i + 1u]);
@@ -629,7 +661,8 @@ std::vector<uint32_t> triangulateIndices(const MeshData &mesh,
 
 class UsdParser {
 public:
-  explicit UsdParser(std::string_view text) : tokens_(tokenize(text)) {}
+  explicit UsdParser(std::string_view text, std::stop_token stop)
+      : stop_(stop), tokens_(tokenize(text, stop_)) {}
 
   std::vector<Node> parse() {
     parseBlock(-1);
@@ -638,6 +671,7 @@ public:
 
 private:
   [[nodiscard]] const Token &peek(size_t offset = 0) const {
+    checkImportProgress(position_, stop_);
     const size_t index = std::min(position_ + offset, tokens_.size() - 1u);
     return tokens_[index];
   }
@@ -760,9 +794,9 @@ private:
                      static_cast<float>(values[2]));
   }
 
-  static std::vector<glm::vec3>
+  std::vector<glm::vec3>
   vec3ArrayFromNumbers(const std::vector<double> &values,
-                       std::string_view attributeName) {
+                       std::string_view attributeName) const {
     if ((values.size() % 3u) != 0u) {
       throw std::runtime_error("USD attribute '" + std::string(attributeName) +
                                "' must contain vec3 values");
@@ -770,6 +804,7 @@ private:
     std::vector<glm::vec3> result;
     result.reserve(values.size() / 3u);
     for (size_t i = 0; i < values.size(); i += 3u) {
+      checkImportProgress(i, stop_);
       result.emplace_back(static_cast<float>(values[i]),
                           static_cast<float>(values[i + 1u]),
                           static_cast<float>(values[i + 2u]));
@@ -777,9 +812,9 @@ private:
     return result;
   }
 
-  static std::vector<glm::vec2>
+  std::vector<glm::vec2>
   vec2ArrayFromNumbers(const std::vector<double> &values,
-                       std::string_view attributeName) {
+                       std::string_view attributeName) const {
     if ((values.size() % 2u) != 0u) {
       throw std::runtime_error("USD attribute '" + std::string(attributeName) +
                                "' must contain vec2 values");
@@ -787,18 +822,20 @@ private:
     std::vector<glm::vec2> result;
     result.reserve(values.size() / 2u);
     for (size_t i = 0; i < values.size(); i += 2u) {
+      checkImportProgress(i, stop_);
       result.emplace_back(static_cast<float>(values[i]),
                           static_cast<float>(values[i + 1u]));
     }
     return result;
   }
 
-  static std::vector<float>
+  std::vector<float>
   floatArrayFromNumbers(const std::vector<double> &values,
-                        std::string_view attributeName) {
+                         std::string_view attributeName) const {
     std::vector<float> result;
     result.reserve(values.size());
     for (double value : values) {
+      checkImportProgress(result.size(), stop_);
       if (!std::isfinite(value)) {
         throw std::runtime_error("USD attribute '" +
                                  std::string(attributeName) +
@@ -809,12 +846,13 @@ private:
     return result;
   }
 
-  static std::vector<uint32_t>
+  std::vector<uint32_t>
   indexArrayFromNumbers(const std::vector<double> &values,
-                        std::string_view attributeName) {
+                         std::string_view attributeName) const {
     std::vector<uint32_t> result;
     result.reserve(values.size());
     for (double value : values) {
+      checkImportProgress(result.size(), stop_);
       if (!std::isfinite(value) || value < 0.0 ||
           value > static_cast<double>(std::numeric_limits<uint32_t>::max()) ||
           std::floor(value) != value) {
@@ -907,6 +945,7 @@ private:
                                                       size_t equal) const {
     for (size_t i = equal; i > start;) {
       --i;
+      checkImportProgress(i, stop_);
       if (tokens_[i].kind == TokenKind::Identifier) {
         return tokens_[i].text;
       }
@@ -917,6 +956,7 @@ private:
   std::optional<size_t> findDeclarationEquals() const {
     size_t depth = 0;
     for (size_t i = position_; i < tokens_.size(); ++i) {
+      checkImportProgress(i, stop_);
       const Token &token = tokens_[i];
       if (token.kind == TokenKind::End) {
         return std::nullopt;
@@ -1158,6 +1198,7 @@ private:
     }
   }
 
+  std::stop_token stop_;
   std::vector<Token> tokens_{};
   size_t position_{0};
   std::vector<Node> nodes_{};
@@ -1326,12 +1367,14 @@ std::optional<glm::vec2> attributeVec2(const std::vector<glm::vec2> &values,
 }
 
 void appendMeshletClustersForRange(dotbim::Model &model,
-                                   const dotbim::MeshRange &range);
+                                   const dotbim::MeshRange &range,
+                                   const std::stop_token &stop);
 
 void appendMesh(dotbim::Model &model, const MeshData &mesh, uint32_t meshId,
-                std::string_view path, const glm::vec4 &color) {
+                std::string_view path, const glm::vec4 &color,
+                const std::stop_token &stop) {
   (void)color;
-  const std::vector<uint32_t> sourceIndices = triangulateIndices(mesh, path);
+  const std::vector<uint32_t> sourceIndices = triangulateIndices(mesh, path, stop);
   if (mesh.points.empty() || sourceIndices.empty()) {
     return;
   }
@@ -1339,11 +1382,12 @@ void appendMesh(dotbim::Model &model, const MeshData &mesh, uint32_t meshId,
   dotbim::MeshRange range{};
   range.meshId = meshId;
   range.firstIndex = static_cast<uint32_t>(model.indices.size());
-  const auto [center, radius] = computeBounds(mesh.points);
+  const auto [center, radius] = computeBounds(mesh.points, stop);
   range.boundsCenter = center;
   range.boundsRadius = radius;
 
   for (size_t i = 0; i + 2u < sourceIndices.size(); i += 3u) {
+    checkImportProgress(i, stop);
     const glm::vec3 &a = mesh.points[sourceIndices[i]];
     const glm::vec3 &b = mesh.points[sourceIndices[i + 1u]];
     const glm::vec3 &c = mesh.points[sourceIndices[i + 2u]];
@@ -1377,12 +1421,13 @@ void appendMesh(dotbim::Model &model, const MeshData &mesh, uint32_t meshId,
       static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
   if (range.indexCount > 0u) {
     model.meshRanges.push_back(range);
-    appendMeshletClustersForRange(model, range);
+    appendMeshletClustersForRange(model, range, stop);
   }
 }
 
-float defaultPointPlaceholderRadius(const MeshData &mesh) {
-  const auto [center, radius] = computeBounds(mesh.points);
+float defaultPointPlaceholderRadius(const MeshData &mesh,
+                                    const std::stop_token &stop) {
+  const auto [center, radius] = computeBounds(mesh.points, stop);
   (void)center;
   if (std::isfinite(radius) && radius > 0.0f) {
     return std::clamp(radius * 0.025f, 0.02f, 1.0f);
@@ -1453,7 +1498,8 @@ glm::vec3 placeholderCurveSegmentColor(const MeshData &mesh, size_t first,
 }
 
 void appendNativePointRange(dotbim::Model &model, const MeshData &mesh,
-                            uint32_t meshId, const glm::vec4 &color) {
+                            uint32_t meshId, const glm::vec4 &color,
+                            const std::stop_token &stop) {
   if (mesh.points.empty()) {
     return;
   }
@@ -1461,11 +1507,12 @@ void appendNativePointRange(dotbim::Model &model, const MeshData &mesh,
   dotbim::NativePrimitiveRange range{};
   range.meshId = meshId;
   range.firstIndex = static_cast<uint32_t>(model.indices.size());
-  const auto [center, radius] = computeBounds(mesh.points);
+  const auto [center, radius] = computeBounds(mesh.points, stop);
   range.boundsCenter = center;
   range.boundsRadius = radius;
   const glm::vec2 texCoord(0.0f);
   for (size_t pointIndex = 0; pointIndex < mesh.points.size(); ++pointIndex) {
+    checkImportProgress(pointIndex, stop);
     const uint32_t vertexIndex = static_cast<uint32_t>(model.vertices.size());
     model.vertices.push_back(makeVertex(
         mesh.points[pointIndex], glm::vec3(0.0f, 1.0f, 0.0f),
@@ -1483,7 +1530,7 @@ void appendNativePointRange(dotbim::Model &model, const MeshData &mesh,
 void appendNativeCurveRange(dotbim::Model &model, const MeshData &mesh,
                             const std::vector<uint32_t> &curveVertexCounts,
                             uint32_t meshId, const glm::vec4 &color,
-                            std::string_view path) {
+                            std::string_view path, const std::stop_token &stop) {
   if (mesh.points.size() < 2u) {
     return;
   }
@@ -1491,18 +1538,21 @@ void appendNativeCurveRange(dotbim::Model &model, const MeshData &mesh,
   dotbim::NativePrimitiveRange range{};
   range.meshId = meshId;
   range.firstIndex = static_cast<uint32_t>(model.indices.size());
-  const auto [center, radius] = computeBounds(mesh.points);
+  const auto [center, radius] = computeBounds(mesh.points, stop);
   range.boundsCenter = center;
   range.boundsRadius = radius;
   const glm::vec2 texCoord(0.0f);
   size_t cursor = 0;
-  for (uint32_t count : curveVertexCounts) {
+  for (size_t curve = 0; curve < curveVertexCounts.size(); ++curve) {
+    checkImportProgress(curve, stop);
+    const uint32_t count = curveVertexCounts[curve];
     if (cursor + static_cast<size_t>(count) > mesh.points.size()) {
       throw std::runtime_error("USD curve '" + std::string(path) +
                                "' has inconsistent curve vertex counts");
     }
     for (uint32_t i = 0; i + 1u < count; ++i) {
       const size_t first = cursor + i;
+      checkImportProgress(first, stop);
       const size_t second = first + 1u;
       const glm::vec3 segment = mesh.points[second] - mesh.points[first];
       if (glm::dot(segment, segment) <= 1.0e-12f) {
@@ -1535,7 +1585,8 @@ void appendNativeCurveRange(dotbim::Model &model, const MeshData &mesh,
 }
 
 void appendMeshletClustersForRange(dotbim::Model &model,
-                                   const dotbim::MeshRange &range) {
+                                   const dotbim::MeshRange &range,
+                                   const std::stop_token &stop) {
   constexpr uint32_t kMeshletTriangleBudget = 64u;
   constexpr uint32_t kMeshletIndexBudget = kMeshletTriangleBudget * 3u;
   const uint32_t endIndex = range.firstIndex + range.indexCount;
@@ -1545,6 +1596,7 @@ void appendMeshletClustersForRange(dotbim::Model &model,
 
   for (uint32_t firstIndex = range.firstIndex; firstIndex + 2u < endIndex;
        firstIndex += kMeshletIndexBudget) {
+    checkModelImportCancellation(stop);
     const uint32_t indexCount =
         std::min(kMeshletIndexBudget, endIndex - firstIndex);
     const uint32_t triangleAlignedIndexCount = (indexCount / 3u) * 3u;
@@ -1562,7 +1614,7 @@ void appendMeshletClustersForRange(dotbim::Model &model,
     if (clusterPoints.empty()) {
       continue;
     }
-    const auto [center, radius] = computeBounds(clusterPoints);
+    const auto [center, radius] = computeBounds(clusterPoints, stop);
     model.meshletClusters.push_back(dotbim::MeshletClusterRange{
         .meshId = range.meshId,
         .firstIndex = firstIndex,
@@ -1577,7 +1629,7 @@ void appendMeshletClustersForRange(dotbim::Model &model,
 
 void appendPointPlaceholders(dotbim::Model &model, const MeshData &mesh,
                              uint32_t meshId, std::string_view path,
-                             const glm::vec4 &color) {
+                             const glm::vec4 &color, const std::stop_token &stop) {
   (void)path;
   if (mesh.points.empty()) {
     return;
@@ -1587,7 +1639,7 @@ void appendPointPlaceholders(dotbim::Model &model, const MeshData &mesh,
   range.meshId = meshId;
   range.firstIndex = static_cast<uint32_t>(model.indices.size());
 
-  const float fallbackRadius = defaultPointPlaceholderRadius(mesh);
+  const float fallbackRadius = defaultPointPlaceholderRadius(mesh, stop);
   std::vector<glm::vec3> rangePoints;
   rangePoints.reserve(mesh.points.size() * 24u);
 
@@ -1600,6 +1652,7 @@ void appendPointPlaceholders(dotbim::Model &model, const MeshData &mesh,
                                {3u, 1u, 5u}, {0u, 3u, 5u}};
 
   for (size_t pointIndex = 0; pointIndex < mesh.points.size(); ++pointIndex) {
+    checkImportProgress(pointIndex, stop);
     const glm::vec3 &point = mesh.points[pointIndex];
     const glm::vec3 vertexColor =
         placeholderPointColor(mesh, pointIndex, color);
@@ -1623,11 +1676,11 @@ void appendPointPlaceholders(dotbim::Model &model, const MeshData &mesh,
   if (range.indexCount == 0u) {
     return;
   }
-  const auto [center, radius] = computeBounds(rangePoints);
+  const auto [center, radius] = computeBounds(rangePoints, stop);
   range.boundsCenter = center;
   range.boundsRadius = radius;
   model.meshRanges.push_back(range);
-  appendNativePointRange(model, mesh, meshId, color);
+  appendNativePointRange(model, mesh, meshId, color, stop);
 }
 
 void appendCurveSegmentPlaceholder(dotbim::Model &model,
@@ -1671,7 +1724,8 @@ void appendCurveSegmentPlaceholder(dotbim::Model &model,
 
 void appendBasisCurvePlaceholders(dotbim::Model &model, const MeshData &mesh,
                                   uint32_t meshId, std::string_view path,
-                                  const glm::vec4 &color) {
+                                  const glm::vec4 &color,
+                                  const std::stop_token &stop) {
   if (mesh.points.empty()) {
     return;
   }
@@ -1680,7 +1734,7 @@ void appendBasisCurvePlaceholders(dotbim::Model &model, const MeshData &mesh,
   range.meshId = meshId;
   range.firstIndex = static_cast<uint32_t>(model.indices.size());
 
-  const float fallbackRadius = defaultPointPlaceholderRadius(mesh);
+  const float fallbackRadius = defaultPointPlaceholderRadius(mesh, stop);
   std::vector<glm::vec3> rangePoints;
   rangePoints.reserve(mesh.points.size() * 36u);
 
@@ -1690,7 +1744,9 @@ void appendBasisCurvePlaceholders(dotbim::Model &model, const MeshData &mesh,
   }
 
   size_t cursor = 0;
-  for (uint32_t count : curveVertexCounts) {
+  for (size_t curve = 0; curve < curveVertexCounts.size(); ++curve) {
+    checkImportProgress(curve, stop);
+    const uint32_t count = curveVertexCounts[curve];
     if (cursor + static_cast<size_t>(count) > mesh.points.size()) {
       throw std::runtime_error("USD curve '" + std::string(path) +
                                "' has inconsistent curve vertex counts");
@@ -1698,6 +1754,7 @@ void appendBasisCurvePlaceholders(dotbim::Model &model, const MeshData &mesh,
     if (count >= 2u) {
       for (uint32_t i = 0; i + 1u < count; ++i) {
         const size_t first = cursor + i;
+        checkImportProgress(first, stop);
         const size_t second = first + 1u;
         const float radius =
             (pointPlaceholderRadius(mesh, first, fallbackRadius) +
@@ -1723,11 +1780,11 @@ void appendBasisCurvePlaceholders(dotbim::Model &model, const MeshData &mesh,
   if (range.indexCount == 0u) {
     return;
   }
-  const auto [center, radius] = computeBounds(rangePoints);
+  const auto [center, radius] = computeBounds(rangePoints, stop);
   range.boundsCenter = center;
   range.boundsRadius = radius;
   model.meshRanges.push_back(range);
-  appendNativeCurveRange(model, mesh, curveVertexCounts, meshId, color, path);
+  appendNativeCurveRange(model, mesh, curveVertexCounts, meshId, color, path, stop);
 }
 
 #if defined(CONTAINER_HAS_TINYUSDZ)
@@ -2820,7 +2877,8 @@ int tinyUsdMaterialIndexForPrim(const tinyusdz::Stage &stage,
 }
 
 MeshData tinyUsdPointsMeshData(const tinyusdz::GeomPoints &points,
-                               std::string_view path) {
+                               std::string_view path,
+                               const std::stop_token &stop) {
   MeshData mesh{};
   const std::vector<tinyusdz::value::point3f> sourcePoints =
       points.get_points();
@@ -2832,6 +2890,7 @@ MeshData tinyUsdPointsMeshData(const tinyusdz::GeomPoints &points,
 
   mesh.points.reserve(sourcePoints.size());
   for (const tinyusdz::value::point3f &point : sourcePoints) {
+    checkImportProgress(mesh.points.size(), stop);
     const glm::vec3 value = tinyVec3(point);
     if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
         !std::isfinite(value.z)) {
@@ -2845,7 +2904,8 @@ MeshData tinyUsdPointsMeshData(const tinyusdz::GeomPoints &points,
 }
 
 template <typename CurveT>
-MeshData tinyUsdCurveMeshData(const CurveT &curves, std::string_view path) {
+MeshData tinyUsdCurveMeshData(const CurveT &curves, std::string_view path,
+                              const std::stop_token &stop) {
   MeshData mesh{};
   const std::vector<tinyusdz::value::point3f> sourcePoints =
       curves.get_points();
@@ -2857,6 +2917,7 @@ MeshData tinyUsdCurveMeshData(const CurveT &curves, std::string_view path) {
 
   mesh.points.reserve(sourcePoints.size());
   for (const tinyusdz::value::point3f &point : sourcePoints) {
+    checkImportProgress(mesh.points.size(), stop);
     const glm::vec3 value = tinyVec3(point);
     if (!std::isfinite(value.x) || !std::isfinite(value.y) ||
         !std::isfinite(value.z)) {
@@ -2867,6 +2928,7 @@ MeshData tinyUsdCurveMeshData(const CurveT &curves, std::string_view path) {
   }
 
   for (int count : curves.get_curveVertexCounts()) {
+    checkImportProgress(mesh.curveVertexCounts.size(), stop);
     if (count < 0 ||
         static_cast<uint64_t>(count) >
             static_cast<uint64_t>(std::numeric_limits<uint32_t>::max())) {
@@ -2880,8 +2942,11 @@ MeshData tinyUsdCurveMeshData(const CurveT &curves, std::string_view path) {
 }
 
 dotbim::Element *modelElementBySource(dotbim::Model &model,
-                                      std::string_view path) {
-  for (dotbim::Element &element : model.elements) {
+                                      std::string_view path,
+                                      const std::stop_token &stop) {
+  for (size_t i = 0; i < model.elements.size(); ++i) {
+    checkImportProgress(i, stop);
+    auto &element = model.elements[i];
     if (element.sourceId == path) {
       return &element;
     }
@@ -2955,7 +3020,8 @@ void appendTinyUsdCurvePrim(dotbim::Model &model, const tinyusdz::Stage &stage,
                             const glm::mat4 &importTransform,
                             const tinyusdz::value::matrix4d &globalMatrix,
                             std::string_view path,
-                            std::string_view fallbackType);
+                            std::string_view fallbackType,
+                            const std::stop_token &stop);
 
 void appendTinyUsdPointsPrim(dotbim::Model &model, const tinyusdz::Stage &stage,
                              const tinyusdz::tydra::RenderScene &scene,
@@ -2963,15 +3029,15 @@ void appendTinyUsdPointsPrim(dotbim::Model &model, const tinyusdz::Stage &stage,
                              const tinyusdz::GeomPoints &points,
                              const glm::mat4 &importTransform,
                              const tinyusdz::value::matrix4d &globalMatrix,
-                             std::string_view path) {
-  if (dotbim::Element *existing = modelElementBySource(model, path)) {
+                             std::string_view path, const std::stop_token &stop) {
+  if (dotbim::Element *existing = modelElementBySource(model, path, stop)) {
     applyTinyUsdPointsElementFields(*existing, stage, scene, prim, points,
                                     importTransform, globalMatrix, path,
                                     existing->meshId);
     return;
   }
 
-  const MeshData mesh = tinyUsdPointsMeshData(points, path);
+  const MeshData mesh = tinyUsdPointsMeshData(points, path, stop);
   if (mesh.points.empty()) {
     return;
   }
@@ -2981,7 +3047,7 @@ void appendTinyUsdPointsPrim(dotbim::Model &model, const tinyusdz::Stage &stage,
   const glm::vec4 color = colorFromTinyUsdMaterialId(
       scene, tinyUsdMaterialIndexForPrim(stage, scene, path),
       tinyUsdDisplayColor(stage, path));
-  appendPointPlaceholders(model, mesh, meshId, path, color);
+  appendPointPlaceholders(model, mesh, meshId, path, color, stop);
   if (model.meshRanges.size() == rangeCountBefore) {
     return;
   }
@@ -2998,7 +3064,8 @@ void appendTinyUsdPointsFromPrim(
     const tinyusdz::tydra::RenderScene &scene, const tinyusdz::Prim &prim,
     const glm::mat4 &importTransform,
     const tinyusdz::value::matrix4d &parentMatrix, std::string_view parentPath,
-    bool inheritedVisible) {
+    bool inheritedVisible, const std::stop_token &stop) {
+  checkModelImportCancellation(stop);
   const std::string path = tinyUsdPrimPathString(prim, parentPath);
   const tinyusdz::value::matrix4d globalMatrix =
       tinyUsdGlobalMatrixForPrim(prim, parentMatrix, path);
@@ -3006,35 +3073,36 @@ void appendTinyUsdPointsFromPrim(
   if (visible) {
     if (const auto *points = prim.as<tinyusdz::GeomPoints>()) {
       appendTinyUsdPointsPrim(model, stage, scene, prim, *points,
-                              importTransform, globalMatrix, path);
+                              importTransform, globalMatrix, path, stop);
     } else if (const auto *basisCurves =
                    prim.as<tinyusdz::GeomBasisCurves>()) {
       appendTinyUsdCurvePrim(model, stage, scene, prim, *basisCurves,
                              importTransform, globalMatrix, path,
-                             "UsdGeomBasisCurves");
+                             "UsdGeomBasisCurves", stop);
     } else if (const auto *nurbsCurves =
                    prim.as<tinyusdz::GeomNurbsCurves>()) {
       appendTinyUsdCurvePrim(model, stage, scene, prim, *nurbsCurves,
                              importTransform, globalMatrix, path,
-                             "UsdGeomNurbsCurves");
+                             "UsdGeomNurbsCurves", stop);
     }
   }
 
   for (const tinyusdz::Prim &child : prim.children()) {
     appendTinyUsdPointsFromPrim(model, stage, scene, child, importTransform,
-                                globalMatrix, path, visible);
+                                globalMatrix, path, visible, stop);
   }
 }
 
 void appendTinyUsdPointsFromStage(dotbim::Model &model,
                                   const tinyusdz::Stage &stage,
                                   const tinyusdz::tydra::RenderScene &scene,
-                                  const glm::mat4 &importTransform) {
+                                  const glm::mat4 &importTransform,
+                                  const std::stop_token &stop) {
   const tinyusdz::value::matrix4d identity =
       tinyusdz::value::matrix4d::identity();
   for (const tinyusdz::Prim &prim : stage.root_prims()) {
     appendTinyUsdPointsFromPrim(model, stage, scene, prim, importTransform,
-                                identity, "", true);
+                                identity, "", true, stop);
   }
 }
 
@@ -3102,15 +3170,16 @@ void appendTinyUsdCurvePrim(dotbim::Model &model, const tinyusdz::Stage &stage,
                             const glm::mat4 &importTransform,
                             const tinyusdz::value::matrix4d &globalMatrix,
                             std::string_view path,
-                            std::string_view fallbackType) {
-  if (dotbim::Element *existing = modelElementBySource(model, path)) {
+                            std::string_view fallbackType,
+                            const std::stop_token &stop) {
+  if (dotbim::Element *existing = modelElementBySource(model, path, stop)) {
     applyTinyUsdCurveElementFields(*existing, stage, scene, prim, curves,
                                    importTransform, globalMatrix, path,
                                    existing->meshId, fallbackType);
     return;
   }
 
-  const MeshData mesh = tinyUsdCurveMeshData(curves, path);
+  const MeshData mesh = tinyUsdCurveMeshData(curves, path, stop);
   if (mesh.points.empty()) {
     return;
   }
@@ -3120,7 +3189,7 @@ void appendTinyUsdCurvePrim(dotbim::Model &model, const tinyusdz::Stage &stage,
   const glm::vec4 color = colorFromTinyUsdMaterialId(
       scene, tinyUsdMaterialIndexForPrim(stage, scene, path),
       tinyUsdDisplayColor(stage, path));
-  appendBasisCurvePlaceholders(model, mesh, meshId, path, color);
+  appendBasisCurvePlaceholders(model, mesh, meshId, path, color, stop);
   if (model.meshRanges.size() == rangeCountBefore) {
     return;
   }
@@ -3155,7 +3224,8 @@ void appendTinyUsdPointMaterialsFromPrim(
     tinyusdz::tydra::RenderSceneConverter &converter,
     const tinyusdz::tydra::RenderSceneConverterEnv &env,
     const tinyusdz::Prim &prim, std::string_view parentPath,
-    bool inheritedVisible) {
+    bool inheritedVisible, const std::stop_token &stop) {
+  checkModelImportCancellation(stop);
   const std::string path = tinyUsdPrimPathString(prim, parentPath);
   const bool visible = tinyUsdPrimIsVisible(prim, inheritedVisible);
   if (visible && tinyUsdPrimNeedsPlaceholderGeometry(prim)) {
@@ -3167,17 +3237,18 @@ void appendTinyUsdPointMaterialsFromPrim(
 
   for (const tinyusdz::Prim &child : prim.children()) {
     appendTinyUsdPointMaterialsFromPrim(scene, stage, converter, env, child,
-                                        path, visible);
+                                        path, visible, stop);
   }
 }
 
 void appendTinyUsdPointMaterialsFromStage(
     tinyusdz::tydra::RenderScene &scene, const tinyusdz::Stage &stage,
-    const tinyusdz::tydra::RenderSceneConverterEnv &env) {
+    const tinyusdz::tydra::RenderSceneConverterEnv &env,
+    const std::stop_token &stop) {
   tinyusdz::tydra::RenderSceneConverter converter;
   for (const tinyusdz::Prim &prim : stage.root_prims()) {
     appendTinyUsdPointMaterialsFromPrim(scene, stage, converter, env, prim, "",
-                                        true);
+                                        true, stop);
   }
 }
 
@@ -3195,8 +3266,9 @@ bool tinyUsdPathNeedsPlaceholderGeometry(const tinyusdz::Stage &stage,
 
 void applyTinyUsdPointsMaterialFallbacks(
     dotbim::Model &model, const tinyusdz::Stage &stage,
-    const tinyusdz::tydra::RenderScene &scene) {
+    const tinyusdz::tydra::RenderScene &scene, const std::stop_token &stop) {
   for (dotbim::Element &element : model.elements) {
+    checkModelImportCancellation(stop);
     if (element.materialIndex != std::numeric_limits<uint32_t>::max() ||
         !tinyUsdPathNeedsPlaceholderGeometry(stage, element.sourceId)) {
       continue;
@@ -3424,7 +3496,7 @@ glm::vec4 tinyVertexTangent(const tinyusdz::tydra::RenderMesh &mesh,
 
 std::vector<TinyMeshTriangle>
 tinyUsdTrianglesForMaterial(const tinyusdz::tydra::RenderMesh &mesh,
-                            int materialId) {
+                            int materialId, const std::stop_token &stop) {
   const std::vector<uint32_t> faceVertexIndices = mesh.faceVertexIndices();
   const std::vector<uint32_t> faceVertexCounts = mesh.faceVertexCounts();
   if (faceVertexIndices.empty()) {
@@ -3436,10 +3508,13 @@ tinyUsdTrianglesForMaterial(const tinyusdz::tydra::RenderMesh &mesh,
                                               : faceVertexCounts.size();
   materialByFace.assign(faceCount, mesh.material_id);
   for (const auto &[name, subset] : mesh.material_subsetMap) {
+    checkModelImportCancellation(stop);
     (void)name;
     const int subsetMaterial =
         subset.material_id >= 0 ? subset.material_id : mesh.material_id;
+    size_t subsetFace = 0;
     for (int faceIndex : subset.indices()) {
+      checkImportProgress(subsetFace++, stop);
       if (faceIndex >= 0 && static_cast<size_t>(faceIndex) < faceCount) {
         materialByFace[static_cast<size_t>(faceIndex)] = subsetMaterial;
       }
@@ -3449,6 +3524,7 @@ tinyUsdTrianglesForMaterial(const tinyusdz::tydra::RenderMesh &mesh,
   std::vector<TinyMeshTriangle> triangles;
   size_t cursor = 0;
   for (size_t face = 0; face < faceCount; ++face) {
+    checkImportProgress(face, stop);
     const uint32_t count =
         faceVertexCounts.empty() ? 3u : faceVertexCounts[face];
     if (count < 3u || cursor + count > faceVertexIndices.size()) {
@@ -3457,6 +3533,7 @@ tinyUsdTrianglesForMaterial(const tinyusdz::tydra::RenderMesh &mesh,
     }
     if (materialByFace[face] == materialId) {
       for (uint32_t i = 1; i + 1u < count; ++i) {
+        checkImportProgress(i, stop);
         TinyMeshTriangle triangle{};
         triangle.pointIndex[0] = faceVertexIndices[cursor];
         triangle.pointIndex[1] = faceVertexIndices[cursor + i];
@@ -3475,7 +3552,8 @@ tinyUsdTrianglesForMaterial(const tinyusdz::tydra::RenderMesh &mesh,
 }
 
 std::vector<int>
-tinyUsdMeshMaterialIds(const tinyusdz::tydra::RenderMesh &mesh) {
+tinyUsdMeshMaterialIds(const tinyusdz::tydra::RenderMesh &mesh,
+                      const std::stop_token &stop) {
   std::vector<int> materialIds;
   auto appendUnique = [&](int materialId) {
     if (std::ranges::find(materialIds, materialId) == materialIds.end()) {
@@ -3485,6 +3563,7 @@ tinyUsdMeshMaterialIds(const tinyusdz::tydra::RenderMesh &mesh) {
 
   appendUnique(mesh.material_id);
   for (const auto &[name, subset] : mesh.material_subsetMap) {
+    checkModelImportCancellation(stop);
     (void)name;
     appendUnique(subset.material_id >= 0 ? subset.material_id
                                          : mesh.material_id);
@@ -3495,7 +3574,7 @@ tinyUsdMeshMaterialIds(const tinyusdz::tydra::RenderMesh &mesh) {
 bool appendTinyUsdTrianglePart(dotbim::Model &model,
                                const tinyusdz::tydra::RenderMesh &mesh,
                                const std::vector<TinyMeshTriangle> &triangles,
-                               uint32_t meshId) {
+                               uint32_t meshId, const std::stop_token &stop) {
   if (mesh.points.size() >
       static_cast<size_t>(std::numeric_limits<uint32_t>::max())) {
     throw std::runtime_error("USD mesh '" + mesh.abs_path +
@@ -3518,6 +3597,7 @@ bool appendTinyUsdTrianglePart(dotbim::Model &model,
       tinyTexcoordAttribute(mesh, 1u);
 
   for (const TinyMeshTriangle &triangle : triangles) {
+    checkImportProgress(rangePoints.size(), stop);
     glm::vec3 positions[3]{};
     for (size_t corner = 0; corner < 3u; ++corner) {
       const uint32_t pointIndex = triangle.pointIndex[corner];
@@ -3564,21 +3644,22 @@ bool appendTinyUsdTrianglePart(dotbim::Model &model,
 
   range.indexCount =
       static_cast<uint32_t>(model.indices.size()) - range.firstIndex;
-  const auto [center, radius] = computeBounds(rangePoints);
+  const auto [center, radius] = computeBounds(rangePoints, stop);
   range.boundsCenter = center;
   range.boundsRadius = radius;
   if (range.indexCount == 0u) {
     return false;
   }
   model.meshRanges.push_back(range);
-  appendMeshletClustersForRange(model, range);
+  appendMeshletClustersForRange(model, range, stop);
   return true;
 }
 
 const std::vector<TinyMeshPart> *appendTinyUsdMeshIfNeeded(
     dotbim::Model &model, const tinyusdz::tydra::RenderScene &scene,
     int32_t meshIndex,
-    std::unordered_map<int32_t, std::vector<TinyMeshPart>> &loadedMeshes) {
+    std::unordered_map<int32_t, std::vector<TinyMeshPart>> &loadedMeshes,
+    const std::stop_token &stop) {
   if (meshIndex < 0 || static_cast<size_t>(meshIndex) >= scene.meshes.size()) {
     return nullptr;
   }
@@ -3591,14 +3672,15 @@ const std::vector<TinyMeshPart> *appendTinyUsdMeshIfNeeded(
   const tinyusdz::tydra::RenderMesh &mesh =
       scene.meshes[static_cast<size_t>(meshIndex)];
   std::vector<TinyMeshPart> parts;
-  for (int materialId : tinyUsdMeshMaterialIds(mesh)) {
+  for (int materialId : tinyUsdMeshMaterialIds(mesh, stop)) {
+    checkModelImportCancellation(stop);
     const std::vector<TinyMeshTriangle> triangles =
-        tinyUsdTrianglesForMaterial(mesh, materialId);
+        tinyUsdTrianglesForMaterial(mesh, materialId, stop);
     if (triangles.empty()) {
       continue;
     }
     const uint32_t meshId = static_cast<uint32_t>(model.meshRanges.size());
-    if (appendTinyUsdTrianglePart(model, mesh, triangles, meshId)) {
+    if (appendTinyUsdTrianglePart(model, mesh, triangles, meshId, stop)) {
       parts.push_back(TinyMeshPart{meshId, materialId});
     }
   }
@@ -3621,12 +3703,14 @@ bool hasTinyUsdCompositionArcs(const tinyusdz::Layer &layer) {
 bool loadComposedTinyUsdStage(const std::filesystem::path &path,
                               tinyusdz::Stage &stage, std::string &warn,
                               std::string &err,
-                              const tinyusdz::USDLoadOptions &options) {
+                              const tinyusdz::USDLoadOptions &options,
+                              const std::stop_token &stop) {
   tinyusdz::Layer layer;
   const std::string filename = pathToTinyUsdUtf8(path);
   if (!tinyusdz::LoadLayerFromFile(filename, &layer, &warn, &err, options)) {
     return false;
   }
+  checkModelImportCancellation(stop);
 
   tinyusdz::AssetResolutionResolver resolver;
   const std::string baseDir = pathToTinyUsdUtf8(path.parent_path());
@@ -3645,6 +3729,7 @@ bool loadComposedTinyUsdStage(const std::filesystem::path &path,
 
   constexpr int kMaxCompositionPasses = 16;
   for (int pass = 0; pass < kMaxCompositionPasses; ++pass) {
+    checkModelImportCancellation(stop);
     if (!hasTinyUsdCompositionArcs(working)) {
       break;
     }
@@ -3657,6 +3742,7 @@ bool loadComposedTinyUsdStage(const std::filesystem::path &path,
     working = std::move(composited);
   }
 
+  checkModelImportCancellation(stop);
   if (hasTinyUsdCompositionArcs(working)) {
     err += "USD composition did not converge after " +
            std::to_string(kMaxCompositionPasses) + " passes.\n";
@@ -3671,8 +3757,10 @@ bool hasRenderableGeometry(const dotbim::Model &model) {
          !model.meshRanges.empty() && !model.elements.empty();
 }
 
-void fillTinyUsdElementDisplayNameFallbacks(dotbim::Model &model) {
+void fillTinyUsdElementDisplayNameFallbacks(dotbim::Model &model,
+                                            const std::stop_token &stop) {
   for (dotbim::Element &element : model.elements) {
+    checkModelImportCancellation(stop);
     if (element.displayName.empty() && !element.sourceId.empty()) {
       element.displayName = tinyUsdPathLeaf(element.sourceId);
     }
@@ -3685,14 +3773,15 @@ void appendTinyUsdNode(
     const glm::mat4 &importTransform,
     std::unordered_map<int32_t, std::vector<TinyMeshPart>> &loadedMeshes,
     const std::unordered_set<std::string> &handledInstancePaths,
-    bool insideHandledInstance) {
+    bool insideHandledInstance, const std::stop_token &stop) {
+  checkModelImportCancellation(stop);
   const bool handledInstance =
       insideHandledInstance ||
       (!node.abs_path.empty() && handledInstancePaths.contains(node.abs_path));
   if (!handledInstance &&
       node.category == tinyusdz::tydra::NodeCategory::Geom && node.id >= 0) {
     const auto *parts =
-        appendTinyUsdMeshIfNeeded(model, scene, node.id, loadedMeshes);
+        appendTinyUsdMeshIfNeeded(model, scene, node.id, loadedMeshes, stop);
     if (parts != nullptr) {
       const tinyusdz::tydra::RenderMesh &mesh =
           scene.meshes[static_cast<size_t>(node.id)];
@@ -3707,6 +3796,7 @@ void appendTinyUsdNode(
         metadata.primType = "Mesh";
       }
       for (const TinyMeshPart &part : *parts) {
+        checkModelImportCancellation(stop);
         const glm::vec4 color =
             colorFromTinyUsdMaterial(scene, mesh, part.materialId);
         dotbim::Element element{};
@@ -3743,21 +3833,23 @@ void appendTinyUsdNode(
 
   for (const tinyusdz::tydra::Node &child : node.children) {
     appendTinyUsdNode(model, stage, scene, child, importTransform, loadedMeshes,
-                      handledInstancePaths, handledInstance);
+                      handledInstancePaths, handledInstance, stop);
   }
 }
 
 void appendTinyUsdInstances(
     dotbim::Model &model, const tinyusdz::Stage &stage,
     const tinyusdz::tydra::RenderScene &scene, const glm::mat4 &importTransform,
-    std::unordered_map<int32_t, std::vector<TinyMeshPart>> &loadedMeshes) {
+    std::unordered_map<int32_t, std::vector<TinyMeshPart>> &loadedMeshes,
+    const std::stop_token &stop) {
   for (const tinyusdz::tydra::RenderInstance &instance : scene.instances) {
+    checkModelImportCancellation(stop);
     if (!instance.visible || instance.mesh_id < 0) {
       continue;
     }
 
     const auto *parts =
-        appendTinyUsdMeshIfNeeded(model, scene, instance.mesh_id, loadedMeshes);
+        appendTinyUsdMeshIfNeeded(model, scene, instance.mesh_id, loadedMeshes, stop);
     if (parts == nullptr) {
       continue;
     }
@@ -3773,6 +3865,7 @@ void appendTinyUsdInstances(
                                  : mesh.display_name;
     }
     for (const TinyMeshPart &part : *parts) {
+      checkModelImportCancellation(stop);
       const int materialId =
           instance.material_id >= 0 ? instance.material_id : part.materialId;
       dotbim::Element element{};
@@ -3810,7 +3903,8 @@ void appendTinyUsdInstances(
 
 dotbim::Model modelFromTinyUsdStage(const tinyusdz::Stage &stage,
                                     float importScale,
-                                    const std::filesystem::path &sourcePath) {
+                                    const std::filesystem::path &sourcePath,
+                                    const std::stop_token &stop) {
   tinyusdz::tydra::RenderScene scene;
   tinyusdz::tydra::RenderSceneConverter converter;
   tinyusdz::tydra::RenderSceneConverterEnv env(stage);
@@ -3819,17 +3913,20 @@ dotbim::Model modelFromTinyUsdStage(const tinyusdz::Stage &stage,
   env.usd_filename = filename;
   env.scene_config.load_texture_assets = false;
   env.set_search_paths({sourceDir});
+  checkModelImportCancellation(stop);
   const bool convertedScene = converter.ConvertToRenderScene(env, &scene);
+  checkModelImportCancellation(stop);
   std::string converterError;
   if (!convertedScene) {
     converterError = converter.GetError();
     scene = tinyusdz::tydra::RenderScene{};
   }
-  appendTinyUsdPointMaterialsFromStage(scene, stage, env);
+  appendTinyUsdPointMaterialsFromStage(scene, stage, env, stop);
 
   dotbim::Model model{};
   model.materials.reserve(scene.materials.size());
   for (const tinyusdz::tydra::RenderMaterial &material : scene.materials) {
+    checkModelImportCancellation(stop);
     model.materials.push_back(
         convertTinyUsdMaterial(scene, material, sourcePath.parent_path()));
   }
@@ -3839,6 +3936,7 @@ dotbim::Model modelFromTinyUsdStage(const tinyusdz::Stage &stage,
   std::unordered_set<std::string> handledInstancePaths;
   handledInstancePaths.reserve(scene.instances.size());
   for (const tinyusdz::tydra::RenderInstance &instance : scene.instances) {
+    checkModelImportCancellation(stop);
     if (instance.visible && instance.mesh_id >= 0 &&
         !instance.abs_path.empty()) {
       handledInstancePaths.insert(instance.abs_path);
@@ -3869,12 +3967,13 @@ dotbim::Model modelFromTinyUsdStage(const tinyusdz::Stage &stage,
       glm::scale(glm::mat4(1.0f), glm::vec3(unitScale));
   for (const tinyusdz::tydra::Node &node : scene.nodes) {
     appendTinyUsdNode(model, stage, scene, node, importTransform, loadedMeshes,
-                      handledInstancePaths, false);
+                      handledInstancePaths, false, stop);
   }
-  appendTinyUsdInstances(model, stage, scene, importTransform, loadedMeshes);
-  appendTinyUsdPointsFromStage(model, stage, scene, importTransform);
-  applyTinyUsdPointsMaterialFallbacks(model, stage, scene);
-  fillTinyUsdElementDisplayNameFallbacks(model);
+  appendTinyUsdInstances(model, stage, scene, importTransform, loadedMeshes, stop);
+  appendTinyUsdPointsFromStage(model, stage, scene, importTransform, stop);
+  applyTinyUsdPointsMaterialFallbacks(model, stage, scene, stop);
+  fillTinyUsdElementDisplayNameFallbacks(model, stop);
+  checkModelImportCancellation(stop);
   if (!convertedScene && !hasRenderableGeometry(model)) {
     throw std::runtime_error(
         "TinyUSDZ failed to convert USD scene '" + filename +
@@ -3884,7 +3983,7 @@ dotbim::Model modelFromTinyUsdStage(const tinyusdz::Stage &stage,
 }
 
 dotbim::Model LoadWithTinyUsd(const std::filesystem::path &path,
-                              float importScale) {
+                              float importScale, const std::stop_token &stop) {
   const std::string filename = pathToTinyUsdUtf8(path);
   tinyusdz::USDLoadOptions options;
   options.load_assets = false;
@@ -3897,9 +3996,11 @@ dotbim::Model LoadWithTinyUsd(const std::filesystem::path &path,
   tinyusdz::Stage directStage;
   std::string directWarn;
   std::string directErr;
-  if (tinyusdz::LoadUSDFromFile(filename, &directStage, &directWarn, &directErr,
-                                options)) {
-    directModel = modelFromTinyUsdStage(directStage, importScale, path);
+  const bool directLoaded = tinyusdz::LoadUSDFromFile(
+      filename, &directStage, &directWarn, &directErr, options);
+  checkModelImportCancellation(stop);
+  if (directLoaded) {
+    directModel = modelFromTinyUsdStage(directStage, importScale, path, stop);
     if (hasRenderableGeometry(*directModel) &&
         !directModel->materials.empty()) {
       return std::move(*directModel);
@@ -3909,8 +4010,11 @@ dotbim::Model LoadWithTinyUsd(const std::filesystem::path &path,
   tinyusdz::Stage composedStage;
   std::string composedWarn;
   std::string composedErr;
-  if (!loadComposedTinyUsdStage(path, composedStage, composedWarn, composedErr,
-                                options)) {
+  checkModelImportCancellation(stop);
+  const bool composedLoaded = loadComposedTinyUsdStage(
+      path, composedStage, composedWarn, composedErr, options, stop);
+  checkModelImportCancellation(stop);
+  if (!composedLoaded) {
     if (directModel && hasRenderableGeometry(*directModel)) {
       return std::move(*directModel);
     }
@@ -3919,7 +4023,7 @@ dotbim::Model LoadWithTinyUsd(const std::filesystem::path &path,
                              "': " + (error.empty() ? "unknown error" : error));
   }
   dotbim::Model composedModel =
-      modelFromTinyUsdStage(composedStage, importScale, path);
+      modelFromTinyUsdStage(composedStage, importScale, path, stop);
   if (hasRenderableGeometry(composedModel) &&
       (!composedModel.materials.empty() || !directModel ||
        !hasRenderableGeometry(*directModel))) {
@@ -3933,14 +4037,28 @@ dotbim::Model LoadWithTinyUsd(const std::filesystem::path &path,
 
 #endif
 
-std::vector<uint8_t> readBinaryFile(const std::filesystem::path &path) {
+std::vector<uint8_t> readBinaryFile(const std::filesystem::path &path,
+                                    const std::stop_token &stop) {
+  checkModelImportCancellation(stop);
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     throw std::runtime_error("failed to open USD file: " +
                              container::util::pathToUtf8(path));
   }
-  return {std::istreambuf_iterator<char>(file),
-          std::istreambuf_iterator<char>()};
+  std::array<uint8_t, 64 * 1024> block;
+  std::vector<uint8_t> bytes;
+  do {
+    checkModelImportCancellation(stop);
+    file.read(reinterpret_cast<char *>(block.data()),
+              static_cast<std::streamsize>(block.size()));
+    bytes.insert(bytes.end(), block.begin(), block.begin() + file.gcount());
+  } while (file);
+  checkModelImportCancellation(stop);
+  if (file.bad() || !file.eof()) {
+    throw std::runtime_error("failed to read USD file: " +
+                             container::util::pathToUtf8(path));
+  }
+  return bytes;
 }
 
 bool fileStartsWithUsdc(const std::filesystem::path &path) {
@@ -3954,8 +4072,12 @@ bool fileStartsWithUsdc(const std::filesystem::path &path) {
          std::string_view(magic, sizeof(magic)) == "PXR-USDC";
 }
 
-std::string readTextFile(const std::filesystem::path &path) {
-  const std::vector<uint8_t> bytes = readBinaryFile(path);
+std::string readTextFile(const std::filesystem::path &path,
+                         const std::stop_token &stop) {
+  const std::vector<uint8_t> bytes = readBinaryFile(path, stop);
+  if (bytes.empty()) {
+    return {};
+  }
   if (bytes.size() >= 8u &&
       std::string_view(reinterpret_cast<const char *>(bytes.data()), 8u) ==
           "PXR-USDC") {
@@ -3989,8 +4111,9 @@ bool hasUsdTextExtension(std::string_view name) {
   return extension == ".usd" || extension == ".usda";
 }
 
-std::string extractFirstUsdTextFromUsdz(const std::filesystem::path &path) {
-  const std::vector<uint8_t> bytes = readBinaryFile(path);
+std::string extractFirstUsdTextFromUsdz(const std::filesystem::path &path,
+                                        const std::stop_token &stop) {
+  const std::vector<uint8_t> bytes = readBinaryFile(path, stop);
   if (bytes.size() < 22u) {
     throw std::runtime_error("USDZ archive is too small");
   }
@@ -3998,6 +4121,7 @@ std::string extractFirstUsdTextFromUsdz(const std::filesystem::path &path) {
   const size_t minOffset = bytes.size() > 66000u ? bytes.size() - 66000u : 0u;
   std::optional<size_t> eocdOffset;
   for (size_t offset = bytes.size() - 22u;; --offset) {
+    checkImportProgress(offset, stop);
     if (readLe32(bytes, offset) == 0x06054b50u) {
       eocdOffset = offset;
       break;
@@ -4014,6 +4138,7 @@ std::string extractFirstUsdTextFromUsdz(const std::filesystem::path &path) {
   const uint32_t centralDirectoryOffset = readLe32(bytes, *eocdOffset + 16u);
   size_t cursor = centralDirectoryOffset;
   for (uint16_t entry = 0; entry < entryCount; ++entry) {
+    checkImportProgress(entry, stop);
     if (readLe32(bytes, cursor) != 0x02014b50u) {
       throw std::runtime_error("USDZ archive has an invalid ZIP directory");
     }
@@ -4072,14 +4197,17 @@ std::string extractFirstUsdTextFromUsdz(const std::filesystem::path &path) {
 
 } // namespace
 
-dotbim::Model LoadFromText(std::string_view usdText, float importScale) {
-  UsdParser parser(usdText);
+dotbim::Model LoadFromText(std::string_view usdText, float importScale,
+                           std::stop_token stop) {
+  checkModelImportCancellation(stop);
+  UsdParser parser(usdText, stop);
   const std::vector<Node> nodes = parser.parse();
+  checkModelImportCancellation(stop);
 
   dotbim::Model model{};
-  const StageUnitMetadata stageUnits = stageMetersPerUnitFromText(usdText);
+  const StageUnitMetadata stageUnits = stageMetersPerUnitFromText(usdText, stop);
   model.unitMetadata = makeUnitMetadata(stageUnits, importScale);
-  const std::string sourceUpAxis = stageUpAxisFromText(usdText);
+  const std::string sourceUpAxis = stageUpAxisFromText(usdText, stop);
   applySourceUpAxis(model, sourceUpAxis);
   std::vector<std::optional<glm::mat4>> transformCache(nodes.size());
   const float unitScale =
@@ -4091,6 +4219,7 @@ dotbim::Model LoadFromText(std::string_view usdText, float importScale) {
 
   uint32_t nextMeshId = 0;
   for (size_t nodeIndex = 0; nodeIndex < nodes.size(); ++nodeIndex) {
+    checkModelImportCancellation(stop);
     const Node &node = nodes[nodeIndex];
     const bool isMesh = node.typeName == "Mesh";
     const bool isPoints = node.typeName == "Points";
@@ -4104,11 +4233,11 @@ dotbim::Model LoadFromText(std::string_view usdText, float importScale) {
     const uint32_t meshId = nextMeshId++;
     const size_t meshRangeCount = model.meshRanges.size();
     if (isPoints) {
-      appendPointPlaceholders(model, node.mesh, meshId, node.path, color);
+      appendPointPlaceholders(model, node.mesh, meshId, node.path, color, stop);
     } else if (isBasisCurves) {
-      appendBasisCurvePlaceholders(model, node.mesh, meshId, node.path, color);
+      appendBasisCurvePlaceholders(model, node.mesh, meshId, node.path, color, stop);
     } else {
-      appendMesh(model, node.mesh, meshId, node.path, color);
+      appendMesh(model, node.mesh, meshId, node.path, color, stop);
     }
     if (model.meshRanges.size() == meshRangeCount) {
       continue;
@@ -4177,26 +4306,30 @@ dotbim::Model LoadFromText(std::string_view usdText, float importScale) {
     model.elements.push_back(std::move(element));
   }
 
+  checkModelImportCancellation(stop);
   return model;
 }
 
 dotbim::Model LoadFromFile(const std::filesystem::path &path,
-                           float importScale) {
+                           float importScale, std::stop_token stop) {
+  checkModelImportCancellation(stop);
   const std::string extension = lowerAscii(path.extension().string());
 #if defined(CONTAINER_HAS_TINYUSDZ)
   try {
-    return LoadWithTinyUsd(path, importScale);
+    return LoadWithTinyUsd(path, importScale, stop);
   } catch (const std::exception &tinyUsdError) {
+    checkModelImportCancellation(stop);
     if (extension == ".usdc" || fileStartsWithUsdc(path)) {
       throw;
     }
 
     try {
       if (extension == ".usdz") {
-        return LoadFromText(extractFirstUsdTextFromUsdz(path), importScale);
+        return LoadFromText(extractFirstUsdTextFromUsdz(path, stop), importScale, stop);
       }
-      return LoadFromText(readTextFile(path), importScale);
+      return LoadFromText(readTextFile(path, stop), importScale, stop);
     } catch (const std::exception &fallbackError) {
+      checkModelImportCancellation(stop);
       throw std::runtime_error(
           std::string(tinyUsdError.what()) +
           "; lightweight USD fallback also failed: " + fallbackError.what());
@@ -4204,13 +4337,13 @@ dotbim::Model LoadFromFile(const std::filesystem::path &path,
   }
 #else
   if (extension == ".usdz") {
-    return LoadFromText(extractFirstUsdTextFromUsdz(path), importScale);
+    return LoadFromText(extractFirstUsdTextFromUsdz(path, stop), importScale, stop);
   }
   if (extension == ".usdc") {
     throw std::runtime_error(
         "binary .usdc files are not supported by the lightweight USD loader");
   }
-  return LoadFromText(readTextFile(path), importScale);
+  return LoadFromText(readTextFile(path, stop), importScale, stop);
 #endif
 }
 

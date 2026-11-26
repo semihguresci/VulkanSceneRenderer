@@ -46,6 +46,13 @@ graphics and asynchronous DDGI readers retire. Eviction switches back to the
 fallback and releases the finer image and its residency charge. The cap
 includes fallback, resident replacements and in-flight replacement images.
 
+Reload admission accounts for the finer mip tails that an accepted replacement
+can release. The renderer retires their readers and releases the tails after
+admission, before allocating the replacement. A rejected synchronous reload
+preserves the live texture views and material descriptors. A detached geometry
+upload also preserves them when the allocation would exceed the budget even
+with those tails released.
+
 Authored chains retain their format, swizzle and level data, including enabled
 BC, ETC2 and ASTC compression. Eligible 8-bit RGBA/BGRA images receive a CPU mip
 pyramid with linear-light filtering for sRGB color and linear filtering for
@@ -61,6 +68,13 @@ allocations, since several descriptor rows can share one image. Set
 `texture_streaming_gpu_regression` on a Vulkan device with validation layers.
 The regression also enables `CONTAINER_DISABLE_TEXTURE_COMPRESSION=1` for a
 capture that exercises CPU expansion before mip streaming.
+
+The reload regression first promotes a 1024² texture under a 7 MiB resident
+cap. It checks that malformed glTF and dotBIM replacements, an oversized glTF
+texture load, and an oversized interactive BIM upload preserve the image ID,
+resident mip and viewport pixels. It then admits a full-resident replacement
+whose texture fits after the old detail retires. Both raster techniques use
+Vulkan synchronization validation for these captures.
 
 ## Allocation ownership
 

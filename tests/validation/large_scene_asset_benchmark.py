@@ -30,6 +30,7 @@ PROVENANCE = {
 }
 VALIDATION_LAYER = 'Insert instance layer "VK_LAYER_KHRONOS_validation"'
 VMA_FIELDS = ("vmaBytes", "vmaDeviceLocalBytes", "vmaAllocations")
+INTERACTIVE_GEOMETRY_KIB = 1024
 
 
 def write_json(path, value):
@@ -103,18 +104,29 @@ def edit_gltf_position(model_path, edit):
     return {**edit, "sha256Before": before, "sha256After": after}
 
 
-def capture_plan(model_name, model_path, warmup, samples):
+def capture_plan(model_name, model_path, warmup, samples, interactive_reload):
     overview = warmup + samples + 2
-    reload_frame = overview + 1
+    reload_start = overview + 1
+    reload_frame = reload_start + int(interactive_reload)
     detail = reload_frame + warmup + samples + 2
 
     def camera(frame, view):
         position, target = CAMERAS[model_name][view]
         return dict(frame=frame, position=position, target=target)
 
-    return dict(schemaVersion=1, frames=detail, sampleFrames=[overview, detail], telemetryFrames=[1, reload_frame],
-                camera=[camera(1, 0), camera(overview, 0), camera(reload_frame, 1), camera(detail, 1)],
-                events=[dict(frame=reload_frame, reload=str(model_path))])
+    cameras = [camera(1, 0), camera(overview, 0)]
+    if interactive_reload:
+        events = [dict(frame=reload_start, guiReload=str(model_path), guiWaitForLoad=False),
+                  dict(frame=reload_frame, guiWaitForUploadChunks=1)]
+        telemetry_frames = [1, reload_start, reload_frame]
+        cameras.append(camera(reload_start, 0))
+        cameras.extend((camera(reload_frame, 0), camera(reload_frame + 1, 1)))
+    else:
+        events = [dict(frame=reload_frame, reload=str(model_path))]
+        telemetry_frames = [1, reload_frame]
+        cameras.append(camera(reload_frame, 1))
+    return dict(schemaVersion=1, frames=detail, sampleFrames=[overview, detail], telemetryFrames=telemetry_frames,
+                camera=[*cameras, camera(detail, 1)], events=events)
 
 
 def capture_paths(image, frame, plan):
@@ -177,8 +189,10 @@ def benchmark_sample(state, scene, capture_frame, args):
         mip = row["residentFirstMip"]
         mips[mip] = mips.get(mip, 0) + 1
     memory = state["assetResidency"]
+    gpu_passes = {row["name"]: row["gpuMs"] for row in state["passes"] if row["active"] and row["gpuTimed"]}
     return dict(timing=frame_timings(state, capture_frame, args.samples), camera=state["camera"],
                 objectCount=state["scene"][f"{provider}ObjectCount"], geometryLod=lod,
+                latestRetiredGpuPassMs=gpu_passes,
                 assetMemory={key: memory[key] for key in ("used", "peak", "limits", "rejectedReservations")},
                 vma={key: state["shaderReload"][key] for key in VMA_FIELDS},
                 geometryStreaming=state["geometryStreaming"], rayShadows=state.get("rayShadows"),
@@ -221,14 +235,19 @@ def acceleration_builds(overview, detail, reload_frame, no_ray_query, require_ra
 
 
 def make_command(args, model, case, sequence, image, cache):
-    command = [str(args.renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui",
+    resident_mib, upload_mib = asset_caps(args, case)
+    command = [str(args.renderer), "--model", str(model), "--import-scale", "1", "--hidden",
                "--render-technique", args.technique, "--width", str(args.width), "--height", str(args.height),
                "--fixed-dt", "0.016666667", "--msaa", "1", "--camera-fov", "45", "--display-mode", "lit",
                "--no-taa", "--no-bloom", "--no-ddgi", "--exposure", "1", "--directional-intensity", "3",
                "--directional-direction", "-0.55", "-0.75", "-0.35", "--environment-intensity", "0.8",
                "--validation" if args.validation_manifest else "--no-validation",
                "--screenshot-viewport", "--capture-sequence", str(sequence), "--screenshot", str(image),
-               "--asset-memory-mb", str(args.asset_memory_mib), "--asset-upload-mb", str(args.asset_upload_mib)]
+               "--asset-memory-mb", str(resident_mib), "--asset-upload-mb", str(upload_mib)]
+    if args.interactive_reload:
+        command += ["--geometry-upload-kb", str(INTERACTIVE_GEOMETRY_KIB)]
+    else:
+        command.append("--no-ui")
     if args.no_ray_query:
         command += ["--no-ray-query", "--ray-shadows", "raster"]
     else:
@@ -241,9 +260,32 @@ def make_command(args, model, case, sequence, image, cache):
     return command
 
 
+def asset_caps(args, case):
+    if case == "reference" and args.unbounded_reference:
+        return 0, 0
+    return args.asset_memory_mib, args.asset_upload_mib
+
+
+def verify_asset_caps(state, expected_mib, source):
+    budget = state["assetResidency"]
+    for key, mib in zip(("residentBytes", "uploadBytes"), expected_mib, strict=True):
+        cap = mib * 1024 * 1024
+        used, peak = budget["used"][key], budget["peak"][key]
+        require(budget["limits"][key] == cap and 0 <= used <= peak and (cap == 0 or peak <= cap),
+                f"Asset budget was not applied or was exceeded for {key} in {source}: {budget}")
+
+
+def geometry_asset(state, route):
+    provider = "primary-mesh-scene" if route == "primary" else "auxiliary-bim-scene"
+    assets = [entry for entry in state["assetResidency"]["providers"] if entry["id"] == provider]
+    require(len(assets) == 1 and assets[0]["residency"] == "resident" and assets[0]["geometryAssetId"] > 0,
+            f"Expected a published {provider} geometry asset, got {assets}")
+    return assets[0]["geometryAssetId"]
+
+
 def run_case(args, scene, model, case, output, environment, validation):
     warmup = args.warmup if args.warmup is not None else (480 if scene == "chess" else 120)
-    plan = capture_plan(scene, model, warmup, args.samples)
+    plan = capture_plan(scene, model, warmup, args.samples, args.interactive_reload)
     sequence = output / "sequence.json"
     write_json(sequence, plan)
     stem = output / case
@@ -266,15 +308,20 @@ def run_case(args, scene, model, case, output, environment, validation):
         require(inserted and Path(inserted[1]).resolve() == Path(validation["library"]["path"]),
                 f"Requested sync validation library was absent. See {log}")
 
-    first_frame, reload_frame = plan["telemetryFrames"]
+    first_frame, *preparation_frames, reload_frame = plan["telemetryFrames"]
     early = {frame: json.loads(capture_paths(image, frame, plan)[1].read_bytes())
-             for frame in (first_frame, reload_frame)}
+             for frame in plan["telemetryFrames"]}
+    route = ROUTES[scene]
+    for frame, state in early.items():
+        verify_asset_caps(state, asset_caps(args, case), f"{scene} {case} frame {frame}")
+    old_asset = geometry_asset(early[first_frame], route)
+    first_reload_asset = geometry_asset(early[reload_frame], route)
     states = {}
     result["views"] = {}
     for view, frame in zip(("overview", "detail"), plan["sampleFrames"], strict=True):
         screenshot, sidecar = capture_paths(image, frame, plan)
         state = states[view] = json.loads(sidecar.read_bytes())
-        route = ROUTES[scene]
+        verify_asset_caps(state, asset_caps(args, case), sidecar)
         require(state["technique"] == args.technique and state["resolution"] == [args.width, args.height]
                 and state["validationEnabled"] == bool(validation) and not state["taa"]["enabled"]
                 and state["swapchainRecreates"] == 0 and state["msaaSamples"] == 1
@@ -309,6 +356,34 @@ def run_case(args, scene, model, case, output, environment, validation):
             and result["startup"]["firstSubmittedMs"] >= result["startup"]["initialSceneMs"],
             f"Invalid startup instrumentation in {log}")
     overview = states["overview"]
+    detail = states["detail"]
+    detail_asset = geometry_asset(detail, route)
+    require(geometry_asset(overview, route) == old_asset and detail_asset != old_asset,
+            f"Reload did not publish a new geometry asset in {scene} {case}")
+    if args.interactive_reload:
+        preparing = early[preparation_frames[0]]
+        pending = early[reload_frame]
+        first_copy = pending["geometryStreaming"]["reload"]
+        completed_copy = detail["geometryStreaming"]["reload"]
+        old_loading = overview["gui"]["modelLoading"]
+        pending_loading = pending["gui"]["modelLoading"]
+        require(geometry_asset(preparing, route) == old_asset and preparing["gui"]["modelLoading"]["pending"] and
+                preparing["geometryStreaming"]["reload"]["submittedBytes"] == 0,
+                f"The {scene} request did not leave the previous scene active during preparation")
+        require(first_reload_asset == old_asset and pending_loading["pending"] and
+                pending_loading["progressFrames"] == old_loading["progressFrames"] and
+                first_copy["state"] == "uploading" and 0 < first_copy["submittedBytes"] < first_copy["totalBytes"],
+                f"The original {scene} view did not keep rendering during staged replacement: {first_copy}")
+        require(completed_copy["state"] == "idle" and completed_copy["requestId"] == first_copy["requestId"] and
+                completed_copy["completedBytes"] == completed_copy["totalBytes"] == first_copy["totalBytes"] and
+                completed_copy["publications"] == first_copy["publications"] + 1 and
+                0 < completed_copy["maxBytesPerTick"] <= INTERACTIVE_GEOMETRY_KIB * 1024 and
+                not detail["gui"]["modelLoading"]["pending"],
+                f"Staged replacement did not publish within the geometry copy limit in {scene} {case}")
+        result["interactiveReload"] = dict(firstCopy=first_copy, completedCopy=completed_copy,
+                                           previousGeometryAsset=old_asset, newGeometryAsset=detail_asset)
+    else:
+        require(first_reload_asset == detail_asset, f"Synchronous reload did not immediately publish in {scene} {case}")
     result["device"] = {field: overview[field] for field in (
         "gpu", "vendorId", "deviceId", "driverVersion", "vulkanApiVersion", "build", "framesInFlight", "swapchainFormat")}
     result["device"]["gpuTimingSource"] = overview["gpuProfiler"]["source"]
@@ -321,7 +396,8 @@ def run_case(args, scene, model, case, output, environment, validation):
         phase: {"telemetry": str(capture_paths(image, frame, plan)[1]), "assetResidency": early[frame]["assetResidency"],
                 "geometryStreaming": early[frame]["geometryStreaming"],
                 "vma": {key: early[frame]["shaderReload"][key] for key in VMA_FIELDS}}
-        for phase, frame in (("startup", first_frame), ("firstReloadFrame", reload_frame))}
+        for phase, frame in (("startup", first_frame), ("firstReloadFrame", reload_frame),
+                             *(("preparingReload", frame) for frame in preparation_frames))}
     result["vmaSampledPeak"] = {
         key: max(sample["vma"][key] for sample in (*result["views"].values(), *result["telemetryCheckpoints"].values()))
         for key in VMA_FIELDS}
@@ -383,6 +459,10 @@ def main():
     parser.add_argument("--timeout", type=int, default=600, help="Seconds per renderer process")
     parser.add_argument("--asset-memory-mib", type=int, default=0)
     parser.add_argument("--asset-upload-mib", type=int, default=0)
+    parser.add_argument("--unbounded-reference", action="store_true",
+                        help="Apply asset caps only to streaming and cache runs")
+    parser.add_argument("--interactive-reload", action="store_true",
+                        help="Exercise staged replacement while the previous large scene keeps rendering")
     parser.add_argument("--texture-chunk-kib", type=int, default=4096, help="Texture copy cap for the streaming runs")
     parser.add_argument("--validation-manifest", type=Path, help="VkLayer_khronos_validation.json for sync validation")
     ray = parser.add_mutually_exclusive_group()
@@ -398,6 +478,8 @@ def main():
         parser.error("require 8–4500 warm-up frames, 8–120 samples, positive extent and timeout and 1–4096 KiB chunks")
     if (args.tekla and args.tekla.suffix.lower() != ".ifcx") or (args.gltf and args.gltf.suffix.lower() != ".gltf"):
         parser.error("expected native IFCX and external-buffer glTF source files")
+    if args.unbounded_reference and not (args.asset_memory_mib or args.asset_upload_mib):
+        parser.error("--unbounded-reference requires at least one asset cap for the streamed runs")
 
     binary = file_identity(args.renderer)
     args.renderer = Path(binary["path"])
@@ -412,7 +494,10 @@ def main():
                   coldPolicy="Fresh process with an empty renderer-derived cache. The OS file cache and the legacy BIM "
                              "metadata cache beside the executable are unmanaged.",
                   comparisonPolicy="Full-detail reference and streamed views use the same extent, camera and lighting.",
-                  vmaPolicy="VMA peaks are sampled at four capture checkpoints. The asset budget reports its own lifetime peak.",
+                  assetCapsMiB={case: dict(zip(("resident", "upload"), asset_caps(args, case), strict=True))
+                                for case in ("reference", "streamed")},
+                  interactiveReload=args.interactive_reload,
+                  vmaPolicy="VMA peaks are sampled at capture checkpoints. The asset budget reports its own lifetime peak.",
                   scenes={})
     try:
         for scene, source in (("tekla", args.tekla), ("chess", args.gltf)):

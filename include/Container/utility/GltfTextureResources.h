@@ -7,6 +7,7 @@
 
 #include <functional>
 #include <limits>
+#include <stop_token>
 
 namespace container::material {
 
@@ -38,7 +39,8 @@ struct PreparedGltfTextures {
 [[nodiscard]] PreparedGltfTextures PrepareGltfTextures(
     const tinygltf::Model& model, const TextureDecodeOptions& deviceProfile,
     uint64_t maxPreparedBytes = GltfTextureMemoryBytes(kDefaultGltfTextureMemoryMiB),
-    bool enableExperimentalMaterials = false, uint32_t streamingFallbackExtent = 0);
+    bool enableExperimentalMaterials = false, uint32_t streamingFallbackExtent = 0,
+    std::stop_token stop = {});
 
 // Exact number of distinct image/role/sampler resources the prepared producer
 // will publish into a fresh table. Validates every binding before any upload.

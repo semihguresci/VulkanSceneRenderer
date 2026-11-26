@@ -103,6 +103,10 @@ def capture_sequence(provider, source, abandoned, candidate, *, correctness):
         events.update({steps[name]: near_probe for name in ("near", "clean")})
         for key, incoming in (("first", abandoned), ("second", candidate), ("acceptedFirst", candidate)):
             events[steps[key]] = {**request(incoming), **far_probe}
+        # Rebuild at an odd extent while the first copy batch is still live.
+        # Return to the original capture extent to compare the old view and pick exactly.
+        events[steps["first"] + 1] = {"resize": [WIDTH + 9, HEIGHT + 7]}
+        events[steps["first"] + 2] = {"resize": [WIDTH, HEIGHT]}
         for name in ("firstLater", "secondLater", "acceptedLater"):
             events[steps[name]] = {"guiWaitForUploadChunks": 4, **far_probe}
         events[steps["secondLater"] + 1] = {"guiUnload": True}
@@ -213,6 +217,11 @@ def streaming_stats(state, chunk_kib, staging_mib):
             0 <= asset["used"]["uploadBytes"] <= asset["peak"]["uploadBytes"] and
             (not staging or asset["peak"]["uploadBytes"] <= staging),
             f"Geometry streaming exceeded its staging allocation cap: {asset}")
+    resident = 64 * 1024 * 1024 if staging else 0
+    require(asset["limits"]["residentBytes"] == resident and
+            0 <= asset["used"]["residentBytes"] <= asset["peak"]["residentBytes"] and
+            (not resident or asset["peak"]["residentBytes"] <= resident),
+            f"Geometry streaming exceeded its resident allocation cap: {asset}")
     reload = stream["reload"]
     require(math.isfinite(reload["maxServiceMs"]) and reload["maxServiceMs"] >= 0,
             f"Missing model service time: {reload}")
@@ -231,6 +240,7 @@ def snapshot(entry, state, reload, **extra):
     path = Path(entry["png"])
     return dict(frame=entry["frame"], image=str(path), telemetry=str(path.with_suffix(".telemetry.json")),
                 reload=reload, guiLoading=state["gui"]["modelLoading"], residency=state["assetResidency"],
+                swapchainRecreates=state["swapchainRecreates"],
                 primaryLodUpload=state["geometryStreaming"].get("primaryLod"),
                 vmaBytes=state["shaderReload"]["vmaBytes"], gpuKnownMs=state["gpuKnownMs"], **extra)
 
@@ -290,6 +300,8 @@ def verify_correctness(record, steps, provider, source, candidate):
 
     before, second, unloaded, restored, accepted, published, clean = [results[name] for name in
         ("before", "second", "unloaded", "restored", "acceptedFirst", "published", "clean")]
+    require(results["firstLater"]["swapchainRecreates"] == results["first"]["swapchainRecreates"] + 2,
+            "The partial upload did not survive both viewport resizes")
     require(second["reload"]["requestId"] > results["first"]["reload"]["requestId"] and
             second["reload"]["cancellations"] == before["reload"]["cancellations"] + 1 and
             unloaded["reload"]["cancellations"] == before["reload"]["cancellations"] + 2,
