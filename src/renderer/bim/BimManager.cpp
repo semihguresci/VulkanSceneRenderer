@@ -4663,6 +4663,32 @@ bool BimManager::beginViewportCulling(bool requested) {
   return frame.viewportCullingRequested;
 }
 
+void BimManager::discardViewportCulling(uint32_t imageIndex) noexcept {
+  if (imageIndex >= visibilityFrames_.size())
+    return;
+
+  auto &frame = visibilityFrames_[imageIndex];
+  frame.viewportCullingRequested = false;
+  frame.viewportFrustumCurrent = false;
+  frame.viewportOcclusionCurrent = false;
+  frame.compactionResidencyRevision = 0u;
+  if (visibilityFilterPipeline_ != VK_NULL_HANDLE) {
+    // The filter may have published readiness while recording its dispatch.
+    frame.maskCurrent = false;
+    frame.maskAllVisible = false;
+  }
+  frame.filterDispatchPending = false;
+  if (imageIndex == visibilityImage_)
+    visibilityFilterStats_.dispatchPending = false;
+  for (auto &slot : frame.draws) {
+    slot.stats.drawsValid = false;
+    slot.dispatchPending = false;
+    slot.stats.dispatchPending = false;
+  }
+  meshletResidencyDispatchPending_ = meshletResidencyStats_.computeReady;
+  meshletResidencyStats_.dispatchPending = meshletResidencyDispatchPending_;
+}
+
 bool BimManager::viewportFrustumReady(uint32_t imageIndex) const {
   if (imageIndex >= visibilityFrames_.size() || !visibilityFrames_[imageIndex].viewportFrustumCurrent) {
     return false;

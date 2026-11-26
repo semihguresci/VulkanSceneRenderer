@@ -22,7 +22,28 @@ function(container_check_fsr_file file hash)
     endif()
 endfunction()
 
-if(ENABLE_FSR_UPSCALING AND WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+function(container_check_fsr_x64_target result)
+    include(CheckCXXSourceCompiles)
+    set(CMAKE_TRY_COMPILE_TARGET_TYPE STATIC_LIBRARY)
+    set(CMAKE_REQUIRED_QUIET TRUE)
+    unset(CONTAINER_FSR_X64_PROBE CACHE)
+    # ARM64EC also defines _M_X64 and _M_AMD64 for MSVC compatibility.
+    check_cxx_source_compiles([=[
+#if !defined(_WIN32) || !defined(_WIN64) || !(defined(_M_X64) || defined(_M_AMD64) || defined(__x86_64__))
+#error The pinned AMD FSR Vulkan SDK requires a Windows x64 compiler target.
+#elif defined(_M_ARM64EC) || defined(__arm64ec__) || defined(_M_ARM64) || defined(__aarch64__)
+#error The pinned AMD FSR Vulkan SDK cannot be used with an ARM target.
+#endif
+int main() { return 0; }
+]=] CONTAINER_FSR_X64_PROBE)
+    set(${result} "${CONTAINER_FSR_X64_PROBE}" PARENT_SCOPE)
+endfunction()
+
+set(_container_fsr_windows_x64 OFF)
+if(ENABLE_FSR_UPSCALING AND WIN32)
+    container_check_fsr_x64_target(_container_fsr_windows_x64)
+endif()
+if(_container_fsr_windows_x64)
     if(NOT CONTAINER_FSR_SDK_ROOT)
         message(WARNING "AMD FSR SDK unavailable. Set CONTAINER_FSR_SDK_ROOT to enable the Vulkan FSR SDK 2.4.0 backend.")
     else()

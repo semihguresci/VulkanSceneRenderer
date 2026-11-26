@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <string_view>
 #include <vector>
 
@@ -30,6 +31,7 @@ namespace container::renderer {
 class BloomManager;
 class OpenVdbVolumeRenderer;
 class TemporalManager;
+enum class FsrFrameStage : uint8_t;
 class PbrAuxiliaryPass;
 class ScreenReflectionPass;
 class VolumetricFogPass;
@@ -416,6 +418,7 @@ struct FrameRecordParams {
   FrameRecordLifecycleHooks lifecycle{};
   // Set by passes that initialize the full pick ID attachment and leave it shader-readable.
   bool *pickIdWritten{nullptr};
+  std::optional<FsrFrameStage> injectedFsrFailure{};
 
   [[nodiscard]] const FrameResourceBinding *resourceBinding(
       RenderTechniqueId technique, std::string_view name) const;

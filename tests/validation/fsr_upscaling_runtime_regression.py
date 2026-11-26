@@ -6,6 +6,7 @@ import math
 import os
 from pathlib import Path
 import re
+import shutil
 import statistics
 import struct
 import subprocess
@@ -36,6 +37,9 @@ FALLBACK_REASONS = {
     },
 }
 VALIDATION_INSERTED = re.compile(r'Insert instance layer "VK_LAYER_KHRONOS_validation" \(([^\r\n]+)\)')
+PROFILES_INSERTED = re.compile(r'Insert instance layer "VK_LAYER_KHRONOS_profiles" \(([^\r\n]+)\)')
+FSR_REQUIRED_EXTENSION = "VK_KHR_compute_shader_derivatives"
+MISSING_FSR_FEATURES = "GPU lacks the required Vulkan FSR features"
 VALIDATION_SETTINGS = ("khronos_validation.validate_sync = true\n"
                        "khronos_validation.duplicate_message_limit = 1000\n")
 RESIZE_START = (640, 360)
@@ -85,6 +89,55 @@ def runtime_receipt(renderer, enabled):
             "signedRuntime": runtime,
             "composeShader": file_identity(compose) if compose.is_file() else None,
             "inputShader": file_identity(shader) if shader.is_file() else None}
+
+
+def profile_fsr_device(output, environment, profiles_manifest, vulkaninfo):
+    profiles_manifest = profiles_manifest.resolve(strict=True)
+    description = json.loads(profiles_manifest.read_bytes())["layer"]
+    assert description["name"] == "VK_LAYER_KHRONOS_profiles", profiles_manifest
+    profiles_library = file_identity(profiles_manifest.parent / description["library_path"])
+    native_env = {key: value for key, value in environment.items()
+                  if key.upper() not in ("VK_INSTANCE_LAYERS", "VK_ADD_LAYER_PATH", "VK_LOADER_LAYERS_ENABLE",
+                                         "VK_LOADER_LAYERS_DISABLE")
+                  and not key.upper().startswith("VK_KHRONOS_PROFILES_")}
+    profile_dir = output / "device-profile"
+    profile_dir.mkdir()
+    settings = ["khronos_profiles.profile_emulation = false",
+                f"khronos_profiles.exclude_device_extensions = {FSR_REQUIRED_EXTENSION}"]
+    (profile_dir / "vk_layer_settings.txt").write_text(VALIDATION_SETTINGS + "\n".join(settings) + "\n", encoding="ascii")
+    profile_env = dict(native_env, VK_LOADER_LAYERS_ENABLE="VK_LAYER_KHRONOS_profiles",
+                       VK_LAYER_PATH=os.pathsep.join((native_env["VK_LAYER_PATH"], str(profiles_manifest.parent))),
+                       VK_LAYER_SETTINGS_PATH=str(profile_dir))
+    vulkaninfo = Path(vulkaninfo).resolve(strict=True) if vulkaninfo else shutil.which("vulkaninfo")
+    assert vulkaninfo, "Install vulkaninfo or pass --vulkaninfo"
+    vulkaninfo = Path(vulkaninfo).resolve(strict=True)
+    probes = {}
+    for name, probe_env in (("native", native_env), ("masked", profile_env)):
+        probe = subprocess.run([str(vulkaninfo)], cwd=output, env=probe_env, capture_output=True,
+                               text=True, errors="replace", timeout=60)
+        path = profile_dir / f"{name}-vulkaninfo.log"
+        log = probe.stdout + probe.stderr
+        path.write_text(log, encoding="utf-8")
+        assert probe.returncode == 0, path
+        layer = PROFILES_INSERTED.search(log)
+        assert bool(layer) == (name == "masked"), path
+        if layer:
+            assert file_identity(output / Path(layer[1])) == profiles_library, path
+        extension_pattern = rf"^\s+{FSR_REQUIRED_EXTENSION}\s+:"
+        advertised = re.search(extension_pattern, probe.stdout, re.MULTILINE) is not None
+        assert advertised == (name == "native"), (name, advertised, path)
+        device_names = re.findall(r"^\s+deviceName\s*=\s*(.+)$", probe.stdout, re.MULTILINE)
+        assert device_names, path
+        derivative_support = re.search(r"^\s+computeDerivativeGroupLinear\s*=\s*true\s*$",
+                                       probe.stdout, re.MULTILINE) is not None
+        if name == "native":
+            assert derivative_support, path
+        probes[name] = dict(deviceNames=device_names, derivativeExtensionAdvertised=advertised,
+                            computeDerivativeGroupLinear=derivative_support, log=str(path))
+    assert probes["native"]["deviceNames"] == probes["masked"]["deviceNames"], probes
+    evidence = dict(manifest=file_identity(profiles_manifest), library=profiles_library, settings=settings,
+                    excludedExtension=FSR_REQUIRED_EXTENSION, vulkaninfo=file_identity(vulkaninfo), probes=probes)
+    return native_env, profile_env, evidence
 
 
 def taa_switch_sequence():
@@ -355,12 +408,84 @@ def verify_resize_pbr(output, capture, check_mode):
     return reports
 
 
+def verify_fsr_recovery(capture, check_mode):
+    samples = [3, 4, 5, 6, 7, 8, 9, 10, 12]
+    startup_samples = [1, 2, *samples]
+    resize = {"frame": 7, "resize": list(RESIZE_ODD)}
+    motion = sequence(samples[-1], startup_samples, [resize])
+    cases = {"resources": ("resources", 5, "balanced", "FSR resource setup failed"),
+             "jitter": ("jitter", 5, "quality", "FSR jitter query failed"),
+             "dispatch": ("dispatch", 5, "quality", "FSR dispatch failed"),
+             "first-dispatch": ("dispatch", 1, "quality", "FSR dispatch failed")}
+    reports = {}
+    for technique in RASTER_TECHNIQUES:
+        native, native_images = capture(f"recovery-{technique}-native", "native", motion, technique=technique)
+        reports[technique] = {}
+        for name, (fault, failure_frame, failed_mode, status_prefix) in cases.items():
+            startup = failure_frame == 1
+            failure_event = {"frame": failure_frame, "fsrFailure": fault}
+            if fault == "resources":
+                failure_event["fsr"] = failed_mode
+            timeline = {**motion, "sampleFrames": startup_samples if startup else samples,
+                        "events": [failure_event, resize, {"frame": 8, "fsr": "performance"},
+                                   {"frame": 10, "fsr": failed_mode}]}
+            states, images = capture(f"recovery-{technique}-{name}", "quality", timeline, technique=technique)
+            failed, resized, recovered = (states[f] for f in (failure_frame, 7, 8))
+            report = {"failure": fault, "failureFrame": failure_frame,
+                      "preservedRequest": failed_mode, "frames": {}}
+            if startup:
+                assert any(p["name"] == "RaySceneBuild" and p["active"] for p in failed["passes"]), failed["passes"]
+            for frame, state in states.items():
+                display_extent = RESIZE_START if frame < 7 else RESIZE_ODD
+                falling_back = failure_frame <= frame < 8
+                expected = failed_mode
+                if frame < failure_frame:
+                    expected = "quality"
+                elif 8 <= frame < 10:
+                    expected = "performance"
+                check_mode(state, expected, "native" if falling_back else expected, display_extent)
+                check_mode(native[frame], "native", "native", display_extent)
+                submitted = state["taa"]["submittedFrame"]
+                assert submitted == native[frame]["taa"]["submittedFrame"] == frame, (technique, name, frame, submitted)
+                assert not state["taa"]["enabled"], state["taa"]
+                frame_report = {"fsr": state["fsr"], "submittedFrame": submitted,
+                                "historyEpoch": state["taa"]["epoch"], "swapchainRecreates": state["swapchainRecreates"]}
+                if falling_back:
+                    fsr = state["fsr"]
+                    assert fsr["status"].startswith(status_prefix) and fsr["status"] == failed["fsr"]["status"], fsr
+                    assert all(fsr[field] is None for field in ("frameTimeMs", "jitterPixels", "preExposure",
+                                                               "motionVectorScale", "sdkAllocatedBytes")), fsr
+                    assert not temporal_resolve(state) and not any(state["camera"]["jitterUv"][:2]), state["taa"]
+                    np.testing.assert_array_equal(images[frame], native_images[frame],
+                                                  err_msg=f"{technique} {name} did not retry frame {frame} natively")
+                    frame_report["nativePixelExact"] = True
+                else:
+                    assert temporal_resolve(state) and state["fsr"]["frameTimeMs"] > 0, state["fsr"]
+                    assert not np.array_equal(images[frame], native_images[frame]), (technique, name, frame)
+                report["frames"][frame] = frame_report
+            if fault in ("jitter", "dispatch"):
+                before = native[1] if startup else states[failure_frame - 1]
+                assert failed["swapchainRecreates"] == before["swapchainRecreates"] + 1, report
+            assert states[6]["swapchainRecreates"] == failed["swapchainRecreates"], report
+            assert resized["swapchainRecreates"] == failed["swapchainRecreates"] + 1, report
+            assert recovered["swapchainRecreates"] == resized["swapchainRecreates"], report
+            if not startup:
+                assert states[failure_frame - 1]["taa"]["epoch"] < failed["taa"]["epoch"], report
+            assert failed["taa"]["epoch"] < recovered["taa"]["epoch"], report
+            for first in (8, 10):
+                np.testing.assert_allclose(states[first]["fsr"]["jitterPixels"], [0., 1. / 6.], rtol=0, atol=1e-6,
+                                           err_msg=f"{technique} {name} retained jitter after reselecting FSR")
+            assert states[9]["fsr"]["jitterPixels"] != states[8]["fsr"]["jitterPixels"], report
+            reports[technique][name] = report
+    return states[samples[-1]], reports
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", type=Path, default=ROOT / "models/validation/taa_scene.gltf")
-    parser.add_argument("--suite", choices=("smoke", "full", "resize", "temporal"), default="smoke")
+    parser.add_argument("--suite", choices=("smoke", "full", "resize", "temporal", "device-fallback", "recovery"), default="smoke")
     parser.add_argument("--resize-format", choices=SWAPCHAIN_FORMATS, help="Add a supported format-only resize to the resize suite")
     parser.add_argument("--resize-reference", action="store_true", help="Check reference viewport fallback on a ray-tracing GPU")
     fallback = parser.add_mutually_exclusive_group()
@@ -369,12 +494,19 @@ def main():
     fallback.add_argument("--expect-fallback", choices=FALLBACK_REASONS, help="Require this exact native fallback cause")
     parser.add_argument("--expect-provider", default="3.1.6", help="Provider version returned by the signed SDK")
     parser.add_argument("--validation-manifest", type=Path, help="Use and identify this Vulkan validation layer")
+    parser.add_argument("--profiles-manifest", type=Path, help="Khronos Profiles layer for --suite device-fallback")
+    parser.add_argument("--vulkaninfo", type=Path, help="Optional explicit vulkaninfo executable for the device probe")
     args = parser.parse_args()
     unavailable = args.expect_unavailable or args.expect_fallback is not None
     if (args.resize_format or args.resize_reference) and args.suite != "resize":
         parser.error("--resize-format and --resize-reference require --suite resize")
-    if unavailable and args.suite in ("resize", "temporal"):
+    if unavailable and args.suite in ("resize", "temporal", "recovery"):
         parser.error(f"--suite {args.suite} requires active FSR")
+    profiled_fallback = args.suite == "device-fallback"
+    if profiled_fallback and (not args.profiles_manifest or not args.validation_manifest or unavailable):
+        parser.error("--suite device-fallback requires both layer manifests and its own active-runtime control")
+    if (args.profiles_manifest or args.vulkaninfo) and not profiled_fallback:
+        parser.error("--profiles-manifest and --vulkaninfo require --suite device-fallback")
     renderer, output, model = (p.resolve() for p in (args.renderer, args.output, args.model))
     runtime = runtime_receipt(renderer, enabled=not unavailable)
     if args.expect_fallback == "missing-runtime":
@@ -384,9 +516,11 @@ def main():
     validation = validation_environment(args.validation_manifest, output, env) if args.validation_manifest else None
     (output / "vk_layer_settings.txt").write_text(VALIDATION_SETTINGS, encoding="ascii")
     results = {}
+    if profiled_fallback:
+        env, profile_env, profile_evidence = profile_fsr_device(output, env, args.profiles_manifest, args.vulkaninfo)
 
     def capture(label, mode, config, *, extent=(640, 360), technique="deferred-raster", display="lit", ui=False,
-                model_path=model, ray_queries=False):
+                model_path=model, ray_queries=False, mask_device=False):
         sequence_path = output / f"{label}.sequence.json"
         sequence_path.write_text(json.dumps(config), encoding="utf-8")
         image = output / f"{label}.png"
@@ -402,7 +536,8 @@ def main():
             command.append("--no-ray-query")
         if not ui:
             command.extend(("--no-ui", "--screenshot-viewport"))
-        run = subprocess.run(command, cwd=renderer.parent, env=env, capture_output=True, text=True,
+        launch_env = profile_env if mask_device else env
+        run = subprocess.run(command, cwd=renderer.parent, env=launch_env, capture_output=True, text=True,
                              errors="replace", timeout=240)
         log = run.stdout + run.stderr
         log_path = output / f"{label}.log"
@@ -413,6 +548,11 @@ def main():
         layer = file_identity(renderer.parent / Path(inserted[1]))
         if validation:
             assert layer == validation["library"], (label, layer, validation["library"])
+        if profiled_fallback:
+            profiles = PROFILES_INSERTED.search(log)
+            assert bool(profiles) == mask_device, (label, log_path)
+            if profiles:
+                assert file_identity(renderer.parent / Path(profiles[1])) == profile_evidence["library"], log_path
 
         states, images = {}, {}
         for frame in config["sampleFrames"]:
@@ -435,6 +575,8 @@ def main():
                           "medianKnownGpuMs": statistics.median(state["gpuKnownMs"] for state in states.values()),
                           "temporalAllocationBytes": states[config["sampleFrames"][-1]]["taa"]["allocatedImageBytes"],
                           "command": command}
+        if profiled_fallback:
+            results[label]["profilesLayer"] = profile_evidence["library"] if mask_device else None
         print(f"{label}: {len(images)} Vulkan-validation-clean captures", flush=True)
         return states, images
 
@@ -452,7 +594,7 @@ def main():
         if args.expect_fallback:
             assert state["fsr"]["status"] in FALLBACK_REASONS[args.expect_fallback], state["fsr"]
 
-    def write_report(state, *, temporal_checks=None):
+    def write_report(state, *, temporal_checks=None, profile_checks=None, recovery_checks=None):
         assert runtime == runtime_receipt(renderer, enabled=not unavailable), "The installed runtime changed during the captures"
         device = {key: state[key] for key in ("gpu", "vendorId", "deviceId", "driverVersion", "vulkanApiVersion")}
         report = {"passed": True, "gpu": device["gpu"], "device": device, "runtime": runtime,
@@ -462,7 +604,51 @@ def main():
                   "expectedFallback": args.expect_fallback or ("unspecified" if unavailable else None), "captures": results}
         if temporal_checks is not None:
             report["temporalChecks"] = temporal_checks
+        if profile_checks is not None:
+            report["deviceFeatureFallback"] = profile_checks
+        if recovery_checks is not None:
+            report["inUseFailureRecovery"] = recovery_checks
         (output / "results.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+
+    if profiled_fallback:
+        display_extent = (640, 360)
+        sampled_modes = {4: "native", 8: "quality", 12: "balanced", 16: "performance"}
+        events = [{"frame": frame - 3, "fsr": mode} for frame, mode in sampled_modes.items() if mode != "native"]
+        motion = sequence(max(sampled_modes), list(sampled_modes))
+        switched = {**motion, "events": events}
+        able, able_images = capture("unmasked-fsr", "native", switched, extent=display_extent)
+        profile_evidence["pixelExact"] = {}
+        for technique in RASTER_TECHNIQUES:
+            reference, reference_images = capture(f"{technique}-unmasked-native", "native", motion, extent=display_extent,
+                                                  technique=technique)
+            unavailable_states, masked_images = capture(f"{technique}-masked-request", "native", switched,
+                                                        extent=display_extent, technique=technique, mask_device=True)
+            exact = profile_evidence["pixelExact"][technique] = {}
+            for frame, requested in sampled_modes.items():
+                state = unavailable_states[frame]
+                native = reference[frame]
+                assert all(state[key] == native[key] == able[frame][key] for key in ("gpu", "deviceId", "vendorId", "driverVersion"))
+                check_mode(native, "native", "native", display_extent)
+                check_mode(state, requested, "native", display_extent)
+                if requested != "native":
+                    assert state["fsr"]["status"] == MISSING_FSR_FEATURES, state["fsr"]
+                assert state["fsr"]["frameTimeMs"] is None and state["fsr"]["sdkAllocatedBytes"] is None, state["fsr"]
+                assert not temporal_resolve(state) and not any(state["camera"]["jitterUv"][:2]), state["taa"]
+                assert state["taa"]["allocatedImageBytes"] == 0, state["taa"]
+                np.testing.assert_array_equal(masked_images[frame], reference_images[frame],
+                                              err_msg=f"{technique} {requested} fallback changed native pixels")
+                exact[requested] = True
+                if technique == "deferred-raster":
+                    check_mode(able[frame], requested, requested, display_extent)
+                    if requested != "native":
+                        assert not np.array_equal(able_images[frame], reference_images[frame]), requested
+        write_report(able[max(sampled_modes)], profile_checks=profile_evidence)
+        return
+
+    if args.suite == "recovery":
+        state, recovery = verify_fsr_recovery(capture, check_mode)
+        write_report(state, recovery_checks=recovery)
+        return
 
     if args.suite == "temporal":
         from fsr_ghosting_runtime_regression import verify_fsr_ghosting

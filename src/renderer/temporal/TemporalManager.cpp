@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cmath>
 #include <stdexcept>
+#include <string>
 
 namespace container::renderer {
 namespace {
@@ -91,6 +92,12 @@ bool needed(const FrameRecordParams &frame) {
   return display == 0 || display == 8 || (display >= 100 && display <= 104);
 }
 } // namespace
+
+FsrFrameError::FsrFrameError(FsrFrameStage stage, std::string_view detail)
+    : std::runtime_error(
+          std::string(stage == FsrFrameStage::JitterQuery ? "FSR jitter query failed: " :
+                                                          "FSR dispatch failed: ") +
+          std::string(detail)) {}
 
 TemporalManager::TemporalManager(
     std::shared_ptr<container::gpu::VulkanDevice> device,
@@ -246,11 +253,17 @@ std::optional<VkExtent2D> TemporalManager::prepareDlss(const std::filesystem::pa
 
 void TemporalManager::prepareCamera(container::gpu::CameraData& camera, glm::uvec2 extent,
                                     const container::temporal::Settings& settings,
-                                    const glm::mat4& projection, float frameMilliseconds) {
+                                    const glm::mat4& projection, float frameMilliseconds,
+                                    std::optional<FsrFrameStage> injectedFailure) {
   std::optional<glm::vec2> jitterOverride;
   if (fsrActive() && settings.enabled) {
     const auto jitter = fsr_->nextJitterPixels();
-    if (!jitter) throw std::runtime_error("Could not query the active Vulkan FSR jitter");
+    if (injectedFailure == FsrFrameStage::JitterQuery)
+      throw FsrFrameError(FsrFrameStage::JitterQuery, "capture fault injection");
+    if (!jitter || !std::ranges::all_of(*jitter, [](float value) {
+          return std::isfinite(value) && std::abs(value) <= 0.5f;
+        }))
+      throw FsrFrameError(FsrFrameStage::JitterQuery, "the active provider returned no valid jitter offset");
     upscaleJitter_ = *jitter;
     fsrVerticalFov_ = 2.0f * std::atan(1.0f / std::abs(projection[1][1]));
     jitterOverride = glm::vec2(upscaleJitter_[0], upscaleJitter_[1]);
@@ -1032,8 +1045,15 @@ void TemporalManager::recordUpscale(VkCommandBuffer cmd, const FrameRecordParams
         .jitterPixels = upscaleJitter_, .cameraNear = p.camera.nearPlane, .cameraFar = p.camera.farPlane,
         .verticalFovRadians = fsrVerticalFov_, .frameMilliseconds = upscaleFrameMilliseconds_,
         .reset = !historyValid});
-    if (result != FsrDispatchResult::Recorded)
-      throw std::runtime_error("Could not record the active Vulkan FSR frame: " + std::string(fsr_->status()));
+    if (result != FsrDispatchResult::Recorded) {
+      const std::string_view detail = result == FsrDispatchResult::InvalidInput
+          ? "invalid frame inputs" : fsr_->status();
+      throw FsrFrameError(FsrFrameStage::Dispatch, detail);
+    }
+    if (p.injectedFsrFailure == FsrFrameStage::Dispatch) {
+      fsr_->discard();
+      throw FsrFrameError(FsrFrameStage::Dispatch, "capture fault injection after recording");
+    }
   }
 
   // Restore the frame-local resources for the next use of this image. The

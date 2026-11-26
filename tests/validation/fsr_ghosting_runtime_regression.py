@@ -1,4 +1,4 @@
-"""Measure FSR disocclusion on moving MASK foliage and BLEND glass against same-frame controls."""
+"""Measure FSR disocclusion on moving foliage, glass, and emissive geometry."""
 
 import base64
 import io
@@ -14,7 +14,8 @@ EXTENT = (640, 384)
 CAMERA_Z = 5.5
 CARD_HALF = (0.675, 0.61)
 SIDE = 1.55
-PARTS = {"foliage": (0.77, 0.15), "glass": (-0.77, 0.28)}
+PARTS = {"foliage": (0.77, 0.15, CARD_HALF), "glass": (-0.77, 0.28, CARD_HALF),
+         "emissive": (0., 0.21, (0.675, 0.12))}
 TECHNIQUES = ("deferred-raster", "forward-raster")
 ARRIVALS = (28, 52)
 OBSERVATIONS = (-2, 0, 1, 2, 4, 8, 16)
@@ -39,14 +40,16 @@ def foliage_texture():
 
 def write_fixture(path):
     asset = Asset()
-    asset.model.update(extensionsUsed=["KHR_materials_unlit"], images=[dict(uri=foliage_texture())],
+    asset.model.update(extensionsUsed=["KHR_materials_unlit", "KHR_materials_emissive_strength"],
+                       images=[dict(uri=foliage_texture())],
                        samplers=[dict(minFilter=9728, magFilter=9728, wrapS=33071, wrapT=33071)],
                        textures=[dict(source=0, sampler=0)])
     asset.model["scenes"][0]["nodes"] = [0, 1]
-    asset.model["nodes"] = [dict(name="Opaque backdrop", mesh=0), dict(name="Moving foreground", children=[2, 3]),
-                            dict(name="Alpha cutout foliage", mesh=1), dict(name="Translucent pane", mesh=2)]
+    asset.model["nodes"] = [dict(name="Opaque backdrop", mesh=0), dict(name="Moving foreground", children=[2, 3, 4]),
+                            dict(name="Alpha cutout foliage", mesh=1), dict(name="Translucent pane", mesh=2),
+                            dict(name="Emissive strip", mesh=3)]
 
-    def quad(name, center_y, z, half, color, alpha):
+    def quad(name, center_y, z, half, color, alpha, *, emissive=None):
         x, y = half
         corners = [(-x, center_y - y, z), (x, center_y - y, z), (x, center_y + y, z), (-x, center_y + y, z)]
         attributes = dict(POSITION=asset.accessor("VEC3", corners), NORMAL=asset.accessor("VEC3", [(0, 0, 1)] * 4),
@@ -58,13 +61,17 @@ def write_fixture(path):
         if alpha == "MASK":
             material["alphaCutoff"] = .5
             parameters["baseColorTexture"] = dict(index=0)
+        if emissive is not None:
+            material["emissiveFactor"] = emissive
+            material["extensions"] = {"KHR_materials_emissive_strength": {"emissiveStrength": 4}}
         asset.model["meshes"].append(dict(primitives=[dict(attributes=attributes, indices=indices,
                                                           material=len(asset.model["materials"]))]))
         asset.model["materials"].append(material)
 
     quad("Neutral background", 0, -.8, (6, 4), (.16, .16, .16, 1), "OPAQUE")
-    quad("Foliage cutout", *PARTS["foliage"], CARD_HALF, (.02, .72, .045, 1), "MASK")
-    quad("Glass overlay", *PARTS["glass"], CARD_HALF, (.72, .025, .52, .6), "BLEND")
+    quad("Foliage cutout", *PARTS["foliage"], (.02, .72, .045, 1), "MASK")
+    quad("Glass overlay", *PARTS["glass"], (.72, .025, .52, .6), "BLEND")
+    quad("Emissive strip", *PARTS["emissive"], (.005, .005, .005, 1), "OPAQUE", emissive=(1, .24, .02))
     asset.write(path)
 
 
@@ -78,8 +85,8 @@ def capture_plan(reset):
 
 
 def projected_card(part, x, projection):
-    y, z = PARTS[part]
-    world = np.array([(x + side_x * CARD_HALF[0], y + side_y * CARD_HALF[1], z, 1)
+    y, z, half = PARTS[part]
+    world = np.array([(x + side_x * half[0], y + side_y * half[1], z, 1)
                       for side_x in (-1, 1) for side_y in (-1, 1)])
     clip = world @ projection
     ndc = clip[:, :2] / clip[:, 3, None]
@@ -167,7 +174,7 @@ def analyze_ghosting(native, live, reset, projection):
 
 
 def verify_fsr_ghosting(output, capture, check_mode):
-    model = output / "moving-foliage-and-glass.gltf"
+    model = output / "moving-foliage-glass-emissive.gltf"
     write_fixture(model)
     report = dict(model=file_identity(model), techniques={})
     for technique in TECHNIQUES:

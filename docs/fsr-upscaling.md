@@ -58,10 +58,10 @@ FSR is disabled or falls back, subject to the normal TAA requirements.
 | `ENABLE_FSR_UPSCALING=OFF` or enabled with an empty SDK path | Builds without Vulkan FSR. An upscale request runs at native resolution. | Separate SDK-off build and native image comparison. |
 | A supplied SDK root has a missing or mismatched pinned file | CMake rejects that configuration. | Pin checks in `cmake/FsrUpscalerDependencies.cmake`. |
 | SDK-enabled build with a missing adjacent loader or upscaler | The runtime stays at native resolution and reports the unavailable DLL pair. | Staged runtime capture and standalone missing-module test. |
-| Required Vulkan features or image formats absent, or the provider context cannot initialize | The runtime stays at native resolution and reports why FSR could not activate. | Source audit and standalone failure checks. The viewport device-feature rejection path still needs a hardware capture. |
-| Perspective deferred or forward raster, MSAA 1×, at most four frames in flight | Eligible in Lit, `taa-velocity` and `taa-reactive` display modes. | Deferred mode transitions, forward Performance, velocity and reactive diagnostics, and UI capture. |
-| MSAA above 1×, orthographic or reference rendering, another display mode, or more than four frames in flight | Retains the requested mode and renders at native resolution. | Live MSAA fallback and recovery. The other eligibility gates were inspected in `RendererFrontend::currentUpscaleResourceRequest`. |
-| Linux or 32-bit Windows | Vulkan FSR SDK backend stays disabled. | Configure gate. Only Windows x64 is supported by the pinned binaries. |
+| Required Vulkan features or image formats absent, or the provider context cannot initialize | The runtime stays at native resolution and reports why FSR could not activate. | The Khronos Profiles layer masked `VK_KHR_compute_shader_derivatives` on the same tested GPU. Quality, Balanced and Performance matched Native pixel for pixel in deferred and forward raster. Standalone tests cover the provider and image adapter. |
+| Perspective deferred or forward raster, MSAA 1×, at most four frames in flight | Eligible in Lit, `taa-velocity` and `taa-reactive` display modes. | Preset transitions in both raster paths, velocity and reactive diagnostics, and UI capture. |
+| MSAA above 1×, orthographic or reference rendering, another display mode, or more than four frames in flight | Retains the requested mode and renders at native resolution. | Live MSAA and orthographic fallback and perspective recovery, native path tracing, and source inspection of the display-mode and frame-count gates. |
+| Linux, 32-bit Windows, Windows ARM64 or ARM64EC | Vulkan FSR SDK backend stays disabled. | Compiler target probe. Configuration was verified for x64, Win32, ARM64 and ARM64EC with the pinned SDK supplied. |
 
 ## Frame inputs and submission
 
@@ -321,7 +321,7 @@ that display exposure stays outside the scene-linear FSR history.
 
 The opacity fixture checks single and overlapping transparent layers against
 the resolved opacity, alongside opaque, cutout and emissive controls. The
-ghosting fixture moves alpha-tested foliage and translucent glass in both
+ghosting fixture moves alpha-tested foliage, translucent glass and an HDR emissive object in both
 directions. Native captures define the vacated and newly occupied sample
 regions. A live FSR history and a same-frame FSR reset use identical poses,
 jitter and exposure. The report tracks retained old color and recovery of newly
@@ -341,6 +341,11 @@ In both raster paths the old reactive view gave both transparent samples
 for two overlapping layers. In the ghosting fixture, neither foreground
 material retained measurable old-color signal in the vacated interior at any
 sample from four through 16 frames after arrival.
+
+The moving emitter vacated 790 measured pixels on each arrival in both raster
+paths. All vacated emissive pixels in the live history matched the same-frame
+reset at every sample. Newly occupied pixels matched the native control from
+arrival through the 16-frame hold.
 
 | Before opacity weighting | After opacity weighting |
 | --- | --- |
@@ -471,15 +476,40 @@ driver and MSVC redistributable. It exercises Native and FSR Quality on both
 raster paths. A second extraction with the upscaler DLL absent and the SDK-off
 ZIP each verify pixel-exact native fallback against their native controls.
 
+### Native recovery during rendering
+
+An FSR scene-grid or temporal resource setup failure switches to native frame
+resources before command recording. A rejected jitter query or dispatch
+abandons the unsubmitted commands, consumes the swapchain acquire signal and
+recreates the swapchain and native frame resources. Interactive rendering
+resumes at the current display extent on the next draw. Scripted captures
+retry the same tick. Only a successful submission advances the submitted frame
+number and SDK jitter. The requested preset and failure message are retained
+across resize. Changing the preset or backend allows a fresh FSR context to
+start with reset history.
+
+```powershell
+python -B tests/validation/fsr_upscaling_runtime_regression.py `
+  --renderer build/fsr/VulkanSceneRenderer.exe --output build/fsr-verification/recovery `
+  --suite recovery --validation-manifest $manifest
+python -B tests/validation/fsr_upscaling_runtime_regression.py `
+  --renderer build/fsr/VulkanSceneRenderer.exe --output build/fsr-verification/device-fallback `
+  --suite device-fallback --validation-manifest $manifest --profiles-manifest $profilesManifest
+```
+
+Point `$profilesManifest` to `VkLayer_khronos_profiles.json`. The device test
+masks `VK_KHR_compute_shader_derivatives` on the same physical device and checks
+20 captures across the masked and unmasked runs. The recovery suite injects
+resource, jitter and dispatch failures in both raster paths. Its first-frame
+dispatch case also checks that the retried frame initializes the shadow fallback
+image. All 98 captures passed on the RTX 2080 SUPER with Vulkan synchronization
+validation. The recovered frames matched the native motion and odd-size resize
+controls pixel for pixel. Each reselected preset started with the provider's
+first jitter.
+
 ## Remaining work
 
-- Qualify AMD ML and other SDK-selected providers on supported devices.
-  Verify the native fallback on a device missing the required features and
-  repeat the extracted package smoke on a clean Windows machine.
-- The CMake gate checks Windows and 64-bit pointer width. Native Windows
-  ARM64 and ARM64EC builds need an explicit target architecture check before
-  enabling the packaged x64 runtime.
-- Native fallback covers initial FSR selection and context setup. Later
-  allocation failures in the FSR frame resources and errors querying jitter
-  or recording an active dispatch still propagate. Recovery needs to retire
-  the failing context and recreate native frame resources.
+- Qualify AMD ML and other SDK-selected providers on supported devices. Add a
+  run on a separate physical device missing the FSR features and repeat the
+  extracted package smoke on a Windows installation with only the driver and
+  redistributable installed.

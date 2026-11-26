@@ -447,6 +447,31 @@ add_test(NAME vulkan_loader_runtime_config_tests
         -P "${TEST_CMAKE_DIR}/vulkan_loader_runtime_config_tests.cmake")
 set_tests_properties(vulkan_loader_runtime_config_tests PROPERTIES LABELS "cpu;cmake;packaging" TIMEOUT 60)
 
+set(_fsr_architecture_generator_args -G "${CMAKE_GENERATOR}")
+if(CMAKE_GENERATOR_PLATFORM)
+    list(APPEND _fsr_architecture_generator_args -A "${CMAKE_GENERATOR_PLATFORM}")
+endif()
+if(CMAKE_GENERATOR_TOOLSET)
+    list(APPEND _fsr_architecture_generator_args -T "${CMAKE_GENERATOR_TOOLSET}")
+endif()
+if(CMAKE_GENERATOR_INSTANCE)
+    list(APPEND _fsr_architecture_generator_args "-DCMAKE_GENERATOR_INSTANCE=${CMAKE_GENERATOR_INSTANCE}")
+endif()
+if(CMAKE_MAKE_PROGRAM)
+    list(APPEND _fsr_architecture_generator_args
+        "-DCMAKE_MAKE_PROGRAM:FILEPATH=${CMAKE_MAKE_PROGRAM}"
+        "-DCMAKE_CXX_COMPILER:FILEPATH=${CMAKE_CXX_COMPILER}")
+endif()
+# The target-macro probes do not need the MSVC Debug program database.
+add_test(NAME fsr_target_architecture_config_tests
+    COMMAND ${CMAKE_COMMAND} -S "${TEST_CMAKE_DIR}/fsr_target_architecture"
+        -B "${CMAKE_BINARY_DIR}/cmake_test_work/fsr_target_architecture"
+        -DCMAKE_BUILD_TYPE:STRING=Release
+        -DCMAKE_TRY_COMPILE_CONFIGURATION:STRING=Release
+        ${_fsr_architecture_generator_args})
+set_tests_properties(fsr_target_architecture_config_tests PROPERTIES LABELS "cpu;cmake;fsr" TIMEOUT 120)
+unset(_fsr_architecture_generator_args)
+
 add_test(
     NAME physics_dependencies_config_tests
     COMMAND ${CMAKE_COMMAND}

@@ -391,6 +391,26 @@ TEST(TemporalCapture, FsrModesSelectIndependentSceneGrids) {
   EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
 }
 
+TEST(TemporalCapture, FsrFailuresAreTypedAndLocalToTheirCaptureTick) {
+  using container::temporal::CaptureFsrFailure;
+  const auto input = nlohmann::json::parse(R"({"schemaVersion":1,"frames":5,"events":[
+      {"frame":1,"fsr":"balanced","fsrFailure":"resources"},
+      {"frame":3,"fsrFailure":"jitter"},
+      {"frame":5,"fsrFailure":"dispatch"}]})");
+  CaptureSequence sequence(input);
+  EXPECT_EQ(sequence.sample(1).event.fsrFailure, CaptureFsrFailure::Resources);
+  EXPECT_FALSE(sequence.sample(2).event.fsrFailure);
+  EXPECT_EQ(sequence.sample(3).event.fsrFailure, CaptureFsrFailure::Jitter);
+  EXPECT_FALSE(sequence.sample(4).event.fsrFailure);
+  EXPECT_EQ(sequence.sample(5).event.fsrFailure, CaptureFsrFailure::Dispatch);
+
+  auto invalid = input;
+  for (const auto& value : nlohmann::json::array({"unknown", 3, true, nullptr})) {
+    invalid["events"][0]["fsrFailure"] = value;
+    EXPECT_THROW((void)CaptureSequence(invalid), std::invalid_argument) << value;
+  }
+}
+
 TEST(TemporalCapture, DlssSelectionRejectsTwoUpscalersInOneEvent) {
   using namespace container::renderer;
   auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[

@@ -211,6 +211,7 @@ struct RayShadowManager::Impl {
   bool validHistory{false}, recorded{false}, enabled{false},
       surfaceRequested{false}, surfaceEnabled{false}, sceneEnabled{false},
       hasRayGeometry{false};
+  bool fallbackInitializationRecorded{false};
   glm::mat4 previousViewProj{1}, previousInverseViewProj{1};
   TraceData data{};
 
@@ -567,6 +568,7 @@ void RayShadowManager::prepare(VkExtent2D extent, uint32_t imageCount) {
   p.rejectedSurfaceReason.clear();
   p.rejectedBuild.reset();
   p.recorded = false;
+  p.fallbackInitializationRecorded = false;
   p.invalidate();
   if (!p.fallback)
     p.fallback =
@@ -892,6 +894,10 @@ void RayShadowManager::recordBuild(VkCommandBuffer cmd, uint32_t image) {
     vkCmdClearColorImage(cmd, p.fallback->value, VK_IMAGE_LAYOUT_GENERAL,
                          &white, 1, &range);
     imageBarrier(cmd, *p.fallback);
+    // This image survives frame-resource recreation. Keep its initial layout
+    // until the clear and both transitions have actually been submitted.
+    p.fallback->initialized = false;
+    p.fallbackInitializationRecorded = true;
   }
   if (!p.sceneEnabled)
     return;
@@ -1041,6 +1047,10 @@ void RayShadowManager::recordFilter(VkCommandBuffer cmd, uint32_t image) {
 }
 void RayShadowManager::commit() {
   auto &p = *impl_;
+  if (p.fallbackInitializationRecorded) {
+    p.fallback->initialized = true;
+    p.fallbackInitializationRecorded = false;
+  }
   if (p.recorded) {
     p.validHistory = true;
     p.previousViewProj = p.data.camera.viewProj;

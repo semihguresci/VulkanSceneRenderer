@@ -385,6 +385,7 @@ bool RendererFrontend::publishCameraViewPose(CameraViewPosePublication& publicat
           pushConstants_.bindless.sectionPlaneEnabled,pushConstants_.bindless.sectionPlane,manager.sceneClipState(),
           [&manager](uint32_t row) {return manager.temporalMaterialRevision(row);},compatible);
       svc_.allocationManager.executeStagedCommands([&](VkCommandBuffer command) {ray->recordBuild(command,image);});
+      ray->commit();
       nextLighting.updateRayShadowDescriptors(image,ray->readSettings(image),ray->readSettingsSize(),ray->visibilityView());
     }
   }
