@@ -425,6 +425,10 @@ calibration, timing, distortion/noise settings and completion semantics.
 report by fixed tick. It records a portable, versioned bundle and can replay
 the aligned observations without the renderer or Jolt. [Record a synchronized dataset](bim-robotics-datasets.md)
 
+The validation matrix covers Jolt and URDF independently. Its local driver and
+the optional Vulkan smoke runner produce evidence for the same fixtures used
+by the regression suite. [Run robotics validation](robotics-validation.md)
+
 ### Import and pose an articulated URDF robot
 
 Build `BimRoboticsUrdf` with `ENABLE_ROBOTICS_URDF=ON`. The tool uses

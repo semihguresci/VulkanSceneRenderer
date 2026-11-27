@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import tempfile
 
 def check_floor_shadow_footprint(raster_record, ray_record):
     """Reject remote floor occlusion without constraining legitimate contacts.
@@ -164,10 +165,14 @@ def main():
     parser.add_argument("--exe", type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--require-opt-in", action="store_true")
+    parser.add_argument("--managed-output", action="store_true",
+                        help="Save this capture under a new run directory")
     parser.add_argument("--check-existing", action="store_true",
                         help="Revalidate saved results and images without launching the renderer")
     args = parser.parse_args()
     if args.check_existing:
+        if args.managed_output:
+            parser.error("--managed-output is for new captures")
         return recheck_existing(args.output.resolve())
     if args.require_opt_in and os.environ.get("CONTAINER_RUN_GPU_PHYSICS") != "1":
         print("Set CONTAINER_RUN_GPU_PHYSICS=1 to run native physics captures")
@@ -178,6 +183,9 @@ def main():
 
     exe, output = args.exe.resolve(), args.output.resolve()
     output.mkdir(parents=True, exist_ok=True)
+    if args.managed_output:
+        output = Path(tempfile.mkdtemp(prefix="run-", dir=output))
+    print(f"Physics runtime regression artifacts: {output}", flush=True)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n")
     (output / "imgui.ini").write_text(
         "[Window][Scene Controls]\nPos=0,0\nSize=350,500\nCollapsed=1\n\n"

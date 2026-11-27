@@ -14,9 +14,25 @@ env:
 
 jobs:
   windows-robotics:
-    name: Windows CPU physics and replay
+    name: Windows robotics (${{ matrix.profile }})
     runs-on: windows-2025-vs2026
     timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: full
+            physics: 'ON'
+            urdf: 'ON'
+          - profile: physics-only
+            physics: 'ON'
+            urdf: 'OFF'
+          - profile: urdf-only
+            physics: 'OFF'
+            urdf: 'ON'
+          - profile: minimal
+            physics: 'OFF'
+            urdf: 'OFF'
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -86,13 +102,13 @@ jobs:
             "-DVulkan_INCLUDE_DIR=$env:VULKAN_SDK/Include"
             "-DVulkan_LIBRARY=$env:VULKAN_SDK/Lib/vulkan-1.lib"
             '-DENABLE_TESTS=ON'
-            '-DENABLE_PHYSICS=ON'
+            '-DENABLE_PHYSICS=${{ matrix.physics }}'
             '-DENABLE_WINDOWED_TESTS=OFF'
             '-DENABLE_VULKAN_VALIDATION_LAYERS=OFF'
             '-DENABLE_RENDERER_MCP=OFF'
             '-DENABLE_TINYUSDZ_USD_LOADER=OFF'
             '-DENABLE_OPENVDB=OFF'
-            '-DENABLE_ROBOTICS_URDF=OFF'
+            '-DENABLE_ROBOTICS_URDF=${{ matrix.urdf }}'
             '-DENABLE_SAMPLE_MODEL_DOWNLOAD=OFF'
             '-DENABLE_BIM_SAMPLE_MODEL_DOWNLOAD=OFF'
             '-DENABLE_USD_SAMPLE_MODEL_DOWNLOAD=OFF'
@@ -100,91 +116,40 @@ jobs:
           cmake --preset windows-release @options
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
-          $targets = @(
-            'BimRoboticsSim'
-            'BimRoboticsDataset'
-            'drive_actuation_tests'
-            'drive_sensor_tests'
-            'raycast_lidar_tests'
-            'sensor_camera_tests'
-            'sensor_camera_dataset_tests'
-            'dataset_simulation_report_tests'
-            'robotics_dataset_reader_tests'
-            'bim_sensor_label_tests'
-            'bim_robotics_scene_tests'
-            'bim_collision_geometry_tests'
-            'bim_asset_cache_tests'
-            'physics_world_tests'
-            'differential_drive_tests'
-            'bim_collision_world_tests'
-            'bim_physics_determinism_tests'
-            'articulated_grasp_tests'
-            'bim_drive_actuation_tests'
-            'bim_drive_sensor_tests'
-            'bim_lidar_tests'
-          )
-          cmake --build out/build/windows-release --parallel 2 --target @targets
+          & ./tests/robotics/run_validation.ps1 -BuildDirectory out/build/windows-release `
+              -Profile '${{ matrix.profile }}' -Phase Build
 
       - name: Save vcpkg binaries
-        if: ${{ !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
+        if: ${{ !cancelled() && matrix.profile == 'full' && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/robotics-vcpkg-cache
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
-      - name: Run physics tests and fixed-step BIM replay
+      - name: Run the selected robotics regression profile
         shell: pwsh
         run: |
-          $tests = @(
-            'robotics_module_boundaries'
-            'drive_actuation_tests'
-            'drive_sensor_tests'
-            'raycast_lidar_tests'
-            'sensor_camera_tests'
-            'sensor_camera_dataset_tests'
-            'dataset_simulation_report_tests'
-            'robotics_dataset_reader_tests'
-            'bim_sensor_label_tests'
-            'bim_robotics_scene_tests'
-            'bim_collision_geometry_tests'
-            'bim_asset_cache_tests'
-            'physics_world_tests'
-            'differential_drive_tests'
-            'bim_collision_world_tests'
-            'bim_physics_determinism_tests'
-            'articulated_grasp_tests'
-            'bim_drive_actuation_tests'
-            'bim_drive_sensor_tests'
-            'bim_lidar_tests'
-            'bim_fixed_step_replay'
-          )
-          $build = Join-Path $PWD 'out/build/windows-release'
-          $filter = '^(' + ($tests -join '|') + ')$'
-          $listed = ctest --test-dir $build -R $filter --show-only=json-v1
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          $registered = (($listed -join [Environment]::NewLine) | ConvertFrom-Json).tests.name
-          $missing = $tests | Where-Object { $_ -notin $registered }
-          if ($missing) { throw "Missing CTest registrations: $($missing -join ', ')." }
-          $junit = Join-Path $build 'robotics-physics.junit.xml'
-          ctest --test-dir $build -R $filter --no-tests=error --output-on-failure --output-junit $junit
+          & ./tests/robotics/run_validation.ps1 -BuildDirectory out/build/windows-release `
+              -Profile '${{ matrix.profile }}' -Phase Test
 
       - name: Upload headless validation evidence
         if: success()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: robotics-headless-validation
+          name: robotics-headless-validation-${{ matrix.profile }}
           if-no-files-found: error
           path: |
-            out/build/windows-release/robotics-physics.junit.xml
+            out/build/windows-release/robotics-validation/
             out/build/windows-release/test_results/bim-fixed-step-replay/summary.json
 
       - name: Upload physics failure diagnostics
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: robotics-physics-failure
+          name: robotics-validation-failure-${{ matrix.profile }}
           if-no-files-found: ignore
           path: |
             out/build/windows-release/Testing/Temporary/
-            out/build/windows-release/robotics-physics.junit.xml
+            out/build/windows-release/robotics-validation/
+            out/build/windows-release/CMakeFiles/CMakeConfigureLog.yaml
             out/build/windows-release/test_results/bim-fixed-step-replay/
