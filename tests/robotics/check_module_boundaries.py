@@ -15,7 +15,8 @@ PREFIX = "VulkanSceneRenderer_"
 CORE = {
     "robotics_clock": set(),
     "robotics_drive": set(),
-    "robotics_sensors": {"robotics_drive"},
+    "robotics_sensors": {"robotics_drive", "fingerprint"},
+    "robotics_dataset": {"robotics_sensors", "robotics_drive", "fingerprint"},
     "robotics_scene": set(),
     "robotics_collision_geometry": {"robotics_scene"},
 }
@@ -122,11 +123,14 @@ def check(build, config, physics, urdf):
 
     standalone_tests = {"drive_actuation_tests": "robotics_drive",
                         "drive_sensor_tests": "robotics_sensors",
-                        "raycast_lidar_tests": "robotics_sensors"}
+                        "raycast_lidar_tests": "robotics_sensors",
+                        "dataset_simulation_report_tests": "robotics_dataset",
+                        "robotics_dataset_reader_tests": "robotics_dataset"}
     if physics:
         standalone_tests["physics_world_tests"] = "physics_world"
     executables = {"BimRoboticsAssets": {"robotics_assets"},
                    "BimRoboticsScene": {"robotics_scene"},
+                   "BimRoboticsDataset": {"robotics_dataset"},
                    **{name: {module} for name, module in standalone_tests.items()}}
     if physics:
         executables["BimRoboticsCollision"] = {"robotics_assets", "robotics_collision", "robotics_diagnostics"}

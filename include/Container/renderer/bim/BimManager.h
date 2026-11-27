@@ -5,6 +5,7 @@
 #include "Container/common/CommonVulkan.h"
 #include "Container/geometry/ImportReport.h"
 #include "Container/geometry/DotBimLoader.h"
+#include "Container/utility/ContentFingerprint.h"
 #include "Container/geometry/GeometryLodSelection.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/renderer/bim/BimCoordinationOverlay.h"
@@ -655,6 +656,7 @@ public:
     std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions;
     std::vector<container::geometry::Vertex> uploadVertices;
     std::vector<uint32_t> uploadIndices;
+    std::vector<util::ContentFingerprint> sourceLayerFingerprints;
     size_t sourceIndexCount{};
     std::unordered_map<uint32_t, std::vector<geometry::GeometryLodRange>> geometryLodRanges;
     BimFloorPlanOverlayData floorPlanGround;
@@ -667,6 +669,7 @@ public:
   // CPU-only staging. The optional observer runs inline and may request a stop.
   // It must not access live renderer state or Vulkan resources.
   // The profiling observer receives one notification at the start of each stage.
+  // Sensor capture can retain fingerprints from the exact imported source bytes.
   [[nodiscard]] static PreparedScene prepareScene(const std::string &path,
                                                   float importScale,
       std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {},
@@ -674,7 +677,8 @@ public:
       const std::function<void(std::string_view)> &progress = {},
       const std::function<void(std::string_view)> &profileStage = {},
       bool generateGeometryLods = false,
-      const std::filesystem::path &derivedCacheDirectory = {});
+      const std::filesystem::path &derivedCacheDirectory = {},
+      bool recordSourceFingerprints = false);
   [[nodiscard]] const auto& openVdbOptions() const { return openVdbOptions_; }
   [[nodiscard]] const BimDerivedCacheReport &derivedCacheReport() const noexcept { return derivedCacheReport_; }
   // Optional raster ranges may be dropped when the source geometry fits alone.

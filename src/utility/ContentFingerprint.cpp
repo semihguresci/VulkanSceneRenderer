@@ -7,6 +7,7 @@
 #include <fstream>
 #include <limits>
 #include <stdexcept>
+#include <streambuf>
 #include <string_view>
 
 namespace container::util {
@@ -117,6 +118,38 @@ private:
   uint64_t size_{};
 };
 
+class FingerprintedInput final : public std::streambuf {
+public:
+  FingerprintedInput(std::ifstream& file, std::stop_token stop) : file_(file), stop_(stop) {}
+
+  ContentFingerprint finish() {
+    checkModelImportCancellation(stop_);
+    if (!traits_type::eq_int_type(sgetc(), traits_type::eof()))
+      throw std::invalid_argument("Source consumer did not read the entire file");
+    return {hash_.Finish(), hash_.Size()};
+  }
+
+protected:
+  int_type underflow() override {
+    checkModelImportCancellation(stop_);
+    if (file_.eof()) return traits_type::eof();
+    file_.read(buffer_.data(), static_cast<std::streamsize>(buffer_.size()));
+    if (file_.bad() || (!file_ && !file_.eof()))
+      throw std::invalid_argument("Source file could not be read");
+    const auto received = static_cast<size_t>(file_.gcount());
+    if (received == 0) return traits_type::eof();
+    hash_.Add({reinterpret_cast<const unsigned char*>(buffer_.data()), received});
+    setg(buffer_.data(), buffer_.data(), buffer_.data() + received);
+    return traits_type::to_int_type(*gptr());
+  }
+
+private:
+  std::ifstream& file_;
+  std::stop_token stop_;
+  Sha256 hash_;
+  std::array<char, kReadChunkBytes> buffer_;
+};
+
 } // namespace
 
 ContentFingerprint FingerprintContent(std::span<const unsigned char> bytes, std::stop_token stop) {
@@ -155,6 +188,22 @@ ContentFingerprint FingerprintFileContent(const std::filesystem::path& path, std
   }
   hash.Add(std::span(bytes).first(static_cast<size_t>(file.gcount())));
   return {hash.Finish(), hash.Size()};
+}
+
+ContentFingerprint FingerprintFileWhileReading(const std::filesystem::path& path,
+                                                const std::function<void(std::istream&)>& consume,
+                                                std::stop_token stop) {
+  checkModelImportCancellation(stop);
+  std::error_code error;
+  if (!std::filesystem::is_regular_file(path, error))
+    throw std::invalid_argument("Source is not a readable file");
+  std::ifstream file(path, std::ios::binary);
+  if (!file) throw std::invalid_argument("Source file could not be opened");
+  FingerprintedInput buffer(file, stop);
+  std::istream input(&buffer);
+  consume(input);
+  if (input.bad()) throw std::invalid_argument("Source file could not be read");
+  return buffer.finish();
 }
 
 } // namespace container::util

@@ -4,6 +4,7 @@
 #include "Container/geometry/CoordinateSystem.h"
 #include "Container/geometry/PolylineGeometry.h"
 #include "Container/geometry/SweptDiskGeometry.h"
+#include "Container/utility/ContentFingerprint.h"
 #include "Container/utility/Platform.h"
 #include "IfcAreaProfileGeometry.h"
 #include "IfcBrepFaceGeometry.h"
@@ -8226,14 +8227,20 @@ Model LoadFromStep(std::string_view stepText, float importScale,
 }
 
 Model LoadFromFile(const std::filesystem::path &path, float importScale,
-                   std::stop_token stop) {
+                   std::stop_token stop, util::ContentFingerprint* sourceFingerprint) {
   container::util::checkModelImportCancellation(stop);
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     throw std::runtime_error("failed to open IFC file: " +
                              container::util::pathToUtf8(path));
   }
-  return LoadFromStep(bim_import::readText(file, stop), importScale, stop);
+  const auto text = bim_import::readText(file, stop);
+  auto model = LoadFromStep(text, importScale, stop);
+  if (sourceFingerprint) {
+    const auto* bytes = reinterpret_cast<const unsigned char*>(text.data());
+    *sourceFingerprint = util::FingerprintContent({bytes, text.size()}, stop);
+  }
+  return model;
 }
 
 } // namespace container::geometry::ifc

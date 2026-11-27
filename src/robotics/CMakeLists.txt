@@ -1,6 +1,6 @@
 add_library(VulkanSceneRenderer_robotics_clock SimClock.cpp)
 
-add_library(VulkanSceneRenderer_robotics_scene RoboticsScene.cpp RoboticsSceneManifest.cpp BimSensorLabels.cpp)
+add_library(VulkanSceneRenderer_robotics_scene RoboticsScene.cpp RoboticsSceneManifest.cpp BimSensorLabels.cpp BimSceneSource.cpp)
 target_link_libraries(VulkanSceneRenderer_robotics_scene PUBLIC Dep_Math
     PRIVATE Vulkan::Headers nlohmann_json::nlohmann_json)
 
@@ -26,9 +26,14 @@ endif()
 add_library(VulkanSceneRenderer_robotics_drive DifferentialDrive.cpp DifferentialDriveActuation.cpp)
 target_link_libraries(VulkanSceneRenderer_robotics_drive PUBLIC Dep_Math)
 
-add_library(VulkanSceneRenderer_robotics_sensors DriveSensors.cpp RaycastLidar.cpp SensorSchedule.cpp SensorCamera.cpp)
+add_library(VulkanSceneRenderer_robotics_sensors
+    DriveSensors.cpp RaycastLidar.cpp SensorSchedule.cpp SensorCamera.cpp DatasetSimulationReport.cpp)
 target_link_libraries(VulkanSceneRenderer_robotics_sensors PUBLIC VulkanSceneRenderer_robotics_drive
-    PRIVATE nlohmann_json::nlohmann_json)
+    PRIVATE nlohmann_json::nlohmann_json VulkanSceneRenderer_fingerprint)
+
+add_library(VulkanSceneRenderer_robotics_dataset RoboticsDatasetReader.cpp RoboticsDatasetWriter.cpp)
+target_link_libraries(VulkanSceneRenderer_robotics_dataset PUBLIC nlohmann_json::nlohmann_json
+    PRIVATE VulkanSceneRenderer_robotics_sensors VulkanSceneRenderer_fingerprint)
 
 foreach(target IN ITEMS
         VulkanSceneRenderer_robotics_clock
@@ -36,7 +41,8 @@ foreach(target IN ITEMS
         VulkanSceneRenderer_robotics_collision_geometry
         VulkanSceneRenderer_robotics_assets
         VulkanSceneRenderer_robotics_drive
-        VulkanSceneRenderer_robotics_sensors)
+        VulkanSceneRenderer_robotics_sensors
+        VulkanSceneRenderer_robotics_dataset)
     target_compile_features(${target} PUBLIC cxx_std_23)
     target_include_directories(${target} PUBLIC ${CMAKE_SOURCE_DIR}/include)
 endforeach()
@@ -52,6 +58,11 @@ target_link_libraries(BimRoboticsAssets PRIVATE
     VulkanSceneRenderer_robotics_assets nlohmann_json::nlohmann_json)
 set_target_properties(BimRoboticsAssets PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 container_stage_runtime_dlls(BimRoboticsAssets)
+
+add_executable(BimRoboticsDataset ${CMAKE_SOURCE_DIR}/tools/bim_robotics_dataset.cpp)
+target_link_libraries(BimRoboticsDataset PRIVATE VulkanSceneRenderer_robotics_dataset)
+set_target_properties(BimRoboticsDataset PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+container_stage_runtime_dlls(BimRoboticsDataset)
 
 if(ENABLE_ROBOTICS_URDF)
     find_package(tinyxml2 CONFIG REQUIRED)

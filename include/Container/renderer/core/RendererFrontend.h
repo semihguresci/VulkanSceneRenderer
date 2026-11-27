@@ -967,6 +967,7 @@ private:
     std::optional<container::geometry::gltf::AnimatedCameraState> camera;
     std::vector<std::optional<container::robotics::SensorCameraFrame>> inFlight;
     std::vector<container::robotics::BimSensorLabel> labels;
+    container::robotics::BimSceneSource sceneSource;
     double metersPerRendererUnit{1.0};
     uint64_t bimRevision{};
     size_t completed{};

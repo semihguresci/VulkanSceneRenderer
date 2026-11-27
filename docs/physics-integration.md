@@ -421,6 +421,10 @@ camera specification and writes per-frame EXR/JSON pairs plus a label manifest.
 See [camera dataset capture](sensor-camera-datasets.md) for a doorway example,
 calibration, timing, distortion/noise settings and completion semantics.
 
+`BimRoboticsDataset` joins the camera output and the matching simulation
+report by fixed tick. It records a portable, versioned bundle and can replay
+the aligned observations without the renderer or Jolt. [Record a synchronized dataset](bim-robotics-datasets.md)
+
 ### Import and pose an articulated URDF robot
 
 Build `BimRoboticsUrdf` with `ENABLE_ROBOTICS_URDF=ON`. The tool uses

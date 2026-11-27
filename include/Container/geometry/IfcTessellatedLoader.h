@@ -15,7 +15,8 @@ using Model = container::geometry::dotbim::Model;
 
 [[nodiscard]] Model LoadFromFile(const std::filesystem::path& path,
                                  float importScale = 1.0f,
-                                 std::stop_token stop = {});
+                                 std::stop_token stop = {},
+                                 util::ContentFingerprint* sourceFingerprint = nullptr);
 [[nodiscard]] Model LoadFromStep(std::string_view stepText,
                                  float importScale = 1.0f,
                                  std::stop_token stop = {});
