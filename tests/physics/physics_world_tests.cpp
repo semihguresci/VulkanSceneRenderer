@@ -61,6 +61,191 @@ TEST(PhysicsWorldTests, FallingBoxSettlesOnStaticFloorAndSleeps) {
   EXPECT_EQ(world.activeBodyCount(), 0u);
 }
 
+TEST(PhysicsWorldTests, ContactTrackingIsOptInAndExcludesSpeculativePairs) {
+  auto settings = testWorldSettings();
+  settings.gravity = glm::vec3(0.0f);
+  PhysicsWorld untracked(settings);
+  (void)addFloor(untracked);
+  (void)untracked.createSphere(.5f, {.position = {0, .49, 0}});
+  untracked.step(kStep);
+  EXPECT_FALSE(untracked.tracksContacts());
+  EXPECT_TRUE(untracked.contacts().empty());
+  EXPECT_TRUE(untracked.contactEvents().empty());
+
+  settings.trackContacts = true;
+  PhysicsWorld tracked(settings);
+  const auto floor = addFloor(tracked);
+  const auto sphere = tracked.createSphere(.5f, {.position = {0, .505, 0},
+                                                 .linearVelocity = {0, -.01f, 0}});
+  EXPECT_TRUE(tracked.tracksContacts());
+  EXPECT_EQ(tracked.motionType(floor), PhysicsMotionType::Static);
+  EXPECT_EQ(tracked.motionType(sphere), PhysicsMotionType::Dynamic);
+  EXPECT_FALSE(tracked.motionType(kInvalidPhysicsBodyId));
+  tracked.step(kStep);
+  EXPECT_TRUE(tracked.contacts().empty());
+  EXPECT_TRUE(tracked.contactEvents().empty());
+
+  ASSERT_TRUE(tracked.setPose(sphere, {{0, .49, 0}}));
+  tracked.step(kStep);
+  ASSERT_EQ(tracked.contacts().size(), 1u);
+  const auto& contact = tracked.contacts().front();
+  EXPECT_EQ(contact.bodyA, floor);
+  EXPECT_EQ(contact.bodyB, sphere);
+  EXPECT_GT(contact.normalFromAToB.y, .99f);
+  EXPECT_NEAR(contact.penetrationDepth, .01f, 1e-4f);
+  ASSERT_EQ(tracked.contactEvents().size(), 1u);
+  EXPECT_EQ(tracked.contactEvents().front().type, PhysicsContactEventType::Began);
+}
+
+TEST(PhysicsWorldTests, ContactsAreSortedAndPoseAndRetirementInvalidateOnlyAffectedPairs) {
+  auto settings = testWorldSettings();
+  settings.workerThreads = 2;
+  settings.trackContacts = true;
+  PhysicsWorld world(settings);
+  // Create one dynamic body before the common floor and one after it so the
+  // stable body ordering must produce opposite normal signs for their pairs.
+  const auto right = world.createSphere(.5f, {.position = {2, .49, 0}});
+  const auto floor = addFloor(world);
+  const auto left = world.createSphere(.5f, {.position = {-2, .49, 0}});
+  world.step(kStep);
+  ASSERT_EQ(world.contacts().size(), 2u);
+  ASSERT_EQ(world.contactEvents().size(), 2u);
+  EXPECT_EQ(world.contacts()[0].bodyA, right);
+  EXPECT_EQ(world.contacts()[0].bodyB, floor);
+  EXPECT_LT(world.contacts()[0].normalFromAToB.y, -.99f);
+  EXPECT_EQ(world.contacts()[1].bodyA, floor);
+  EXPECT_EQ(world.contacts()[1].bodyB, left);
+  EXPECT_GT(world.contacts()[1].normalFromAToB.y, .99f);
+  for (const auto& event : world.contactEvents())
+    EXPECT_EQ(event.type, PhysicsContactEventType::Began);
+
+  world.step(kStep);
+  ASSERT_EQ(world.contactEvents().size(), 2u);
+  for (const auto& event : world.contactEvents())
+    EXPECT_EQ(event.type, PhysicsContactEventType::Persisted);
+  const auto floorPose = world.pose(floor);
+  ASSERT_TRUE(floorPose);
+  ASSERT_TRUE(world.setPose(floor, {floorPose->position, -floorPose->rotation}));
+  EXPECT_EQ(world.contacts().size(), 2u);
+  EXPECT_THROW((void)world.setPose(right, {{0, std::numeric_limits<double>::infinity(), 0}}),
+               std::invalid_argument);
+  EXPECT_EQ(world.contacts().size(), 2u);
+
+  ASSERT_TRUE(world.setPose(right, {{2, 2.5, 0}}, false));
+  ASSERT_EQ(world.contacts().size(), 1u);
+  EXPECT_EQ(world.contacts().front().bodyB, left);
+  ASSERT_EQ(world.contactEvents().size(), 2u);
+  EXPECT_EQ(world.contactEvents()[0].type, PhysicsContactEventType::Persisted);
+  world.step(kStep);
+  ASSERT_EQ(world.contactEvents().size(), 2u);
+  EXPECT_EQ(world.contactEvents()[0].type, PhysicsContactEventType::Ended);
+  EXPECT_EQ(world.contactEvents()[0].contact.bodyA, right);
+  EXPECT_EQ(world.contactEvents()[1].type, PhysicsContactEventType::Persisted);
+
+  ASSERT_TRUE(world.destroyBody(left));
+  EXPECT_TRUE(world.contacts().empty());
+  EXPECT_FALSE(world.motionType(left));
+  const auto replacement = world.createSphere(.5f, {.position = {-2, 2.5, 0}});
+  EXPECT_NE(replacement, left);
+  world.step(kStep);
+  ASSERT_EQ(world.contactEvents().size(), 1u);
+  EXPECT_EQ(world.contactEvents().front().type, PhysicsContactEventType::Ended);
+  EXPECT_EQ(world.contactEvents().front().contact.bodyB, left);
+  world.step(kStep);
+  EXPECT_TRUE(world.contactEvents().empty());
+  world.clear();
+  EXPECT_TRUE(world.contacts().empty());
+  EXPECT_TRUE(world.contactEvents().empty());
+}
+
+TEST(PhysicsWorldTests, CollisionFilteringJointInvalidatesContactEvidenceBeforeNextStep) {
+  auto settings = testWorldSettings();
+  settings.gravity = glm::vec3(0.0f);
+  settings.trackContacts = true;
+  PhysicsWorld world(settings);
+  const auto anchor = world.createBox({.5f, .5f, .5f}, {.motionType = PhysicsMotionType::Static});
+  const auto payload = world.createBox({.5f, .5f, .5f}, {.position = {.96, 0, 0}});
+  world.step(kStep);
+  ASSERT_EQ(world.contacts().size(), 1u);
+  ASSERT_EQ(world.contactEvents().size(), 1u);
+  EXPECT_EQ(world.contactEvents().front().type, PhysicsContactEventType::Began);
+  const auto fixed = world.createJoint(anchor, payload, {.type = PhysicsJointType::Fixed,
+                                                        .anchor = {.5, 0, 0}});
+  EXPECT_TRUE(world.contacts().empty());
+  ASSERT_EQ(world.contactEvents().size(), 1u);
+  EXPECT_EQ(world.contactEvents().front().type, PhysicsContactEventType::Began);
+  world.step(kStep);
+  ASSERT_EQ(world.contactEvents().size(), 1u);
+  EXPECT_EQ(world.contactEvents().front().type, PhysicsContactEventType::Ended);
+  EXPECT_EQ(world.contactEvents().front().contact.bodyA, anchor);
+  EXPECT_EQ(world.contactEvents().front().contact.bodyB, payload);
+  ASSERT_TRUE(world.destroyJoint(fixed));
+  EXPECT_TRUE(world.contacts().empty());
+  world.step(kStep);
+  ASSERT_EQ(world.contacts().size(), 1u);
+  ASSERT_EQ(world.contactEvents().size(), 1u);
+  EXPECT_EQ(world.contactEvents().front().type, PhysicsContactEventType::Began);
+  world.clear();
+  EXPECT_TRUE(world.contacts().empty());
+  EXPECT_TRUE(world.contactEvents().empty());
+}
+
+TEST(PhysicsWorldTests, ContactsCoalesceMultipleMeshManifoldsIntoOneStablePair) {
+  auto settings = testWorldSettings();
+  settings.gravity = glm::vec3(0.0f);
+  settings.trackContacts = true;
+  PhysicsWorld world(settings);
+  // One static body contains two independent surfaces with different contact
+  // normals and depths. Removing only the deeper one keeps the body pair.
+  const std::array<glm::vec3, 8> vertices{{
+      {-3, 0, -3}, {-3, 0, 3}, {3, 0, 3}, {3, 0, -3},
+      {0, -3, -3}, {0, 3, -3}, {0, 3, 3}, {0, -3, 3}}};
+  const std::array<uint32_t, 12> triangles{0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+  const auto corner = world.createStaticMesh(vertices, triangles);
+  const auto sphere = world.createSphere(.5f, {.position = {.46, .49, 1.2}});
+  world.step(kStep);
+  ASSERT_EQ(world.contacts().size(), 1u);
+  ASSERT_EQ(world.contactEvents().size(), 1u);
+  EXPECT_EQ(world.contactEvents().front().type, PhysicsContactEventType::Began);
+  EXPECT_EQ(world.contacts().front().bodyA, corner);
+  EXPECT_EQ(world.contacts().front().bodyB, sphere);
+  EXPECT_GT(world.contacts().front().normalFromAToB.x, .99f);
+  EXPECT_NEAR(world.contacts().front().penetrationDepth, .04f, 1e-3f);
+
+  ASSERT_TRUE(world.setPose(sphere, {{.8, .49, 1.2}}));
+  EXPECT_TRUE(world.contacts().empty());
+  world.step(kStep);
+  ASSERT_EQ(world.contacts().size(), 1u);
+  ASSERT_EQ(world.contactEvents().size(), 1u);
+  EXPECT_EQ(world.contactEvents().front().type, PhysicsContactEventType::Persisted);
+  EXPECT_GT(world.contacts().front().normalFromAToB.y, .99f);
+  EXPECT_NEAR(world.contacts().front().penetrationDepth, .01f, 1e-3f);
+}
+
+TEST(PhysicsWorldTests, SolverContactEndsWhenTheRestingBodySleeps) {
+  auto settings = testWorldSettings();
+  settings.trackContacts = true;
+  PhysicsWorld world(settings);
+  const auto floor = addFloor(world);
+  const auto box = world.createBox({.5f, .5f, .5f}, {.position = {0, 2.0, 0}});
+  bool began = false, ended = false;
+  for (size_t tick = 0; tick < 240; ++tick) {
+    world.step(kStep);
+    for (const auto& event : world.contactEvents()) {
+      SCOPED_TRACE(tick);
+      EXPECT_EQ(event.contact.bodyA, floor);
+      EXPECT_EQ(event.contact.bodyB, box);
+      began |= event.type == PhysicsContactEventType::Began;
+      ended |= event.type == PhysicsContactEventType::Ended;
+    }
+  }
+  EXPECT_TRUE(began);
+  EXPECT_TRUE(ended);
+  EXPECT_EQ(world.activeBodyCount(), 0u);
+  EXPECT_TRUE(world.contacts().empty());
+  EXPECT_TRUE(world.contactEvents().empty());
+}
+
 TEST(PhysicsWorldTests, StaticBodiesIgnoreGravityAndVelocityMutation) {
   PhysicsWorld world(testWorldSettings());
   const auto body = world.createSphere(0.5f,

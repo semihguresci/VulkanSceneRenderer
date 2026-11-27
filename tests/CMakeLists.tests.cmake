@@ -3299,6 +3299,12 @@ if(ENABLE_PHYSICS)
     target_compile_definitions(bim_physics_determinism_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
+    add_custom_test(articulated_grasp_tests
+        ${TESTS_DIR}/robotics/articulated_grasp_tests.cpp "" ${TEST_RESULTS_DIR}
+        VulkanSceneRenderer_robotics_physics
+    )
+    set_tests_properties(articulated_grasp_tests PROPERTIES LABELS "cpu;physics;robotics")
+
     if(Python3_Interpreter_FOUND)
         add_test(NAME bim_fixed_step_replay
             COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_fixed_step_replay.py"

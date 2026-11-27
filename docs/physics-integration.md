@@ -448,6 +448,50 @@ These are kinematic colliders. Inertia, effort, damping and friction are
 available as authored data for a dynamics adapter. A mesh collider requires
 a separate moving mesh adapter before binding.
 
+### Drive an articulated mechanism and grasp a payload
+
+Link `VulkanSceneRenderer_robotics_physics` with `ENABLE_PHYSICS=ON` and
+include `Container/robotics/Articulation.h`. Create the dynamic links and
+hinge or slider joints in a caller-owned `PhysicsWorld`. The articulation
+commands drive the existing Jolt motors with joint limits and an effort cap.
+Commands use radians or radians per second for hinges and world units or
+world units per second for sliders. Velocity commands support an optional
+speed cap. Robotics worlds use metres and +Z up.
+
+Enable `PhysicsWorldSettings::trackContacts` to read contacts after each
+fixed step. Contact rows use world-unique body handles. Begin, persist, and
+end events report changes in the solver's contact pairs in stable order.
+Each row reports the deepest non-speculative manifold before constraint
+resolution. An end event can mean separation or sleep. Consume the spans
+before advancing or mutating the world.
+
+Construct a `ParallelGripper` with a palm, two finger slider joints, and
+joint-space open and closed positions. Command it closed, advance the
+world in fixed ticks, and call `tryGrasp` for a specific dynamic payload
+after the fingers contact both sides. For a successful grasp, a temporary
+fixed joint captures the live palm-to-payload transform. The payload keeps
+colliding with the environment throughout the lift and move. Opening the
+gripper or calling `release` removes the constraint and leaves the payload's
+current pose and velocity to the solver.
+
+The approximation assumes an ideal rigid hold until release. The caller
+selects the payload and owns the finger commands through the gripper. The
+gripper borrows the world and must be destroyed before the world.
+
+Build and run the same fixed-step pick-and-place test used in CI.
+
+```powershell
+cmake --build out/build/windows-release --config Release --target articulated_grasp_tests
+ctest --test-dir out/build/windows-release -C Release -R '^articulated_grasp_tests$' --output-on-failure
+```
+
+The Cartesian arm fixture runs 1,920 fixed 120 Hz steps in each of two
+independent worlds with one Jolt worker. It checks actual bilateral
+contact, the cube's clearance during lift and transport, and its final
+rest on the destination support. The contact penetration budget is
+1 mm. Replays compare positions and joint coordinates to 0.1 mm or
+0.1 mrad and compare contact pairs and event types at every tick.
+
 ## Current scope
 
 The scene panel attaches oriented box colliders derived from each selected
