@@ -57,6 +57,22 @@ Implications:
 - Any mirrored transform with `det(model3x3) < 0` changes the tangent-frame
   handedness and must be accounted for when building the bitangent sign.
 
+### Semantic BIM export for robotics
+
+The semantic manifest uses a building-local, right-handed robotics frame with
+metres and REP-103 axes. Renderer forward `-Z`, left `-X`, and up `+Y` map to
+robotics `+X`, `+Y`, and `+Z`. For a renderer world point `(x, y, z)`, the metric
+point is `metersPerRendererUnit × (-z, -x, y)`. The rotation has positive
+determinant. [ROS REP-103](https://github.com/ros-infrastructure/rep/blob/master/rep-0103.rst)
+
+The importer resolves nested authored placements before applying this conversion.
+`roboticsWorldFromLocal` maps the original product or geometry coordinates
+into the metric world. It is a full column-major affine matrix, so scale and
+reflection remain explicit. A consumer that needs a rigid ROS transform must
+handle scaled or mirrored local coordinates separately. Georeference metadata
+is retained for provenance. The frame carries no inferred north alignment or
+geographic reprojection. [Export a semantic scene](ifc-import.md#export-a-semantic-scene-for-robotics)
+
 ## 2. Clip Space and Reverse-Z
 
 Vulkan uses `Zc` in the clip volume `0 <= Zc <= Wc` by default. After

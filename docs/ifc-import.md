@@ -4,6 +4,43 @@ The native implementation for [#61](https://github.com/semihguresci/VulkanSceneR
 adds conversion, solid operations and explicit import diagnostics. It is a
 subset of IFC geometry, with a Manifold mesh Boolean kernel.
 
+## Export a semantic scene for robotics
+
+`BimRoboticsScene` reads native IFC STEP or IFCX on the CPU and writes a
+versioned JSON manifest without opening a window. Build the tool and choose a
+source namespace that stays stable for the dataset.
+
+```powershell
+cmake --build out/build/windows-release --config Release --target BimRoboticsScene
+.\out\build\windows-release\BimRoboticsScene.exe "TeklaHouse.ifc" "tekla-robotics.json" "tekla-house"
+```
+
+The manifest includes authored GUIDs and source occurrence IDs, IFC classes,
+product world placements, separate drawable representation placements, and
+spatial relations. Project, site, building, storey, space, wall, slab, door,
+and opening records can survive without drawable geometry. Native STEP
+relations retain containment, aggregation, nesting, opening and filling
+roles. IFCX preserves explicit composition links and any authored GUIDs. Its
+stable IDs include the composition path, so repeated GUID instances stay
+distinct as instances are added or removed. When a GUID is unavailable, the
+ID uses the source occurrence.
+
+Native STEP reads the project's supported length unit and composes nested
+local placements. IFCX files such as Tekla House may contain neither authored
+GUIDs nor length units. The manifest preserves that evidence and leaves
+metric matrices `null` when the metre scale is unknown. For a source whose
+scale you have verified, pass `--metres-per-renderer-unit N`. Missing or
+unsupported product placements are also `null`. The loader reports unresolved
+relations and ambiguous storeys under `diagnostics`. [Coordinate contract](coordinate-conventions.md#semantic-bim-export-for-robotics)
+
+The manifest records semantic classes and placements. It carries no inferred
+room boundaries, door passability, collision geometry, navigability or global
+map projection. Source relations and authoring gaps remain explicit for
+downstream robotics applications.
+
+Set `CONTAINER_IFC_SAMPLE_ROOT` to the buildingSMART examples directory to run
+the optional Tekla checks within `bim_robotics_scene_tests`.
+
 ## Import results
 
 `dotbim::Model::importReport` contains the STEP importer result. The BIM manager

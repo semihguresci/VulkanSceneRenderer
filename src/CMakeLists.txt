@@ -328,6 +328,7 @@ target_link_libraries(VulkanSceneRenderer_texture_codecs PUBLIC Dep_VulkanCore
     PRIVATE Dep_TextureCodecs VulkanSceneRenderer_stb)
 
 add_subdirectory(geometry)
+add_subdirectory(robotics)
 add_subdirectory(utility)
 add_subdirectory(ecs)
 

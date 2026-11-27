@@ -30,6 +30,126 @@ TEST(IfcxLoader, CancelledImportDoesNotReadOrParse) {
                container::util::ModelImportCancelled);
 }
 
+TEST(IfcxLoader, SemanticFeedRetainsNonDrawableAndHiddenProducts) {
+  constexpr auto source = R"json({"data":[
+    {"path":"project","attributes":{"bsi::ifc::class":"IfcProject"},
+     "children":{"Storey":"storey"}},
+    {"path":"storey","attributes":{"bsi::ifc::class":"IfcBuildingStorey",
+       "bsi::ifc::globalId":"storey-guid","bsi::ifc::name":"Ground"},
+     "children":{"Room":"room","Wall":"wall","Hidden":"hidden"}},
+    {"path":"room","attributes":{"bsi::ifc::class":"IfcSpace"}},
+    {"path":"wall","attributes":{"bsi::ifc::class":"IfcWall"},
+     "children":{"Body":"mesh"}},
+    {"path":"hidden","attributes":{"bsi::ifc::class":"IfcDoor",
+       "usd::usdgeom::visibility":{"visibility":"invisible"}}},
+    {"path":"mesh","attributes":{"usd::usdgeom::mesh":{
+       "faceVertexIndices":[0,1,2],"points":[[0,0,0],[1,0,0],[0,1,0]]}}}
+  ]})json";
+  const auto model = container::geometry::ifcx::LoadFromJson(source);
+  ASSERT_EQ(model.semanticProducts.size(), 5u);
+  ASSERT_EQ(model.semanticRelationships.size(), 4u);
+  for (const auto &relationship : model.semanticRelationships)
+    EXPECT_EQ(relationship.kind,
+              container::geometry::dotbim::SemanticRelationshipKind::Child);
+  const auto room = std::ranges::find(model.semanticProducts, "IfcSpace",
+      &container::geometry::dotbim::SemanticProduct::type);
+  ASSERT_NE(room, model.semanticProducts.end());
+  EXPECT_EQ(room->sourceId, "project/storey/room");
+  EXPECT_TRUE(room->guid.empty());
+  EXPECT_TRUE(room->isComposedOccurrence);
+  EXPECT_TRUE(room->hasPlacement);
+  const auto storey = std::ranges::find(model.semanticProducts, "IfcBuildingStorey",
+      &container::geometry::dotbim::SemanticProduct::type);
+  ASSERT_NE(storey, model.semanticProducts.end());
+  EXPECT_EQ(storey->guid, "storey-guid");
+  EXPECT_EQ(storey->name, "Ground");
+  ASSERT_EQ(model.elements.size(), 1u);
+  EXPECT_EQ(model.elements.front().sourceId, "project/storey/wall/mesh");
+  EXPECT_EQ(model.elements.front().semanticSourceId, "project/storey/wall");
+  EXPECT_FALSE(model.unitMetadata.hasMetersPerUnit);
+}
+
+TEST(IfcxLoader, SemanticOccurrencesKeepDoubleNestedMirroredPlacements) {
+  constexpr auto source = R"json({"data":[
+    {"path":"root","attributes":{"usd::xformop":{"transform":[
+       [-1,0,0,0],[0,1,0,0],[0,0,1,0],[10000000.125,2,3,1]]}},
+     "children":{"First":"one","Second":"two"}},
+    {"path":"one","inherits":["type"],"attributes":{"usd::xformop":{"transform":[
+       [1,0,0,0],[0,1,0,0],[0,0,1,0],[0.25,4,5,1]]}}},
+    {"path":"two","inherits":["type"],"attributes":{"usd::xformop":{"transform":[
+       [1,0,0,0],[0,1,0,0],[0,0,1,0],[0.5,6,7,1]]}}},
+    {"path":"type","attributes":{"bsi::ifc::class":"IfcSlab",
+       "bsi::ifc::globalId":"shared-authored-guid"},"children":{"Body":"mesh"}},
+    {"path":"mesh","attributes":{"usd::usdgeom::mesh":{
+       "faceVertexIndices":[0,1,2],"points":[[0,0,0],[1,0,0],[0,1,0]]}}}
+  ]})json";
+  const auto model = container::geometry::ifcx::LoadFromJson(source, 2.0f);
+  ASSERT_EQ(model.semanticProducts.size(), 2u);
+  EXPECT_TRUE(model.semanticRelationships.empty());
+  ASSERT_EQ(model.elements.size(), 2u);
+  const auto first = std::ranges::find(model.semanticProducts, "root/one",
+      &container::geometry::dotbim::SemanticProduct::sourceId);
+  ASSERT_NE(first, model.semanticProducts.end());
+  EXPECT_EQ(first->guid, "shared-authored-guid");
+  EXPECT_TRUE(first->hasPlacement);
+  EXPECT_DOUBLE_EQ(first->transform[3].x, 19999999.75);
+  EXPECT_DOUBLE_EQ(first->transform[3].y, 16.0);
+  EXPECT_DOUBLE_EQ(first->transform[3].z, -12.0);
+  EXPECT_DOUBLE_EQ(first->transform[0].x, -2.0);
+  EXPECT_EQ(model.elements[0].semanticSourceId, "root/one");
+  EXPECT_EQ(model.elements[1].semanticSourceId, "root/two");
+  EXPECT_NE(model.elements[0].sourceId, model.elements[1].sourceId);
+}
+
+TEST(IfcxLoader, SemanticFeedDoesNotInventGuidOrMalformedPlacement) {
+  constexpr auto source = R"json({"data":[
+    {"path":"12345678-1234-1234-1234-123456789abc",
+     "attributes":{"bsi::ifc::class":"IfcOpeningElement",
+       "usd::xformop":{"transform":[[1,0],[0,1]]}}}
+  ]})json";
+  const auto model = container::geometry::ifcx::LoadFromJson(source);
+  ASSERT_EQ(model.semanticProducts.size(), 1u);
+  EXPECT_TRUE(model.semanticProducts.front().guid.empty());
+  EXPECT_FALSE(model.semanticProducts.front().hasPlacement);
+  EXPECT_TRUE(model.semanticRelationships.empty());
+}
+
+TEST(IfcxLoader, SemanticFeedOwnsUntypedDrawablesWithoutInventingGuidOrUnits) {
+  constexpr auto source = R"json({"data":[
+    {"path":"cloud","attributes":{
+       "usd::xformop":{"transform":[
+         [1,0,0,0],[0,1,0,0],[0,0,1,0],[2,3,4,1]]},
+       "points::array":{"positions":[[0,0,0],[1,0,0]]}}},
+    {"path":"product","attributes":{"bsi::ifc::class":"IfcWall"},
+     "children":{"Body":"mesh"}},
+    {"path":"mesh","attributes":{"usd::usdgeom::mesh":{
+       "faceVertexIndices":[0,1,2],"points":[[0,0,0],[1,0,0],[0,1,0]]}}}
+  ]})json";
+  const auto model = container::geometry::ifcx::LoadFromJson(source);
+  ASSERT_EQ(model.semanticProducts.size(), 2u);
+  ASSERT_EQ(model.elements.size(), 2u);
+  const auto cloud = std::ranges::find(model.semanticProducts, "cloud",
+      &container::geometry::dotbim::SemanticProduct::sourceId);
+  ASSERT_NE(cloud, model.semanticProducts.end());
+  EXPECT_TRUE(cloud->type.empty());
+  EXPECT_TRUE(cloud->guid.empty());
+  EXPECT_TRUE(cloud->isComposedOccurrence);
+  EXPECT_TRUE(cloud->hasPlacement);
+  EXPECT_EQ(cloud->transform[3], glm::dvec4(2, 4, -3, 1));
+  const auto drawable = std::ranges::find(model.elements, "cloud",
+      &container::geometry::dotbim::Element::sourceId);
+  ASSERT_NE(drawable, model.elements.end());
+  EXPECT_EQ(drawable->semanticSourceId, "cloud");
+  EXPECT_EQ(drawable->guid, "cloud"); // Preserve the legacy render identity.
+  const auto mesh = std::ranges::find(model.elements, "product/mesh",
+      &container::geometry::dotbim::Element::sourceId);
+  ASSERT_NE(mesh, model.elements.end());
+  EXPECT_EQ(mesh->semanticSourceId, "product");
+  EXPECT_FALSE(model.unitMetadata.hasSourceUnits);
+  EXPECT_FALSE(model.unitMetadata.hasMetersPerUnit);
+  EXPECT_TRUE(model.semanticRelationships.empty());
+}
+
 std::string readTextFile(const std::filesystem::path &path) {
   std::ifstream file(path, std::ios::binary);
   std::string text((std::istreambuf_iterator<char>(file)),

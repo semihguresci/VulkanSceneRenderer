@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <stop_token>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -79,6 +80,10 @@ struct Element {
   uint32_t materialIndex{std::numeric_limits<uint32_t>::max()};
   // The mesh range is both the rendered metric stroke and the pick geometry.
   bool hasAuthoredCurveWidth{false};
+  // An occurrence can own several drawable rows with distinct source IDs.
+  std::string semanticSourceId{};
+  // Standalone geometry with no owning semantic product.
+  bool isRepresentationOnly{false};
 };
 
 struct MaterialTextureAsset {
@@ -160,6 +165,43 @@ struct SpaceWithoutDrawableGeometry {
   bool ambiguousStorey{};
 };
 
+struct SemanticProduct {
+  std::string sourceId;
+  std::string guid;
+  std::string type;
+  std::string name;
+  // Maps source-local coordinates to the same +Y-up world as drawable rows.
+  glm::dmat4 transform{1.0};
+  bool hasPlacement{false};
+  // Composed sources identify occurrences independently of GUID uniqueness.
+  bool isComposedOccurrence{false};
+};
+
+enum class SemanticRelationshipKind : uint8_t {
+  Contains,
+  Aggregates,
+  Nests,
+  Voids,
+  Fills,
+  Child,
+};
+
+struct SemanticRelationship {
+  // Parent to child, host to opening, or opening to filling product.
+  std::string fromSourceId;
+  std::string toSourceId;
+  SemanticRelationshipKind kind{};
+};
+
+struct SemanticUnitContext {
+  // Both are absent when source units are unsupported or ambiguous.
+  std::optional<double> sourceMetersPerUnit;
+  // Multiplier from imported world coordinates to physical metres.
+  std::optional<double> metersPerImportedUnit;
+  std::string sourceUnits;
+  std::string provenance;
+};
+
 struct Model {
   container::geometry::ImportReport importReport{};
   std::vector<Vertex> vertices{};
@@ -175,6 +217,9 @@ struct Model {
   ModelGeoreferenceMetadata georeferenceMetadata{};
   // Semantic rooms survive even when the importer cannot emit a draw row.
   std::vector<SpaceWithoutDrawableGeometry> spacesWithoutDrawableGeometry;
+  std::vector<SemanticProduct> semanticProducts;
+  std::vector<SemanticRelationship> semanticRelationships;
+  std::optional<SemanticUnitContext> semanticUnitContext;
 };
 
 [[nodiscard]] Model LoadFromFile(const std::filesystem::path& path,

@@ -125,7 +125,7 @@ struct ProductMetadata {
 
 struct LengthUnitMetadata {
   bool authored{false};
-  float metersPerUnit{1.0f};
+  double metersPerUnit{1.0};
   std::string sourceUnits{};
 };
 
@@ -182,14 +182,14 @@ makeUnitMetadata(const LengthUnitMetadata &lengthUnit, float importScale) {
     metadata.hasSourceUnits = true;
     metadata.sourceUnits = lengthUnit.sourceUnits;
     metadata.hasMetersPerUnit = true;
-    metadata.metersPerUnit = lengthUnit.metersPerUnit;
+    metadata.metersPerUnit = static_cast<float>(lengthUnit.metersPerUnit);
   }
   metadata.hasImportScale = true;
   metadata.importScale = sanitizedImportScale;
   metadata.hasEffectiveImportScale = true;
   metadata.effectiveImportScale =
       sanitizedImportScale *
-      (lengthUnit.authored ? lengthUnit.metersPerUnit : 1.0f);
+      (lengthUnit.authored ? metadata.metersPerUnit : 1.0f);
   return metadata;
 }
 
@@ -752,8 +752,10 @@ public:
       return left < right;
     });
     unitMetadata_ = detectLengthUnitMetadata();
-    unitScale_ = unitMetadata_.authored ? unitMetadata_.metersPerUnit : 1.0f;
+    unitScale_ = unitMetadata_.authored
+        ? static_cast<float>(unitMetadata_.metersPerUnit) : 1.0f;
     model_.unitMetadata = makeUnitMetadata(unitMetadata_, importScale_);
+    model_.semanticUnitContext = detectSemanticUnitContext();
     pointCache_.reserve(entities_.size() / 2u);
     directionCache_.reserve(entities_.size() / 8u);
     axisPlacementCache_.reserve(entities_.size() / 8u);
@@ -1943,29 +1945,142 @@ private:
       metadata.authored = true;
       metadata.sourceUnits = ifcSiLengthUnitLabel(prefix);
       if (!prefix.has_value()) {
-        metadata.metersPerUnit = 1.0f;
+        metadata.metersPerUnit = 1.0;
         return metadata;
       }
       if (*prefix == "MILLI") {
-        metadata.metersPerUnit = 0.001f;
+        metadata.metersPerUnit = 0.001;
         return metadata;
       }
       if (*prefix == "CENTI") {
-        metadata.metersPerUnit = 0.01f;
+        metadata.metersPerUnit = 0.01;
         return metadata;
       }
       if (*prefix == "DECI") {
-        metadata.metersPerUnit = 0.1f;
+        metadata.metersPerUnit = 0.1;
         return metadata;
       }
       if (*prefix == "KILO") {
-        metadata.metersPerUnit = 1000.0f;
+        metadata.metersPerUnit = 1000.0;
         return metadata;
       }
-      metadata.metersPerUnit = 1.0f;
+      metadata.metersPerUnit = 1.0;
       return metadata;
     }
     return {};
+  }
+
+  static LengthUnitMetadata semanticSiLengthUnit(const Entity &unit) {
+    if (enumValue(argAt(unit, 3)) != "METRE")
+      return {};
+    const auto *prefix = argAt(unit, 2);
+    if (prefix && prefix->kind == StepValue::Kind::Omitted)
+      return {true, 1.0, "metre"};
+    if (!prefix || prefix->kind != StepValue::Kind::Enum)
+      return {};
+
+    struct Prefix {
+      std::string_view name;
+      double scale;
+      std::string_view unitLabel;
+    };
+    static constexpr Prefix prefixes[]{
+        {"EXA", 1e18, "exametre"}, {"PETA", 1e15, "petametre"},
+        {"TERA", 1e12, "terametre"}, {"GIGA", 1e9, "gigametre"},
+        {"MEGA", 1e6, "megametre"}, {"KILO", 1e3, "kilometre"},
+        {"HECTO", 1e2, "hectometre"}, {"DECA", 1e1, "decametre"},
+        {"DECI", 1e-1, "decimetre"}, {"CENTI", 1e-2, "centimetre"},
+        {"MILLI", 1e-3, "millimetre"}, {"MICRO", 1e-6, "micrometre"},
+        {"NANO", 1e-9, "nanometre"}, {"PICO", 1e-12, "picometre"},
+        {"FEMTO", 1e-15, "femtometre"}, {"ATTO", 1e-18, "attometre"}};
+    for (const auto &known : prefixes) {
+      if (known.name == prefix->text)
+        return {true, known.scale, std::string(known.unitLabel)};
+    }
+    return {};
+  }
+
+  LengthUnitMetadata semanticLengthUnit(const Entity &unit, size_t depth = 0) const {
+    if (depth > 4 || enumValue(argAt(unit, 1)) != "LENGTHUNIT")
+      return {};
+    if (unit.type == "IFCSIUNIT")
+      return semanticSiLengthUnit(unit);
+    if (unit.type != "IFCCONVERSIONBASEDUNIT")
+      return {};
+
+    const auto factorRef = firstRef(unit, 3);
+    const auto *measure = factorRef ? entity(*factorRef) : nullptr;
+    if (!measure || measure->type != "IFCMEASUREWITHUNIT")
+      return {};
+    const auto *value = argAt(*measure, 0);
+    const auto factor = numberValue(
+        value && value->kind == StepValue::Kind::List && value->list.size() == 1
+            ? &value->list.front()
+            : value);
+    const auto baseRef = firstRef(*measure, 1);
+    const auto *baseUnit = baseRef ? entity(*baseRef) : nullptr;
+    if (!baseUnit || !factor || !std::isfinite(*factor) || *factor <= 0.0)
+      return {};
+    const auto base = semanticLengthUnit(*baseUnit, depth + 1);
+    const double scale = base.metersPerUnit * *factor;
+    if (!base.authored || !std::isfinite(scale) || scale <= 0.0)
+      return {};
+    return {true, scale, stringValue(argAt(unit, 2)).value_or("conversion-based IFC length")};
+  }
+
+  dotbim::SemanticUnitContext detectSemanticUnitContext() const {
+    const Entity *assignment = nullptr;
+    for (const uint32_t id : sortedEntityIds_) {
+      checkCancellation();
+      const auto *project = entity(id);
+      if (project->type != "IFCPROJECT")
+        continue;
+      const auto assignmentRef = firstRef(*project, 8);
+      const auto *candidate = assignmentRef ? entity(*assignmentRef) : nullptr;
+      if (!candidate || candidate->type != "IFCUNITASSIGNMENT")
+        return {.provenance = "missing IFC project unit assignment"};
+      if (assignment && assignment != candidate)
+        return {.provenance = "ambiguous IFC project unit assignments"};
+      assignment = candidate;
+    }
+
+    const Entity *lengthUnit = nullptr;
+    if (assignment) {
+      for (const auto &reference : asList(argAt(*assignment, 0))) {
+        checkCancellation();
+        const auto ref = refValue(&reference);
+        const auto *unit = ref ? entity(*ref) : nullptr;
+        if (!unit)
+          return {.provenance = "invalid IFC project unit assignment"};
+        if (enumValue(argAt(*unit, 1)) != "LENGTHUNIT")
+          continue;
+        if (lengthUnit)
+          return {.provenance = "ambiguous IFC project length units"};
+        lengthUnit = unit;
+      }
+    } else {
+      // Small standalone geometry fixtures can omit IfcProject. Do not infer
+      // the length unit from the SI base of an unassigned conversion unit.
+      for (const uint32_t id : sortedEntityIds_) {
+        checkCancellation();
+        const auto *unit = entity(id);
+        if (enumValue(argAt(*unit, 1)) != "LENGTHUNIT")
+          continue;
+        if (lengthUnit || unit->type != "IFCSIUNIT")
+          return {.provenance = "ambiguous or unsupported unassigned IFC length units"};
+        lengthUnit = unit;
+      }
+    }
+    if (!lengthUnit)
+      return {.provenance = "missing IFC length unit"};
+
+    const auto sourceUnit = semanticLengthUnit(*lengthUnit);
+    if (!sourceUnit.authored)
+      return {.provenance = "unsupported IFC length unit"};
+    return {sourceUnit.metersPerUnit,
+            sourceUnit.metersPerUnit / model_.unitMetadata.effectiveImportScale,
+            sourceUnit.sourceUnits,
+            assignment ? "IFCPROJECT.UnitsInContext" : "sole unassigned IFC SI length unit"};
   }
 
   glm::mat4 importUnitTransform() const {
@@ -2063,6 +2178,118 @@ private:
       if (!cyclic)
         localPlacementCache_.emplace(placement.id, result);
     }
+    return result;
+  }
+
+  std::optional<glm::dvec3> semanticCoordinates(uint32_t ref,
+      std::string_view type, size_t dimensions) const {
+    const auto *value = entity(ref);
+    if (!value || value->type != type)
+      return std::nullopt;
+    const auto coordinates = asList(argAt(*value, 0));
+    if (coordinates.size() != dimensions)
+      return std::nullopt;
+    glm::dvec3 result(0.0);
+    for (size_t axis = 0; axis < dimensions; ++axis) {
+      const auto number = numberValue(&coordinates[axis]);
+      if (!number || !std::isfinite(*number))
+        return std::nullopt;
+      result[static_cast<glm::length_t>(axis)] = *number;
+    }
+    return result;
+  }
+
+  std::optional<glm::dvec3> semanticDirection(const StepValue *value,
+      size_t dimensions, glm::dvec3 fallback) const {
+    if (!value || value->kind == StepValue::Kind::Omitted)
+      return fallback;
+    const auto ref = refValue(value);
+    if (!ref)
+      return std::nullopt;
+    const auto coordinates = semanticCoordinates(*ref, "IFCDIRECTION", dimensions);
+    if (!coordinates)
+      return std::nullopt;
+    const double length = std::hypot(coordinates->x, coordinates->y, coordinates->z);
+    if (!std::isfinite(length) || length == 0.0)
+      return std::nullopt;
+    return *coordinates / length;
+  }
+
+  std::optional<glm::dmat4> semanticAxisPlacement(uint32_t ref) const {
+    const auto *placement = entity(ref);
+    if (!placement || (placement->type != "IFCAXIS2PLACEMENT2D" &&
+                       placement->type != "IFCAXIS2PLACEMENT3D"))
+      return std::nullopt;
+    const bool is2D = placement->type == "IFCAXIS2PLACEMENT2D";
+    const size_t dimensions = is2D ? 2u : 3u;
+    const auto locationRef = firstRef(*placement, 0);
+    if (!locationRef)
+      return std::nullopt;
+    const auto location = semanticCoordinates(*locationRef, "IFCCARTESIANPOINT", dimensions);
+    const auto z = semanticDirection(is2D ? nullptr : argAt(*placement, 1),
+                                     3u, {0.0, 0.0, 1.0});
+    if (!location || !z)
+      return std::nullopt;
+    const glm::dvec3 defaultX = std::abs(z->x) < 0.9
+        ? glm::dvec3(1.0, 0.0, 0.0) : glm::dvec3(0.0, 1.0, 0.0);
+    const auto xHint = semanticDirection(argAt(*placement, is2D ? 1 : 2),
+                                         dimensions, defaultX);
+    if (!xHint)
+      return std::nullopt;
+    const glm::dvec3 y = glm::cross(*z, *xHint);
+    const double length = glm::length(y);
+    if (length <= 1e-12)
+      return std::nullopt;
+    const glm::dvec3 normalizedY = y / length;
+    return glm::dmat4(glm::dvec4(glm::cross(normalizedY, *z), 0.0),
+                      glm::dvec4(normalizedY, 0.0), glm::dvec4(*z, 0.0),
+                      glm::dvec4(*location, 1.0));
+  }
+
+  static bool finiteSemanticTranslation(const glm::dmat4 &transform) {
+    return std::isfinite(transform[3].x) && std::isfinite(transform[3].y) &&
+           std::isfinite(transform[3].z);
+  }
+
+  std::optional<glm::dmat4> semanticLocalPlacement(uint32_t ref) {
+    const uint32_t originalRef = ref;
+    std::vector<std::pair<uint32_t, glm::dmat4>> chain;
+    std::unordered_set<uint32_t> visiting;
+    std::optional<glm::dmat4> result;
+    while (visiting.insert(ref).second) {
+      checkCancellation();
+      if (const auto cached = semanticPlacementCache_.find(ref);
+          cached != semanticPlacementCache_.end()) {
+        result = cached->second;
+        break;
+      }
+      const auto *placement = entity(ref);
+      if (!placement || placement->type != "IFCLOCALPLACEMENT")
+        break;
+      const auto relative = firstRef(*placement, 1);
+      const auto transform = relative ? semanticAxisPlacement(*relative) : std::nullopt;
+      if (!transform)
+        break;
+      chain.emplace_back(ref, *transform);
+      const auto *parent = argAt(*placement, 0);
+      if (!parent || parent->kind == StepValue::Kind::Omitted) {
+        result = glm::dmat4(1.0);
+        break;
+      }
+      if (parent->kind != StepValue::Kind::Ref)
+        break;
+      ref = parent->ref;
+    }
+    for (auto it = chain.rbegin(); it != chain.rend(); ++it) {
+      checkCancellation();
+      if (result) {
+        *result *= it->second;
+        if (!finiteSemanticTranslation(*result))
+          result.reset();
+      }
+      semanticPlacementCache_.try_emplace(it->first, result);
+    }
+    semanticPlacementCache_.try_emplace(originalRef, result);
     return result;
   }
 
@@ -2405,6 +2632,8 @@ private:
       }
       openingsByHostProduct_[*hostRef].push_back(*openingRef);
       hostByOpeningProduct_[*openingRef] = *hostRef;
+      appendSemanticRelationship(*hostRef, *openingRef,
+                                 dotbim::SemanticRelationshipKind::Voids);
       appendRelationshipReference(*hostRef, "IFCRELVOIDSELEMENT", "Opening",
                                   *openingRef);
     }
@@ -2424,6 +2653,8 @@ private:
         continue;
       }
 
+      appendSemanticRelationship(*openingRef, *fillerRef,
+                                 dotbim::SemanticRelationshipKind::Fills);
       appendRelationshipReference(*fillerRef, "IFCRELFILLSELEMENT", "Opening",
                                   *openingRef);
       appendRelationshipReference(*openingRef, "IFCRELFILLSELEMENT", "FilledBy",
@@ -2452,19 +2683,26 @@ private:
         continue;
       }
       const Entity *structure = entity(*structureRef);
-      if (structure == nullptr || (structure->type != "IFCBUILDINGSTOREY" &&
-                                   structure->type != "IFCSPACE")) {
+      if (!structure) {
         continue;
       }
 
+      const bool isStorey = structure->type == "IFCBUILDINGSTOREY";
+      const bool isSpace = structure->type == "IFCSPACE";
       StoreyMetadata storey{};
-      storey.id = stringValue(argAt(*structure, 0)).value_or("");
-      if (storey.id.empty()) {
-        storey.id = "#" + std::to_string(structure->id);
+      if (isStorey || isSpace) {
+        storey.id = stringValue(argAt(*structure, 0)).value_or("");
+        if (storey.id.empty())
+          storey.id = fallbackRefValue(structure->id);
+        storey.name = stringValue(argAt(*structure, 2)).value_or("");
       }
-      storey.name = stringValue(argAt(*structure, 2)).value_or("");
       for (const auto productRef : refList(argAt(*relation, 4))) {
-        if (structure->type == "IFCBUILDINGSTOREY") {
+        checkCancellation();
+        appendSemanticRelationship(*structureRef, productRef,
+                                   dotbim::SemanticRelationshipKind::Contains);
+        if (!isStorey && !isSpace)
+          continue;
+        if (isStorey) {
           const auto *product = entity(productRef);
           if (product && product->type == "IFCSPACE") {
             rememberRoomStorey(productRef, storey);
@@ -2477,7 +2715,7 @@ private:
             metadata,
             makeProperty(
                 "IFCRELCONTAINEDINSPATIALSTRUCTURE",
-                structure->type == "IFCSPACE" ? "Space" : "BuildingStorey",
+                isSpace ? "Space" : "BuildingStorey",
                 storey.name.empty() ? storey.id : storey.name, "reference"));
       }
     }
@@ -2692,6 +2930,15 @@ private:
 
   static std::string fallbackRefValue(uint32_t ref) {
     return "#" + std::to_string(ref);
+  }
+
+  void appendSemanticRelationship(uint32_t from, uint32_t to,
+                                  dotbim::SemanticRelationshipKind kind) {
+    if (!entity(from) || !entity(to))
+      return;
+    semanticRelationshipProducts_.insert(from);
+    semanticRelationshipProducts_.insert(to);
+    model_.semanticRelationships.push_back({fallbackRefValue(from), fallbackRefValue(to), kind});
   }
 
   std::string entityNameOrId(uint32_t ref) const {
@@ -3314,8 +3561,13 @@ private:
       }
 
       const auto *parent = entity(*parentRef);
+      const auto semanticKind = relation->type == "IFCRELAGGREGATES"
+          ? dotbim::SemanticRelationshipKind::Aggregates
+          : dotbim::SemanticRelationshipKind::Nests;
       size_t childIndex = 1u;
       for (const auto childRef : refList(argAt(*relation, 5))) {
+        checkCancellation();
+        appendSemanticRelationship(*parentRef, childRef, semanticKind);
         if (parent && parent->type == "IFCBUILDINGSTOREY") {
           const auto *child = entity(childRef);
           if (child && child->type == "IFCSPACE") {
@@ -7612,11 +7864,17 @@ private:
 
   void appendProductElements() {
     const glm::mat4 unitTransform = importUnitTransform();
+    const double scale = model_.unitMetadata.effectiveImportScale;
+    const glm::dmat4 semanticUnitTransform =
+        glm::dmat4(container::geometry::zUpForwardYToRendererAxes()) *
+        glm::scale(glm::dmat4(1.0), glm::dvec3(scale));
     for (const auto id : sortedEntityIds_) {
       checkCancellation();
       const Entity *product = entity(id);
-      if (product == nullptr || product->args.kind != StepValue::Kind::List ||
-          product->args.list.size() < 7u) {
+      if (!product)
+        continue;
+      appendSemanticProduct(*product, semanticUnitTransform);
+      if (product->args.kind != StepValue::Kind::List || product->args.list.size() < 7u) {
         continue;
       }
 
@@ -7707,6 +7965,37 @@ private:
     }
   }
 
+  void appendSemanticProduct(const Entity &product, const glm::dmat4 &unitTransform) {
+    static const std::unordered_set<std::string_view> navigationTypes{
+        "IFCPROJECT", "IFCSITE", "IFCBUILDING", "IFCBUILDINGSTOREY", "IFCSPACE",
+        "IFCWALL", "IFCWALLSTANDARDCASE", "IFCWALLELEMENTEDCASE", "IFCSLAB",
+        "IFCSLABSTANDARDCASE", "IFCSLABELEMENTEDCASE", "IFCDOOR",
+        "IFCDOORSTANDARDCASE", "IFCOPENINGELEMENT", "IFCOPENINGSTANDARDCASE"};
+    if (!semanticRelationshipProducts_.contains(product.id) &&
+        !navigationTypes.contains(product.type)) {
+      const auto representationRef = firstRef(product, 6);
+      const auto *representation = representationRef ? entity(*representationRef) : nullptr;
+      if (!representation || representation->type != "IFCPRODUCTDEFINITIONSHAPE")
+        return;
+    }
+
+    dotbim::SemanticProduct semantic{
+        .sourceId = fallbackRefValue(product.id),
+        .guid = stringValue(argAt(product, 0)).value_or(""),
+        .type = product.type,
+        .name = stringValue(argAt(product, 2)).value_or("")};
+    if (const auto placementRef = firstRef(product, 5)) {
+      if (const auto placement = semanticLocalPlacement(*placementRef)) {
+        const auto transform = unitTransform * *placement;
+        if (finiteSemanticTranslation(transform)) {
+          semantic.transform = transform;
+          semantic.hasPlacement = true;
+        }
+      }
+    }
+    model_.semanticProducts.push_back(std::move(semantic));
+  }
+
   void compactDrawableGeometry() {
     std::unordered_set<uint32_t> referenced;
     for (const auto &element : model_.elements) {
@@ -7781,6 +8070,7 @@ private:
         element.color = group.color;
         element.type = entity(id)->type;
         element.sourceId = "#" + std::to_string(id);
+        element.isRepresentationOnly = true;
         model_.elements.push_back(std::move(element));
       }
     }
@@ -7799,6 +8089,8 @@ private:
   mutable std::unordered_map<uint32_t, glm::vec3> directionCache_{};
   mutable std::unordered_map<uint32_t, glm::mat4> axisPlacementCache_{};
   mutable std::unordered_map<uint32_t, glm::mat4> localPlacementCache_{};
+  std::unordered_map<uint32_t, std::optional<glm::dmat4>> semanticPlacementCache_;
+  std::unordered_set<uint32_t> semanticRelationshipProducts_;
   std::unordered_map<uint32_t, glm::vec4> styleColorByItem_{};
   std::unordered_map<uint32_t, std::optional<glm::vec4>>
       styleColorByReference_{};
