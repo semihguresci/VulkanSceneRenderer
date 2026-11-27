@@ -1,6 +1,7 @@
 #include "Container/robotics/TwinTelemetry.h"
 
 #include "TwinTelemetryLimits.h"
+#include "TwinTelemetryValidation.h"
 
 #include <glm/geometric.hpp>
 
@@ -10,7 +11,7 @@
 #include <map>
 #include <numbers>
 #include <stdexcept>
-#include <tuple>
+#include <type_traits>
 #include <utility>
 
 namespace container::robotics {
@@ -48,10 +49,6 @@ void validateSceneSource(const BimSceneSource& source) {
   }
 }
 
-auto eventOrder(const TwinEvent& event) {
-  return std::tuple{event.timestampNanoseconds, std::string_view(event.entityId), event.payload.index()};
-}
-
 glm::dvec3 lerpPosition(glm::dvec3 a, glm::dvec3 b, double fraction) {
   return {std::lerp(a.x, b.x, fraction), std::lerp(a.y, b.y, fraction), std::lerp(a.z, b.z, fraction)};
 }
@@ -75,33 +72,63 @@ double distanceToPath(glm::dvec3 position, const std::vector<glm::dvec3>& points
 
 } // namespace
 
-void canonicalizeTwinRecording(TwinRecording& recording) {
+namespace twin_telemetry_validation {
+
+void validateRecordingMetadata(const TwinRecording& recording) {
   validateText(recording.sourceNamespace, maxIdentityBytes, "sourceNamespace");
   validateText(recording.clockId, maxLabelBytes, "clockId");
   validateSceneSource(recording.sceneSource);
+}
+
+size_t validateEvent(const TwinEvent& event) {
+  validateText(event.entityId, maxIdentityBytes, "event entityId");
+  validateText(event.source, maxLabelBytes, "event source");
+  if (event.payload.valueless_by_exception()) invalid("event payload", "is missing");
+  return std::visit([]<class Payload>(const Payload& payload) -> size_t {
+    if constexpr (std::is_same_v<Payload, TwinRobotPose>) {
+      validatePoint(payload.position, "robot position");
+      if (!std::isfinite(payload.yaw) || std::abs(payload.yaw) > maxYawRadians)
+        invalid("robot yaw", "must be finite and in [-1000000000, 1000000000] radians");
+    } else if constexpr (std::is_same_v<Payload, TwinPlannedPath>) {
+      if (payload.points.size() > maxPlanPoints)
+        invalid("planned path", "exceeds the per-path point limit");
+      for (const auto point : payload.points) validatePoint(point, "planned path point");
+      return payload.points.size();
+    } else if constexpr (std::is_same_v<Payload, TwinSensorStatus>) {
+      validateText(payload.state, maxLabelBytes, "sensor state");
+    } else if constexpr (std::is_same_v<Payload, TwinAssetState>) {
+      validateText(payload.state, maxLabelBytes, "asset state");
+    } else if constexpr (std::is_same_v<Payload, TwinRobotHealth>) {
+      validateText(payload.state, maxLabelBytes, "robot health state");
+      if (payload.batteryPercent && (!std::isfinite(*payload.batteryPercent) ||
+          *payload.batteryPercent < 0.0 || *payload.batteryPercent > 100.0))
+        invalid("robot health batteryPercent", "must be finite and in [0, 100]");
+    } else {
+      static_assert(std::is_same_v<Payload, TwinTaskStatus>, "Unhandled twin telemetry payload");
+      validateText(payload.taskId, maxIdentityBytes, "taskId");
+      validateText(payload.state, maxLabelBytes, "task state");
+      if (payload.progress && (!std::isfinite(*payload.progress) ||
+          *payload.progress < 0.0 || *payload.progress > 1.0))
+        invalid("task progress", "must be finite and in [0, 1]");
+    }
+    return 0;
+  }, event.payload);
+}
+
+} // namespace twin_telemetry_validation
+
+void canonicalizeTwinRecording(TwinRecording& recording) {
+  using namespace twin_telemetry_validation;
+  validateRecordingMetadata(recording);
   if (recording.events.empty() || recording.events.size() > maxEvents)
     invalid("events", "must contain 1..65,536 observations");
 
   size_t totalPlanPoints = 0;
   for (const auto& event : recording.events) {
-    validateText(event.entityId, maxIdentityBytes, "event entityId");
-    validateText(event.source, maxLabelBytes, "event source");
-    if (event.payload.valueless_by_exception()) invalid("event payload", "is missing");
-    if (const auto* pose = std::get_if<TwinRobotPose>(&event.payload)) {
-      validatePoint(pose->position, "robot position");
-      if (!std::isfinite(pose->yaw) || std::abs(pose->yaw) > maxYawRadians)
-        invalid("robot yaw", "must be finite and in [-1000000000, 1000000000] radians");
-    } else if (const auto* sensor = std::get_if<TwinSensorStatus>(&event.payload)) {
-      validateText(sensor->state, maxLabelBytes, "sensor state");
-    } else if (const auto* asset = std::get_if<TwinAssetState>(&event.payload)) {
-      validateText(asset->state, maxLabelBytes, "asset state");
-    } else {
-      const auto& points = std::get<TwinPlannedPath>(event.payload).points;
-      if (points.size() > maxPlanPoints || points.size() > maxTotalPlanPoints - totalPlanPoints)
-        invalid("planned path", "exceeds the per-path or recording point limit");
-      totalPlanPoints += points.size();
-      for (const auto point : points) validatePoint(point, "planned path point");
-    }
+    const auto points = validateEvent(event);
+    if (points > maxTotalPlanPoints - totalPlanPoints)
+      invalid("planned path", "exceeds the recording point limit");
+    totalPlanPoints += points;
   }
 
   std::stable_sort(recording.events.begin(), recording.events.end(), [](const auto& a, const auto& b) {
@@ -110,18 +137,22 @@ void canonicalizeTwinRecording(TwinRecording& recording) {
   const auto duplicate = std::ranges::adjacent_find(recording.events, [](const auto& a, const auto& b) {
     return eventOrder(a) == eventOrder(b);
   });
-  if (duplicate != recording.events.end())
-    invalid("events", "contain a duplicate kind and entity at timestamp " +
-                      std::to_string(duplicate->timestampNanoseconds) + " for " + duplicate->entityId);
+  if (duplicate != recording.events.end()) {
+    auto context = "contain a duplicate track at timestamp " + std::to_string(duplicate->timestampNanoseconds) +
+                   " for " + duplicate->entityId;
+    if (const auto* task = std::get_if<TwinTaskStatus>(&duplicate->payload))
+      context += " task " + task->taskId;
+    invalid("events", context);
+  }
 }
 
 TwinReplay::TwinReplay(TwinRecording recording) : recording_(std::move(recording)) {
   canonicalizeTwinRecording(recording_);
-  using TrackKey = std::pair<std::string_view, size_t>;
+  using namespace twin_telemetry_validation;
   std::map<TrackKey, std::vector<size_t>> tracks;
   for (size_t index = 0; index < recording_.events.size(); ++index) {
     const auto& event = recording_.events[index];
-    tracks[{event.entityId, event.payload.index()}].push_back(index);
+    tracks[trackKey(event)].push_back(index);
   }
   tracks_.reserve(tracks.size());
   for (auto& [key, events] : tracks) tracks_.push_back(std::move(events));

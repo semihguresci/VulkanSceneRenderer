@@ -33,10 +33,11 @@ std::string field(std::string_view context, std::string_view name) {
   return std::string(context) + "." + std::string(name);
 }
 
-void requireKeys(const Json& object, std::string_view context, std::initializer_list<std::string_view> keys) {
+void requireKeys(const Json& object, std::string_view context, std::initializer_list<std::string_view> keys,
+                 std::initializer_list<std::string_view> optional = {}) {
   if (!object.is_object()) invalid(context, "must be an object");
   for (const auto& [key, value] : object.items()) {
-    if (std::ranges::find(keys, key) == keys.end())
+    if (std::ranges::find(keys, key) == keys.end() && std::ranges::find(optional, key) == optional.end())
       invalid(field(context, key), "unknown field");
   }
   for (const auto key : keys) {
@@ -70,6 +71,8 @@ glm::dvec3 readPoint(const Json& value, std::string_view context) {
 Json parseJson(std::string_view input) {
   if (input.empty() || input.size() > maxRecordingBytes)
     invalid("JSON", "must contain at most 32 MiB of data");
+  if (input.find('\0') != std::string_view::npos)
+    invalid("JSON", "must not contain a raw NUL byte");
   std::vector<std::set<std::string>> objectKeys;
   size_t nodeCount = 0;
   const Json::parser_callback_t guard = [&](int depth, Json::parse_event_t event, Json& parsed) {
@@ -94,7 +97,13 @@ Json parseJson(std::string_view input) {
   }
 }
 
-TwinPayload readPayload(std::string_view kind, const Json& value, std::string_view context) {
+std::optional<double> optionalNumber(const Json& value, std::string_view key, std::string_view context) {
+  const auto result = value.find(key);
+  if (result == value.end() || result->is_null()) return std::nullopt;
+  return number(*result, field(context, key));
+}
+
+TwinPayload readPayload(std::string_view kind, const Json& value, std::string_view context, uint32_t version) {
   if (kind == "robot-pose") {
     requireKeys(value, context, {"position", "yaw"});
     return TwinRobotPose{readPoint(value.at("position"), field(context, "position")),
@@ -117,7 +126,29 @@ TwinPayload readPayload(std::string_view kind, const Json& value, std::string_vi
     for (const auto& point : points) result.points.push_back(readPoint(point, pointContext));
     return result;
   }
+  if (kind == "robot-health") {
+    if (version < 2) invalid(context, "robot-health requires recording version 2");
+    requireKeys(value, context, {"state"}, {"batteryPercent"});
+    return TwinRobotHealth{text(value.at("state"), field(context, "state")),
+                           optionalNumber(value, "batteryPercent", context)};
+  }
+  if (kind == "task-status") {
+    if (version < 2) invalid(context, "task-status requires recording version 2");
+    requireKeys(value, context, {"taskId", "state"}, {"progress"});
+    return TwinTaskStatus{text(value.at("taskId"), field(context, "taskId")),
+                          text(value.at("state"), field(context, "state")),
+                          optionalNumber(value, "progress", context)};
+  }
   invalid(context, "unknown event kind");
+}
+
+TwinEvent readEvent(const Json& value, std::string_view context, uint32_t version) {
+  requireKeys(value, context, {"timestampNanoseconds", "entityId", "source", "kind", "payload"});
+  const auto kind = text(value.at("kind"), field(context, "kind"));
+  return {integer(value.at("timestampNanoseconds"), field(context, "timestampNanoseconds")),
+          text(value.at("entityId"), field(context, "entityId")),
+          text(value.at("source"), field(context, "source")),
+          readPayload(kind, value.at("payload"), field(context, "payload"), version)};
 }
 
 } // namespace
@@ -164,10 +195,48 @@ Json event(const TwinEvent& value) {
       auto points = Json::array();
       for (const auto& entry : data.points) points.push_back(point(entry));
       payload = {{"points", std::move(points)}};
+    } else if constexpr (std::is_same_v<T, TwinRobotHealth>) {
+      kind = "robot-health";
+      payload = {{"state", data.state}};
+      if (data.batteryPercent) payload["batteryPercent"] = *data.batteryPercent;
+    } else if constexpr (std::is_same_v<T, TwinTaskStatus>) {
+      kind = "task-status";
+      payload = {{"taskId", data.taskId}, {"state", data.state}};
+      if (data.progress) payload["progress"] = *data.progress;
     }
   }, value.payload);
   return {{"timestampNanoseconds", value.timestampNanoseconds}, {"entityId", value.entityId},
           {"source", value.source}, {"kind", kind}, {"payload", std::move(payload)}};
+}
+
+uint32_t recordingVersion(const TwinRecording& value) {
+  return std::ranges::any_of(value.events, [](const auto& entry) {
+    return std::holds_alternative<TwinRobotHealth>(entry.payload) ||
+           std::holds_alternative<TwinTaskStatus>(entry.payload);
+  }) ? 2u : 1u;
+}
+
+TwinIngestMessage parseIngestMessage(std::string_view line) {
+  if (line.size() > maxIngestLineBytes) invalid("JSONL row", "exceeds 512 KiB");
+  const auto value = parseJson(line);
+  requireKeys(value, "envelope", {"schema", "version", "clockId", "receivedTimestampNanoseconds", "event"},
+              {"assetReference"});
+  if (text(value.at("schema"), "envelope.schema") != "container.bim-twin-event" ||
+      integer(value.at("version"), "envelope.version") != 1)
+    invalid("envelope", "expected container.bim-twin-event version 1");
+  TwinIngestMessage result{
+      .clockId = text(value.at("clockId"), "envelope.clockId"),
+      .receivedTimestampNanoseconds = integer(value.at("receivedTimestampNanoseconds"),
+                                              "envelope.receivedTimestampNanoseconds"),
+      .event = readEvent(value.at("event"), "envelope.event", 2)};
+  if (const auto reference = value.find("assetReference"); reference != value.end()) {
+    const auto kind = text(*reference, "envelope.assetReference");
+    if (!std::holds_alternative<TwinAssetState>(result.event.payload))
+      invalid("envelope.assetReference", "applies only to bim-asset-state");
+    if (kind == "ifc-guid") result.assetReference = TwinAssetReference::IfcGuid;
+    else if (kind != "entity-id") invalid("envelope.assetReference", "expected entity-id or ifc-guid");
+  }
+  return result;
 }
 
 } // namespace twin_json
@@ -176,8 +245,9 @@ TwinRecording parseTwinRecording(std::string_view input) {
   const auto json = parseJson(input);
   requireKeys(json, "root", {"schema", "version", "sourceNamespace", "sceneSource", "clockId",
                              "staleAfterNanoseconds", "events"});
-  if (text(json.at("schema"), "schema") != schema || integer(json.at("version"), "version") != 1)
-    invalid("schema", "expected container.bim-twin-telemetry version 1");
+  const auto version = integer(json.at("version"), "version");
+  if (text(json.at("schema"), "schema") != schema || (version != 1 && version != 2))
+    invalid("schema", "expected container.bim-twin-telemetry version 1 or 2");
   TwinRecording result{
       .sourceNamespace = text(json.at("sourceNamespace"), "sourceNamespace"),
       .sceneSource = twin_json::parseSceneSource(json.at("sceneSource")),
@@ -189,13 +259,7 @@ TwinRecording parseTwinRecording(std::string_view input) {
   result.events.reserve(events.size());
   for (const auto& entry : events) {
     const auto context = "events[" + std::to_string(result.events.size()) + "]";
-    requireKeys(entry, context, {"timestampNanoseconds", "entityId", "source", "kind", "payload"});
-    const auto kind = text(entry.at("kind"), field(context, "kind"));
-    result.events.push_back({
-        integer(entry.at("timestampNanoseconds"), field(context, "timestampNanoseconds")),
-        text(entry.at("entityId"), field(context, "entityId")),
-        text(entry.at("source"), field(context, "source")),
-        readPayload(kind, entry.at("payload"), field(context, "payload"))});
+    result.events.push_back(readEvent(entry, context, static_cast<uint32_t>(version)));
   }
   canonicalizeTwinRecording(result);
   return result;
@@ -220,7 +284,7 @@ std::string serializeTwinRecording(const TwinRecording& recording) {
   canonicalizeTwinRecording(ordered);
   auto events = Json::array();
   for (const auto& entry : ordered.events) events.push_back(twin_json::event(entry));
-  const Json json{{"schema", schema}, {"version", 1}, {"sourceNamespace", ordered.sourceNamespace},
+  const Json json{{"schema", schema}, {"version", twin_json::recordingVersion(ordered)}, {"sourceNamespace", ordered.sourceNamespace},
       {"sceneSource", bimSceneSourceJson(ordered.sceneSource)}, {"clockId", ordered.clockId},
       {"staleAfterNanoseconds", ordered.staleAfterNanoseconds}, {"events", std::move(events)}};
   auto bytes = json.dump();

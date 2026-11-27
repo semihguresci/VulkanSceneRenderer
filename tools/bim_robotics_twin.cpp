@@ -4,6 +4,7 @@
 #include "Container/utility/Platform.h"
 #include "DatasetSimulationReport.h"
 #include "TwinRecordingJson.h"
+#include "bim_robotics_twin_ingest.h"
 
 #include <charconv>
 #include <filesystem>
@@ -11,6 +12,7 @@
 #include <stdexcept>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace {
 
@@ -23,7 +25,9 @@ constexpr std::string_view usage =
     "Usage: BimRoboticsTwin record SIMULATION.json NEW_LOG.json [--supplement EVENTS.json]\n"
     "       BimRoboticsTwin import INPUT.json NEW_LOG.json\n"
     "       BimRoboticsTwin sample LOG.json TIMESTAMP_NS\n"
-    "       BimRoboticsTwin verify LOG.json\n";
+    "       BimRoboticsTwin verify LOG.json\n"
+    "       BimRoboticsTwin ingest MODEL.ifc|MODEL.ifcx EVENTS.jsonl NEW_LOG.json SOURCE_NAMESPACE CLOCK_ID\n"
+    "                              [--stale-after-ns N] [--metres-per-renderer-unit N]\n";
 constexpr std::string_view simulationClock = "simulation-fixed-step";
 constexpr uint64_t nanosecondsPerSecond = 1'000'000'000;
 
@@ -116,6 +120,8 @@ Json verify(const robotics::TwinReplay& replay) {
   auto result = identity(replay.recording());
   result["schema"] = "container.bim-twin-verification";
   result["eventCount"] = replay.recording().events.size();
+  if (robotics::twin_json::recordingVersion(replay.recording()) == 2)
+    result["recordingVersion"] = 2;
   result["firstTimestampNanoseconds"] = replay.firstTimestamp();
   result["lastTimestampNanoseconds"] = replay.lastTimestamp();
   return result;
@@ -125,6 +131,7 @@ Json sample(const robotics::TwinReplay& replay, uint64_t when) {
   const auto sampled = replay.sample(when);
   auto result = identity(replay.recording());
   result["schema"] = "container.bim-twin-sample";
+  result["version"] = robotics::twin_json::recordingVersion(replay.recording());
   result["timestampNanoseconds"] = sampled.timestampNanoseconds;
   auto tracks = Json::array();
   for (const auto& track : sampled.tracks) {
@@ -171,6 +178,10 @@ int run(int count, Char** args) {
       const robotics::TwinReplay replay(robotics::loadTwinRecording(fs::path(args[2])));
       std::cout << verify(replay).dump(2) << '\n';
       return 0;
+    }
+    if (count >= 7 && operation == "ingest") {
+      std::vector<fs::path> arguments(args + 2, args + count);
+      return container::tools::runTwinIngest(arguments);
     }
   } catch (const std::exception& error) {
     std::cerr << "BimRoboticsTwin: " << error.what() << '\n';

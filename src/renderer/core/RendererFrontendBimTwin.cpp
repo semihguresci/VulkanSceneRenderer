@@ -35,6 +35,8 @@ TrackStyle trackStyle(const robotics::TwinPayload& payload) {
   if (std::holds_alternative<robotics::TwinRobotPose>(payload)) return {"robot-pose", "Robot pose"};
   if (std::holds_alternative<robotics::TwinSensorStatus>(payload)) return {"sensor-status", "Sensor"};
   if (std::holds_alternative<robotics::TwinAssetState>(payload)) return {"bim-asset-state", "BIM asset"};
+  if (std::holds_alternative<robotics::TwinRobotHealth>(payload)) return {"robot-health", "Robot health"};
+  if (std::holds_alternative<robotics::TwinTaskStatus>(payload)) return {"task-status", "Task"};
   return {"planned-path", "Planned path"};
 }
 
@@ -70,6 +72,17 @@ void drawTrackState(const robotics::TwinTrackSample& track, bool assetResolved) 
       ImGui::SetTooltip("%.2f m from plan", *track.distanceToPlanMeters);
   } else if (const auto* plan = std::get_if<robotics::TwinPlannedPath>(&track.event.payload)) {
     ImGui::Text("%zu waypoints", plan->points.size());
+  } else if (const auto* health = std::get_if<robotics::TwinRobotHealth>(&track.event.payload)) {
+    if (health->batteryPercent)
+      ImGui::Text("%s (%.0f%% battery)", health->state.c_str(), *health->batteryPercent);
+    else
+      ImGui::TextUnformatted(health->state.c_str());
+  } else if (const auto* task = std::get_if<robotics::TwinTaskStatus>(&track.event.payload)) {
+    if (task->progress)
+      ImGui::Text("%s (%.0f%%)", task->state.c_str(), 100.0 * *task->progress);
+    else
+      ImGui::TextUnformatted(task->state.c_str());
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Task: %s", task->taskId.c_str());
   }
 }
 
@@ -376,6 +389,13 @@ nlohmann::json RendererFrontend::bimTwinCaptureTelemetry() const {
         row["state"] = sensor->state;
       } else if (const auto* plan = std::get_if<robotics::TwinPlannedPath>(&track.event.payload)) {
         row["pointCount"] = plan->points.size();
+      } else if (const auto* health = std::get_if<robotics::TwinRobotHealth>(&track.event.payload)) {
+        row["state"] = health->state;
+        row["batteryPercent"] = health->batteryPercent ? Json(*health->batteryPercent) : Json(nullptr);
+      } else if (const auto* task = std::get_if<robotics::TwinTaskStatus>(&track.event.payload)) {
+        row["taskId"] = task->taskId;
+        row["state"] = task->state;
+        row["progress"] = task->progress ? Json(*task->progress) : Json(nullptr);
       }
       tracks.push_back(std::move(row));
     }

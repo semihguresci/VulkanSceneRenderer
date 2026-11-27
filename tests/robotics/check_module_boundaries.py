@@ -129,14 +129,15 @@ def check(build, config, physics, urdf):
                         "raycast_lidar_tests": "robotics_sensors",
                         "dataset_simulation_report_tests": "robotics_dataset",
                         "robotics_dataset_reader_tests": "robotics_dataset",
-                        "twin_replay_tests": "robotics_twin"}
+                        "twin_replay_tests": "robotics_twin",
+                        "twin_ingest_tests": "robotics_twin"}
     if physics:
         standalone_tests["physics_world_tests"] = "physics_world"
     executables = {"BimRoboticsAssets": {"robotics_assets"},
                    "BimRoboticsScene": {"robotics_scene"},
                    "BimRoboticsUsd": {"robotics_usd"},
                    "BimRoboticsDataset": {"robotics_dataset"},
-                   "BimRoboticsTwin": {"robotics_twin", "robotics_sensors"},
+                   "BimRoboticsTwin": {"robotics_twin", "robotics_sensors", "geometry"},
                    **{name: {module} for name, module in standalone_tests.items()}}
     if physics:
         executables["BimRoboticsCollision"] = {"robotics_assets", "robotics_collision", "robotics_diagnostics"}
