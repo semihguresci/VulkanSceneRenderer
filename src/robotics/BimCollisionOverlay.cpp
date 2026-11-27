@@ -1,6 +1,6 @@
 #include "Container/robotics/BimCollisionOverlay.h"
 
-#include "Container/geometry/GltfSceneExport.h"
+#include "Container/geometry/GltfPackedSceneExport.h"
 #include "Container/robotics/BimCollisionWorld.h"
 #include "Container/robotics/RoboticsScene.h"
 

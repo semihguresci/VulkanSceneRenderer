@@ -1,12 +1,12 @@
 #pragma once
 
+#include "Container/robotics/LidarQuery.h"
 #include "Container/robotics/SensorSchedule.h"
 
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
 #include <cstdint>
-#include <functional>
 #include <numbers>
 #include <optional>
 #include <span>
@@ -34,15 +34,6 @@ struct RaycastLidarSettings {
   uint64_t seed{};
   LidarPose baseFromSensor;
 };
-
-struct LidarHit {
-  double fraction{};
-  std::string entityId;
-};
-
-// Return the nearest collision along origin + fraction * displacement, with
-// fraction in [0, 1]. An empty result denotes a clear segment.
-using LidarCast = std::function<std::optional<LidarHit>(glm::dvec3 origin, glm::dvec3 displacement)>;
 
 enum class LidarReturnStatus { Valid, NoHit, BelowMinimum, Dropped, NoiseOutOfRange };
 

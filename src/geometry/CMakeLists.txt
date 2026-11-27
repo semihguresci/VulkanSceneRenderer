@@ -59,6 +59,7 @@ add_library(VulkanSceneRenderer_geometry
     GltfMaterialVariants.cpp
     GltfModelLoader.cpp
     GltfSceneExport.cpp
+    GltfPackedSceneExport.cpp
     GltfMaterialExport.cpp
     GltfLegacyMaterialSerialization.cpp
     GltfMaterialAuthoring.cpp

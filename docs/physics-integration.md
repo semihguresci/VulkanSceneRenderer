@@ -450,7 +450,7 @@ a separate moving mesh adapter before binding.
 
 ### Drive an articulated mechanism and grasp a payload
 
-Link `VulkanSceneRenderer_robotics_physics` with `ENABLE_PHYSICS=ON` and
+Link `VulkanSceneRenderer_robotics_simulation` with `ENABLE_PHYSICS=ON` and
 include `Container/robotics/Articulation.h`. Create the dynamic links and
 hinge or slider joints in a caller-owned `PhysicsWorld`. The articulation
 commands drive the existing Jolt motors with joint limits and an effort cap.

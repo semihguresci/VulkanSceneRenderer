@@ -1777,7 +1777,7 @@ set_tests_properties(edit_history_tests scene_edit_history_tests scene_graph_edi
 if(ENABLE_PHYSICS)
     add_custom_test(physics_world_tests
         ${CMAKE_SOURCE_DIR}/tests/physics/physics_world_tests.cpp "" ${TEST_RESULTS_DIR}
-        VulkanSceneRenderer_physics Threads::Threads Jolt::Jolt
+        VulkanSceneRenderer_physics_world Threads::Threads Jolt::Jolt
     )
     add_custom_test(physics_scene_tests
         ${CMAKE_SOURCE_DIR}/tests/physics/physics_scene_tests.cpp "" ${TEST_RESULTS_DIR}
@@ -3202,7 +3202,7 @@ target_sources(renderer_mcp_measurement_tests PRIVATE
 
 add_custom_test(bim_robotics_scene_tests
     ${TESTS_DIR}/robotics/bim_robotics_scene_tests.cpp "" ${TEST_RESULTS_DIR}
-    VulkanSceneRenderer_robotics VulkanSceneRenderer_geometry
+    VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_geometry
 )
 target_sources(bim_robotics_scene_tests PRIVATE
     ${TESTS_DIR}/robotics/bim_robotics_sample_tests.cpp
@@ -3211,30 +3211,30 @@ target_sources(bim_robotics_scene_tests PRIVATE
 
 add_custom_test(bim_collision_geometry_tests
     ${TESTS_DIR}/robotics/bim_collision_geometry_tests.cpp "" ${TEST_RESULTS_DIR}
-    VulkanSceneRenderer_robotics VulkanSceneRenderer_geometry
+    VulkanSceneRenderer_robotics_collision_geometry VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_geometry
 )
 target_sources(bim_collision_geometry_tests PRIVATE ${TESTS_DIR}/robotics/bim_walkability_tests.cpp)
 
 add_custom_test(bim_asset_cache_tests
     ${TESTS_DIR}/robotics/bim_asset_cache_tests.cpp "" ${TEST_RESULTS_DIR}
-    VulkanSceneRenderer_robotics VulkanSceneRenderer_geometry VulkanSceneRenderer_fingerprint
+    VulkanSceneRenderer_robotics_assets VulkanSceneRenderer_geometry VulkanSceneRenderer_fingerprint
 )
 target_compile_definitions(bim_asset_cache_tests PRIVATE
     CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
 add_custom_test(raycast_lidar_tests
     ${TESTS_DIR}/robotics/raycast_lidar_tests.cpp "" ${TEST_RESULTS_DIR}
-    VulkanSceneRenderer_robotics
+    VulkanSceneRenderer_robotics_sensors
 )
 
 add_custom_test(drive_sensor_tests
     ${TESTS_DIR}/robotics/drive_sensor_tests.cpp "" ${TEST_RESULTS_DIR}
-    VulkanSceneRenderer_robotics
+    VulkanSceneRenderer_robotics_sensors
 )
 
 add_custom_test(drive_actuation_tests
     ${TESTS_DIR}/robotics/drive_actuation_tests.cpp "" ${TEST_RESULTS_DIR}
-    VulkanSceneRenderer_robotics
+    VulkanSceneRenderer_robotics_drive
 )
 
 if(ENABLE_ROBOTICS_URDF)
@@ -3258,7 +3258,7 @@ endif()
 if(ENABLE_PHYSICS)
     add_custom_test(bim_collision_world_tests
         ${TESTS_DIR}/robotics/bim_collision_world_tests.cpp "" ${TEST_RESULTS_DIR}
-        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
+        VulkanSceneRenderer_robotics_collision VulkanSceneRenderer_robotics_diagnostics VulkanSceneRenderer_geometry
     )
     target_sources(bim_collision_world_tests PRIVATE ${TESTS_DIR}/robotics/bim_room_graph_tests.cpp)
     target_compile_definitions(bim_collision_world_tests PRIVATE
@@ -3266,42 +3266,42 @@ if(ENABLE_PHYSICS)
 
     add_custom_test(differential_drive_tests
         ${TESTS_DIR}/robotics/differential_drive_tests.cpp "" ${TEST_RESULTS_DIR}
-        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
+        VulkanSceneRenderer_robotics_simulation VulkanSceneRenderer_geometry
     )
     target_compile_definitions(differential_drive_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
     add_custom_test(bim_lidar_tests
         ${TESTS_DIR}/robotics/bim_lidar_tests.cpp "" ${TEST_RESULTS_DIR}
-        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
+        VulkanSceneRenderer_robotics_simulation VulkanSceneRenderer_robotics_sensors VulkanSceneRenderer_geometry
     )
     target_compile_definitions(bim_lidar_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
     add_custom_test(bim_drive_sensor_tests
         ${TESTS_DIR}/robotics/bim_drive_sensor_tests.cpp "" ${TEST_RESULTS_DIR}
-        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
+        VulkanSceneRenderer_robotics_simulation VulkanSceneRenderer_robotics_sensors VulkanSceneRenderer_geometry
     )
     target_compile_definitions(bim_drive_sensor_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
     add_custom_test(bim_drive_actuation_tests
         ${TESTS_DIR}/robotics/bim_drive_actuation_tests.cpp "" ${TEST_RESULTS_DIR}
-        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
+        VulkanSceneRenderer_robotics_simulation VulkanSceneRenderer_geometry
     )
     target_compile_definitions(bim_drive_actuation_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
     add_custom_test(bim_physics_determinism_tests
         ${TESTS_DIR}/robotics/bim_physics_determinism_tests.cpp "" ${TEST_RESULTS_DIR}
-        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
+        VulkanSceneRenderer_robotics_simulation VulkanSceneRenderer_geometry
     )
     target_compile_definitions(bim_physics_determinism_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
     add_custom_test(articulated_grasp_tests
         ${TESTS_DIR}/robotics/articulated_grasp_tests.cpp "" ${TEST_RESULTS_DIR}
-        VulkanSceneRenderer_robotics_physics
+        VulkanSceneRenderer_robotics_simulation
     )
     set_tests_properties(articulated_grasp_tests PROPERTIES LABELS "cpu;physics;robotics")
 
