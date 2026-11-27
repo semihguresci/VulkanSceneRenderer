@@ -1,0 +1,18 @@
+{
+  "version": 1,
+  "initialFeet": [0, 0, 0],
+  "ticks": 240,
+  "actuators": {
+    "maxWheelAccelerationRadiansPerSecondSquared": 16,
+    "tractionCoefficient": 0.10,
+    "slipRatio": { "left": 0.10, "right": 0.10 }
+  },
+  "wheelTravelVariancePerMeter": { "left": 0.0003, "right": 0.0005 },
+  "commands": [
+    { "tick": 0, "wheelRates": { "left": 6, "right": 6 } },
+    { "tick": 90, "wheelRates": { "left": -2, "right": 2 } },
+    { "tick": 135, "linear": 0.2, "angular": -0.3 },
+    { "tick": 180, "wheelRates": { "left": 0, "right": 0 } }
+  ],
+  "driveSensors": { "samplesPerSecondMilliHz": 12000 }
+}

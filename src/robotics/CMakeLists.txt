@@ -4,7 +4,7 @@ target_include_directories(VulkanSceneRenderer_robotics_clock PUBLIC ${CMAKE_SOU
 
 add_library(VulkanSceneRenderer_robotics
     RoboticsScene.cpp RoboticsSceneManifest.cpp BimCollisionGeometry.cpp BimWalkability.cpp
-    BimAssetCache.cpp BimCachedCollision.cpp BimCachedRender.cpp DifferentialDrive.cpp
+    BimAssetCache.cpp BimCachedCollision.cpp BimCachedRender.cpp DifferentialDrive.cpp DifferentialDriveActuation.cpp
     DriveSensors.cpp RaycastLidar.cpp SensorSchedule.cpp)
 target_compile_features(VulkanSceneRenderer_robotics PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_robotics PUBLIC ${CMAKE_SOURCE_DIR}/include)
