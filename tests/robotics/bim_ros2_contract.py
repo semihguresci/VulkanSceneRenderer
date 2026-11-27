@@ -289,27 +289,30 @@ def startup_and_drive(executor, node, publisher, process, deadline, obs, types, 
         actual, expected_xyz = obs.static_poses[edge][:3], mount.get("xyz", (0.0, 0.0, 0.0))
         require(near(actual, expected_xyz), f"Static TF {edge} mounts at {actual}, expected {expected_xyz} metres")
 
-    def sensor_stamp():
-        common = obs.aligned_images()
+    def sensor_stamp(frame, common):
         if len(common) < 4:
             return None
         for candidate in sorted(common, reverse=True)[:4]:
             stamp = Time(nanoseconds=candidate)
-            if tf_buffer.can_transform("map", _OPTICAL, stamp):
+            if tf_buffer.can_transform("map", frame, stamp):
                 return stamp
         return None
 
-    spin("RGB-D/odometry TF at a common live tick", sensor_stamp)
-    stamp = sensor_stamp()
+    def camera_stamp():
+        return sensor_stamp(_OPTICAL, obs.aligned_images())
+
+    spin("RGB-D/odometry TF at a common live tick", camera_stamp)
+    stamp = camera_stamp()
     camera_pose = tf_buffer.lookup_transform("map", _OPTICAL, stamp)
     require(_ns(camera_pose.header.stamp) == stamp.nanoseconds and camera_pose.child_frame_id == _OPTICAL,
             "tf2 did not resolve map to camera at the exact observation time")
     lidar_pose = None
     if obs.lidar_settings is not None:
-        spin("LiDAR, /clock, and odometry sharing four timestamps",
-             lambda: len(obs.aligned_lidar().intersection(obs.clock)) >= 4)
-        lidar_stamp = Time(nanoseconds=max(obs.aligned_lidar().intersection(obs.clock)))
-        spin("LiDAR TF at its exact sample time", lambda: tf_buffer.can_transform("map", _LIDAR_FRAME, lidar_stamp))
+        def current_lidar_stamp():
+            return sensor_stamp(_LIDAR_FRAME, obs.aligned_lidar().intersection(obs.clock))
+
+        spin("LiDAR TF with four common /clock and odometry ticks", current_lidar_stamp)
+        lidar_stamp = current_lidar_stamp()
         lidar_pose = tf_buffer.lookup_transform("map", _LIDAR_FRAME, lidar_stamp)
         require(_ns(lidar_pose.header.stamp) == lidar_stamp.nanoseconds and lidar_pose.child_frame_id == _LIDAR_FRAME,
                 "tf2 did not resolve map to LiDAR at the exact observation time")
