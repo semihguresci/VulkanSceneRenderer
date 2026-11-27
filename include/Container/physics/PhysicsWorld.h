@@ -8,6 +8,8 @@
 #include <memory>
 #include <optional>
 #include <span>
+#include <utility>
+#include <vector>
 
 namespace container::physics {
 
@@ -39,6 +41,34 @@ struct PhysicsWorldSettings {
   uint32_t maxBodies{16'384u};
   // Zero chooses at most four workers, leaving small systems on the caller.
   uint32_t workerThreads{0u};
+};
+
+// Immutable cooked triangle mesh. Copies share the shape and retain the Jolt
+// runtime, so a handle can outlive its creating world and be reused in another.
+class PhysicsStaticMesh {
+public:
+  PhysicsStaticMesh() = default;
+  [[nodiscard]] bool valid() const noexcept;
+  [[nodiscard]] size_t vertexCount() const noexcept;
+  [[nodiscard]] size_t triangleCount() const noexcept;
+
+private:
+  friend class PhysicsWorld;
+  struct Impl;
+  explicit PhysicsStaticMesh(std::shared_ptr<const Impl> impl) : impl_(std::move(impl)) {}
+  std::shared_ptr<const Impl> impl_;
+};
+
+struct PhysicsQueryHit {
+  PhysicsBodyId body{kInvalidPhysicsBodyId};
+  float fraction{0.0f};
+  glm::dvec3 position{0.0};
+  // Capsule normals point from the target toward the query shape. Ray normals
+  // preserve the surface orientation, including triangle winding on back-face
+  // hits. A zero vector represents an undefined degenerate interior normal.
+  glm::vec3 normal{0.0f};
+  float penetrationDepth{0.0f};
+  uint32_t subShapeId{0u};
 };
 
 using PhysicsJointId = uint64_t;
@@ -117,6 +147,34 @@ public:
                    std::span<const uint32_t> indices,
                    const PhysicsBodySettings &settings = {
                        .motionType = PhysicsMotionType::Static});
+  [[nodiscard]] static PhysicsStaticMesh
+  cookStaticMesh(std::span<const glm::vec3> vertices,
+                   std::span<const uint32_t> indices);
+  [[nodiscard]] PhysicsBodyId
+  createStaticMesh(const PhysicsStaticMesh& mesh,
+                   const PhysicsBodySettings& settings = {
+                       .motionType = PhysicsMotionType::Static});
+
+  // Queries leave the simulation unchanged and include both triangle faces.
+  // Ignored handles are process-unique; unknown or destroyed handles have no
+  // effect. A ray displacement specifies its finite segment, including its end.
+  [[nodiscard]] std::optional<PhysicsQueryHit>
+  rayCast(glm::dvec3 origin, glm::vec3 displacement,
+          std::span<const PhysicsBodyId> ignored = {}) const;
+  // Capsules use the same local +Y axis as createCapsule. Rotate the pose to
+  // choose another up axis. Total height is 2 * (halfHeight + radius).
+  // Contacts are returned in fraction/body/subshape order, keeping the deepest
+  // duplicate per subshape at a given fraction. Supporting-floor contacts are
+  // retained so callers can apply their own slope/skin rule.
+  [[nodiscard]] std::vector<PhysicsQueryHit>
+  overlapCapsule(float halfHeight, float radius, const PhysicsBodyPose& pose,
+                  std::span<const PhysicsBodyId> ignored = {}) const;
+  // A zero displacement reports the initial overlaps. Positive sweeps also
+  // report initial overlaps at fraction zero, including penetration depth.
+  [[nodiscard]] std::vector<PhysicsQueryHit>
+  sweepCapsule(float halfHeight, float radius, const PhysicsBodyPose& pose,
+                glm::vec3 displacement,
+                std::span<const PhysicsBodyId> ignored = {}) const;
 
   [[nodiscard]] bool destroyBody(PhysicsBodyId id) noexcept;
   [[nodiscard]] bool contains(PhysicsBodyId id) const noexcept;

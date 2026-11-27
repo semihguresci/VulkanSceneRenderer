@@ -190,6 +190,177 @@ TEST(PhysicsWorldTests, SphereAndCapsuleRestOnOwnedIndexedTriangleMesh) {
   EXPECT_LT(std::abs(capsulePose->position.x - 2.0), 1.5);
 }
 
+TEST(PhysicsWorldTests, CookedStaticMeshOwnsDataAndSurvivesWorldLifetimes) {
+  PhysicsStaticMesh mesh;
+  {
+    const std::array<glm::vec3, 4> vertices{{
+        {-2, -2, 0}, {2, -2, 0}, {2, 2, 0}, {-2, 2, 0}}};
+    const std::array<uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+    // Cooking has no dependency on a live PhysicsWorld or the input buffers.
+    mesh = PhysicsWorld::cookStaticMesh(vertices, indices);
+  }
+  ASSERT_TRUE(mesh.valid());
+  EXPECT_EQ(mesh.vertexCount(), 4u);
+  EXPECT_EQ(mesh.triangleCount(), 2u);
+  {
+    PhysicsWorld world(testWorldSettings());
+    const auto copy = mesh;
+    const auto low = world.createStaticMesh(mesh);
+    const auto high = world.createStaticMesh(copy,
+        {.motionType = PhysicsMotionType::Static, .position = {0, 0, 2}});
+    const auto hit = world.rayCast({.25, .5, 4}, {0, 0, -8});
+    ASSERT_TRUE(hit);
+    EXPECT_EQ(hit->body, high);
+    EXPECT_NEAR(hit->fraction, .25f, 1e-6f);
+    const std::array ignored{high};
+    const auto lowerHit = world.rayCast({.25, .5, 4}, {0, 0, -8}, ignored);
+    ASSERT_TRUE(lowerHit);
+    EXPECT_EQ(lowerHit->body, low);
+  }
+  // The last world has retired. Reuse the same cooked shape in a new world,
+  // then release the handle while that world's body still owns the shape.
+  PhysicsWorld world(testWorldSettings());
+  const auto body = world.createStaticMesh(mesh);
+  mesh = {};
+  EXPECT_FALSE(mesh.valid());
+  EXPECT_EQ(mesh.vertexCount(), 0u);
+  EXPECT_EQ(mesh.triangleCount(), 0u);
+  const auto hit = world.rayCast({.25, .5, 2}, {0, 0, -4});
+  ASSERT_TRUE(hit);
+  EXPECT_EQ(hit->body, body);
+  EXPECT_NEAR(hit->position.z, 0, 1e-6);
+  EXPECT_THROW((void)world.createStaticMesh(mesh), std::invalid_argument);
+}
+
+TEST(PhysicsWorldTests, RayQueriesAreTwoSidedDeterministicAndUseStableBodyHandles) {
+  PhysicsWorld world(testWorldSettings());
+  const auto first = world.createBox(glm::vec3{.5f},
+      {.motionType = PhysicsMotionType::Static});
+  const auto second = world.createBox(glm::vec3{.5f},
+      {.motionType = PhysicsMotionType::Static});
+  const auto moving = world.createSphere(.25f,
+      {.position = {10, 10, 10}, .linearVelocity = {1, 2, 3}});
+  const auto activeBefore = world.activeBodyCount();
+  for (unsigned repeat = 0; repeat < 3; ++repeat) {
+    const auto hit = world.rayCast({-2, 0, 0}, {4, 0, 0});
+    ASSERT_TRUE(hit);
+    EXPECT_EQ(hit->body, first); // Equal fractions use process-unique handles.
+    EXPECT_NEAR(hit->fraction, .375f, 1e-6f);
+    EXPECT_NEAR(hit->position.x, -.5, 1e-6);
+    EXPECT_NEAR(hit->normal.x, -1, 1e-6f);
+  }
+  const std::array ignored{first};
+  const auto remaining = world.rayCast({-2, 0, 0}, {4, 0, 0}, ignored);
+  ASSERT_TRUE(remaining);
+  EXPECT_EQ(remaining->body, second);
+  ASSERT_TRUE(world.destroyBody(first));
+  const auto replacement = world.createBox(glm::vec3{.5f},
+      {.motionType = PhysicsMotionType::Static});
+  EXPECT_NE(replacement, first);
+  // An ignored stale handle must not hide a body that reused its backend slot.
+  const std::array ignoredOldAndSecond{first, second};
+  const auto replaced = world.rayCast({2, 0, 0}, {-4, 0, 0}, ignoredOldAndSecond);
+  ASSERT_TRUE(replaced);
+  EXPECT_EQ(replaced->body, replacement);
+  EXPECT_NEAR(replaced->normal.x, 1, 1e-6f);
+  EXPECT_FALSE(world.rayCast({-2, 0, 0}, {1, 0, 0}));
+  EXPECT_FALSE(world.rayCast({0, 0, 0}, {0, 0, 0}));
+  expectPosition(world, moving, {10, 10, 10});
+  EXPECT_EQ(*world.linearVelocity(moving), glm::vec3(1, 2, 3));
+  EXPECT_EQ(world.activeBodyCount(), activeBefore);
+}
+
+TEST(PhysicsWorldTests, CapsuleQueriesRetainInitialOverlapAndFloorAndWallHits) {
+  PhysicsWorld world(testWorldSettings());
+  const std::array<glm::vec3, 4> wallVertices{{
+      {0, -2, 0}, {0, 2, 0}, {0, 2, 3}, {0, -2, 3}}};
+  const std::array<uint32_t, 6> indices{0, 1, 2, 0, 2, 3};
+  const auto wall = world.createStaticMesh(wallVertices, indices);
+  const std::array<glm::vec3, 4> floorVertices{{
+      {-10, -10, 0}, {10, -10, 0}, {10, 10, 0}, {-10, 10, 0}}};
+  const auto floor = world.createStaticMesh(floorVertices, indices);
+  const auto zUp = glm::angleAxis(1.5707963267948966f, glm::vec3(1, 0, 0));
+  const PhysicsBodyPose pose{{-2, 0, .9}, zUp};
+  const auto hits = world.sweepCapsule(.7f, .25f, pose, {4, 0, 0});
+  const auto floorHit = std::ranges::find_if(hits, [=](const auto& hit) {
+    return hit.body == floor && hit.fraction == 0 && hit.normal.z > .99f;
+  });
+  ASSERT_NE(floorHit, hits.end());
+  EXPECT_NEAR(floorHit->penetrationDepth, .05f, .003f);
+  const auto wallHit = std::ranges::find_if(hits, [=](const auto& hit) {
+    return hit.body == wall && hit.fraction > 0;
+  });
+  ASSERT_NE(wallHit, hits.end());
+  EXPECT_NEAR(wallHit->fraction, .4375f, .003f);
+  EXPECT_NEAR(wallHit->position.x, 0, .003);
+  EXPECT_LT(wallHit->normal.x, -.99f);
+  // Both triangle faces block a swept capsule, independent of mesh winding.
+  const auto reverse = world.sweepCapsule(.7f, .25f, {{2, 0, 1.2}, zUp}, {-4, 0, 0});
+  ASSERT_FALSE(reverse.empty());
+  EXPECT_EQ(reverse.front().body, wall);
+  EXPECT_NEAR(reverse.front().fraction, .4375f, .003f);
+  EXPECT_GT(reverse.front().normal.x, .99f);
+  const PhysicsBodyPose penetrating{{-.1, 0, 1.2}, zUp};
+  const auto overlaps = world.overlapCapsule(.7f, .25f, penetrating);
+  ASSERT_FALSE(overlaps.empty());
+  EXPECT_EQ(overlaps.front().body, wall);
+  EXPECT_EQ(overlaps.front().fraction, 0);
+  EXPECT_GT(overlaps.front().penetrationDepth, .1f);
+  const auto stationary = world.sweepCapsule(.7f, .25f, penetrating, {0, 0, 0});
+  ASSERT_EQ(stationary.size(), overlaps.size());
+  EXPECT_EQ(stationary.front().body, wall);
+  EXPECT_NEAR(stationary.front().penetrationDepth, overlaps.front().penetrationDepth, 1e-6f);
+  const std::array ignored{wall};
+  EXPECT_TRUE(world.overlapCapsule(.7f, .25f, penetrating, ignored).empty());
+  EXPECT_TRUE(world.sweepCapsule(.7f, .25f, {{-2, 0, 1.2}, zUp}, {4, 0, 0}, ignored).empty());
+  EXPECT_EQ(world.bodyCount(), 2u);
+  EXPECT_EQ(world.activeBodyCount(), 0u);
+}
+
+TEST(PhysicsWorldTests, CapsuleSweepUsesAuthoredMeshOpeningAndRealRadius) {
+  PhysicsWorld world(testWorldSettings());
+  const std::array<glm::vec3, 8> vertices{{
+      {0, -2, 0}, {0, -.6f, 0}, {0, -.6f, 3}, {0, -2, 3},
+      {0, .6f, 0}, {0, 2, 0}, {0, 2, 3}, {0, .6f, 3}}};
+  const std::array<uint32_t, 12> indices{0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7};
+  const auto wall = world.createStaticMesh(vertices, indices);
+  const auto zUp = glm::angleAxis(1.5707963267948966f, glm::vec3(1, 0, 0));
+  EXPECT_TRUE(world.sweepCapsule(.7f, .25f, {{-2, 0, 1.2}, zUp}, {4, 0, 0}).empty());
+  // A centre ray fits, but its capsule radius reaches the opening's jamb.
+  EXPECT_FALSE(world.rayCast({-2, .45, 1.2}, {4, 0, 0}));
+  const auto clipped = world.sweepCapsule(.7f, .25f, {{-2, .45, 1.2}, zUp}, {4, 0, 0});
+  ASSERT_FALSE(clipped.empty());
+  EXPECT_EQ(clipped.front().body, wall);
+  EXPECT_GT(clipped.front().fraction, 0);
+  EXPECT_LT(clipped.front().fraction, .5f);
+  // The unrotated +Y capsule is too wide for the same opening.
+  EXPECT_FALSE(world.sweepCapsule(.7f, .25f, {{-2, 0, 1.2}}, {4, 0, 0}).empty());
+}
+
+TEST(PhysicsWorldTests, CookedMeshesAndQueriesRejectInvalidInputWithoutChangingBodies) {
+  PhysicsWorld world(testWorldSettings());
+  const auto body = world.createBox(glm::vec3{.5f}, {.position = {2, 3, 4}});
+  const std::array<glm::vec3, 3> vertices{{{0, 0, 0}, {1, 0, 0}, {0, 1, 0}}};
+  const std::array<uint32_t, 3> indices{0, 1, 2};
+  const auto mesh = PhysicsWorld::cookStaticMesh(vertices, indices);
+  for (const auto motion : {PhysicsMotionType::Dynamic, PhysicsMotionType::Kinematic})
+    EXPECT_THROW((void)world.createStaticMesh(mesh, {.motionType = motion}), std::invalid_argument);
+  EXPECT_THROW((void)world.createStaticMesh(PhysicsStaticMesh{}), std::invalid_argument);
+  const std::array<uint32_t, 3> invalidIndices{0, 1, 3};
+  EXPECT_THROW((void)PhysicsWorld::cookStaticMesh(vertices, invalidIndices), std::invalid_argument);
+  EXPECT_THROW((void)PhysicsWorld::cookStaticMesh({}, {}), std::invalid_argument);
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float infinity = std::numeric_limits<float>::infinity();
+  EXPECT_THROW((void)world.rayCast({nan, 0, 0}, {1, 0, 0}), std::invalid_argument);
+  EXPECT_THROW((void)world.rayCast({0, 0, 0}, {infinity, 0, 0}), std::invalid_argument);
+  EXPECT_THROW((void)world.overlapCapsule(.5f, 0, {}), std::invalid_argument);
+  EXPECT_THROW((void)world.overlapCapsule(-.5f, .2f, {}), std::invalid_argument);
+  EXPECT_THROW((void)world.overlapCapsule(.5f, .2f, {{}, {0, 0, 0, 0}}), std::invalid_argument);
+  EXPECT_THROW((void)world.sweepCapsule(.5f, .2f, {}, {nan, 0, 0}), std::invalid_argument);
+  EXPECT_EQ(world.bodyCount(), 1u);
+  expectPosition(world, body, {2, 3, 4});
+}
+
 TEST(PhysicsWorldTests, ZeroHeightCapsuleBecomesSphereAndSmallBoxesAreValid) {
   PhysicsWorld world(testWorldSettings());
   const auto capsule = world.createCapsule(0.0f, 0.5f,
@@ -435,7 +606,8 @@ TEST(PhysicsWorldTests, RejectsInvalidShapeAndMeshDataWithoutInstallingBodies) {
   const std::array<uint32_t, 3> invalid{0u, 2u, 3u};
   const std::array<uint32_t, 3> degenerate{0u, 0u, 0u};
   const std::array<uint32_t, 2> incomplete{0u, 1u};
-  EXPECT_THROW((void)world.createStaticMesh({}, {}), std::invalid_argument);
+  EXPECT_THROW((void)world.createStaticMesh(std::span<const glm::vec3>{},
+                                            std::span<const uint32_t>{}), std::invalid_argument);
   EXPECT_THROW((void)world.createStaticMesh(vertices, invalid), std::invalid_argument);
   EXPECT_THROW((void)world.createStaticMesh(vertices, incomplete), std::invalid_argument);
   EXPECT_THROW((void)world.createStaticMesh(vertices, degenerate), std::invalid_argument);

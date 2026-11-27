@@ -14,6 +14,11 @@
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
+#include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
+#include <Jolt/Physics/Collision/RayCast.h>
+#include <Jolt/Physics/Collision/CastResult.h>
+#include <Jolt/Physics/Collision/ShapeCast.h>
 #include <Jolt/Physics/Collision/BroadPhase/BroadPhaseQuery.h>
 #include <Jolt/Physics/Collision/TransformedShape.h>
 #include <Jolt/Physics/Collision/CollisionGroup.h>
@@ -39,6 +44,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <tuple>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -414,7 +420,61 @@ JPH::ShapeRefC makeShape(const ShapeSettings &settings) {
   return result.Get();
 }
 
+class QueryBodyFilter final : public JPH::BodyFilter {
+public:
+  explicit QueryBodyFilter(std::span<const PhysicsBodyId> ignored) : ignored_(ignored) {}
+  bool ShouldCollideLocked(const JPH::Body& body) const override {
+    return std::ranges::find(ignored_, body.GetUserData()) == ignored_.end();
+  }
+private:
+  std::span<const PhysicsBodyId> ignored_;
+};
+
+void validateQuerySegment(glm::dvec3 origin, glm::vec3 displacement) {
+  validatePosition(origin);
+  if (!finite(displacement) || !std::isfinite(glm::dot(displacement, displacement)))
+    throw std::invalid_argument("Physics query displacement must have a finite representable length");
+  validatePosition(origin + glm::dvec3(displacement));
+}
+
+JPH::ShapeRefC queryCapsule(float halfHeight, float radius) {
+  if (!std::isfinite(halfHeight) || halfHeight < 0.0f || !std::isfinite(radius) || radius <= 0.0f)
+    throw std::invalid_argument("Physics capsule query dimensions must be finite and nonnegative");
+  return makeShape(JPH::CapsuleShapeSettings(halfHeight, radius));
+}
+
+glm::vec3 queryNormal(JPH::Vec3 value) {
+  const float lengthSquared = value.LengthSq();
+  if (!std::isfinite(lengthSquared) || lengthSquared <= 0.0f) return glm::vec3(0.0f);
+  value /= std::sqrt(lengthSquared);
+  return {value.GetX(), value.GetY(), value.GetZ()};
+}
+
+void sortQueryHits(std::vector<PhysicsQueryHit>& hits) {
+  std::ranges::sort(hits, [](const auto& first, const auto& second) {
+    return std::tuple{first.fraction, first.body, first.subShapeId, -first.penetrationDepth,
+                      first.position.x, first.position.y, first.position.z, first.normal.x, first.normal.y, first.normal.z} <
+           std::tuple{second.fraction, second.body, second.subShapeId, -second.penetrationDepth,
+                      second.position.x, second.position.y, second.position.z, second.normal.x, second.normal.y, second.normal.z};
+  });
+  hits.erase(std::unique(hits.begin(), hits.end(), [](const auto& first, const auto& second) {
+    return first.fraction == second.fraction && first.body == second.body && first.subShapeId == second.subShapeId;
+  }), hits.end());
+}
+
 } // namespace
+
+struct PhysicsStaticMesh::Impl {
+  // Shapes are destroyed before releasing the registration/factory lease.
+  std::shared_ptr<RuntimeOwner> runtime;
+  JPH::ShapeRefC shape;
+  size_t vertices{};
+  size_t triangles{};
+};
+
+bool PhysicsStaticMesh::valid() const noexcept { return bool(impl_); }
+size_t PhysicsStaticMesh::vertexCount() const noexcept { return impl_ ? impl_->vertices : 0u; }
+size_t PhysicsStaticMesh::triangleCount() const noexcept { return impl_ ? impl_->triangles : 0u; }
 
 struct PhysicsWorld::Impl {
   struct WorldAnchorDeleter {
@@ -1084,28 +1144,128 @@ PhysicsBodyId PhysicsWorld::createStaticMesh(
   if (settings.motionType != PhysicsMotionType::Static)
     throw std::invalid_argument("Triangle mesh physics bodies must be static");
   validateBodySettings(settings);
+  return createStaticMesh(cookStaticMesh(vertices, indices), settings);
+}
+
+PhysicsStaticMesh PhysicsWorld::cookStaticMesh(
+    std::span<const glm::vec3> vertices, std::span<const uint32_t> indices) {
   if (vertices.empty() || indices.empty() || indices.size() % 3u != 0u ||
       vertices.size() > std::numeric_limits<uint32_t>::max() ||
       indices.size() / 3u > std::numeric_limits<uint32_t>::max())
     throw std::invalid_argument("Physics triangle mesh requires indexed triangles");
+  for (const auto vertex : vertices)
+    if (!finite(vertex))
+      throw std::invalid_argument("Physics mesh vertices must be finite");
+  for (const auto index : indices)
+    if (index >= vertices.size())
+      throw std::invalid_argument("Physics mesh index is outside its vertex array");
+  const auto runtime = acquireRuntime();
   JPH::VertexList meshVertices;
   meshVertices.reserve(vertices.size());
   for (const auto vertex : vertices) {
-    if (!finite(vertex))
-      throw std::invalid_argument("Physics mesh vertices must be finite");
     meshVertices.emplace_back(vertex.x, vertex.y, vertex.z);
   }
   JPH::IndexedTriangleList triangles;
   triangles.reserve(indices.size() / 3u);
   for (size_t index = 0; index < indices.size(); index += 3u) {
     const auto a = indices[index], b = indices[index + 1u], c = indices[index + 2u];
-    if (a >= vertices.size() || b >= vertices.size() || c >= vertices.size())
-      throw std::invalid_argument("Physics mesh index is outside its vertex array");
     triangles.emplace_back(a, b, c, 0u);
   }
-  return impl_->create(makeShape(JPH::MeshShapeSettings(std::move(meshVertices),
-                                                        std::move(triangles))),
-                        settings);
+  auto cooked = std::make_shared<PhysicsStaticMesh::Impl>();
+  cooked->runtime = runtime;
+  cooked->shape = makeShape(JPH::MeshShapeSettings(std::move(meshVertices), std::move(triangles)));
+  cooked->vertices = vertices.size();
+  cooked->triangles = indices.size() / 3u;
+  return PhysicsStaticMesh(std::move(cooked));
+}
+
+PhysicsBodyId PhysicsWorld::createStaticMesh(const PhysicsStaticMesh& mesh, const PhysicsBodySettings& settings) {
+  if (settings.motionType != PhysicsMotionType::Static)
+    throw std::invalid_argument("Triangle mesh physics bodies must be static");
+  validateBodySettings(settings);
+  if (!mesh.valid()) throw std::invalid_argument("Physics static mesh handle is empty");
+  return impl_->create(mesh.impl_->shape, settings);
+}
+
+std::optional<PhysicsQueryHit> PhysicsWorld::rayCast(
+    glm::dvec3 origin, glm::vec3 displacement, std::span<const PhysicsBodyId> ignored) const {
+  validateQuerySegment(origin, displacement);
+  if (glm::dot(displacement, displacement) == 0.0f) return std::nullopt;
+  const JPH::RRayCast ray(toJolt(origin), toJolt(displacement));
+  JPH::RayCastSettings settings;
+  settings.SetBackFaceMode(JPH::EBackFaceMode::CollideWithBackFaces);
+  const QueryBodyFilter filter(ignored);
+  JPH::AllHitCollisionCollector<JPH::CastRayCollector> collector;
+  impl_->system.GetNarrowPhaseQuery().CastRay(ray, settings, collector, {}, {}, filter);
+  std::vector<PhysicsQueryHit> hits;
+  hits.reserve(collector.mHits.size());
+  for (const auto& hit : collector.mHits) {
+    if (!(hit.mFraction >= 0.0f && hit.mFraction <= 1.0f)) continue;
+    JPH::BodyLockRead lock(impl_->system.GetBodyLockInterface(), hit.mBodyID);
+    if (!lock.Succeeded()) throw std::runtime_error("Physics query body could not be locked");
+    const auto& body = lock.GetBody();
+    const auto point = ray.GetPointOnRay(hit.mFraction);
+    const auto normal = queryNormal(body.GetWorldSpaceSurfaceNormal(hit.mSubShapeID2, point));
+    hits.push_back({body.GetUserData(), hit.mFraction, {point.GetX(), point.GetY(), point.GetZ()},
+                    normal, 0.0f, hit.mSubShapeID2.GetValue()});
+  }
+  sortQueryHits(hits);
+  if (hits.empty()) return std::nullopt;
+  return hits.front();
+}
+
+std::vector<PhysicsQueryHit> PhysicsWorld::overlapCapsule(
+    float halfHeight, float radius, const PhysicsBodyPose& inputPose,
+    std::span<const PhysicsBodyId> ignored) const {
+  const auto pose = validatePose(inputPose);
+  const auto shape = queryCapsule(halfHeight, radius);
+  const auto origin = toJolt(pose.position);
+  const auto transform = JPH::RMat44::sRotationTranslation(toJolt(pose.rotation), origin);
+  JPH::CollideShapeSettings settings;
+  settings.mBackFaceMode = JPH::EBackFaceMode::CollideWithBackFaces;
+  const QueryBodyFilter filter(ignored);
+  JPH::AllHitCollisionCollector<JPH::CollideShapeCollector> collector;
+  impl_->system.GetNarrowPhaseQuery().CollideShapeWithInternalEdgeRemoval(
+      shape, JPH::Vec3::sReplicate(1.0f), transform, settings, origin, collector, {}, {}, filter);
+  std::vector<PhysicsQueryHit> hits;
+  hits.reserve(collector.mHits.size());
+  for (const auto& hit : collector.mHits) {
+    const auto point = origin + hit.mContactPointOn2;
+    const auto body = impl_->system.GetBodyInterface().GetUserData(hit.mBodyID2);
+    hits.push_back({body, 0.0f, {point.GetX(), point.GetY(), point.GetZ()},
+                    queryNormal(-hit.mPenetrationAxis), hit.mPenetrationDepth, hit.mSubShapeID2.GetValue()});
+  }
+  sortQueryHits(hits);
+  return hits;
+}
+
+std::vector<PhysicsQueryHit> PhysicsWorld::sweepCapsule(
+    float halfHeight, float radius, const PhysicsBodyPose& inputPose,
+    glm::vec3 displacement, std::span<const PhysicsBodyId> ignored) const {
+  const auto pose = validatePose(inputPose);
+  validateQuerySegment(pose.position, displacement);
+  auto hits = overlapCapsule(halfHeight, radius, pose, ignored);
+  if (glm::dot(displacement, displacement) == 0.0f) return hits;
+  const auto shape = queryCapsule(halfHeight, radius);
+  const auto origin = toJolt(pose.position);
+  const auto transform = JPH::RMat44::sRotationTranslation(toJolt(pose.rotation), origin);
+  const JPH::RShapeCast cast(shape, JPH::Vec3::sReplicate(1.0f), transform, toJolt(displacement));
+  JPH::ShapeCastSettings settings;
+  settings.SetBackFaceMode(JPH::EBackFaceMode::CollideWithBackFaces);
+  settings.mReturnDeepestPoint = true;
+  settings.mActiveEdgeMovementDirection = toJolt(displacement);
+  const QueryBodyFilter filter(ignored);
+  JPH::AllHitCollisionCollector<JPH::CastShapeCollector> collector;
+  impl_->system.GetNarrowPhaseQuery().CastShape(cast, settings, origin, collector, {}, {}, filter);
+  for (const auto& hit : collector.mHits) {
+    if (!(hit.mFraction >= 0.0f && hit.mFraction <= 1.0f)) continue;
+    const auto point = origin + hit.mContactPointOn2;
+    const auto body = impl_->system.GetBodyInterface().GetUserData(hit.mBodyID2);
+    hits.push_back({body, hit.mFraction, {point.GetX(), point.GetY(), point.GetZ()},
+                    queryNormal(-hit.mPenetrationAxis), hit.mPenetrationDepth, hit.mSubShapeID2.GetValue()});
+  }
+  sortQueryHits(hits);
+  return hits;
 }
 
 bool PhysicsWorld::destroyBody(PhysicsBodyId id) noexcept {
