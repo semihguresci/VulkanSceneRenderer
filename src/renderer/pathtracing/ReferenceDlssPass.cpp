@@ -220,7 +220,8 @@ struct ReferenceDlssPass::Impl {
     layout = pipelines.createPipelineLayout({materials, lights, scene, guideLayout}, {});
     composeSetLayout = pipelines.createDescriptorSetLayout({
         {2, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr}}, {});
-    composeLayout = pipelines.createPipelineLayout({materials, lights, scene, composeSetLayout}, {});
+    composeLayout = pipelines.createPipelineLayout({materials, lights, scene, composeSetLayout},
+        {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(float)}});
     pool = pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, count},
         {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, count * uint32_t(guides.size()) + 1},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * count}}, count + 1);
@@ -357,6 +358,9 @@ struct ReferenceDlssPass::Impl {
     const std::array sets{input.materials, input.lights, scene, composeSet};
     vkCmdBindDescriptorSets(command, VK_PIPELINE_BIND_POINT_COMPUTE, composeLayout, 0,
         static_cast<uint32_t>(sets.size()), sets.data(), 0, nullptr);
+    const float reconstructedWeight = 1.0f;
+    vkCmdPushConstants(command, composeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+        sizeof(reconstructedWeight), &reconstructedWeight);
     vkCmdDispatch(command, (outputExtent.width + 7) / 8, (outputExtent.height + 7) / 8, 1);
   }
 };
@@ -371,7 +375,7 @@ ReferenceDlssPass::ReferenceDlssPass(std::shared_ptr<gpu::VulkanDevice> device, 
 
 ReferenceDlssPass::~ReferenceDlssPass() = default;
 
-void ReferenceDlssPass::record(VkCommandBuffer command, uint32_t image, const ReferencePathTraceInput& input,
+bool ReferenceDlssPass::record(VkCommandBuffer command, uint32_t image, const ReferencePathTraceInput& input,
     const ReferencePathTraceData& trace, VkDescriptorSet sceneSet) {
   auto& s = *impl_;
   auto& slot = s.slots.at(image);
@@ -383,13 +387,13 @@ void ReferenceDlssPass::record(VkCommandBuffer command, uint32_t image, const Re
     s.message = "Evaluation was not submitted. Reselect the reconstruction mode to retry.";
     s.pending.reset();
   }
-  if (s.failed) return;
+  if (s.failed) return false;
   if ((trace.limits.w & 8u) != 0 || input.settings.ground.mode == ReferenceGroundMode::ShadowMatte ||
       trace.trace.z > 0.0f || (!input.emptyScene && !input.dlssMotion.lifetime)) {
     s.previous.reset();
     s.historyFrames = 0;
     s.message = "Raw display while the scene, lens, or shadow matte is incompatible";
-    return;
+    return false;
   }
   const auto projection = glm::inverse(trace.inverseProjection);
   const auto view = glm::inverse(trace.inverseView);
@@ -438,7 +442,8 @@ void ReferenceDlssPass::record(VkCommandBuffer command, uint32_t image, const Re
       .jitterPixels = {-jitter.x, -jitter.y}, .worldToView = rowMajor(view), .viewToClip = rowMajor(projection),
       .reset = reset, .frameMilliseconds = input.frameMilliseconds});
   require(vkEndCommandBuffer(slot.secondary), "DLSS RR evaluation command end failed");
-  if (result == DlssDispatchResult::Recorded) {
+  const bool published = result == DlssDispatchResult::Recorded;
+  if (published) {
     if (s.queries) {
       vkCmdResetQueryPool(command, s.queries, image * 2, 2);
       vkCmdWriteTimestamp2(command, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, s.queries, image * 2);
@@ -457,6 +462,7 @@ void ReferenceDlssPass::record(VkCommandBuffer command, uint32_t image, const Re
   }
   s.imageLayouts(command, false);
   s.pendingImage = image;
+  return published;
 }
 
 void ReferenceDlssPass::commit(uint32_t image) noexcept {

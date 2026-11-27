@@ -334,6 +334,8 @@ void printCommandLineHelp() {
   --path-oidn QUALITY          Vulkan OIDN display filter off|fast|balanced|high (off)
   --path-optix                 OptiX guided HDR display filter (requires OptiX build)
   --path-dlss QUALITY          DLSS Ray Reconstruction off|quality|balanced|performance (off)
+  --path-denoiser-handoff N    Blend from RR to a spatial filter by N samples [0,16777216] (0 off)
+                               Requires active --path-dlss plus --path-optix or active --path-oidn
   --path-display MODE          Reference viewport beauty|standard-error (beauty)
   --path-denoise-interval N    Filter every N samples and at the stop [1,1024] (8)
   --path-oidn-interval N        Alias for --path-denoise-interval
@@ -503,6 +505,9 @@ void printCommandLineHelp() {
 void applyCommandLine(container::app::AppConfig& config, int argc,
                       char** argv, std::filesystem::path& displayGradeOutput,
                       std::filesystem::path& skyPresetOutput) {
+  using container::renderer::ReferenceOidnQuality;
+  using container::renderer::ReferenceOidnSettings;
+  using container::renderer::UpscaleMode;
   bool positionalModelConsumed = false;
   bool explicitBimModel = false;
   bool explicitBimImportScale = false;
@@ -511,6 +516,9 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   bool explicitDdgiDetailBudget = false;
   bool explicitFrameCapture = false;
   bool explicitPathSampleLimit = false;
+  UpscaleMode handoffDlss = UpscaleMode::Native;
+  ReferenceOidnQuality handoffOidn = ReferenceOidnQuality::Off;
+  bool handoffOptix = false;
   std::filesystem::path sensorCameraSpec;
   std::optional<std::filesystem::path> sensorTrajectory;
   std::filesystem::path bimTwinReplayPath;
@@ -821,22 +829,30 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       if (!container::renderer::validReferenceFireflyClamp(config.pathFireflyClamp))
         throw std::invalid_argument("--path-firefly-clamp must be 0 or in [1e-6,1e20]");
     } else if (arg == "--path-oidn" || arg == "--path-optix") {
-      config.pathOidn.dlss = container::renderer::UpscaleMode::Native;
+      config.pathOidn.dlss = UpscaleMode::Native;
       config.pathOidn.optix = arg == "--path-optix";
       if (!config.pathOidn.optix) {
         const auto quality = container::renderer::parseReferenceOidnQuality(requireValue(argc, argv, i, arg));
         if (!quality) throw std::invalid_argument("--path-oidn requires off, fast, balanced or high");
         config.pathOidn.quality = *quality;
       }
+      handoffOptix = config.pathOidn.optix;
+      handoffOidn = handoffOptix ? ReferenceOidnQuality::Off : config.pathOidn.quality;
     } else if (arg == "--path-dlss") {
       const auto quality = container::renderer::parseReferenceDlssQuality(requireValue(argc, argv, i, arg));
       if (!quality) throw std::invalid_argument("--path-dlss requires off, quality, balanced or performance");
       config.pathOidn.dlss = *quality;
       config.pathOidn.optix = false;
-      config.pathOidn.quality = container::renderer::ReferenceOidnQuality::Off;
+      config.pathOidn.quality = ReferenceOidnQuality::Off;
+      handoffDlss = *quality;
+    } else if (arg == "--path-denoiser-handoff") {
+      const auto samples = parseUint(requireValue(argc, argv, i, arg), arg);
+      if (samples > ReferenceOidnSettings::maxHandoffSamples)
+        throw std::invalid_argument("--path-denoiser-handoff must be in [0,16777216]");
+      config.pathOidn.handoffSamples = samples;
     } else if (arg == "--path-oidn-interval" || arg == "--path-denoise-interval") {
       const auto interval = parseUint(requireValue(argc, argv, i, arg), arg);
-      if (interval == 0 || interval > container::renderer::ReferenceOidnSettings::maxSampleInterval)
+      if (interval == 0 || interval > ReferenceOidnSettings::maxSampleInterval)
         throw std::invalid_argument(std::string(arg) + " must be in [1,1024]");
       config.pathOidn.sampleInterval = interval;
     } else if (arg == "--path-ground") {
@@ -1521,6 +1537,14 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     } else {
       throw std::runtime_error("unknown argument: " + std::string(arg));
     }
+  }
+
+  if (config.pathOidn.handoffSamples) {
+    if (handoffDlss == UpscaleMode::Native || (!handoffOptix && handoffOidn == ReferenceOidnQuality::Off))
+      throw std::invalid_argument("--path-denoiser-handoff requires active --path-dlss and a spatial filter (--path-optix or --path-oidn)");
+    config.pathOidn.dlss = handoffDlss;
+    config.pathOidn.optix = handoffOptix;
+    config.pathOidn.quality = handoffOidn;
   }
 
   const size_t vdbSourceCount = (!config.vdbVolumePath.empty() ? 1u : 0u) +

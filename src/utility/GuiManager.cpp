@@ -5575,18 +5575,46 @@ void GuiManager::drawSceneControls(
     if (ImGui::TreeNode("Reference display denoising")) {
       using Quality = container::renderer::ReferenceOidnQuality;
       using Dlss = container::renderer::UpscaleMode;
-      int backend = referenceOidn_.dlss != Dlss::Native ? 4 + static_cast<int>(referenceOidn_.dlss)
-          : referenceOidn_.optix ? 4 : static_cast<int>(referenceOidn_.quality);
-      if (ImGui::Combo("Display filter", &backend,
-              "Off\0Vulkan OIDN Fast\0Vulkan OIDN Balanced\0Vulkan OIDN High\0OptiX guided HDR\0"
-              "DLSS Ray Reconstruction Quality\0DLSS Ray Reconstruction Balanced\0DLSS Ray Reconstruction Performance\0")) {
-        referenceOidn_.quality = backend < 4 ? static_cast<Quality>(backend) : Quality::Off;
-        referenceOidn_.optix = backend == 4;
-        referenceOidn_.dlss = backend > 4 ? static_cast<Dlss>(backend - 4) : Dlss::Native;
+      using Settings = container::renderer::ReferenceOidnSettings;
+      bool handoff = referenceOidn_.handoffSamples != 0;
+      if (ImGui::Checkbox("Gradual denoiser handoff", &handoff)) {
+        referenceOidn_.handoffSamples = handoff ? 64 : 0;
+        if (handoff) {
+          if (referenceOidn_.dlss == Dlss::Native) referenceOidn_.dlss = Dlss::Quality;
+          if (referenceOidn_.quality == Quality::Off) referenceOidn_.optix = true;
+        } else {
+          referenceOidn_.dlss = Dlss::Native;
+        }
+      }
+      if (handoff) {
+        int spatial = referenceOidn_.optix ? 3 : static_cast<int>(referenceOidn_.quality) - 1;
+        if (ImGui::Combo("Spatial denoiser", &spatial,
+                "Vulkan OIDN Fast\0Vulkan OIDN Balanced\0Vulkan OIDN High\0OptiX guided HDR\0")) {
+          referenceOidn_.optix = spatial == 3;
+          referenceOidn_.quality = spatial == 3 ? Quality::Off : static_cast<Quality>(spatial + 1);
+        }
+        int reconstruction = static_cast<int>(referenceOidn_.dlss) - 1;
+        if (ImGui::Combo("DLSS Ray Reconstruction", &reconstruction, "Quality\0Balanced\0Performance\0"))
+          referenceOidn_.dlss = static_cast<Dlss>(reconstruction + 1);
+        int samples = static_cast<int>(referenceOidn_.handoffSamples);
+        if (ImGui::DragInt("Handoff target (spp)", &samples, 0.5f, 1, Settings::maxHandoffSamples,
+                "%d", ImGuiSliderFlags_AlwaysClamp))
+          referenceOidn_.handoffSamples = static_cast<uint32_t>(samples);
+        ShowItemTooltip("Starts with DLSS Ray Reconstruction and blends toward the spatial result as samples accumulate.");
+      } else {
+        int backend = referenceOidn_.dlss != Dlss::Native ? 4 + static_cast<int>(referenceOidn_.dlss)
+            : referenceOidn_.optix ? 4 : static_cast<int>(referenceOidn_.quality);
+        if (ImGui::Combo("Display filter", &backend,
+                "Off\0Vulkan OIDN Fast\0Vulkan OIDN Balanced\0Vulkan OIDN High\0OptiX guided HDR\0"
+                "DLSS Ray Reconstruction Quality\0DLSS Ray Reconstruction Balanced\0DLSS Ray Reconstruction Performance\0")) {
+          referenceOidn_.quality = backend < 4 ? static_cast<Quality>(backend) : Quality::Off;
+          referenceOidn_.optix = backend == 4;
+          referenceOidn_.dlss = backend > 4 ? static_cast<Dlss>(backend - 4) : Dlss::Native;
+        }
       }
       int interval = static_cast<int>(referenceOidn_.sampleInterval);
-      if (backend > 0 && backend <= 4 && ImGui::SliderInt("Sample interval", &interval, 1,
-              container::renderer::ReferenceOidnSettings::maxSampleInterval))
+      if ((referenceOidn_.optix || referenceOidn_.quality != Quality::Off) &&
+          ImGui::SliderInt("Sample interval", &interval, 1, Settings::maxSampleInterval))
         referenceOidn_.sampleInterval = static_cast<uint32_t>(interval);
       ImGui::TextDisabled("EXR captures keep the raw accumulation.");
       ImGui::TreePop();

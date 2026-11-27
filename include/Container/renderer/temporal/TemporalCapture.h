@@ -287,6 +287,7 @@ struct CaptureEvent {
   std::optional<container::renderer::ReferenceOidnQuality> referenceOidn;
   std::optional<bool> referenceOptix;
   std::optional<container::renderer::UpscaleMode> referenceDlss;
+  std::optional<uint32_t> referenceDenoiserHandoffSamples;
   std::optional<container::renderer::ReferencePathDisplayMode> referenceDisplay;
   std::optional<CaptureComfyUi> comfyUi;
   std::optional<bool> gpuTransforms;
@@ -825,9 +826,19 @@ public:
           throw std::invalid_argument("Capture referenceOptix requires a boolean and a separate backend event");
         event.referenceOptix = value.at("referenceOptix").get<bool>();
       }
+      if (value.contains("referenceDenoiserHandoffSamples")) {
+        const auto& requested = value.at("referenceDenoiserHandoffSamples");
+        const double count = requested.is_number() ? requested.get<double>() : -1.0;
+        constexpr auto maximum = container::renderer::ReferenceOidnSettings::maxHandoffSamples;
+        if (!std::isfinite(count) || count < 0.0 || count > maximum || std::floor(count) != count)
+          throw std::invalid_argument("Capture referenceDenoiserHandoffSamples expects a whole number from 0 to " +
+                                      std::to_string(maximum));
+        event.referenceDenoiserHandoffSamples = static_cast<uint32_t>(count);
+      }
       if (value.contains("referenceDlss")) {
-        if (event.referenceOidn || event.referenceOptix)
-          throw std::invalid_argument("Capture referenceDlss requires a separate backend event");
+        if ((event.referenceOidn || event.referenceOptix) && !event.referenceDenoiserHandoffSamples.value_or(0))
+          throw std::invalid_argument("Combining capture referenceDlss with a spatial backend requires a positive "
+                                      "referenceDenoiserHandoffSamples in the same event");
         event.referenceDlss = container::renderer::parseReferenceDlssQuality(value.at("referenceDlss").get<std::string>());
         if (!event.referenceDlss) throw std::invalid_argument("Invalid capture referenceDlss quality");
       }

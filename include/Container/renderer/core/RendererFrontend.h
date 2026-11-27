@@ -485,6 +485,7 @@ private:
                                    uint64_t generation, uint64_t epoch);
   void updateReferenceColorSource(uint32_t imageIndex, bool sceneLinear);
   void publishReferenceColorBinding(uint32_t imageIndex);
+  [[nodiscard]] ReferenceOidnSettings referenceDenoising() const;
   std::vector<bool> referenceColorBound_;
   std::vector<uint64_t> referenceDiagnosticSeen_;
   uint64_t referenceDiagnosticEpoch_{}, referenceUnsupported_{}, referenceRejected_{};
@@ -494,10 +495,8 @@ private:
   std::optional<uint32_t> referenceAdaptiveBatch_;
   std::optional<float> referenceTimedLightingMs_;
   std::optional<float> referenceFocusDistanceOverride_;
-  std::optional<ReferenceOidnQuality> referenceOidnQualityOverride_;
-  std::optional<bool> referenceOptixOverride_;
+  std::optional<ReferenceOidnSettings> referenceDenoisingOverride_;
   std::optional<ReferencePathDisplayMode> referencePathDisplayOverride_;
-  std::optional<UpscaleMode> referenceDlssOverride_;
   bool referenceAutofocusRequested_{};
   std::string referenceAutofocusStatus_;
   std::string referenceStatus_;

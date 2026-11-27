@@ -24,6 +24,8 @@
       "referenceOidn": {"enum": ["off", "fast", "balanced", "high"]},
       "referenceOptix": {"type": "boolean"},
       "referenceDlss": {"enum": ["off", "quality", "balanced", "performance"]},
+      "referenceDenoiserHandoffSamples": {"type": "integer", "minimum": 0, "maximum": 16777216,
+        "description": "Set the reference display handoff target in samples per pixel. A positive target allows one spatial denoiser and DLSS Ray Reconstruction together. Zero ends the handoff."},
       "referenceDisplay": {"enum": ["beauty", "standard-error"]},
       "comfyUi": {"type": "object", "additionalProperties": false, "required": ["action"], "properties": {
         "action": {"enum": ["generate-environment", "restyle-viewport", "apply-environment", "cancel"]},
@@ -141,9 +143,12 @@
       "nodeTransform": {"$ref": "#/$defs/nodeTransform"},
       "addPrimitive": {"$ref": "#/$defs/addPrimitive"}
     }, "not": {"anyOf": [{"required": ["referenceOidn", "referenceOptix"]},
-                        {"required": ["referenceOidn", "referenceDlss"]},
-                        {"required": ["referenceOptix", "referenceDlss"]},
                         {"required": ["fsr", "dlss"]}]}, "allOf": [{
+      "if": {"required": ["referenceDlss"], "anyOf": [{"required": ["referenceOidn"]},
+                                                     {"required": ["referenceOptix"]}]},
+      "then": {"required": ["referenceDenoiserHandoffSamples"],
+               "properties": {"referenceDenoiserHandoffSamples": {"minimum": 1}}}
+    }, {
       "if": {"required": ["guiWaitForLoad"], "properties": {"guiWaitForLoad": {"const": false}}},
       "then": {"anyOf": [
         {"required": ["guiWaitForUploadChunks"]},

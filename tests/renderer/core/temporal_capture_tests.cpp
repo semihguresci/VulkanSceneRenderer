@@ -445,7 +445,7 @@ TEST(TemporalCapture, DlssSelectionRejectsTwoUpscalersInOneEvent) {
   EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
 }
 
-TEST(TemporalCapture, ReferenceDlssIsAnIndependentExclusiveDisplayBackend) {
+TEST(TemporalCapture, ReferenceDlssIsExclusiveWithoutAHandoffTarget) {
   using container::renderer::UpscaleMode;
   auto input = json::parse(R"({"schemaVersion":1,"frames":4,"events":[
     {"frame":1,"referenceDlss":"quality"},{"frame":3,"referenceDlss":"off"}]})");
@@ -461,6 +461,52 @@ TEST(TemporalCapture, ReferenceDlssIsAnIndependentExclusiveDisplayBackend) {
   }
   input["events"][0]["referenceDlss"] = "native";
   EXPECT_THROW(CaptureSequence{input}, std::invalid_argument);
+}
+
+TEST(TemporalCapture, ReferenceDenoiserHandoffOptionsAreTypedAndOneShot) {
+  using container::renderer::ReferenceOidnQuality;
+  using container::renderer::ReferenceOidnSettings;
+  using container::renderer::UpscaleMode;
+  const auto input = json::parse(R"({"schemaVersion":1,"frames":5,"events":[
+    {"frame":1,"referenceDlss":"quality","referenceOptix":true,"referenceDenoiserHandoffSamples":64},
+    {"frame":2,"referenceDlss":"balanced","referenceOidn":"high","referenceDenoiserHandoffSamples":1},
+    {"frame":3,"referenceDenoiserHandoffSamples":0},
+    {"frame":4,"referenceDenoiserHandoffSamples":64.0}]})");
+  const CaptureSequence sequence(input);
+  const auto optix = sequence.sample(1).event;
+  EXPECT_EQ(optix.referenceDlss, UpscaleMode::Quality);
+  EXPECT_EQ(optix.referenceOptix, true);
+  EXPECT_EQ(optix.referenceDenoiserHandoffSamples, 64u);
+  const auto oidn = sequence.sample(2).event;
+  EXPECT_EQ(oidn.referenceDlss, UpscaleMode::Balanced);
+  EXPECT_EQ(oidn.referenceOidn, ReferenceOidnQuality::High);
+  EXPECT_EQ(oidn.referenceDenoiserHandoffSamples, 1u);
+  EXPECT_EQ(sequence.sample(3).event.referenceDenoiserHandoffSamples, 0u);
+  EXPECT_EQ(sequence.sample(4).event.referenceDenoiserHandoffSamples, 64u);
+  EXPECT_FALSE(sequence.sample(5).event.referenceDenoiserHandoffSamples);
+
+  auto changed = input;
+  changed["events"][3]["referenceDenoiserHandoffSamples"] = ReferenceOidnSettings::maxHandoffSamples;
+  EXPECT_EQ(CaptureSequence(changed).sample(4).event.referenceDenoiserHandoffSamples,
+            ReferenceOidnSettings::maxHandoffSamples);
+  for (const auto& invalid : json::array({-1, 1.25, nullptr, true, "64",
+                                        ReferenceOidnSettings::maxHandoffSamples + 1u,
+                                        std::numeric_limits<uint64_t>::max(),
+                                        std::numeric_limits<double>::infinity()})) {
+    changed["events"][3]["referenceDenoiserHandoffSamples"] = invalid;
+    EXPECT_THROW(CaptureSequence{changed}, std::invalid_argument) << invalid.dump();
+  }
+
+  for (const int index : {0, 1}) {
+    auto conflict = input;
+    conflict["events"][index]["referenceDenoiserHandoffSamples"] = 0;
+    EXPECT_THROW(CaptureSequence{conflict}, std::invalid_argument);
+  }
+  auto conflict = input;
+  conflict["events"][0]["referenceOidn"] = "high";
+  EXPECT_THROW(CaptureSequence{conflict}, std::invalid_argument);
+  conflict["events"][0].erase("referenceDlss");
+  EXPECT_THROW(CaptureSequence{conflict}, std::invalid_argument);
 }
 
 json jointCapture() {

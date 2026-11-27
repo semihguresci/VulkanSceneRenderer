@@ -25,6 +25,10 @@ EXTENT = (640, 360)
 RESIZED = (704, 400)
 LOW_SAMPLE_FRAMES = (1, 4, 8)
 MOTION_FRAMES = (1, 3, 6, 9, 11, 12, 15, 18, 21, 23, 25, 27, 29, 32, 35)
+HANDOFF_SAMPLE_LIMIT = 6
+HANDOFF_TARGET_SAMPLES = 10
+HANDOFF_CUT_FRAME = 9
+HANDOFF_FRAMES = (1, 2, 4, 6, 7, 8, 9, 10, 12, 14, 15, 16)
 
 
 def write_motion_glass_fixture(path):
@@ -187,14 +191,178 @@ def motion_quality(raw, reconstructed):
             "thinGlassRrDisplayDelta": rr_tint.tolist()}
 
 
+def check_handoff_events(capture, raw, controls, spatial_backend):
+    spatial_event = {"referenceOptix": True} if spatial_backend == "optix" else {"referenceOidn": "fast"}
+    events = [{"frame": 2, "referenceDlss": "quality", "referenceDenoiserHandoffSamples": 5, **spatial_event},
+              {"frame": 3, "referenceDenoiserHandoffSamples": 8},
+              {"frame": 4, "referenceDenoiserHandoffSamples": 0},
+              {"frame": 5, "referenceDlss": "quality"},
+              {"frame": 6, "referenceDenoiserHandoffSamples": 8, **spatial_event},
+              {"frame": 7, "referenceDlss": "off"}]
+    config = {**fixed_sequence(range(1, 9)), "events": events}
+    frames = capture("handoff-events", "off", config, extension=".exr", **controls)
+    expected = (("off", False, 0), ("quality", True, 5), ("quality", True, 8), ("off", True, 0),
+                ("quality", False, 0), ("quality", True, 8), ("off", True, 0), ("off", True, 0))
+    evidence = {}
+    for frame, (quality, use_spatial, target) in enumerate(expected, 1):
+        sample = frames[frame]
+        path = sample.path
+        spatial = path[spatial_backend]
+        spatial_selected = spatial["requested"] if spatial_backend == "optix" else spatial["quality"] == "fast"
+        assert (sample.dlss["quality"], spatial_selected, path["denoiserHandoff"]["targetSamples"]) == (
+            quality, use_spatial, target), path
+        assert path["attemptedSamples"] == min(frame, HANDOFF_SAMPLE_LIMIT), path
+        assert path["historyResets"] == raw[1].path["historyResets"], path
+        evidence[frame] = {"rrQuality": quality, "spatialSelected": use_spatial, "targetSamples": target,
+                           "attemptedSamples": path["attemptedSamples"]}
+        if frame in raw:
+            comparison = pixel_exact(sample, raw[frame])
+            assert comparison["encodedFileExact"], (sample.image, raw[frame].image)
+            evidence[frame]["rawExr"] = comparison
+    return evidence
+
+
+def handoff_regression(capture, output, report, spatial_backend, rr_available, spatial_available):
+    witness = output / "handoff-motion-glass.gltf"
+    write_motion_glass_fixture(witness)
+    # Hold each endpoint so that precisely one frame changes the camera by
+    # more than five world units, including with keyframe interpolation.
+    initial, cut = (0, 0), (-2.5, 5.1)
+    camera = [{"frame": frame, "position": [x, 0, z], "target": [x, 0, z - 1]}
+              for frame, (x, z) in ((1, initial), (HANDOFF_CUT_FRAME - 1, initial),
+                                    (HANDOFF_CUT_FRAME, cut), (HANDOFF_FRAMES[-1], cut))]
+    controls = dict(selected_model=witness, position=(0, 0, 0), target=(0, 0, -1),
+                    bounces=2, samples=HANDOFF_SAMPLE_LIMIT)
+    config = {**fixed_sequence(HANDOFF_FRAMES), "camera": camera}
+    if spatial_backend == "optix":
+        spatial_options = ("--path-optix", "--path-denoise-interval", "1")
+    else:
+        spatial_options = ("--path-oidn", "fast", "--path-denoise-interval", "2")
+    handoff_options = (*spatial_options, "--path-denoiser-handoff", str(HANDOFF_TARGET_SAMPLES))
+    combined = capture("handoff-display", "quality", config, extra=handoff_options, **controls)
+    raw_sequence = {**config, "sampleFrames": [1, 4, 8, HANDOFF_CUT_FRAME, 16]}
+    raw = capture("handoff-raw-control", "off", raw_sequence, extension=".exr", **controls)
+    # Reverse the enabled backend flag order in the raw export invocation.
+    requested = capture("handoff-raw-export", "off", raw_sequence, extension=".exr",
+                        extra=(*handoff_options, "--path-dlss", "quality"), **controls)
+
+    details = report["handoff"] = {
+        "spatialBackend": spatial_backend, "rrAvailableExpected": rr_available,
+        "spatialAvailableExpected": spatial_available, "rawExr": {}, "frames": {}, "viewport": {},
+    }
+    for frame, control in raw.items():
+        display_export = requested[frame]
+        comparison = pixel_exact(control, display_export)
+        assert comparison["encodedFileExact"], (control.image, display_export.image)
+        assert control.path["attemptedSamples"] == display_export.path["attemptedSamples"], frame
+        assert control.path["historyResets"] == display_export.path["historyResets"], frame
+        assert display_export.dlss["quality"] == "quality", display_export.path
+        assert display_export.path["denoiserHandoff"]["targetSamples"] == HANDOFF_TARGET_SAMPLES, display_export.path
+        spatial = display_export.path[spatial_backend]
+        assert (spatial["requested"] if spatial_backend == "optix" else spatial["quality"] == "fast"), spatial
+        details["rawExr"][frame] = comparison
+
+    starting_epoch = combined[1].path["historyResets"]
+    for frame, sample in combined.items():
+        epoch_frame = 1 if frame < HANDOFF_CUT_FRAME else HANDOFF_CUT_FRAME
+        assert sample.path["historyResets"] == starting_epoch + (epoch_frame == HANDOFF_CUT_FRAME), sample.path
+        assert sample.path["attemptedSamples"] == min(HANDOFF_SAMPLE_LIMIT, frame - epoch_frame + 1), sample.path
+        assert sample.pixels.shape == (EXTENT[1], EXTENT[0], 3), sample.image
+        handoff = sample.path["denoiserHandoff"]
+        spatial = sample.path[spatial_backend]
+        assert handoff["targetSamples"] == HANDOFF_TARGET_SAMPLES, handoff
+        weight = handoff["spatialWeight"]
+        displayed = spatial["displayedSamples"]
+        assert 0 <= weight <= 1 and 0 <= displayed <= spatial["guideSamples"] <= sample.path["attemptedSamples"], sample.path
+        assert sample.dlss["quality"] == "quality", sample.dlss
+        if spatial_backend == "optix":
+            assert spatial["requested"], spatial
+        else:
+            assert spatial["quality"] == "fast", spatial
+        if spatial_available:
+            assert spatial["allocatedBytes"] > 0, spatial
+            assert (weight > 0) == (displayed > 0), sample.path
+            if displayed == HANDOFF_SAMPLE_LIMIT:
+                assert weight == 1, sample.path
+            elif rr_available and displayed:
+                assert 0 < weight < 1, sample.path
+        else:
+            assert displayed == 0 and weight == 0, sample.path
+            assert spatial["status"] and spatial["status"].lower() not in ("off", "ready"), spatial
+        if rr_available:
+            assert sample.dlss["active"] == (weight < 1), sample.dlss
+            if sample.dlss["active"]:
+                assert_mode(sample, "quality", True, EXTENT)
+        else:
+            assert_mode(sample, "quality", False, EXTENT)
+            assert weight in (0, 1), sample.path
+        details["frames"][frame] = {"attemptedSamples": sample.path["attemptedSamples"],
+                                    "historyResets": sample.path["historyResets"], "spatialWeight": weight,
+                                    "spatial": spatial, "rr": sample.dlss}
+
+    for frame in (1, HANDOFF_CUT_FRAME):
+        start = details["frames"][frame]
+        assert start["spatial"]["displayedSamples"] == 0 and start["spatialWeight"] == 0, start
+        if rr_available:
+            assert start["rr"]["historyFrames"] == 1, start
+    before_cut = details["frames"][HANDOFF_CUT_FRAME - 1]
+    if rr_available:
+        assert details["frames"][HANDOFF_CUT_FRAME]["rr"]["historyResets"] > before_cut["rr"]["historyResets"]
+
+    if rr_available:
+        rr_only = capture("handoff-rr-only", "quality", config, **controls)
+    if spatial_available:
+        spatial_only = capture("handoff-spatial-only", "off", config, extra=spatial_options, **controls)
+
+    comparisons = details["viewport"]
+    if rr_available and spatial_available:
+        partial_differences = []
+        for frame, entry in details["frames"].items():
+            weight = entry["spatialWeight"]
+            image = combined[frame]
+            if weight == 0:
+                comparisons[frame] = {"source": "rr", **pixel_exact(image, rr_only[frame])}
+            elif weight == 1:
+                comparisons[frame] = {"source": spatial_backend, **pixel_exact(image, spatial_only[frame])}
+            else:
+                differences = {"source": "blend", "changedFromRr": int(np.count_nonzero(
+                    np.any(image.pixels != rr_only[frame].pixels, axis=-1))), "changedFromSpatial": int(np.count_nonzero(
+                    np.any(image.pixels != spatial_only[frame].pixels, axis=-1)))}
+                comparisons[frame] = differences
+                partial_differences.append(differences)
+        assert any(row["changedFromRr"] and row["changedFromSpatial"] for row in partial_differences), comparisons
+        for start, end in ((1, HANDOFF_CUT_FRAME - 1), (HANDOFF_CUT_FRAME, HANDOFF_FRAMES[-1])):
+            weights = [entry["spatialWeight"] for frame, entry in details["frames"].items() if start <= frame <= end]
+            assert weights == sorted(weights) and weights[0] == 0 and weights[-1] == 1, weights
+            assert any(0 < weight < 1 for weight in weights), weights
+    else:
+        if rr_available:
+            fallback = rr_only
+            source = "rr"
+        elif spatial_available:
+            fallback = spatial_only
+            source = spatial_backend
+        else:
+            fallback = capture("handoff-raw-display", "off", config, **controls)
+            source = "raw"
+        for frame, image in combined.items():
+            comparisons[frame] = {"source": source, **pixel_exact(image, fallback[frame])}
+    details["captureEvents"] = check_handoff_events(capture, raw, controls, spatial_backend)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--model", type=Path, default=ROOT / "models/validation/cornell_box_local_light.gltf")
     parser.add_argument("--expect-unavailable", action="store_true", help="Require bit-exact disabled SDK fallback")
-    parser.add_argument("--suite", choices=("full", "smoke"), default="full")
+    parser.add_argument("--suite", choices=("full", "smoke", "handoff"), default="full")
+    parser.add_argument("--handoff-spatial", choices=("optix", "oidn"), default="optix")
+    parser.add_argument("--expect-spatial-unavailable", action="store_true",
+                        help="require independent RR or raw fallback in the handoff suite")
     args = parser.parse_args()
+    if args.expect_spatial_unavailable and args.suite != "handoff":
+        parser.error("--expect-spatial-unavailable requires --suite handoff")
     renderer, output, model = (args.renderer.resolve(strict=True), args.output.resolve(),
                                args.model.resolve(strict=True))
     output.mkdir(parents=True, exist_ok=False)
@@ -208,7 +376,7 @@ def main():
         report_path.write_text(json.dumps(report, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
     def capture(label, quality, config, *, selected_model=model, extension=".png", samples=4, batch=1,
-                position=(0, 1, 4), target=(0, 1, 0), bounces=5):
+                position=(0, 1, 4), target=(0, 1, 0), bounces=5, extra=()):
         sequence = output / f"{label}.sequence.json"
         sequence.write_text(json.dumps(config), encoding="utf-8")
         command = [str(renderer), "--hidden", "--validation", "--no-ui", "--screenshot-viewport",
@@ -219,7 +387,7 @@ def main():
                    "--camera-position", *map(str, position), "--camera-target", *map(str, target),
                    "--camera-fov", "42", "--fixed-dt", ".016666667", "--path-seed", "17",
                    "--path-bounces", str(bounces), "--path-spp", str(batch), "--path-samples", str(samples),
-                   "--path-dlss", quality, "--capture-sequence", str(sequence),
+                   "--path-dlss", quality, *extra, "--capture-sequence", str(sequence),
                    "--screenshot", str(output / f"{label}{extension}")]
         log = output / f"{label}.log"
         run = report["runs"][label] = {"log": str(log), "command": command, "captures": {}}
@@ -269,6 +437,13 @@ def main():
         return frames
 
     try:
+        if args.suite == "handoff":
+            handoff_regression(capture, output, report, args.handoff_spatial,
+                               not args.expect_unavailable, not args.expect_spatial_unavailable)
+            assert sha256(renderer) == report["executableSha256"], "Renderer binary changed during capture"
+            report["passed"] = True
+            print(f"PASS Vulkan DLSS Ray Reconstruction handoff: {report_path}")
+            return
         low = fixed_sequence(LOW_SAMPLE_FRAMES)
         raw = capture("cornell-native", "off", low)
         reconstructed = capture("cornell-quality", "quality", low)

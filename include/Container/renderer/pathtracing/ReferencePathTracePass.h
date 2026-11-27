@@ -74,6 +74,7 @@ struct ReferenceAutofocusResult {
 struct ReferenceOidnStatus {
   std::string_view message;
   uint32_t displayedSamples{};
+  uint32_t guideSamples{};
   uint64_t allocatedBytes{};
   std::optional<double> lastGpuMs;
 };
@@ -121,8 +122,10 @@ class ReferencePathTracePass {
   [[nodiscard]] bool optixSelected() const;
   [[nodiscard]] UpscaleMode dlssQuality() const;
   [[nodiscard]] ReferenceDlssStatus dlssStatus() const;
+  [[nodiscard]] uint32_t denoiserHandoffSamples() const noexcept;
+  [[nodiscard]] float denoiserHandoffWeight() const noexcept;
   // The caller retires all frame readers before changing reconstruction mode.
-  void setDlssQuality(const std::filesystem::path& shaderRoot, UpscaleMode mode);
+  void setDenoising(const std::filesystem::path& shaderRoot, ReferenceOidnSettings);
   void setOidnSampleInterval(uint32_t interval);
   void collectDenoiserTiming(uint32_t image);
   [[nodiscard]] uint64_t historyResets() const;

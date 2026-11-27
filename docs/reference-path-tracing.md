@@ -171,8 +171,11 @@ Enable **Reference display denoising** in Scene Controls, or pass
 interval with `--path-oidn-interval N` from 1 to 1,024 attempted samples per
 pixel. The backend refreshes at the interval and at the exact sample stop.
 It can reuse the last filtered image from the same accumulation between updates.
-Camera, scene, and viewport changes discard that image. Changing quality
-recreates the reference resources and starts a fresh accumulation.
+Camera, scene, and viewport changes discard that image and its accumulation.
+Changing spatial backend or OIDN quality preserves the raw mean, variance, and
+sample count. The new filter publishes when its guides cover the same samples
+as the mean. Enabling a filter after accumulation has started can replay guide
+samples in bounded batches, including after the exact sample stop.
 
 The SDK reads the scene-linear mean with first-hit albedo and world-normal
 guides. The shader averages guides with the same accepted samples and camera
@@ -180,8 +183,8 @@ rays as radiance. Misses use zero guides. These are first-surface guides,
 including for glass. Filtering runs in the graphics command buffer before
 display grading. It preserves diagnostic pixels and bypasses shadow mattes.
 PNG shows the filtered display when ready. EXR still exports the raw float32
-mean. Capture telemetry records filtered sample count, image and network
-memory, and the last retired denoising GPU duration. Capture sequences can
+mean. Capture telemetry records the guide and displayed sample counts, image
+and network memory, and the last retired denoising GPU duration. Capture sequences can
 set `"referenceOidn": "off"`, `"fast"`, `"balanced"`, or `"high"`.
 
 The backend requires the pinned [vk_oidn 0.2.0 SDK](https://github.com/nvpro-samples/vk_oidn/releases/tag/v0.2.0).
@@ -198,8 +201,8 @@ The validation entry point is `tests/validation/reference_oidn_runtime_regressio
 ### Optional NVIDIA OptiX display denoising
 
 Select **OptiX guided HDR** in the reference display denoising controls or
-pass `--path-optix`. The reference renderer uses one display denoiser at a
-time. Set `--path-denoise-interval N` from 1 to 1,024 attempted samples (default
+pass `--path-optix`. Select one spatial filter for the reference viewport.
+Set `--path-denoise-interval N` from 1 to 1,024 attempted samples (default
 8). Use `"referenceOptix": true` or `false` in a capture-sequence event to
 switch OptiX on or off. The existing `referenceOidn` quality event selects
 Vulkan OIDN and accepts `"off"` for the raw display.
@@ -208,11 +211,12 @@ OptiX uses the same sample-aligned HDR radiance, albedo and normal guides as
 OIDN. Its spatial HDR model receives normalized camera-space normal X/Y.
 Vulkan stages the completed inputs and uploads the filtered result on the
 following frame. The viewport stays raw until the first filter result is
-ready. For an exact frame capture, allow one additional frame after the
-requested accumulation count. Camera, scene, extent and backend changes
-discard the old result and its pending guides. Reference EXR capture still
-exports the raw linear mean. The reference telemetry and capture metadata
-report the sample count of the displayed OptiX result.
+ready. For an exact frame capture with OptiX active from the start, allow one
+additional frame after the requested accumulation count. Camera, scene, and
+extent changes invalidate the filtered result. Switching spatial backends
+also retires any pending filter work and preserves the raw linear mean for
+reference EXR capture. The reference telemetry reports guide and displayed
+sample counts. Capture metadata records the displayed sample count.
 
 On Windows x64, install CUDA development headers and extract NVIDIA's
 OptiX 9.1.0 header archive. Configure with `-DENABLE_REFERENCE_OPTIX=ON` and
@@ -227,7 +231,7 @@ and reports a capability reason. [NVIDIA OptiX 9.1.0 release](https://github.com
 
 Run `tests/validation/reference_oidn_runtime_regression.py --backend optix`
 to exercise filter quality, raw EXR identity, glass, camera and object motion,
-resize, and backend switching. The `referencePath.optix` telemetry reports
+resize, and backend switching before and after the sample limit. The `referencePath.optix` telemetry reports
 OptiX GPU time for HDR intensity and filtering, and allocated bytes including
 guide images, host staging and CUDA working buffers. The GPU time excludes
 host staging and transfers.
@@ -257,9 +261,56 @@ No CUDA Toolkit runtime or SDK-provided OptiX DLL is redistributed. The SDK's
 Windows stubs additionally use the operating system's CfgMgr32 and registry
 APIs to find the driver.
 
-The optional [DLSS Ray Reconstruction backend](dlss-upscaling.md#reference-ray-reconstruction)
-is also available in the reference display controls and retains the raw
-full-resolution EXR.
+### Reference denoiser handoff
+
+In **Reference display denoising**, enable the handoff to start with DLSS Ray
+Reconstruction and transition to OptiX or Vulkan OIDN as full-resolution
+samples accumulate. The editor starts with a target of 64 samples per pixel.
+Choose the two backends and target in Scene Controls, or pass their settings
+together on the command line.
+
+```text
+--render-technique path-tracing --path-dlss quality --path-optix --path-denoiser-handoff 64
+```
+
+Use `--path-oidn high` in place of `--path-optix` for Vulkan OIDN. The target
+accepts 0 through 16,777,216 samples. Zero uses exclusive display selection.
+A positive target requires both a Ray Reconstruction preset and one spatial
+filter. The spatial result blends in once its guides and the mean cover the
+same samples. The blend weight increases with the displayed spatial sample
+count and reaches one at the target or the exact sample limit, whichever is
+lower. Ray Reconstruction dispatches stop while the spatial filter supplies
+the full display. A camera or scene reset starts the transition again.
+
+If one backend is unavailable, the available backend can supply the display
+as soon as it produces a result. The raw mean supplies the display until a
+requested backend produces a valid result, and remains the source of every
+scene-linear EXR. The `referencePath.denoiserHandoff` telemetry reports
+`targetSamples` and `spatialWeight`. [DLSS Ray Reconstruction](dlss-upscaling.md#reference-ray-reconstruction)
+
+A capture sequence can select both backends in one event by setting a
+positive `referenceDenoiserHandoffSamples` alongside `referenceDlss` and
+one of `referenceOptix` or `referenceOidn`.
+
+```json
+{
+  "schemaVersion": 1,
+  "frames": 12,
+  "events": [
+    {"frame": 2, "referenceDlss": "quality", "referenceOptix": true, "referenceDenoiserHandoffSamples": 64},
+    {"frame": 7, "referenceDenoiserHandoffSamples": 32},
+    {"frame": 10, "referenceDenoiserHandoffSamples": 0}
+  ]
+}
+```
+
+An event can update an existing pair's target by itself. During the handoff,
+an omitted backend keeps its selection, and turning off one backend leaves
+the other active. An event with only a zero target ends the handoff and keeps
+the spatial filter. A zero target with a single explicit backend returns to
+exclusive selection for that backend.
+
+### Accumulation and export
 
 The technique shares the forward graph's depth, picking, editor overlays and HDR
 presentation. Surface generations are requested independently of DDGI, including

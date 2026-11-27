@@ -14,7 +14,8 @@ class ReferenceDlssPass {
       VkDescriptorSetLayout scene, uint64_t guideBudget);
   ~ReferenceDlssPass();
 
-  void record(VkCommandBuffer, uint32_t image, const ReferencePathTraceInput&,
+  // True only when this command buffer publishes a fresh display image.
+  [[nodiscard]] bool record(VkCommandBuffer, uint32_t image, const ReferencePathTraceInput&,
       const ReferencePathTraceData&, VkDescriptorSet sceneSet);
   void commit(uint32_t image) noexcept;
   void invalidateHistory() noexcept;

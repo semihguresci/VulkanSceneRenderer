@@ -2404,6 +2404,10 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
         status += " | DLSS Ray Reconstruction ";
         status += subs_.referencePathTracePass->dlssStatus().message;
       }
+      if (beauty && subs_.referencePathTracePass->denoiserHandoffSamples()) {
+        const auto weight = subs_.referencePathTracePass->denoiserHandoffWeight();
+        status += " | Spatial blend " + std::to_string(static_cast<int>(100.0f * weight + 0.5f)) + "%";
+      }
     }
     subs_.guiManager->setReferencePathStatus(std::move(status));
   }
@@ -2962,19 +2966,35 @@ void RendererFrontend::applyTemporalCapture(
     if (subs_.guiManager) subs_.guiManager->setReferencePathDisplay(*event.referenceDisplay);
     else referencePathDisplayOverride_ = event.referenceDisplay;
   }
-  if (event.referenceOidn || event.referenceOptix || event.referenceDlss) {
-    if (subs_.guiManager) {
-      auto settings = subs_.guiManager->referenceOidn();
+  const bool selectsDenoiser = event.referenceOidn || event.referenceOptix || event.referenceDlss;
+  if (selectsDenoiser || event.referenceDenoiserHandoffSamples) {
+    auto settings = referenceDenoising();
+    const bool wasHandoff = settings.handoffSamples != 0;
+    settings.handoffSamples = event.referenceDenoiserHandoffSamples.value_or(settings.handoffSamples);
+    if (settings.handoffSamples != 0) {
+      if (event.referenceOidn || event.referenceOptix) {
+        settings.optix = event.referenceOptix.value_or(false);
+        settings.quality = event.referenceOidn.value_or(ReferenceOidnQuality::Off);
+      }
+      if (event.referenceDlss) settings.dlss = *event.referenceDlss;
+      if (settings.dlss == UpscaleMode::Native ||
+          (!settings.optix && settings.quality == ReferenceOidnQuality::Off)) {
+        if (event.referenceDenoiserHandoffSamples)
+          throw std::runtime_error("A positive referenceDenoiserHandoffSamples requires DLSS Ray Reconstruction and OptiX or Vulkan OIDN");
+        settings.handoffSamples = 0;
+      }
+    } else if (selectsDenoiser) {
+      if (event.referenceDlss || wasHandoff) settings.quality = ReferenceOidnQuality::Off;
       if (event.referenceOidn) settings.quality = *event.referenceOidn;
-      if (event.referenceDlss) settings.quality = ReferenceOidnQuality::Off;
       settings.optix = event.referenceOptix.value_or(false);
       settings.dlss = event.referenceDlss.value_or(UpscaleMode::Native);
+    } else if (wasHandoff) {
+      settings.dlss = UpscaleMode::Native;
+    }
+    if (subs_.guiManager) {
       subs_.guiManager->setReferenceOidn(settings);
     } else {
-      if (event.referenceOidn) referenceOidnQualityOverride_ = *event.referenceOidn;
-      if (event.referenceDlss) referenceOidnQualityOverride_ = ReferenceOidnQuality::Off;
-      referenceOptixOverride_ = event.referenceOptix.value_or(false);
-      referenceDlssOverride_ = event.referenceDlss.value_or(UpscaleMode::Native);
+      referenceDenoisingOverride_ = settings;
     }
   }
   if (event.comfyUi)
@@ -3838,7 +3858,8 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
   if (referencePathActive()) {
     const auto* path = subs_.referencePathTracePass.get();
     const auto lens = path ? path->effectiveLens() : std::nullopt;
-    const bool optixSelected = path ? path->optixSelected() : svc_.config.pathOidn.optix;
+    const auto settings = referenceDenoising();
+    const bool optixSelected = path ? path->optixSelected() : settings.optix;
     const auto denoiser = path ? path->oidnStatus() : ReferenceOidnStatus{};
     const auto oidn = optixSelected ? ReferenceOidnStatus{} : denoiser;
     const auto optix = optixSelected ? denoiser : ReferenceOidnStatus{};
@@ -3858,15 +3879,19 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
         {"adaptiveTargetMs", svc_.config.pathTargetMs},
         {"lastTimedLightingMs", referenceTimedLightingMs_ ? nlohmann::json(*referenceTimedLightingMs_) : nlohmann::json(nullptr)},
         {"fireflyClamp", path ? path->effectiveFireflyClamp() : 0.0f},
+        {"denoiserHandoff", {{"targetSamples", path ? path->denoiserHandoffSamples() : settings.handoffSamples},
+                             {"spatialWeight", path ? path->denoiserHandoffWeight() : 0.0f}}},
         {"oidn", {{"quality", referenceOidnQualityName(path ? path->oidnQuality() :
-                      optixSelected ? ReferenceOidnQuality::Off : svc_.config.pathOidn.quality)},
+                      optixSelected ? ReferenceOidnQuality::Off : settings.quality)},
                   {"status", oidn.message}, {"displayedSamples", oidn.displayedSamples},
+                  {"guideSamples", oidn.guideSamples},
                   {"allocatedBytes", oidn.allocatedBytes},
                   {"lastGpuMs", oidn.lastGpuMs ? nlohmann::json(*oidn.lastGpuMs) : nlohmann::json(nullptr)}}},
         {"optix", {{"requested", optixSelected}, {"status", optix.message},
                    {"displayedSamples", optix.displayedSamples}, {"allocatedBytes", optix.allocatedBytes},
+                   {"guideSamples", optix.guideSamples},
                    {"lastGpuMs", optix.lastGpuMs ? nlohmann::json(*optix.lastGpuMs) : nlohmann::json(nullptr)}}},
-        {"dlss", {{"quality", referenceDlssQualityName(path ? path->dlssQuality() : svc_.config.pathOidn.dlss)},
+        {"dlss", {{"quality", referenceDlssQualityName(path ? path->dlssQuality() : settings.dlss)},
                   {"status", rr.message}, {"active", rr.active},
                   {"renderExtent", {rr.renderExtent.width, rr.renderExtent.height}},
                   {"outputExtent", {rr.outputExtent.width, rr.outputExtent.height}},
@@ -7830,6 +7855,8 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
         {"fireflyClamp", referenceCapture->effectiveFireflyClamp()},
         {"oidnDisplaySamples", screenshot_.sceneLinear || optix ? 0u : denoiser.displayedSamples},
         {"optixDisplaySamples", screenshot_.sceneLinear || !optix ? 0u : denoiser.displayedSamples},
+        {"denoiserHandoff", {{"targetSamples", referenceCapture->denoiserHandoffSamples()},
+                             {"spatialWeight", screenshot_.sceneLinear ? 0.0f : referenceCapture->denoiserHandoffWeight()}}},
         {"ground", referenceGroundMetadata(ground)},
         {"maxBounces", svc_.config.pathMaxBounces},
         {"seed", svc_.config.pathSeed},
