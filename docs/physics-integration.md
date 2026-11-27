@@ -189,6 +189,45 @@ spaces are outside this export's scope. IFCX files without authored fill,
 void and space-boundary relationships can provide room nodes, but their
 composition hierarchy does not establish door links.
 
+### Reuse preprocessed BIM assets
+
+`BimRoboticsAssets` builds without Jolt. It prepares a semantic manifest,
+CPU render geometry, shared metric collision recipes and slope-filtered
+support triangles in one versioned cache entry. The source file is opened
+for reading. For IFCX, local composition is resolved before lookup so
+changes to any resolved layer or a newly appearing layer can change the key.
+
+```powershell
+cmake --build out/build/windows-release --config Release --target BimRoboticsAssets
+$input = 'tests/fixtures/robotics/room-connectivity.ifc'
+$cache = 'out/bim-asset-cache'
+& '.\out\build\windows-release\BimRoboticsAssets.exe' $input $cache rooms `
+    --render-glb 'rooms-preview.glb'
+```
+
+The JSON summary records the cache key and status, producer revision, source
+layer SHA-256 digests and source-unit provenance. Entries are keyed by the
+actual source bytes, relevant IFCX paths, producer revision, source namespace,
+unit override, cooker limits and slope. A changed model or option gets a new
+key even when its modification time and size are unchanged. Invalid entries
+are rebuilt from source. Render vertex blocks are compressed losslessly. If a
+record exceeds the supported 256 MiB payload, preprocessing still returns the
+assets and reports that the entry could not be cached.
+
+To reuse the same cache in `BimRoboticsCollision`, add `assetCacheDirectory`
+to its query JSON. A relative path is resolved next to that file. Use the same
+source namespace, scale, cooker limits and slope for a hit. Door states, agent
+clearance and passage checks are evaluated again against the static assets.
+The persisted shape data is portable and Jolt cooks its runtime shapes from
+it when starting a collision world.
+
+The optional GLB is an untextured preview in renderer +Y-up metres, with
+authored geometry, occurrence IDs and GUIDs where available. Use direct editor
+import for image textures and advanced materials. IFCX files with unknown units
+retain their render geometry and semantics. Supply a verified
+`--metres-per-renderer-unit` value to produce metric collision assets and a
+metre-scale preview.
+
 ## Current scope
 
 The scene panel attaches oriented box colliders derived from each selected
