@@ -111,6 +111,52 @@ rotation and scale edits continue to use the inspector's TRS controls.
 Colliders are explicit: attach static bodies to the floors or other scenery
 that should support moving elements.
 
+## BIM collision and walkability queries
+
+With `ENABLE_PHYSICS=ON`, build `BimRoboticsCollision` to create a separate
+collision layer from an IFC or IFCX source. It uses the same building-local
+REP-103 metre frame as the [semantic export](ifc-import.md#export-a-semantic-scene-for-robotics).
+Wall, slab, stair, ramp and supported structural colliders use the imported
+triangles, including cuts in walls. Reflected placements correct winding.
+Translated instances can share cooked mesh shapes. Movable furnishings use
+box proxies. Room and opening records describe the model's semantics.
+
+Door colliders are closed by default. List stable semantic door IDs in
+`openDoorIds` to remove those door shapes from the collision world while
+retaining the wall and aperture geometry. This state represents a fully
+cleared door. A door product that combines its leaf and frame is treated as
+one shape. Separately modeled fixed frames can remain as static colliders.
+Unsupported or omitted geometry appears in the report diagnostics.
+
+```powershell
+cmake --build out/build/windows-release --config Release --target BimRoboticsCollision
+$tool = '.\out\build\windows-release\BimRoboticsCollision.exe'
+$fixture = 'tests/fixtures/robotics/doorway.ifc'
+$queries = 'tests/fixtures/robotics/doorway-queries.json'
+& $tool $fixture doorway-collision.json doorway $queries
+& $tool $fixture doorway-overlay.glb doorway $queries
+.\out\build\windows-release\VulkanSceneRenderer.exe --model doorway-overlay.glb --bim-model $fixture
+```
+
+The report records the query settings, collider identity, ray hits, reached
+floor elevations and capsule blockers. `raycasts` use finite `from` and `to`
+points. For `walks`, these points indicate the ground under the capsule
+axis. The query tests a straight horizontal route with bounded height changes,
+slope and floor support checks, and actual capsule sweeps for radius and
+headroom. `agent.sampleSpacing` is an upper bound: support probes use at most
+`min(sampleSpacing, radius)` metres between samples, including step lookahead.
+The `maxSamples` budget applies to this effective spacing. A coarse configured
+spacing cannot skip a floor gap wider than the robot's footprint.
+It performs no route planning. If IFCX omits metric units, set
+`metersPerRendererUnit` in the query file using the verified source scale.
+
+The GLB is an inspectable collision overlay in the original renderer
+coordinates. Blue marks static meshes, red marks closed doors, orange marks
+dynamic box proxies, and green marks candidate support triangles within the
+slope limit. The layer can be opened on its own or combined with the source BIM
+model. Green indicates potential floor support. Capsule clearance is tested in
+each walk query. [Jolt mesh shape rules](https://jrouwe.github.io/JoltPhysicsDocs/5.6.0/class_mesh_shape_settings.html)
+
 ## Current scope
 
 The scene panel attaches oriented box colliders derived from each selected
@@ -167,8 +213,8 @@ bodies for its individual fragments. Existing imported units and scales apply.
 Noninvertible or projective fragment matrices are rejected before attachment or
 replacement, so an unsupported rendered pose cannot leave a live physics body
 that fails its first GPU publication.
-The integration does not provide a collision character controller, BIM
-navigation, vehicles, soft bodies or saved physics scene assets. Joint families
+The interactive physics panel provides rigid bodies and joints. The separate
+BIM collision tool supports walkability and clearance queries. Joint families
 beyond fixed, hinge and slider are not exposed.
 
 Runtime element poses update GPU instance matrices, normal transforms, culling

@@ -3209,6 +3209,21 @@ target_sources(bim_robotics_scene_tests PRIVATE
     ${TESTS_DIR}/robotics/bim_robotics_units_tests.cpp
 )
 
+add_custom_test(bim_collision_geometry_tests
+    ${TESTS_DIR}/robotics/bim_collision_geometry_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics VulkanSceneRenderer_geometry
+)
+target_sources(bim_collision_geometry_tests PRIVATE ${TESTS_DIR}/robotics/bim_walkability_tests.cpp)
+
+if(ENABLE_PHYSICS)
+    add_custom_test(bim_collision_world_tests
+        ${TESTS_DIR}/robotics/bim_collision_world_tests.cpp "" ${TEST_RESULTS_DIR}
+        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
+    )
+    target_compile_definitions(bim_collision_world_tests PRIVATE
+        CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+endif()
+
 if(WIN32 AND Python3_Interpreter_FOUND)
     add_library(swapchain_capture_clip_layer MODULE EXCLUDE_FROM_ALL
         "${TEST_VALIDATION_DIR}/fixtures/swapchain_capture_clip_layer.cpp"
