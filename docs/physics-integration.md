@@ -266,6 +266,44 @@ The trajectory tests compare every tick at 30, 60 and 144 Hz and after a
 stalled frame with one Jolt worker. The reproducibility contract covers the
 same build, seed, scene and tick-addressed inputs.
 
+### Command wheel actuators and compare motion
+
+Give each command either `linear` and `angular` in base-frame m/s and rad/s,
+or `wheelRates` with signed `left` and `right` shaft rates in rad/s. Both
+forms use the configured `maxWheelRadiansPerSecond` and scale the two
+setpoints together at the speed limit.
+
+```powershell
+& '.\out\build\windows-release\BimRoboticsSim.exe' `
+    tests/fixtures/robotics/lidar-corner.ifc actuation.json lidar-corner `
+    tests/fixtures/robotics/drive-actuation-motion.json
+```
+
+The optional `actuators` object sets shaft slew via
+`maxWheelAccelerationRadiansPerSecondSquared`. A zero value leaves the slew
+unlimited. Each wheel's `slipRatio` sets the fraction of shaft travel lost to
+slip, from zero for ideal rolling to one for full slip. The optional
+`tractionCoefficient` bounds the ground-track acceleration to the coefficient
+times 9.81 m/s². This is a longitudinal kinematic approximation with a fixed
+coefficient for the scenario. A collision can stop the shafts and ground
+tracks within a tick even when slew is enabled. The next tick starts the
+actuators from rest after that stop.
+
+The motion report pairs `base` with the map-frame `commanded` pose. The
+commanded pose integrates the speed-limited setpoints from spawn before slew,
+slip, and collision checks. Its elevation stays at the spawn elevation. A
+`null` value means the reference path exceeded the numeric range. The report
+also gives target, accepted shaft, and accepted ground-track rates. The IMU
+turn rate follows the accepted ground-track motion.
+
+Set `wheelTravelVariancePerMeter` with independent `left` and `right`
+variances in m² per metre of shaft travel. Encoder noise contributes its own
+travel variance while each wheel moves. `odometryCovariance` starts at zero
+and propagates through the planar arc with these process variances. Every row
+uses a row-major 3×3 matrix in the odometry frame with axes `(x, y, yaw)`
+and units `(m, m, rad)`. Systematic slip appears in the comparison between
+encoder odometry and ground truth.
+
 ### Scan BIM colliders with planar or multi-ring LiDAR
 
 Add a `lidar` object to a `BimRoboticsSim` scenario to sample the live Jolt

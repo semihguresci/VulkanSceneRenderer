@@ -22,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace {
@@ -39,7 +40,7 @@ constexpr uint64_t maxLidarReturns = 1'000'000;
 
 struct Command {
   uint64_t tick;
-  robotics::DriveTwist twist;
+  std::variant<robotics::DriveTwist, robotics::DriveWheels> target;
 };
 
 struct ScenarioLidar {
@@ -59,6 +60,7 @@ struct Scenario {
   std::filesystem::path cacheDirectory;
   std::optional<ScenarioLidar> lidar;
   std::optional<robotics::DriveSensorModel> driveSensors;
+  bool reportMotionModel{};
 };
 
 void checkKeys(const Json& object, std::initializer_list<std::string_view> keys) {
@@ -212,12 +214,40 @@ robotics::ImuAxisError readImuError(const Json& value) {
   return error;
 }
 
-robotics::DriveWheels readWheelError(const Json& value) {
+robotics::DriveWheels readWheelPair(const Json& value, std::string_view field) {
   checkKeys(value, {"left", "right"});
-  robotics::DriveWheels error;
-  readReal(value, "left", error.left);
-  readReal(value, "right", error.right);
-  return error;
+  robotics::DriveWheels pair;
+  if (value.contains("left")) pair.left = real(value.at("left"), std::string(field) + ".left");
+  if (value.contains("right")) pair.right = real(value.at("right"), std::string(field) + ".right");
+  return pair;
+}
+
+void readActuators(const Json& value, robotics::DifferentialDriveSimulationOptions& options) {
+  checkKeys(value, {"maxWheelAccelerationRadiansPerSecondSquared", "tractionCoefficient", "slipRatio"});
+  auto& actuators = options.actuators;
+  readReal(value, "maxWheelAccelerationRadiansPerSecondSquared", actuators.maxWheelAccelerationRadiansPerSecondSquared);
+  if (value.contains("tractionCoefficient"))
+    actuators.tractionCoefficient = real(value.at("tractionCoefficient"), "tractionCoefficient");
+  if (value.contains("slipRatio")) actuators.slipRatio = readWheelPair(value.at("slipRatio"), "slipRatio");
+}
+
+Command readCommand(const Json& value, uint64_t ticks) {
+  checkKeys(value, {"tick", "linear", "angular", "wheelRates"});
+  const auto tick = natural(value.at("tick"), "command tick", maxTicks);
+  if (tick >= ticks) throw std::invalid_argument("A command is scheduled after the last executable tick");
+  const bool wheel = value.contains("wheelRates");
+  const bool linear = value.contains("linear"), angular = value.contains("angular");
+  if ((wheel && (linear || angular)) || (!wheel && (!linear || !angular)))
+    throw std::invalid_argument("A command must specify both linear and angular, or only wheelRates");
+  if (wheel) {
+    const auto& rates = value.at("wheelRates");
+    checkKeys(rates, {"left", "right"});
+    if (!rates.contains("left") || !rates.contains("right"))
+      throw std::invalid_argument("wheelRates must contain both left and right wheel speeds in rad/s");
+    return {tick, robotics::DriveWheels{real(rates.at("left"), "wheelRates.left"),
+                                        real(rates.at("right"), "wheelRates.right")}};
+  }
+  return {tick, robotics::DriveTwist{real(value.at("linear"), "linear"), real(value.at("angular"), "angular")}};
 }
 
 robotics::EncoderObservationSettings readEncoderSettings(const Json& value) {
@@ -226,9 +256,10 @@ robotics::EncoderObservationSettings readEncoderSettings(const Json& value) {
   if (value.contains("countsPerRevolution"))
     settings.countsPerRevolution = static_cast<uint32_t>(natural(value.at("countsPerRevolution"),
         "countsPerRevolution", std::numeric_limits<uint32_t>::max()));
-  if (value.contains("biasRadians")) settings.biasRadians = readWheelError(value.at("biasRadians"));
-  if (value.contains("noiseStdDevRadians")) settings.noiseStdDevRadians = readWheelError(value.at("noiseStdDevRadians"));
-  if (value.contains("driftRadiansPerSecond")) settings.driftRadiansPerSecond = readWheelError(value.at("driftRadiansPerSecond"));
+  if (value.contains("biasRadians")) settings.biasRadians = readWheelPair(value.at("biasRadians"), "biasRadians");
+  if (value.contains("noiseStdDevRadians")) settings.noiseStdDevRadians = readWheelPair(value.at("noiseStdDevRadians"), "noiseStdDevRadians");
+  if (value.contains("driftRadiansPerSecond"))
+    settings.driftRadiansPerSecond = readWheelPair(value.at("driftRadiansPerSecond"), "driftRadiansPerSecond");
   return settings;
 }
 
@@ -265,7 +296,7 @@ Scenario readScenario(const std::filesystem::path& path) {
   checkKeys(value, {"version", "initialFeet", "initialYaw", "ticks", "durationNanoseconds", "frameNanoseconds",
                     "ticksPerSecond", "maxTicksPerAdvance", "commands", "openDoorIds", "assetCacheDirectory",
                     "metersPerRendererUnit", "seed", "encoderNoiseRadians", "robotId", "drive", "capsule", "lidar",
-                    "driveSensors"});
+                    "driveSensors", "actuators", "wheelTravelVariancePerMeter"});
   if (natural(value.at("version"), "version", 1) != 1)
     throw std::invalid_argument("Unsupported simulation scenario version");
 
@@ -276,6 +307,15 @@ Scenario readScenario(const std::filesystem::path& path) {
   if (value.contains("lidar"))
     scenario.lidar = readLidar(value.at("lidar"), scenario.options.ticksPerSecond, scenario.ticks);
   if (value.contains("drive")) readDrive(value.at("drive"), scenario.options.drive);
+  if (value.contains("actuators")) {
+    readActuators(value.at("actuators"), scenario.options);
+    scenario.reportMotionModel = true;
+  }
+  if (value.contains("wheelTravelVariancePerMeter")) {
+    scenario.options.wheelTravelVariancePerMeter =
+        readWheelPair(value.at("wheelTravelVariancePerMeter"), "wheelTravelVariancePerMeter");
+    scenario.reportMotionModel = true;
+  }
   if (value.contains("driveSensors")) scenario.driveSensors = readDriveSensors(value.at("driveSensors"), scenario);
   if (value.contains("capsule")) readCapsule(value.at("capsule"), scenario.options.capsule);
   if (value.contains("seed"))
@@ -294,13 +334,14 @@ Scenario readScenario(const std::filesystem::path& path) {
   if (const auto commands = value.find("commands"); commands != value.end()) {
     if (!commands->is_array() || commands->size() > maxTicks)
       throw std::invalid_argument("commands must be an array within the scenario command limit");
-    for (const auto& command : *commands) {
-      checkKeys(command, {"tick", "linear", "angular"});
-      const auto tick = natural(command.at("tick"), "command tick", maxTicks);
-      if (tick >= scenario.ticks) throw std::invalid_argument("A command is scheduled after the last executable tick");
-      scenario.commands.push_back({tick, {real(command.at("linear"), "linear"), real(command.at("angular"), "angular")}});
+    for (const auto& input : *commands) {
+      auto command = readCommand(input, scenario.ticks);
+      scenario.reportMotionModel = scenario.reportMotionModel || std::holds_alternative<robotics::DriveWheels>(command.target);
+      scenario.commands.push_back(std::move(command));
     }
   }
+  if (scenario.reportMotionModel)
+    robotics::validateDriveActuators(scenario.options.actuators, scenario.options.wheelTravelVariancePerMeter);
   return scenario;
 }
 
@@ -328,11 +369,28 @@ Json wheels(const robotics::DriveWheels& value) {
   return {{"left", value.left}, {"right", value.right}};
 }
 
-Json sample(const robotics::DifferentialDriveState& state) {
-  return {{"tick", state.tick}, {"seconds", state.seconds}, {"base", pose(state.base)},
-          {"odometry", pose(state.odometry)}, {"wheelAngles", wheels(state.wheelAngles)},
-          {"wheelRates", wheels(state.wheelRates)}, {"encoderAngles", wheels(state.encoderAngles)},
-          {"obstruction", obstructionName(state.obstruction)}, {"blockingEntityId", state.blockingEntityId}};
+Json sample(const robotics::DifferentialDriveState& state, bool motionModel) {
+  Json result{{"tick", state.tick}, {"seconds", state.seconds}, {"base", pose(state.base)},
+              {"odometry", pose(state.odometry)}, {"wheelAngles", wheels(state.wheelAngles)},
+              {"wheelRates", wheels(state.wheelRates)}, {"encoderAngles", wheels(state.encoderAngles)},
+              {"obstruction", obstructionName(state.obstruction)}, {"blockingEntityId", state.blockingEntityId}};
+  if (motionModel) {
+    result["commanded"] = state.commanded ? pose(*state.commanded) : Json(nullptr);
+    result["targetWheelRates"] = wheels(state.targetWheelRates);
+    result["groundWheelRates"] = wheels(state.groundWheelRates);
+    result["odometryCovariance"] = state.odometryCovariance;
+  }
+  return result;
+}
+
+Json motionModelReport(const robotics::DifferentialDriveSimulationOptions& options) {
+  const auto& actuators = options.actuators;
+  return {{"actuators", {{"maxWheelAccelerationRadiansPerSecondSquared", actuators.maxWheelAccelerationRadiansPerSecondSquared},
+                          {"tractionCoefficient", actuators.tractionCoefficient ? Json(*actuators.tractionCoefficient) : Json(nullptr)},
+                          {"slipRatio", wheels(actuators.slipRatio)}}},
+          {"wheelTravelVariancePerMeter", wheels(options.wheelTravelVariancePerMeter)}, {"wheelRateUnit", "rad/s"},
+          {"odometryCovariance", {{"frame", "odometry"}, {"layout", "row-major"},
+                                  {"axes", Json::array({"x", "y", "yaw"})}, {"units", Json::array({"m", "m", "rad"})}}}};
 }
 
 Json matrix(const glm::dmat4& value) {
@@ -416,7 +474,10 @@ Json driveSensorReport(const robotics::DriveSensorModel& sensors, Json samples) 
 
 void play(robotics::DifferentialDriveSimulation& simulation, const Scenario& scenario,
           const robotics::DifferentialDriveSimulation::TickObserver& observe) {
-  for (const auto& command : scenario.commands) simulation.queueCommand(command.tick, command.twist);
+  for (const auto& command : scenario.commands) {
+    if (const auto* twist = std::get_if<robotics::DriveTwist>(&command.target)) simulation.queueCommand(command.tick, *twist);
+    else simulation.queueWheelCommand(command.tick, std::get<robotics::DriveWheels>(command.target));
+  }
   if (observe) observe(simulation.state());
   if (!scenario.frameNanos) {
     for (uint64_t tick = 0; tick < scenario.ticks; ++tick) simulation.step(observe);
@@ -491,7 +552,7 @@ int run(int count, Char** args) {
         if (auto& sensors = scenario.driveSensors) {
           const auto reading = sensors->observe({.tick = state.tick, .base = state.base,
               .encoderRadians = state.encoderAngles,
-              .yawRateRadiansPerSecond = robotics::differentialYawRate(scenario.options.drive, state.wheelRates)});
+              .yawRateRadiansPerSecond = robotics::differentialYawRate(scenario.options.drive, state.groundWheelRates)});
           if (reading) driveSamples.push_back(driveSensorSample(*reading));
         }
       };
@@ -503,7 +564,7 @@ int run(int count, Char** args) {
       throw std::logic_error("Simulation did not produce every scheduled drive sensor sample");
 
     Json history = Json::array();
-    for (const auto& entry : simulation.history()) history.push_back(sample(entry));
+    for (const auto& entry : simulation.history()) history.push_back(sample(entry, scenario.reportMotionModel));
     if (history.size() != scenario.ticks + 1)
       throw std::logic_error("Simulation history does not contain every requested tick");
     const auto transforms = simulation.frames();
@@ -511,7 +572,7 @@ int run(int count, Char** args) {
                 {"sourceNamespace", sourceNamespace}, {"robotId", scenario.options.robotId},
                 {"coordinateConvention", "ROS REP-103"}, {"matrixLayout", "column-major"},
                 {"seed", scenario.options.seed}, {"ticksPerSecond", scenario.options.ticksPerSecond},
-                {"state", sample(simulation.state())}, {"history", std::move(history)},
+                {"state", sample(simulation.state(), scenario.reportMotionModel)}, {"history", std::move(history)},
                 {"transforms", {{"mapFromOdometry", matrix(transforms.mapFromOdometry)},
                                 {"odometryFromBase", matrix(transforms.odometryFromBase)},
                                 {"baseFromLeftWheel", matrix(transforms.baseFromLeftWheel)},
@@ -519,6 +580,7 @@ int run(int count, Char** args) {
     if (!assetCache.is_null()) report["assetCache"] = std::move(assetCache);
     if (scenario.lidar) report["lidar"] = lidarReport(*scenario.lidar, std::move(scans));
     if (scenario.driveSensors) report["driveSensors"] = driveSensorReport(*scenario.driveSensors, std::move(driveSamples));
+    if (scenario.reportMotionModel) report["motionModel"] = motionModelReport(scenario.options);
     container::util::writeFileAtomically(output, report.dump(2) + '\n');
     std::cout << "Simulated " << simulation.clock().tick() << " fixed ticks\n";
     return 0;

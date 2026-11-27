@@ -42,6 +42,19 @@ double encoderJitter(std::mt19937_64& generator, double deviation) {
   return (2 * uniform - 1) * std::sqrt(3.0) * deviation;
 }
 
+DriveWheels distanceForRates(DriveWheels rates, double seconds, double radius) {
+  return {rates.left * seconds * radius, rates.right * seconds * radius};
+}
+
+double wheelDistanceVariance(double shaftRadians, double radius, double variancePerMeter,
+                             double jitterRadians) {
+  if (shaftRadians == 0) return 0;
+  const auto jitterMeters = jitterRadians * radius;
+  const auto travelVariance = variancePerMeter == 0 ? 0 :
+      std::abs(shaftRadians * radius) * variancePerMeter;
+  return travelVariance + jitterMeters * jitterMeters;
+}
+
 double targetHeight(glm::dvec3 from, glm::dvec3 to,
                     const BimWalkabilityQueries& queries, const BimWalkabilitySettings& capsule) {
   const double margin = std::max(2 * capsule.skin, 1e-6);
@@ -114,8 +127,9 @@ struct DifferentialDriveSimulation::Impl {
   DrivePose groundedSpawn;
   DifferentialDriveSimulationOptions options;
   SimClock time;
-  std::map<uint64_t, DriveTwist> commands;
-  DriveTwist held;
+  std::map<uint64_t, DriveWheels> commands;
+  DriveWheels held;
+  DifferentialDriveRates actuation;
   std::mt19937_64 random;
   DifferentialDriveState current;
   std::deque<DifferentialDriveState> samples;
@@ -126,6 +140,7 @@ struct DifferentialDriveSimulation::Impl {
       : world(collision), authoredSpawn(spawn), options(std::move(settings)),
         time(options.ticksPerSecond, options.maxTicksPerAdvance), random(options.seed) {
     validateDifferentialDrive(options.drive);
+    validateDriveActuators(options.actuators, options.wheelTravelVariancePerMeter);
     if (!options.maxHistorySamples || !std::isfinite(options.encoderNoiseRadians) ||
         options.encoderNoiseRadians < 0 || options.encoderNoiseRadians > 1 || options.robotId.empty())
       throw std::invalid_argument("Invalid drive history, encoder noise or robot identity");
@@ -144,10 +159,11 @@ struct DifferentialDriveSimulation::Impl {
       throw std::invalid_argument("Robot spawn needs clear capsule space on supported ground");
     groundedSpawn.position = support.reachedFeet;
     groundNormalZ = support.samples.back().normal.z;
-    current = {.base = groundedSpawn};
+    current = {.base = groundedSpawn, .commanded = groundedSpawn};
     samples.clear();
     samples.push_back(current);
     held = {};
+    actuation = {};
     random.seed(options.seed);
 
     const auto radius = shapeLength(options.capsule.radius);
@@ -163,15 +179,22 @@ struct DifferentialDriveSimulation::Impl {
          .rotation = pose.rotation});
   }
 
+  void queueRates(uint64_t tick, DriveWheels rates) {
+    if (tick < time.tick() || tick == std::numeric_limits<uint64_t>::max())
+      throw std::invalid_argument("Drive command tick is outside the remaining simulation");
+    if (!commands.emplace(tick, rates).second)
+      throw std::invalid_argument("A drive command is already scheduled at this tick");
+  }
+
   void execute(uint64_t tick, double seconds) {
     if (needsReset || !world.world_.contains(world.robotBody_))
       throw std::runtime_error("Reset the drive simulation before advancing");
-    auto command = held;
+    auto target = held;
     if (const auto at = commands.find(tick); at != commands.end())
-      command = at->second;
-    const auto rates = differentialWheelRates(options.drive, command);
-    const DriveWheels requested{rates.left * seconds * options.drive.wheelRadius,
-                                rates.right * seconds * options.drive.wheelRadius};
+      target = at->second;
+    const auto& drive = options.drive;
+    const auto rates = applyDriveActuators(drive, options.actuators, actuation, target, seconds);
+    const auto requested = distanceForRates(rates.ground, seconds, drive.wheelRadius);
     const auto queries = world.walkabilityQueries(world.robotBody_);
     auto movement = checkMotion(current.base, groundNormalZ, requested, options, queries);
     DifferentialDriveState next = current;
@@ -180,7 +203,19 @@ struct DifferentialDriveSimulation::Impl {
     next.base = movement.pose;
     next.obstruction = movement.obstruction;
     next.blockingEntityId = std::move(movement.blocker);
-    next.wheelRates = {rates.left * movement.acceptedFraction, rates.right * movement.acceptedFraction};
+    next.targetWheelRates = target;
+    next.wheelRates = {rates.shaft.left * movement.acceptedFraction, rates.shaft.right * movement.acceptedFraction};
+    next.groundWheelRates = {rates.ground.left * movement.acceptedFraction, rates.ground.right * movement.acceptedFraction};
+    if (next.commanded) {
+      try {
+        next.commanded = integrateWheelTravel(*next.commanded, drive.trackWidth,
+                                             distanceForRates(target, seconds, drive.wheelRadius));
+      } catch (const std::invalid_argument&) {
+        // A nominal path outside the numeric range must not stop a safe
+        // collision-limited simulation.
+        next.commanded.reset();
+      }
+    }
 
     const DriveWheels angle{next.wheelRates.left * seconds, next.wheelRates.right * seconds};
     next.wheelAngles = {current.wheelAngles.left + angle.left, current.wheelAngles.right + angle.right};
@@ -192,8 +227,17 @@ struct DifferentialDriveSimulation::Impl {
     if (!std::isfinite(next.wheelAngles.left) || !std::isfinite(next.wheelAngles.right) ||
         !std::isfinite(next.encoderAngles.left) || !std::isfinite(next.encoderAngles.right))
       throw std::overflow_error("Robot wheel history exceeded its numeric range");
-    next.odometry = integrateWheelTravel(current.odometry, options.drive.trackWidth,
-        {encoder.left * options.drive.wheelRadius, encoder.right * options.drive.wheelRadius});
+    const DriveWheels measured{encoder.left * drive.wheelRadius, encoder.right * drive.wheelRadius};
+    next.odometry = integrateWheelTravel(current.odometry, drive.trackWidth, measured);
+    const auto variance = options.wheelTravelVariancePerMeter;
+    if ((angle.left != 0 || angle.right != 0) &&
+        (variance.left > 0 || variance.right > 0 || options.encoderNoiseRadians > 0)) {
+      const DriveWheels distanceVariance{
+          wheelDistanceVariance(angle.left, drive.wheelRadius, variance.left, options.encoderNoiseRadians),
+          wheelDistanceVariance(angle.right, drive.wheelRadius, variance.right, options.encoderNoiseRadians)};
+      next.odometryCovariance = propagatePlanarOdometryCovariance(current.odometryCovariance,
+          current.odometry, drive.trackWidth, measured, distanceVariance);
+    }
     // Wheel odometry has planar coordinates and no direct elevation sensor.
     const auto pose = capsulePose(next.base, options.capsule, movement.normalZ);
     samples.push_back(next);
@@ -209,7 +253,10 @@ struct DifferentialDriveSimulation::Impl {
     if (samples.size() > options.maxHistorySamples)
       samples.pop_front();
     random = engine;
-    held = command;
+    held = target;
+    // Contact is an emergency stop. The achieved travel is reported for
+    // this tick, and the actuator starts the next tick at rest.
+    actuation = movement.obstruction == BimWalkabilityFailure::None ? rates : DifferentialDriveRates{};
     groundNormalZ = movement.normalZ;
     current = std::move(next);
   }
@@ -227,11 +274,11 @@ DifferentialDriveSimulation::~DifferentialDriveSimulation() {
 }
 
 void DifferentialDriveSimulation::queueCommand(uint64_t tick, DriveTwist command) {
-  if (tick < impl_->time.tick() || tick == std::numeric_limits<uint64_t>::max())
-    throw std::invalid_argument("Drive command tick is outside the remaining simulation");
-  (void)differentialWheelRates(impl_->options.drive, command);
-  if (!impl_->commands.emplace(tick, command).second)
-    throw std::invalid_argument("A drive command is already scheduled at this tick");
+  impl_->queueRates(tick, differentialWheelRates(impl_->options.drive, command));
+}
+
+void DifferentialDriveSimulation::queueWheelCommand(uint64_t tick, DriveWheels rates) {
+  impl_->queueRates(tick, limitDifferentialWheelRates(impl_->options.drive, rates));
 }
 
 void DifferentialDriveSimulation::clearCommands() noexcept {
