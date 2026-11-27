@@ -165,6 +165,11 @@ struct SpaceWithoutDrawableGeometry {
   bool ambiguousStorey{};
 };
 
+struct SemanticBounds {
+  glm::dvec3 minimum{0.0};
+  glm::dvec3 maximum{0.0};
+};
+
 struct SemanticProduct {
   std::string sourceId;
   std::string guid;
@@ -175,6 +180,8 @@ struct SemanticProduct {
   bool hasPlacement{false};
   // Composed sources identify occurrences independently of GUID uniqueness.
   bool isComposedOccurrence{false};
+  // Source geometry bounds in the renderer world without a drawable reference.
+  std::optional<SemanticBounds> rendererBounds;
 };
 
 enum class SemanticRelationshipKind : uint8_t {
@@ -184,6 +191,7 @@ enum class SemanticRelationshipKind : uint8_t {
   Voids,
   Fills,
   Child,
+  SpaceBoundary,
 };
 
 struct SemanticRelationship {

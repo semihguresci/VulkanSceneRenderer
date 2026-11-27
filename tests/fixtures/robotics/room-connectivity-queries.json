@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "openDoorIds": ["bim/5:rooms/guid/22:0000000000000000000044"],
+  "agent": { "radius": 0.25, "height": 1.6 },
+  "roomGraph": {}
+}

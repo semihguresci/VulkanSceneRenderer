@@ -3220,6 +3220,7 @@ if(ENABLE_PHYSICS)
         ${TESTS_DIR}/robotics/bim_collision_world_tests.cpp "" ${TEST_RESULTS_DIR}
         VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
     )
+    target_sources(bim_collision_world_tests PRIVATE ${TESTS_DIR}/robotics/bim_room_graph_tests.cpp)
     target_compile_definitions(bim_collision_world_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 endif()

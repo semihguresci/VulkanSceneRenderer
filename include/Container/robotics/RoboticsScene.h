@@ -35,6 +35,7 @@ enum class SemanticRelationshipKind : uint8_t {
   Voids,
   Fills,
   Child,
+  SpaceBoundary,
 };
 
 enum class SemanticGeometryKind : uint8_t { Mesh, Points, Curves };
@@ -53,6 +54,13 @@ struct SemanticRepresentation {
   std::optional<glm::dmat4> roboticsWorldFromLocal;
 };
 
+struct SemanticBounds {
+  glm::dvec3 minimum{0.0};
+  glm::dvec3 maximum{0.0};
+
+  bool operator==(const SemanticBounds&) const = default;
+};
+
 struct SemanticEntity {
   std::string id;
   std::string sourceId;
@@ -66,6 +74,8 @@ struct SemanticEntity {
   std::optional<glm::dmat4> roboticsWorldFromLocal;
   std::vector<SemanticRepresentation> representations;
   std::vector<std::string> storeyIds;
+  // World-space geometry bounds in metres, independent of drawables.
+  std::optional<SemanticBounds> roboticsBounds;
 };
 
 struct SemanticRelationship {

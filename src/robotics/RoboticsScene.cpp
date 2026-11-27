@@ -2,6 +2,7 @@
 
 #include "Container/geometry/DotBimLoader.h"
 
+#include <glm/common.hpp>
 #include <glm/geometric.hpp>
 #include <glm/matrix.hpp>
 
@@ -77,6 +78,7 @@ SemanticRelationshipKind relationshipKind(bim::SemanticRelationshipKind kind) {
   case bim::SemanticRelationshipKind::Voids: return SemanticRelationshipKind::Voids;
   case bim::SemanticRelationshipKind::Fills: return SemanticRelationshipKind::Fills;
   case bim::SemanticRelationshipKind::Child: return SemanticRelationshipKind::Child;
+  case bim::SemanticRelationshipKind::SpaceBoundary: return SemanticRelationshipKind::SpaceBoundary;
   }
   throw std::invalid_argument("Unknown BIM semantic relationship kind");
 }
@@ -140,6 +142,18 @@ void assignMetricTransform(std::optional<glm::dmat4>& destination,
   validateTransform(*destination, "converted metric placement");
 }
 
+std::optional<SemanticBounds> metricBounds(const bim::SemanticBounds& bounds, const RoboticsFrame& frame) {
+  if (!frame.roboticsFromRenderer) return std::nullopt;
+  // The renderer-to-robotics basis is a signed axis permutation and uniform scale.
+  const glm::dvec3 first(*frame.roboticsFromRenderer * glm::dvec4(bounds.minimum, 1.0));
+  const glm::dvec3 second(*frame.roboticsFromRenderer * glm::dvec4(bounds.maximum, 1.0));
+  for (int axis = 0; axis < 3; ++axis)
+    if (bounds.minimum[axis] > bounds.maximum[axis] ||
+        !std::isfinite(first[axis]) || !std::isfinite(second[axis]))
+      return std::nullopt;
+  return SemanticBounds{glm::min(first, second), glm::max(first, second)};
+}
+
 } // namespace
 
 glm::dmat4 rendererToRosTransform(double metersPerRendererUnit) {
@@ -190,6 +204,7 @@ std::string_view semanticRelationshipKindName(SemanticRelationshipKind kind) {
   case SemanticRelationshipKind::Voids: return "voids";
   case SemanticRelationshipKind::Fills: return "fills";
   case SemanticRelationshipKind::Child: return "child";
+  case SemanticRelationshipKind::SpaceBoundary: return "space-boundary";
   }
   throw std::invalid_argument("Unknown robotics semantic relationship kind");
 }
@@ -246,11 +261,17 @@ RoboticsScene buildRoboticsScene(const bim::Model& model, const RoboticsSceneOpt
       entity.rendererWorldFromLocal = product.transform;
       assignMetricTransform(entity.roboticsWorldFromLocal, product.transform, scene.frame);
     }
+    if (product.rendererBounds) {
+      entity.roboticsBounds = metricBounds(*product.rendererBounds, scene.frame);
+      if (scene.frame.roboticsFromRenderer && !entity.roboticsBounds)
+        diagnostic("invalid-product-bounds", entity.sourceId, "The imported geometry bounds cannot be converted to the metric robotics frame.");
+    }
     if (const auto found = products.find(key); found != products.end()) {
       const auto& original = found->second;
       if (product.sourceId.empty() || original.guid != entity.guid ||
           normalizedClass(original.ifcClass) != normalizedClass(entity.ifcClass) || original.name != entity.name ||
           composedOccurrences.contains(key) != product.isComposedOccurrence ||
+          original.roboticsBounds != entity.roboticsBounds ||
           bool(original.rendererWorldFromLocal) != bool(entity.rendererWorldFromLocal) ||
           (original.rendererWorldFromLocal && !sameTransform(*original.rendererWorldFromLocal, *entity.rendererWorldFromLocal)))
         throw std::invalid_argument("Conflicting robotics semantic source occurrence " + product.sourceId);

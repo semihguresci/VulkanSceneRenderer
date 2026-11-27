@@ -2,6 +2,7 @@
 #include "Container/geometry/IfcxLoader.h"
 #include "Container/robotics/BimCollisionOverlay.h"
 #include "Container/robotics/BimCollisionWorld.h"
+#include "Container/robotics/BimRoomGraph.h"
 #include "Container/robotics/RoboticsScene.h"
 #include "Container/utility/AtomicFile.h"
 
@@ -27,6 +28,7 @@ constexpr std::string_view usage =
 struct Config {
   std::optional<double> metersPerRendererUnit;
   std::vector<std::string> openDoorIds;
+  std::optional<std::vector<std::string>> lockedGraphDoorIds;
   robotics::BimWalkabilitySettings agent;
   robotics::BimCollisionCookOptions cook;
   Json raycasts = Json::array();
@@ -56,13 +58,18 @@ Config readConfig(const std::filesystem::path& path) {
   if (!stream)
     throw std::runtime_error("Could not open the BIM collision query file");
   const auto values = Json::parse(stream);
-  checkKeys(values, {"version", "metersPerRendererUnit", "openDoorIds", "agent", "cook", "raycasts", "walks"});
+  checkKeys(values, {"version", "metersPerRendererUnit", "openDoorIds", "agent", "cook", "raycasts", "walks", "roomGraph"});
   if (values.at("version") != 1)
     throw std::invalid_argument("Unsupported BIM collision query file version");
   Config config;
   if (values.contains("metersPerRendererUnit"))
     config.metersPerRendererUnit = values.at("metersPerRendererUnit").get<double>();
   config.openDoorIds = values.value("openDoorIds", config.openDoorIds);
+  if (values.contains("roomGraph")) {
+    const auto& graph = values.at("roomGraph");
+    checkKeys(graph, {"lockedDoorIds"});
+    config.lockedGraphDoorIds = graph.value("lockedDoorIds", std::vector<std::string>{});
+  }
   config.raycasts = values.value("raycasts", config.raycasts);
   config.walks = values.value("walks", config.walks);
   if (!config.raycasts.is_array() || !config.walks.is_array())
@@ -135,6 +142,41 @@ std::string_view kindName(robotics::BimColliderKind kind) {
   case DynamicBox: return "dynamic-box";
   }
   throw std::logic_error("Unknown BIM collider kind");
+}
+
+std::string_view portalState(robotics::BimPortalState state) {
+  using enum robotics::BimPortalState;
+  switch (state) {
+  case Closed: return "closed";
+  case Locked: return "locked";
+  case Open: return "open";
+  }
+  throw std::logic_error("Unknown BIM portal state");
+}
+
+Json crossing(const std::optional<robotics::BimPortalCrossing>& attempt) {
+  if (!attempt)
+    return {{"traversable", false}, {"witness", nullptr}};
+  return {{"traversable", attempt->result == robotics::BimWalkabilityFailure::None},
+          {"witness", {{"fromFeet", xyz(attempt->fromFeet)}, {"toFeet", xyz(attempt->toFeet)},
+                       {"result", walkFailure(attempt->result)}}}};
+}
+
+Json roomGraphReport(const robotics::BimRoomGraph& graph) {
+  Json result{{"schema", "container.bim-room-graph"}, {"version", 1},
+              {"rooms", Json::array()}, {"portals", Json::array()}, {"diagnostics", Json::array()}};
+  for (const auto& room : graph.rooms)
+    result["rooms"].push_back({{"id", room.id}, {"guid", room.guid}, {"name", room.name},
+                               {"storeyIds", room.storeyIds}, {"hasVolume", room.hasVolume}});
+  for (const auto& portal : graph.portals)
+    result["portals"].push_back({{"doorId", portal.doorId}, {"doorGuid", portal.doorGuid},
+        {"openingId", portal.openingId}, {"hostId", portal.hostId}, {"roomIds", portal.roomIds},
+        {"adjacencyEvidence", portal.evidence}, {"doorState", portalState(portal.state)},
+        {"forward", crossing(portal.forward)}, {"reverse", crossing(portal.reverse)}});
+  for (const auto& diagnostic : graph.diagnostics)
+    result["diagnostics"].push_back({{"code", diagnostic.code}, {"sourceId", diagnostic.sourceId},
+                                     {"message", diagnostic.message}});
+  return result;
 }
 
 Json report(const robotics::BimCollisionWorld& world, const robotics::RoboticsScene& scene,
@@ -215,8 +257,13 @@ int run(int count, Char** args) {
                                             config.openDoorIds);
     if (output.extension() == ".glb")
       robotics::writeBimCollisionOverlay(output, world, scene.frame, config.agent.maxSlopeDegrees);
-    else
-      container::util::writeFileAtomically(output, report(world, scene, config).dump(2) + '\n');
+    else {
+      auto json = report(world, scene, config);
+      if (config.lockedGraphDoorIds)
+        json["roomGraph"] = roomGraphReport(
+            robotics::buildBimRoomGraph(model, scene, world, *config.lockedGraphDoorIds, config.agent));
+      container::util::writeFileAtomically(output, json.dump(2) + '\n');
+    }
     std::cout << "Prepared " << world.activeColliderCount() << " active BIM colliders\n";
     return 0;
   } catch (const std::exception& error) {

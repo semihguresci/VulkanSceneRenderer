@@ -157,6 +157,38 @@ slope limit. The layer can be opened on its own or combined with the source BIM
 model. Green indicates potential floor support. Capsule clearance is tested in
 each walk query. [Jolt mesh shape rules](https://jrouwe.github.io/JoltPhysicsDocs/5.6.0/class_mesh_shape_settings.html)
 
+### Export a BIM room connectivity graph
+
+Add `"roomGraph": {}` to a collision query file to include a versioned room
+graph in the JSON report. The graph retains each space's stable semantic ID,
+authored IFC GUID and storey, including rooms without any confirmed doorway.
+Each portal connects two rooms on the same storey. It records the door,
+opening and host IDs and the evidence for the architectural link.
+
+```powershell
+$tool = '.\out\build\windows-release\BimRoboticsCollision.exe'
+& $tool tests/fixtures/robotics/room-connectivity.ifc room-graph.json rooms `
+    tests/fixtures/robotics/room-connectivity-queries.json
+```
+
+The sample opens the ground-floor door and leaves an upper room disconnected.
+Omit `openDoorIds` to keep the ground-floor door closed. To label it locked,
+place its ID in `roomGraph.lockedDoorIds` and omit it from `openDoorIds`.
+Closed and locked doors retain architectural adjacency. For an open door,
+`forward` follows the order of `roomIds` and `reverse` runs in the opposite
+direction. Each successful crossing has a pair of supported foot positions
+in metres verified with the configured capsule. Step and drop limits can make
+one direction unavailable. This check covers the local doorway crossing.
+
+The graph uses physical IFC space boundaries related to the door or opening
+when present. It can also probe opposite space volumes at an authored opening
+when the source supplies the door fill, opening host and room storeys. Missing
+or ambiguous metadata produces diagnostics. The graph currently models doorway
+links within a storey. Vertical circulation and geometry without authored
+spaces are outside this export's scope. IFCX files without authored fill,
+void and space-boundary relationships can provide room nodes, but their
+composition hierarchy does not establish door links.
+
 ## Current scope
 
 The scene panel attaches oriented box colliders derived from each selected

@@ -11,7 +11,8 @@ set_target_properties(BimRoboticsScene PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CM
 container_stage_runtime_dlls(BimRoboticsScene)
 
 if(ENABLE_PHYSICS)
-    add_library(VulkanSceneRenderer_robotics_physics BimCollisionWorld.cpp BimCollisionOverlay.cpp)
+    add_library(VulkanSceneRenderer_robotics_physics
+        BimCollisionWorld.cpp BimCollisionOverlay.cpp BimRoomGraph.cpp BimRoomGeometry.cpp)
     target_link_libraries(VulkanSceneRenderer_robotics_physics PUBLIC
         VulkanSceneRenderer_robotics VulkanSceneRenderer_physics PRIVATE VulkanSceneRenderer_geometry)
 

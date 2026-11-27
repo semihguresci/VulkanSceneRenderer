@@ -1962,6 +1962,13 @@ bool appendPointCloud(Model &model, const PointCloud &cloud, uint32_t meshId,
   return true;
 }
 
+using SpaceBoundaryReference = std::pair<std::string_view, std::string_view>;
+
+struct BoundaryEndpoint {
+  size_t productIndex{};
+  size_t occurrenceCount{};
+};
+
 struct SceneBuilder {
   Model model{};
   const NodeGraph &graph;
@@ -1973,7 +1980,56 @@ struct SceneBuilder {
   glm::mat4 importTransform{1.0f};
   std::stop_token stop;
   std::unordered_map<std::string, std::string> semanticOwners{};
+  std::unordered_map<std::string_view, BoundaryEndpoint> boundaryEndpoints{};
 };
+
+std::string_view spaceBoundaryReference(const Json &boundary, const char *role) {
+  const auto endpoint = boundary.find(role);
+  if (endpoint == boundary.end() || !endpoint->is_object()) return {};
+  const auto ref = endpoint->find("ref");
+  if (ref == endpoint->end() || !ref->is_string()) return {};
+  return ref->get_ref<const std::string &>();
+}
+
+std::vector<SpaceBoundaryReference> indexSpaceBoundaryReferences(SceneBuilder &builder) {
+  std::vector<SpaceBoundaryReference> references;
+  for (const auto &[path, node] : builder.graph.nodes) {
+    container::util::checkModelImportCancellation(builder.stop);
+    // IFC5 alpha authors the boundary as an object with explicit endpoint refs.
+    const auto boundary = node.attributes.find("bsi::ifc::spaceBoundary");
+    if (boundary == node.attributes.end() || !boundary->is_object()) continue;
+    const auto space = spaceBoundaryReference(*boundary, "relatingspace");
+    const auto element = spaceBoundaryReference(*boundary, "relatedelement");
+    if (space.empty() || element.empty() || space == element) continue;
+    references.emplace_back(space, element);
+    builder.boundaryEndpoints.try_emplace(space);
+    builder.boundaryEndpoints.try_emplace(element);
+  }
+  std::ranges::sort(references);
+  references.erase(std::unique(references.begin(), references.end()), references.end());
+  return references;
+}
+
+void appendSpaceBoundaryRelationships(
+    SceneBuilder &builder, const std::vector<SpaceBoundaryReference> &references) {
+  for (const auto &[space, element] : references) {
+    container::util::checkModelImportCancellation(builder.stop);
+    const auto &spaceEndpoint = builder.boundaryEndpoints.at(space);
+    const auto &elementEndpoint = builder.boundaryEndpoints.at(element);
+    // Multiple occurrences of a source path make the authored endpoint ambiguous.
+    if (spaceEndpoint.occurrenceCount != 1 || elementEndpoint.occurrenceCount != 1)
+      continue;
+    const auto &spaceProduct = builder.model.semanticProducts[spaceEndpoint.productIndex];
+    const auto &elementProduct = builder.model.semanticProducts[elementEndpoint.productIndex];
+    if (!equalsAsciiInsensitive(spaceProduct.type, "IfcSpace") ||
+        !startsWithAsciiInsensitive(elementProduct.type, "Ifc") ||
+        equalsAsciiInsensitive(elementProduct.type, "IfcSpace") ||
+        equalsAsciiInsensitive(elementProduct.type, "IfcVirtualElement"))
+      continue;
+    builder.model.semanticRelationships.push_back({spaceProduct.sourceId, elementProduct.sourceId,
+        dotbim::SemanticRelationshipKind::SpaceBoundary});
+  }
+}
 
 // Keep semantic placements in double precision before the render path rounds
 // them to float. Missing xforms are identity; malformed authored xforms are
@@ -2049,6 +2105,11 @@ void traverseSemantics(SceneBuilder &builder, const std::string &path,
          "displayName", "display_name", "name", "Name"}).value_or("");
     product.transform = glm::dmat4(builder.importTransform) * world;
     product.hasPlacement = hasPlacement && finiteTransform(product.transform);
+    if (const auto endpoint = builder.boundaryEndpoints.find(path);
+        endpoint != builder.boundaryEndpoints.end()) {
+      endpoint->second.productIndex = builder.model.semanticProducts.size();
+      ++endpoint->second.occurrenceCount;
+    }
     builder.model.semanticProducts.push_back(std::move(product));
     if (!parentProduct.empty()) {
       // IFCX children express composition, not an authored IFC relationship
@@ -2620,11 +2681,13 @@ Model loadFromRoot(const Json &root, float importScale,
   }
   std::ranges::sort(roots);
 
+  const auto spaceBoundaries = indexSpaceBoundaryReferences(builder);
   std::unordered_set<std::string> visiting;
   for (const std::string &rootPath : roots) {
     traverseSemantics(builder, rootPath, rootPath, glm::dmat4(1.0), true, {},
                       false, visiting);
   }
+  appendSpaceBoundaryRelationships(builder, spaceBoundaries);
   for (const std::string &rootPath : roots) {
     traverseNode(builder, rootPath, rootPath, glm::mat4(1.0f), {}, {}, {},
                  false, visiting);
