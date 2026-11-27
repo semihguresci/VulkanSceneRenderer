@@ -1972,7 +1972,103 @@ struct SceneBuilder {
   uint32_t nextMeshId{0};
   glm::mat4 importTransform{1.0f};
   std::stop_token stop;
+  std::unordered_map<std::string, std::string> semanticOwners{};
 };
+
+// Keep semantic placements in double precision before the render path rounds
+// them to float. Missing xforms are identity; malformed authored xforms are
+// unavailable facts rather than silently manufactured identity placements.
+std::optional<glm::dmat4> semanticUsdTransform(const Json &attributes) {
+  if (!attributes.contains("usd::xformop"))
+    return glm::dmat4(1.0);
+  const Json &xform = attributes.at("usd::xformop");
+  if (!xform.is_object() || !xform.contains("transform") ||
+      !xform.at("transform").is_array() || xform.at("transform").size() != 4u)
+    return std::nullopt;
+  const Json &columns = xform.at("transform");
+  glm::dmat4 result(1.0);
+  for (glm::length_t column = 0; column < 4; ++column) {
+    if (!columns[column].is_array() || columns[column].size() != 4u)
+      return std::nullopt;
+    for (glm::length_t row = 0; row < 4; ++row) {
+      const auto value = numberAsDouble(columns[column][row]);
+      if (!value)
+        return std::nullopt;
+      result[column][row] = *value;
+    }
+  }
+  return result;
+}
+
+bool finiteTransform(const glm::dmat4 &transform) {
+  for (glm::length_t column = 0; column < 4; ++column)
+    for (glm::length_t row = 0; row < 4; ++row)
+      if (!std::isfinite(transform[column][row]))
+        return false;
+  return true;
+}
+
+void traverseSemantics(SceneBuilder &builder, const std::string &path,
+                       const std::string &logicalPath,
+                       const glm::dmat4 &parentTransform, bool parentHasPlacement,
+                       const std::string &parentProduct, bool inheritedDefinition,
+                       std::unordered_set<std::string> &visiting) {
+  container::util::checkModelImportCancellation(builder.stop);
+  const auto found = builder.graph.nodes.find(path);
+  if (found == builder.graph.nodes.end() || !visiting.insert(path).second)
+    return;
+  const Node &node = found->second;
+  const auto local = semanticUsdTransform(node.attributes);
+  const glm::dmat4 world = parentTransform * local.value_or(glm::dmat4(1.0));
+  const bool hasPlacement = parentHasPlacement && local && finiteTransform(world);
+  std::string owner = parentProduct;
+  // A referenced definition contributes its attributes/geometry to its
+  // occurrence. It is not another product occurrence at the same placement.
+  const std::string type = inheritedDefinition
+      ? std::string{} : inheritedType({path}, builder.graph.nodes);
+  const std::string guid = inheritedDefinition ? std::string{} :
+      inheritedStringAttribute({path}, builder.graph.nodes,
+          {"bsi::ifc::globalId", "bsi::ifc::GlobalId", "ifc::globalId",
+           "globalId", "GlobalId", "guid"}).value_or("");
+  const bool hasDrawable = node.attributes.contains("usd::usdgeom::mesh") ||
+      node.attributes.contains("usd::usdgeom::basiscurves") ||
+      node.attributes.contains("points::array") ||
+      node.attributes.contains("points::base64") ||
+      node.attributes.contains("pcd::base64");
+  // Standalone point/curve/mesh occurrences may have no IFC class at all.
+  // Their authoritative empty GUID prevents the legacy render GUID fallback
+  // from being mistaken for an authored identity by semantic consumers.
+  if (!type.empty() || !guid.empty() || (parentProduct.empty() && hasDrawable)) {
+    dotbim::SemanticProduct product{};
+    product.sourceId = logicalPath;
+    product.guid = guid;
+    product.type = type;
+    product.isComposedOccurrence = true;
+    product.name = inheritedStringAttribute({path}, builder.graph.nodes,
+        {"bsi::ifc::name", "bsi::ifc::prop::Name", "bsi::ifc::prop::name",
+         "displayName", "display_name", "name", "Name"}).value_or("");
+    product.transform = glm::dmat4(builder.importTransform) * world;
+    product.hasPlacement = hasPlacement && finiteTransform(product.transform);
+    builder.model.semanticProducts.push_back(std::move(product));
+    if (!parentProduct.empty()) {
+      // IFCX children express composition, not an authored IFC relationship
+      // class. In particular they do not establish door connectivity.
+      builder.model.semanticRelationships.push_back({parentProduct, logicalPath,
+          dotbim::SemanticRelationshipKind::Child});
+    }
+    owner = logicalPath;
+  }
+  if (!owner.empty())
+    builder.semanticOwners.emplace(logicalPath, owner);
+  // Semantics survive hidden or non-drawable geometry, unlike render rows.
+  for (const auto &child : node.children)
+    traverseSemantics(builder, child, logicalPath + "/" + child, world,
+                      hasPlacement, owner, false, visiting);
+  for (const auto &inherited : node.inherits)
+    traverseSemantics(builder, inherited, logicalPath + "=>" + inherited, world,
+                      hasPlacement, owner, true, visiting);
+  visiting.erase(path);
+}
 
 bool appendGeometryIfNeeded(SceneBuilder &builder, const std::string &key,
                             const Json &geometry, std::string_view context) {
@@ -2138,6 +2234,9 @@ void appendElement(SceneBuilder &builder, const std::string &geometryKey,
       inheritedStringAttribute(chain, builder.graph.nodes,
                                {"sourceId", "source_id"})
           .value_or(logicalPath);
+  if (const auto owner = builder.semanticOwners.find(logicalPath);
+      owner != builder.semanticOwners.end())
+    element.semanticSourceId = owner->second;
   element.properties = inheritedProperties(chain, builder.graph.nodes, builder.stop);
   builder.model.elements.push_back(std::move(element));
 }
@@ -2522,6 +2621,10 @@ Model loadFromRoot(const Json &root, float importScale,
   std::ranges::sort(roots);
 
   std::unordered_set<std::string> visiting;
+  for (const std::string &rootPath : roots) {
+    traverseSemantics(builder, rootPath, rootPath, glm::dmat4(1.0), true, {},
+                      false, visiting);
+  }
   for (const std::string &rootPath : roots) {
     traverseNode(builder, rootPath, rootPath, glm::mat4(1.0f), {}, {}, {},
                  false, visiting);

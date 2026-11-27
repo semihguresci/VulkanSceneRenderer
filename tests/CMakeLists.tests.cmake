@@ -3200,6 +3200,15 @@ target_sources(renderer_mcp_measurement_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/core/RendererMcpMeasurement.cpp
 )
 
+add_custom_test(bim_robotics_scene_tests
+    ${TESTS_DIR}/robotics/bim_robotics_scene_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics VulkanSceneRenderer_geometry
+)
+target_sources(bim_robotics_scene_tests PRIVATE
+    ${TESTS_DIR}/robotics/bim_robotics_sample_tests.cpp
+    ${TESTS_DIR}/robotics/bim_robotics_units_tests.cpp
+)
+
 if(WIN32 AND Python3_Interpreter_FOUND)
     add_library(swapchain_capture_clip_layer MODULE EXCLUDE_FROM_ALL
         "${TEST_VALIDATION_DIR}/fixtures/swapchain_capture_clip_layer.cpp"

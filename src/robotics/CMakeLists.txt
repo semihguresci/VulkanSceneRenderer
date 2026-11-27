@@ -1,0 +1,10 @@
+add_library(VulkanSceneRenderer_robotics RoboticsScene.cpp RoboticsSceneManifest.cpp)
+target_compile_features(VulkanSceneRenderer_robotics PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_robotics PUBLIC ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(VulkanSceneRenderer_robotics PUBLIC Dep_Math
+    PRIVATE VulkanSceneRenderer_geometry nlohmann_json::nlohmann_json)
+
+add_executable(BimRoboticsScene ${CMAKE_SOURCE_DIR}/tools/bim_robotics_scene.cpp)
+target_link_libraries(BimRoboticsScene PRIVATE VulkanSceneRenderer_robotics VulkanSceneRenderer_geometry)
+set_target_properties(BimRoboticsScene PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+container_stage_runtime_dlls(BimRoboticsScene)
