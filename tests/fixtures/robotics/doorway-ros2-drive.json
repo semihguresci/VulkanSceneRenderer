@@ -1,0 +1,7 @@
+{
+  "version": 1,
+  "initialFeet": [-1.55, 0.05, 1.2],
+  "ticksPerSecond": 60,
+  "ticks": 5400,
+  "openDoorIds": ["bim/7:doorway/guid/9:door-guid"]
+}

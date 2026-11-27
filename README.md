@@ -56,6 +56,9 @@ USDZ fallback. See [build options](docs/build-and-test.md) and
 The headless `BimRoboticsUsd` tool exports BIM geometry, semantic IDs and
 collision proxies as a metre-based OpenUSD stage. [Robotics OpenUSD export](docs/robotics-openusd.md)
 
+The optional ROS 2 adapter connects the headless BIM simulator to Nav2 and
+publishes calibrated RGB-D, odometry, and simulated time. [ROS 2 Jazzy bridge](docs/bim-ros2-bridge.md)
+
 Use **Scene Controls → Go to**, **Selection**, or **Material** to find a tool.
 The [current editor controls guide](docs/current-editor-controls.md) describes
 the available workflows. Rendering uses dynamic rendering and synchronization2,

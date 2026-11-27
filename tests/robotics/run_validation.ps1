@@ -41,6 +41,7 @@ $tests = @(
     'drive_sensor_tests',
     'raycast_lidar_tests',
     'sensor_camera_tests',
+    'collision_sensor_camera_tests',
     'sensor_camera_dataset_tests',
     'dataset_simulation_report_tests',
     'robotics_dataset_reader_tests',
@@ -73,9 +74,10 @@ if ($physics) {
         'bim_fixed_step_replay',
         'bim_fleet_missions',
         'bim_navigation_protocol',
+        'bim_drive_stream',
         'bim_nav2_map_export'
     )
-    $scriptTests += @('bim_fixed_step_replay', 'bim_fleet_missions', 'bim_navigation_protocol', 'bim_nav2_map_export')
+    $scriptTests += @('bim_fixed_step_replay', 'bim_fleet_missions', 'bim_navigation_protocol', 'bim_drive_stream', 'bim_nav2_map_export')
     $tools += @('BimRoboticsCollision', 'BimRoboticsSim', 'BimRoboticsFleet', 'BimRoboticsNavigation', 'BimRoboticsNavMap')
 }
 if ($urdf) {
