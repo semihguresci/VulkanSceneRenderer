@@ -3215,6 +3215,13 @@ add_custom_test(bim_collision_geometry_tests
 )
 target_sources(bim_collision_geometry_tests PRIVATE ${TESTS_DIR}/robotics/bim_walkability_tests.cpp)
 
+add_custom_test(bim_asset_cache_tests
+    ${TESTS_DIR}/robotics/bim_asset_cache_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics VulkanSceneRenderer_geometry VulkanSceneRenderer_fingerprint
+)
+target_compile_definitions(bim_asset_cache_tests PRIVATE
+    CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+
 if(ENABLE_PHYSICS)
     add_custom_test(bim_collision_world_tests
         ${TESTS_DIR}/robotics/bim_collision_world_tests.cpp "" ${TEST_RESULTS_DIR}

@@ -2495,14 +2495,20 @@ void appendRootData(Json &data, Json &&root, std::stop_token stop) {
   }
 }
 
-Json readJsonFile(const std::filesystem::path &path, std::stop_token stop) {
+Json readJsonFile(const std::filesystem::path &path, std::stop_token stop,
+                  std::vector<SourceLayer> *layers) {
   container::util::checkModelImportCancellation(stop);
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     throw std::runtime_error("failed to open IFCX file: " +
                              container::util::pathToUtf8(path));
   }
-  return bim_import::parseJson(bim_import::readText(file, stop), stop);
+  const auto text = bim_import::readText(file, stop);
+  if (layers) {
+    const auto *bytes = reinterpret_cast<const unsigned char *>(text.data());
+    layers->push_back({path, util::FingerprintContent({bytes, text.size()}, stop)});
+  }
+  return bim_import::parseJson(text, stop);
 }
 
 bool startsWith(std::string_view value, std::string_view prefix) {
@@ -2607,7 +2613,8 @@ heuristicBaseLayerPath(const std::filesystem::path &path) {
 
 Json composeRootFromFile(const std::filesystem::path &path,
                          std::unordered_set<std::string> &visiting,
-                         std::stop_token stop) {
+                         std::stop_token stop,
+                         std::vector<SourceLayer> *layers = nullptr) {
   container::util::checkModelImportCancellation(stop);
   const std::filesystem::path normalized = path.lexically_normal();
   const std::string key = container::util::pathToUtf8(normalized);
@@ -2615,18 +2622,18 @@ Json composeRootFromFile(const std::filesystem::path &path,
     return Json{{"data", Json::array()}};
   }
 
-  Json root = readJsonFile(normalized, stop);
+  Json root = readJsonFile(normalized, stop, layers);
   Json composed{{"data", Json::array()}};
   const std::vector<std::filesystem::path> imports =
       localImportPaths(root, normalized.parent_path());
   for (const std::filesystem::path &importPath : imports) {
-    appendRootData(composed["data"], composeRootFromFile(importPath, visiting, stop), stop);
+    appendRootData(composed["data"], composeRootFromFile(importPath, visiting, stop, layers), stop);
   }
   if (imports.empty() &&
       (!hasRenderableData(root, stop) || hasUnresolvedGraphReferences(root, stop))) {
     if (auto baseLayer = heuristicBaseLayerPath(normalized)) {
       appendRootData(composed["data"],
-                     composeRootFromFile(*baseLayer, visiting, stop), stop);
+                     composeRootFromFile(*baseLayer, visiting, stop, layers), stop);
     }
   }
   normalizeRootMaterialTexturePaths(root, normalized.parent_path(), stop);
@@ -2697,6 +2704,27 @@ Model loadFromRoot(const Json &root, float importScale,
 }
 
 } // namespace
+
+struct SourceSnapshotData {
+  Json root;
+  std::filesystem::path directory;
+};
+
+SourceSnapshot PrepareSource(const std::filesystem::path &path, std::stop_token stop) {
+  const auto absolute = std::filesystem::absolute(path).lexically_normal();
+  SourceSnapshot snapshot;
+  std::unordered_set<std::string> visiting;
+  auto root = composeRootFromFile(absolute, visiting, stop, &snapshot.layers);
+  snapshot.data = std::make_shared<SourceSnapshotData>(
+      SourceSnapshotData{std::move(root), absolute.parent_path()});
+  return snapshot;
+}
+
+Model LoadFromSnapshot(const SourceSnapshot &source, float importScale, std::stop_token stop) {
+  if (!source.data)
+    throw std::invalid_argument("Missing prepared IFCX source");
+  return loadFromRoot(source.data->root, importScale, &source.data->directory, stop);
+}
 
 Model LoadFromJson(std::string_view jsonText, float importScale,
                    std::stop_token stop) {

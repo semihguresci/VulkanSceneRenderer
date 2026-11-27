@@ -1,10 +1,12 @@
 #include "Container/geometry/IfcTessellatedLoader.h"
 #include "Container/geometry/IfcxLoader.h"
+#include "Container/robotics/BimAssetCache.h"
 #include "Container/robotics/BimCollisionOverlay.h"
 #include "Container/robotics/BimCollisionWorld.h"
 #include "Container/robotics/BimRoomGraph.h"
 #include "Container/robotics/RoboticsScene.h"
 #include "Container/utility/AtomicFile.h"
+#include "Container/utility/Platform.h"
 
 #include <nlohmann/json.hpp>
 
@@ -29,6 +31,7 @@ struct Config {
   std::optional<double> metersPerRendererUnit;
   std::vector<std::string> openDoorIds;
   std::optional<std::vector<std::string>> lockedGraphDoorIds;
+  std::filesystem::path assetCacheDirectory;
   robotics::BimWalkabilitySettings agent;
   robotics::BimCollisionCookOptions cook;
   Json raycasts = Json::array();
@@ -58,13 +61,21 @@ Config readConfig(const std::filesystem::path& path) {
   if (!stream)
     throw std::runtime_error("Could not open the BIM collision query file");
   const auto values = Json::parse(stream);
-  checkKeys(values, {"version", "metersPerRendererUnit", "openDoorIds", "agent", "cook", "raycasts", "walks", "roomGraph"});
+  checkKeys(values, {"version", "metersPerRendererUnit", "openDoorIds", "agent", "cook",
+                     "raycasts", "walks", "roomGraph", "assetCacheDirectory"});
   if (values.at("version") != 1)
     throw std::invalid_argument("Unsupported BIM collision query file version");
   Config config;
   if (values.contains("metersPerRendererUnit"))
     config.metersPerRendererUnit = values.at("metersPerRendererUnit").get<double>();
   config.openDoorIds = values.value("openDoorIds", config.openDoorIds);
+  if (values.contains("assetCacheDirectory")) {
+    config.assetCacheDirectory = container::util::pathFromUtf8(values.at("assetCacheDirectory").get<std::string>());
+    if (config.assetCacheDirectory.empty())
+      throw std::invalid_argument("assetCacheDirectory must name a directory");
+    if (config.assetCacheDirectory.is_relative())
+      config.assetCacheDirectory = path.parent_path() / config.assetCacheDirectory;
+  }
   if (values.contains("roomGraph")) {
     const auto& graph = values.at("roomGraph");
     checkKeys(graph, {"lockedDoorIds"});
@@ -180,7 +191,7 @@ Json roomGraphReport(const robotics::BimRoomGraph& graph) {
 }
 
 Json report(const robotics::BimCollisionWorld& world, const robotics::RoboticsScene& scene,
-            const Config& config) {
+            const Config& config, size_t walkableTriangles) {
   const auto queries = world.walkabilityQueries();
   Json result{{"schema", "container.bim-collision-report"}, {"version", 1},
               {"coordinates", "ROS REP-103, metres"}, {"sourceNamespace", scene.sourceNamespace},
@@ -192,7 +203,7 @@ Json report(const robotics::BimCollisionWorld& world, const robotics::RoboticsSc
                          {"skin", config.agent.skin}, {"elevationTolerance", config.agent.elevationTolerance},
                          {"maxSamples", config.agent.maxSamples}}},
               {"activeColliders", world.activeColliderCount()}, {"cachedStaticMeshes", world.cachedStaticMeshCount()},
-              {"walkableTriangles", robotics::extractWalkableSurfaces(world.geometry(), config.agent.maxSlopeDegrees).size()},
+              {"walkableTriangles", walkableTriangles},
               {"colliders", Json::array()}, {"diagnostics", Json::array()},
               {"raycasts", Json::array()}, {"walks", Json::array()}};
   for (const auto& row : world.geometry().colliders) {
@@ -250,18 +261,34 @@ int run(int count, Char** args) {
     const robotics::RoboticsSceneOptions options{
         .sourceNamespace = std::string(key.begin(), key.end()),
         .metersPerRendererUnit = config.metersPerRendererUnit};
-    const auto model = extension == ".ifc" ? container::geometry::ifc::LoadFromFile(input)
-                                             : container::geometry::ifcx::LoadFromFile(input);
-    const auto scene = robotics::buildRoboticsScene(model, options);
-    const robotics::BimCollisionWorld world(robotics::cookBimCollisionGeometry(model, scene, config.cook),
-                                            config.openDoorIds);
+    robotics::BimPreprocessedAssets assets;
+    if (config.assetCacheDirectory.empty()) {
+      assets.renderModel = extension == ".ifc" ? container::geometry::ifc::LoadFromFile(input)
+                                               : container::geometry::ifcx::LoadFromFile(input);
+      assets.scene = robotics::buildRoboticsScene(assets.renderModel, options);
+      assets.collision = robotics::cookBimCollisionGeometry(assets.renderModel, assets.scene, config.cook);
+    } else {
+      assets = robotics::loadBimPreprocessedAssets(input, config.assetCacheDirectory,
+          {.scene = options, .cook = config.cook, .maxSlopeDegrees = config.agent.maxSlopeDegrees});
+      if (!assets.cacheDiagnostic.empty())
+        std::cerr << assets.cacheDiagnostic << '\n';
+    }
+    const auto& scene = assets.scene;
+    const robotics::BimCollisionWorld world(std::move(assets.collision), config.openDoorIds);
     if (output.extension() == ".glb")
       robotics::writeBimCollisionOverlay(output, world, scene.frame, config.agent.maxSlopeDegrees);
     else {
-      auto json = report(world, scene, config);
+      const auto walkableTriangles = config.assetCacheDirectory.empty()
+          ? robotics::extractWalkableSurfaces(world.geometry(), config.agent.maxSlopeDegrees).size()
+          : assets.walkableSurfaces.size();
+      auto json = report(world, scene, config, walkableTriangles);
+      if (!config.assetCacheDirectory.empty())
+        json["assetCache"] = {{"key", assets.cacheKey},
+            {"status", container::util::derivedAssetCacheStatusName(assets.cacheStatus)},
+            {"producerRevision", assets.producerRevision}};
       if (config.lockedGraphDoorIds)
         json["roomGraph"] = roomGraphReport(
-            robotics::buildBimRoomGraph(model, scene, world, *config.lockedGraphDoorIds, config.agent));
+            robotics::buildBimRoomGraph(assets.renderModel, scene, world, *config.lockedGraphDoorIds, config.agent));
       container::util::writeFileAtomically(output, json.dump(2) + '\n');
     }
     std::cout << "Prepared " << world.activeColliderCount() << " active BIM colliders\n";
