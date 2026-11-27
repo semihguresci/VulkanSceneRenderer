@@ -146,6 +146,81 @@ TEST(SensorCamera, StaticSpecUsesOneFrameAndPreservesMountAndSensorErrorFields) 
   EXPECT_EQ(sensorCameraProjection(playback.settings), sensorCameraProjection(defaultPlayback.settings));
 }
 
+TEST(SensorCamera, ParsesSeededIndoorEffectsWithoutChangingCameraGeometryOrTiming) {
+  const auto clean = parseSensorCameraPlayback(spec());
+  const auto augmented = parseSensorCameraPlayback(spec(R"(,
+    "depthNoise":{"stdDevMeters":0.1,"seed":37,"dropoutProbability":0.25},
+    "rgbNoise":{"stdDevLinear":0.03,"seed":18446744073709551615},
+    "appearance":{"seed":47,"lightingVariation":0.2,"materialVariation":0.8})"));
+  EXPECT_DOUBLE_EQ(augmented.settings.depthDropoutProbability, .25);
+  EXPECT_DOUBLE_EQ(augmented.settings.depthNoiseStdDevMeters, .1);
+  EXPECT_EQ(augmented.settings.depthNoiseSeed, 37u);
+  EXPECT_DOUBLE_EQ(augmented.settings.rgbNoiseStdDevLinear, .03);
+  EXPECT_EQ(augmented.settings.rgbNoiseSeed, std::numeric_limits<uint64_t>::max());
+  ASSERT_TRUE(augmented.settings.appearance);
+  EXPECT_EQ(augmented.settings.appearance->seed, 47u);
+  EXPECT_DOUBLE_EQ(augmented.settings.appearance->lightingVariation, .2);
+  EXPECT_DOUBLE_EQ(augmented.settings.appearance->materialVariation, .8);
+  EXPECT_EQ(sensorCameraProjection(clean.settings), sensorCameraProjection(augmented.settings));
+  ASSERT_EQ(augmented.frames.size(), clean.frames.size());
+  EXPECT_EQ(augmented.frames.front().worldFromCamera, clean.frames.front().worldFromCamera);
+  EXPECT_EQ(augmented.frames.front().tick, clean.frames.front().tick);
+}
+
+TEST(SensorCamera, RejectsInvalidIndoorEffectSettings) {
+  expectInvalid([&] { (void)parseSensorCameraPlayback(spec(R"(,"depthNoise":{"dropoutProbability":1.01})")); },
+                "depthNoise.dropoutProbability");
+  expectInvalid([&] { (void)parseSensorCameraPlayback(spec(R"(,"depthNoise":{"dropoutProbability":-0.01})")); },
+                "depthNoise.dropoutProbability");
+  expectInvalid([&] { (void)parseSensorCameraPlayback(spec(R"(,"rgbNoise":{"stdDevLinear":-1})")); },
+                "rgbNoise.stdDevLinear");
+  expectInvalid([&] { (void)parseSensorCameraPlayback(spec(R"(,"rgbNoise":{"seed":0.5})")); }, "rgbNoise.seed");
+  expectInvalid([&] { (void)parseSensorCameraPlayback(spec(R"(,"appearance":{"lightingVariation":2})")); },
+                "lightingVariation");
+  expectInvalid([&] { (void)parseSensorCameraPlayback(spec(R"(,"appearance":{"materialVariation":-0.1})")); },
+                "materialVariation");
+  expectInvalid([&] { (void)parseSensorCameraPlayback(spec(R"(,"appearance":{"other":0.5})")); },
+                "appearance.other");
+
+  auto settings = calibration();
+  settings.depthDropoutProbability = std::numeric_limits<double>::quiet_NaN();
+  expectInvalid([&] { validateSensorCameraSettings(settings); }, "depthNoise.dropoutProbability");
+  settings = calibration();
+  settings.rgbNoiseStdDevLinear = std::numeric_limits<double>::infinity();
+  expectInvalid([&] { validateSensorCameraSettings(settings); }, "rgbNoise.stdDevLinear");
+}
+
+TEST(SensorCamera, IndoorAppearanceIsSeededBoundedAndIndependentOfMaterialOrder) {
+  SensorAppearanceSettings settings{.seed = 51};
+  const auto neutral = sampleSensorLighting(settings);
+  EXPECT_FLOAT_EQ(neutral.directional, 1);
+  EXPECT_FLOAT_EQ(neutral.environment, 1);
+  constexpr std::array unitTint{1.0f, 1.0f, 1.0f};
+  EXPECT_EQ(sampleSensorMaterialTint(settings, 0, false), unitTint);
+  EXPECT_EQ(sampleSensorMaterialTint(settings, 19, true), unitTint);
+
+  settings.lightingVariation = .5;
+  settings.materialVariation = .7;
+  const auto lighting = sampleSensorLighting(settings);
+  EXPECT_GE(lighting.directional, .5f);
+  EXPECT_LE(lighting.directional, 1.5f);
+  EXPECT_GE(lighting.environment, .5f);
+  EXPECT_LE(lighting.environment, 1.5f);
+  const auto authored = sampleSensorMaterialTint(settings, 19, true);
+  const auto fallback = sampleSensorMaterialTint(settings, 19, false);
+  EXPECT_NE(authored, fallback);
+  EXPECT_NE(authored, sampleSensorMaterialTint(settings, 20, true));
+  EXPECT_EQ(authored, sampleSensorMaterialTint(settings, 19, true));
+  EXPECT_EQ(fallback, sampleSensorMaterialTint(settings, 19, false));
+  for (const auto gain : authored) {
+    EXPECT_GE(gain, .3f);
+    EXPECT_LE(gain, 1.0f);
+  }
+  ++settings.seed;
+  EXPECT_NE(lighting.directional, sampleSensorLighting(settings).directional);
+  EXPECT_NE(authored, sampleSensorMaterialTint(settings, 19, true));
+}
+
 TEST(SensorCamera, PlaybackInheritsTrajectoryFrequencyAndUsesCommittedGroundTruth) {
   const auto report = trajectory();
   const auto playback = parseSensorCameraPlayback(spec(R"(,

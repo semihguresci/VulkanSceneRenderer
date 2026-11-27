@@ -29,7 +29,10 @@ struct EncodedSensorCameraFrame {
 // not by a source element. Every nonzero surface must have a valid BIM label.
 // Output channels B/G/R/Z are FLOAT; InstanceID/SemanticID are exact UINT.
 // Optional distortion pulls from the ideal inputs, using bilinear RGB and
-// nearest surface/labels at the same coordinate. Invalid depth/labels are zero.
+// the nearest surface and labels at the same coordinate. With augmentation
+// enabled, GroundTruthZ and the labels describe the same ideal surface even
+// when observed Z is zero. Legacy captures use zero depth and labels for an
+// invalid observation.
 [[nodiscard]] EncodedSensorCameraFrame encodeSensorCameraFrame(
     std::span<const float> rgba, std::span<const SceneDataCapturePixel> surfaces,
     std::span<const robotics::BimSensorLabel> objectLabels,

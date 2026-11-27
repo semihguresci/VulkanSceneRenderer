@@ -20,6 +20,15 @@ MOUNT_Z = 0.7
 CAMERA_TICKS = (0, 2, 4, 6)
 IMU_TICKS = (1, 4, 7)
 LIDAR_TICKS = (2, 6)
+CAMERA_RANDOMIZATION = {
+    "appearance": {"seed": 501, "lightingVariation": 0.4, "materialVariation": 0.6},
+    "rgbNoise": {"stdDevLinear": 0.01, "seed": 502},
+    "depthNoise": {"dropoutProbability": 0.3, "seed": 503},
+}
+LIDAR_RANDOMIZATION = {
+    "seed": 504, "noiseStdDevPerMeter": 0.025, "rangeResolutionMeters": 0.01,
+    "dropoutProbability": 0.25, "recordIdealRanges": True,
+}
 
 
 def run(executable, arguments, log, expected_error=None):
@@ -66,6 +75,13 @@ def check_camera_source(camera, report_path, report, model):
           report["sceneSource"]["metersPerUnscaledRendererUnit"], 1e-6)
 
     assert manifest["frameCount"] == len(CAMERA_TICKS)
+    appearance = manifest["appearance"]
+    assert appearance["algorithm"] == "splitmix64-v1", appearance
+    for key, value in CAMERA_RANDOMIZATION["appearance"].items():
+        assert appearance[key] == value, appearance
+    variation = appearance["lightingVariation"]
+    for key in ("directionalGain", "environmentGain"):
+        assert 1 - variation <= appearance[key] <= 1 + variation, (key, appearance)
     labels = read_json(camera / "labels.json")
     close(labels["metersPerRendererUnit"] * IMPORT_SCALE,
           manifest["sceneSource"]["metersPerUnscaledRendererUnit"])
@@ -79,15 +95,43 @@ def check_camera_source(camera, report_path, report, model):
         assert classes[row["semanticId"]] == semantic_class, row
     expected_ids = {(row["instanceId"], row["semanticId"]) for row in labels["instances"]} | {(0, 0)}
     foreground_ids = {instances[guid]["instanceId"] for guid in ("wall-guid", "door-guid")}
-    planes = read_exr(camera / "frame-00000000.exr")
-    actual_ids = set()
-    for ids, semantic, depths in zip(planes["InstanceID"], planes["SemanticID"], planes["Z"], strict=True):
-        for instance, label, depth in zip(ids, semantic, depths, strict=True):
-            assert (instance, label) in expected_ids and math.isfinite(depth)
-            assert bool(instance) == (depth > 0)
+    planes = read_exr(camera / "frame-00000000.exr", include_ground_truth=True)
+    actual_ids, dropped_pixels = set(), 0
+    for ids, semantic, depths, ideal_depths in zip(planes["InstanceID"], planes["SemanticID"], planes["Z"],
+                                                   planes["GroundTruthZ"], strict=True):
+        for instance, label, depth, ideal in zip(ids, semantic, depths, ideal_depths, strict=True):
+            assert (instance, label) in expected_ids and math.isfinite(ideal)
+            assert bool(instance) == (ideal > 0) and depth in (0, ideal)
+            dropped_pixels += bool(instance) and depth == 0
             actual_ids.add(instance)
     assert actual_ids & foreground_ids, actual_ids
+    assert dropped_pixels > 0
     return manifest
+
+
+def check_lidar_observations(clean, randomized):
+    assert randomized["history"] == clean["history"], "LiDAR settings changed robot motion"
+    clean_scans, noisy_scans = clean["lidar"]["scans"], randomized["lidar"]["scans"]
+    counts = {"measured": 0, "changed": 0, "dropped": 0, "noHit": 0}
+    for clean_scan, noisy_scan in zip(clean_scans, noisy_scans, strict=True):
+        for key in ("worldFromSensor", "tick", "seconds"):
+            assert clean_scan[key] == noisy_scan[key], key
+        for ideal, noisy in zip(clean_scan["returns"], noisy_scan["returns"], strict=True):
+            assert noisy["entityId"] == ideal["entityId"], (ideal, noisy)
+            assert noisy["idealRangeMeters"] == ideal["rangeMeters"], (ideal, noisy)
+            if ideal["status"] == "no-hit":
+                assert noisy["status"] == "no-hit" and noisy["rangeMeters"] is None, noisy
+                counts["noHit"] += 1
+            elif noisy["status"] == "dropped":
+                assert noisy["idealRangeMeters"] > 0 and noisy["rangeMeters"] is None, noisy
+                counts["dropped"] += 1
+            elif noisy["status"] == "valid":
+                bins = noisy["rangeMeters"] / LIDAR_RANDOMIZATION["rangeResolutionMeters"]
+                assert math.isclose(bins, round(bins), abs_tol=1e-10), noisy
+                counts["measured"] += 1
+                counts["changed"] += noisy["rangeMeters"] != noisy["idealRangeMeters"]
+    assert min(counts.values()) > 0, counts
+    return counts
 
 
 def check_replay(dataset, manifest, rows, camera, report):
@@ -98,6 +142,8 @@ def check_replay(dataset, manifest, rows, camera, report):
     assert manifest["ticksPerChunk"] == CHUNK_SIZE and manifest["chunkCount"] == 3
     assert manifest["cameraFrameCount"] == len(CAMERA_TICKS)
     assert manifest["imuSampleCount"] == len(IMU_TICKS) and manifest["lidarScanCount"] == len(LIDAR_TICKS)
+    for key, value in LIDAR_RANDOMIZATION.items():
+        assert manifest["sensors"]["lidar"][key] == value
     assert (dataset / "labels.json").read_bytes() == (camera / "labels.json").read_bytes()
     for index, expected_size in enumerate((3, 3, 2)):
         path = dataset / f"chunk-{index:08}.jsonl"
@@ -116,6 +162,10 @@ def check_replay(dataset, manifest, rows, camera, report):
         assert frame["tick"] == tick and frame["sampleIndex"] == index
         assert frame["intrinsics"] == INTRINSICS
         assert frame["worldFrame"] == "REP-103 metres"
+        assert "GroundTruthZ" in frame["channels"]
+        for effect, settings in CAMERA_RANDOMIZATION.items():
+            for key, value in settings.items():
+                assert frame[effect][key] == value, (image, effect, key)
         close(frame["seconds"], tick / RATE)
         position = report["history"][tick]["base"]["position"]
         for axis, expected in enumerate((*position[:2], position[2] + MOUNT_Z)):
@@ -149,25 +199,32 @@ def main():
     if args.managed_output:
         work = Path(tempfile.mkdtemp(prefix="run-", dir=work))
     print(f"Robotics dataset pipeline artifacts: {work}", flush=True)
-    scenario = work / "scenario.json"
-    write_json(scenario, {
+    scenario = {
         "version": 1, "initialFeet": [-1.5, 0, 1.2], "ticks": TICKS, "ticksPerSecond": RATE,
         "commands": [{"tick": 0, "linear": 0.2, "angular": 0}],
         "driveSensors": {"samplesPerSecondMilliHz": 4000, "firstTick": 1},
-        "lidar": {"scansPerSecondMilliHz": 3000, "firstTick": 2, "azimuthSamples": 8,
+        "lidar": {"scansPerSecondMilliHz": 3000, "firstTick": 2, "azimuthSamples": 32,
                   "minRangeMeters": 0.05, "maxRangeMeters": 6,
                   "mount": {"xyz": [0, 0, MOUNT_Z]}},
-    })
+    }
+    clean_scenario_path, clean_report_path = work / "clean-scenario.json", work / "clean-simulation.json"
+    write_json(clean_scenario_path, scenario)
+    run(simulator, (model, clean_report_path, NAMESPACE, clean_scenario_path), work / "clean-simulate.log")
+    scenario_path = work / "scenario.json"
+    scenario["lidar"].update(LIDAR_RANDOMIZATION)
+    write_json(scenario_path, scenario)
     report_path = work / "simulation.json"
-    run(simulator, (model, report_path, NAMESPACE, scenario), work / "simulate.log")
+    run(simulator, (model, report_path, NAMESPACE, scenario_path), work / "simulate.log")
     report = read_json(report_path)
     assert report["history"][0]["base"] != report["history"][-1]["base"]
+    lidar_observations = check_lidar_observations(read_json(clean_report_path), report)
 
     spec = work / "camera.json"
     write_json(spec, {
         "schema": "container.sensor-camera", "version": 1, "intrinsics": INTRINSICS,
         "baseFromCamera": {"xyz": [0, 0, MOUNT_Z]},
         "timing": {"ticksPerSecond": RATE, "framesPerSecondMilliHz": 6000, "firstTick": 0, "lastTick": TICKS},
+        **CAMERA_RANDOMIZATION,
     })
     (work / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="ascii")
     camera = work / "camera"
@@ -199,6 +256,7 @@ def main():
     assert jsonl(run(recorder, ("replay", relocated), work / "relocated-replay.jsonl")) == rows
     write_json(work / "summary.json", {"cameraTicks": CAMERA_TICKS, "imuTicks": IMU_TICKS,
                                       "lidarTicks": LIDAR_TICKS, "chunkSizes": (3, 3, 2),
+                                      "lidarObservations": lidar_observations,
                                       "sceneSource": manifest["sceneSource"]})
     print(f"PASS native simulation, calibrated BIM camera, and portable dataset replay ({work})", flush=True)
     return 0

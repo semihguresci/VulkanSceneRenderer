@@ -372,6 +372,20 @@ chance of a lost hit and `seed` for repeatability. The JSON report includes
 the calibrated pose, scan poses and named statuses. The headless report
 allows up to 65,536 rays per scan and 1,000,000 returns per scenario.
 
+These optional fields model the indoor sensor readout using only the ray
+distance and the configured seed. Add them to the scenario's `lidar` object.
+
+| Field | Default | Effect |
+| --- | --- | --- |
+| `noiseStdDevPerMeter` | `0` | Adds this many metres of Gaussian standard deviation per metre of ideal distance, on top of `noiseStdDevMeters`. |
+| `rangeResolutionMeters` | `0` | Rounds noisy ranges to the nearest multiple of this value. Halfway values use the even bin. Ranges outside the calibrated interval after rounding carry `noise-out-of-range`. |
+| `recordIdealRanges` | `false` | Adds `idealRangeMeters` to every beam in the report and synchronized dataset. This is the geometric hit distance, even for `below-minimum`, `dropped`, and `noise-out-of-range`. A miss uses `null`. |
+
+A seeded run keys its noise to the scan index and beam. Changing these
+readout settings preserves the collision queries, scan poses and BIM
+entity IDs. A zero slope and zero resolution preserve the legacy readout,
+and omitting the ideal range channel preserves the legacy report fields.
+
 The sensor models one collision return per beam from an instantaneous snapshot
 and treats colliders as opaque. The C++ scan generator accepts a caller-provided
 segment query and builds without Jolt. The BIM runner requires

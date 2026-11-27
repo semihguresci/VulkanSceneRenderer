@@ -1253,10 +1253,16 @@ void LightingManager::uploadLightingData(uint32_t imageIndex) const {
   uploadLightingData(imageIndex, *this);
 }
 
-void LightingManager::uploadLightingData(uint32_t imageIndex, const LightingManager& source) const {
+void LightingManager::uploadLightingData(uint32_t imageIndex, const container::gpu::LightingData& lighting) const {
+  uploadLightingData(imageIndex, *this, &lighting);
+}
+
+void LightingManager::uploadLightingData(uint32_t imageIndex, const LightingManager& source,
+                                         const container::gpu::LightingData* lightingOverride) const {
   if (imageIndex >= lightingBuffers_.size()) return;
   SceneController::writeToBuffer(allocationManager_, lightingBuffers_[imageIndex],
-                                 &source.lightingData_, sizeof(LightingData));
+                                 lightingOverride ? lightingOverride : &source.lightingData_,
+                                 sizeof(LightingData));
   const auto points = std::min<size_t>(source.pointLightsSsbo_.size(), kMaxClusteredLights);
   const auto areas = std::min<size_t>(source.areaLightsSsbo_.size(), kMaxAreaLights);
   if (points)

@@ -160,6 +160,61 @@ TEST(RaycastLidar, NoiseAndDropoutReplayByTickAndSeedWithoutRangeClamping) {
   }));
 }
 
+TEST(RaycastLidar, RangeNoiseGrowsWithDistanceAndPreservesTheIdealHit) {
+  const LidarSchedule schedule(60, 60'000);
+  auto settings = RaycastLidarSettings{.azimuthSamples = 8, .maxRangeMeters = 10, .seed = 104,
+                                       .noiseStdDevPerMeter = .02, .recordIdealRanges = true};
+  const RaycastLidar lidar(settings);
+  const LidarCast nearPlane = [](glm::dvec3, glm::dvec3) { return LidarHit{.25, "near-plane"}; };
+  const LidarCast farPlane = [](glm::dvec3, glm::dvec3) { return LidarHit{.5, "far-plane"}; };
+  const auto near = lidar.scan({}, schedule, 13, nearPlane).returns;
+  const auto far = lidar.scan({}, schedule, 13, farPlane).returns;
+  EXPECT_EQ(far, lidar.scan({}, schedule, 13, farPlane).returns);
+  ++settings.seed;
+  EXPECT_NE(far, RaycastLidar(settings).scan({}, schedule, 13, farPlane).returns);
+  for (size_t beam = 0; beam < near.size(); ++beam) {
+    SCOPED_TRACE(beam);
+    ASSERT_TRUE(near[beam].rangeMeters && far[beam].rangeMeters);
+    EXPECT_NEAR(*far[beam].rangeMeters - 5.0, 2 * (*near[beam].rangeMeters - 2.5), 1e-12);
+    EXPECT_EQ(near[beam].idealRangeMeters, 2.5);
+    EXPECT_EQ(far[beam].idealRangeMeters, 5.0);
+    EXPECT_EQ(near[beam].entityId, "near-plane");
+    EXPECT_EQ(far[beam].entityId, "far-plane");
+  }
+  EXPECT_TRUE(std::ranges::any_of(far, [](const auto& hit) { return hit.rangeMeters != hit.idealRangeMeters; }));
+}
+
+TEST(RaycastLidar, QuantizesReadoutAndRetainsExactTruthForMissesAndRejectedReturns) {
+  const LidarSchedule schedule(60, 60'000);
+  auto settings = RaycastLidarSettings{.azimuthSamples = 5, .minRangeMeters = 2.125, .maxRangeMeters = 8,
+                                       .rangeResolutionMeters = .5, .recordIdealRanges = true};
+  const std::array<std::optional<LidarHit>, 5> hits{
+      std::nullopt, LidarHit{.125, "near"}, LidarHit{.28125, "minimum-bin"},
+      LidarHit{.34375, "far-tie"}, LidarHit{.390625, "far"}};
+  const auto scan = [&](const auto& calibration) {
+    size_t beam = 0;
+    return RaycastLidar(calibration).scan({}, schedule, 5,
+        [&](glm::dvec3, glm::dvec3) { return hits.at(beam++); }).returns;
+  };
+  const auto returns = scan(settings);
+  ASSERT_EQ(returns.size(), hits.size());
+  EXPECT_EQ(returns[0], LidarReturn{});
+  EXPECT_EQ(returns[1], (LidarReturn{std::nullopt, LidarReturnStatus::BelowMinimum, "near", 1.0}));
+  EXPECT_EQ(returns[2], (LidarReturn{std::nullopt, LidarReturnStatus::NoiseOutOfRange, "minimum-bin", 2.25}));
+  EXPECT_EQ(returns[3], (LidarReturn{3.0, LidarReturnStatus::Valid, "far-tie", 2.75}));
+  EXPECT_EQ(returns[4], (LidarReturn{3.0, LidarReturnStatus::Valid, "far", 3.125}));
+  settings.dropoutProbability = 1.0;
+  const auto dropped = scan(settings);
+  EXPECT_EQ(dropped[0], returns[0]);
+  EXPECT_EQ(dropped[1], returns[1]);
+  for (size_t beam = 2; beam < dropped.size(); ++beam) {
+    EXPECT_EQ(dropped[beam].status, LidarReturnStatus::Dropped);
+    EXPECT_FALSE(dropped[beam].rangeMeters);
+    EXPECT_EQ(dropped[beam].idealRangeMeters, returns[beam].idealRangeMeters);
+    EXPECT_EQ(dropped[beam].entityId, returns[beam].entityId);
+  }
+}
+
 TEST(RaycastLidar, RejectsMalformedBackendFractionsAndInvalidSamplingSettings) {
   const RaycastLidar lidar({.azimuthSamples = 1});
   const LidarSchedule schedule(60, 60'000);
@@ -176,6 +231,12 @@ TEST(RaycastLidar, RejectsMalformedBackendFractionsAndInvalidSamplingSettings) {
   EXPECT_THROW(RaycastLidar({.azimuthSpan = 3 * pi}), std::invalid_argument);
   EXPECT_THROW(RaycastLidar({.minRangeMeters = 10, .maxRangeMeters = 9}), std::invalid_argument);
   EXPECT_THROW(RaycastLidar({.dropoutProbability = 1.01}), std::invalid_argument);
+  EXPECT_THROW(RaycastLidar({.noiseStdDevPerMeter = -.01}), std::invalid_argument);
+  EXPECT_THROW(RaycastLidar({.noiseStdDevPerMeter = std::numeric_limits<double>::max()}),
+               std::invalid_argument);
+  EXPECT_THROW(RaycastLidar({.rangeResolutionMeters = -.01}), std::invalid_argument);
+  EXPECT_THROW(RaycastLidar({.rangeResolutionMeters = std::numeric_limits<double>::infinity()}),
+               std::invalid_argument);
 }
 
 } // namespace

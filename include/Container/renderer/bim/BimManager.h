@@ -17,6 +17,7 @@
 #include "Container/renderer/bim/BimSectionCapBuilder.h"
 #include "Container/renderer/bim/BimSemanticColorMode.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
+#include "Container/robotics/SensorAppearance.h"
 #include "Container/scene/SceneProvider.h"
 #include "Container/utility/GeometryUploadBatch.h"
 #include "Container/utility/DerivedAssetCache.h"
@@ -625,10 +626,11 @@ public:
   BimManager(const BimManager &) = delete;
   BimManager &operator=(const BimManager &) = delete;
 
-  // Enable before loading a model. The label map borrows the installed BIM
-  // scene lifetime and is replaced when its scene changes.
+  // Configure before loading a model. The label map follows the installed BIM
+  // scene lifetime. Appearance optionally tints only its runtime materials.
   void enableSensorLabels(std::string sourceNamespace,
-                          std::optional<double> metersPerRendererUnit = std::nullopt);
+                          std::optional<double> metersPerRendererUnit = std::nullopt,
+                          std::optional<robotics::SensorAppearanceSettings> appearance = std::nullopt);
   [[nodiscard]] const robotics::BimSensorLabelMap* sensorLabels() const noexcept {
     return sensorLabels_.get();
   }
@@ -1088,6 +1090,7 @@ private:
   std::filesystem::path loadedSourcePath_;
   std::string sensorLabelNamespace_;
   std::optional<double> sensorLabelMetersPerRendererUnit_;
+  std::optional<robotics::SensorAppearanceSettings> sensorAppearance_;
   std::unique_ptr<robotics::BimSensorLabelMap> sensorLabels_;
   std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions_;
   container::geometry::ImportReport importReport_{};

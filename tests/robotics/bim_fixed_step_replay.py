@@ -312,7 +312,9 @@ def noisy_scenario(quiet):
     scenario["driveSensors"].update(samplesPerSecondMilliHz=13000, firstTick=3, seed=253,
         accelerometer={"noiseStdDev": [.02] * 3}, gyroscope={"noiseStdDev": [.003] * 3})
     scenario["driveSensors"]["encoders"]["noiseStdDevRadians"] = {"left": .004, "right": .004}
-    scenario["lidar"].update(firstTick=2, noiseStdDevMeters=.01, dropoutProbability=.05, seed=149)
+    scenario["lidar"].update(firstTick=2, noiseStdDevMeters=.01, noiseStdDevPerMeter=.01,
+                             rangeResolutionMeters=.02, dropoutProbability=.15,
+                             recordIdealRanges=True, seed=149)
     return scenario
 
 
@@ -339,6 +341,38 @@ def seed_checks(harness, scenario, baseline):
         rows = "samples" if field == "driveSensors" else "scans"
         require(baseline[field][rows] != other[field][rows], f"Changed {field} seed did not change noisy measurements")
     harness.summary["checks"].append({"name": "independent seeds and ground truth", "result": "passed"})
+
+
+def lidar_readout_checks(harness, scenario, noisy):
+    ideal_scenario = copy.deepcopy(scenario)
+    for field in ("noiseStdDevMeters", "noiseStdDevPerMeter", "rangeResolutionMeters", "dropoutProbability"):
+        del ideal_scenario["lidar"][field]
+    ideal = harness.run("lidar-ideal", ideal_scenario)[1]
+    equal("LiDAR readout leaves trajectory unchanged", ideal["history"], noisy["history"])
+    for field in ("recordIdealRanges", "noiseStdDevPerMeter", "rangeResolutionMeters"):
+        equal(f"LiDAR calibration retains {field}", scenario["lidar"][field], noisy["lidar"][field])
+    measured, dropped, perturbed = 0, 0, 0
+    resolution = noisy["lidar"]["rangeResolutionMeters"]
+    for clean_scan, noisy_scan in zip(ideal["lidar"]["scans"], noisy["lidar"]["scans"], strict=True):
+        equal("LiDAR noise leaves sensor pose unchanged", clean_scan["worldFromSensor"], noisy_scan["worldFromSensor"])
+        for beam, (clean, observation) in enumerate(zip(clean_scan["returns"], noisy_scan["returns"], strict=True)):
+            context = f"LiDAR tick {noisy_scan['tick']} beam {beam}"
+            equal(f"{context} identity", clean["entityId"], observation["entityId"])
+            equal(f"{context} ideal distance", clean["idealRangeMeters"], observation["idealRangeMeters"])
+            if observation["status"] == "dropped":
+                dropped += 1
+                require(observation["idealRangeMeters"] is not None, f"{context} lost its dropped hit's truth")
+            if observation["status"] == "valid":
+                measured += 1
+                bins = observation["rangeMeters"] / resolution
+                require(abs(bins - round(bins)) < 1e-9, f"{context} range is not quantized")
+                perturbed += observation["rangeMeters"] != observation["idealRangeMeters"]
+            if clean["status"] == "no-hit":
+                equal(f"{context} remains a miss", clean, observation)
+    require(measured and dropped and perturbed,
+            "Expected quantized, dropped and changed readouts in the noisy BIM corner run")
+    harness.summary["checks"].append({"name": "LiDAR range response and unchanged ideal hits", "result": "passed",
+                                      "measured": measured, "dropped": dropped, "perturbed": perturbed})
 
 
 def doorway_checks(harness):
@@ -406,7 +440,9 @@ def main():
         quiet = corner_scenario()
         quiet_oracles(harness, matrix(harness, "quiet", quiet)[1])
         noisy = noisy_scenario(quiet)
-        seed_checks(harness, noisy, matrix(harness, "noisy", noisy)[1])
+        noisy_report = matrix(harness, "noisy", noisy)[1]
+        seed_checks(harness, noisy, noisy_report)
+        lidar_readout_checks(harness, noisy, noisy_report)
         doorway_checks(harness)
         negative_checks(harness, quiet)
         harness.summary["status"] = "passed"

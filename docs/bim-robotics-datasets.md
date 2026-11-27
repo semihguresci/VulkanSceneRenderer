@@ -79,11 +79,13 @@ the directory can be moved as a unit.
   committed state, including its `base.position` and `base.yaw` fields.
 - `frame-00000000.exr` and subsequent images retain the original scene-linear
   FLOAT RGB and axial depth in metres, plus exact UINT instance and semantic
-  IDs. The camera row retains the source image digest, intrinsics, metric
-  `worldFromCamera`, and the original timing and noise settings.
+  IDs. Captures with camera realism effects retain the optional FLOAT
+  `GroundTruthZ` plane alongside observed depth. The camera row retains the
+  source image digest, intrinsics, metric `worldFromCamera`, and the original
+  timing, appearance and noise settings.
 - `labels.json` maps the EXR IDs to their BIM occurrence, authored GUID, and
   semantic class. The manifest records its checksum. LiDAR returns retain
-  their original entity identifiers.
+  their original entity identifiers and optional ideal beam ranges.
 
 Chunks contain 64 ticks by default. `--ticks-per-chunk` accepts 1 through
 1024, and the final chunk can be shorter. The recorder streams the input report

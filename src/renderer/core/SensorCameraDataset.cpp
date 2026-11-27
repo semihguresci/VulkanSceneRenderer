@@ -118,6 +118,11 @@ double normal(uint64_t key) {
   return std::sqrt(-2 * std::log(1 - first)) * std::cos(2 * std::numbers::pi * second);
 }
 
+// Separate streams so changing RGB noise or dropout never shifts legacy
+// depth noise on any other output pixel.
+constexpr uint64_t rgbNoiseStream = 0x7267622d6e6f6973ULL;
+constexpr uint64_t depthDropoutStream = 0x64657074682d6472ULL;
+
 Json matrix(const glm::dmat4& value) {
   Json columns = Json::array();
   for (glm::length_t column = 0; column < 4; ++column)
@@ -135,9 +140,14 @@ EncodedSensorCameraFrame encodeSensorCameraFrame(
     const robotics::SensorCameraSettings& settings, const robotics::SensorCameraFrame& frame) {
   robotics::validateSensorCameraSettings(settings);
   robotics::validateSensorCameraFrame(frame);
+  const bool rgbNoiseEnabled = settings.rgbNoiseStdDevLinear > 0;
+  const bool appearanceEnabled = settings.appearance &&
+      (settings.appearance->lightingVariation > 0 || settings.appearance->materialVariation > 0);
+  const bool groundTruthEnabled = rgbNoiseEnabled || settings.depthDropoutProbability > 0 || appearanceEnabled;
   constexpr auto maximum = std::numeric_limits<int>::max();
+  const auto bytesPerPixel = groundTruthEnabled ? 28 : 24;
   const auto count = uint64_t(settings.width) * settings.height;
-  if (settings.width > uint32_t(maximum / 24) || settings.height > uint32_t(maximum) ||
+  if (settings.width > uint32_t(maximum / bytesPerPixel) || settings.height > uint32_t(maximum) ||
       surfaces.size() != count || rgba.size() != count * 4)
     throw std::invalid_argument("Sensor camera input dimensions do not match its aligned host buffers");
   // Fail before encoding even when distortion would crop an invalid input ID.
@@ -152,16 +162,25 @@ EncodedSensorCameraFrame encodeSensorCameraFrame(
   }
   std::array<std::vector<float>, 4> colorsAndDepth;
   for (auto& plane : colorsAndDepth) plane.resize(static_cast<size_t>(count));
+  std::vector<float> groundTruthDepth(groundTruthEnabled ? static_cast<size_t>(count) : 0);
   std::vector<uint32_t> instances(static_cast<size_t>(count)), semantics(static_cast<size_t>(count));
-  uint64_t unmapped = 0, rangeRejected = 0;
-  const auto frameKey = mix(mix(settings.depthNoiseSeed) ^ frame.sampleIndex);
+  uint64_t unmapped = 0, rangeRejected = 0, depthDropped = 0;
+  const auto depthKey = mix(mix(settings.depthNoiseSeed) ^ frame.sampleIndex);
+  const auto dropoutKey = mix(depthKey ^ depthDropoutStream);
+  const auto rgbKey = mix(mix(settings.rgbNoiseSeed ^ rgbNoiseStream) ^ frame.sampleIndex);
   for (uint32_t y = 0; y < settings.height; ++y) {
     for (uint32_t x = 0; x < settings.width; ++x) {
       const auto destination = size_t(y) * settings.width + x;
       const auto source = sourceCoordinate(x, y, settings);
       if (!source) { ++unmapped; continue; }
-      for (size_t channel = 0; channel < 3; ++channel)
-        colorsAndDepth[channel][destination] = rgb(rgba, settings.width, settings.height, *source, channel);
+      for (size_t channel = 0; channel < 3; ++channel) {
+        auto sample = rgb(rgba, settings.width, settings.height, *source, channel);
+        if (rgbNoiseEnabled) {
+          const auto error = settings.rgbNoiseStdDevLinear * normal(mix(rgbKey ^ uint64_t(3 * destination + channel)));
+          sample = static_cast<float>(std::clamp(sample + error, 0.0, double(std::numeric_limits<float>::max())));
+        }
+        colorsAndDepth[channel][destination] = sample;
+      }
       // Pixel centres use edge coordinates; floor selects the nearest centre,
       // with exact half-way ties toward increasing image coordinates.
       const auto sourcePixel = size_t(static_cast<uint32_t>(source->y)) * settings.width +
@@ -171,8 +190,17 @@ EncodedSensorCameraFrame encodeSensorCameraFrame(
       const auto label = labelFor(surface.objectId, objectLabels);
       double depth = surface.depth;
       if (depth < settings.nearMeters || depth > settings.farMeters) { ++rangeRejected; continue; }
+      if (groundTruthEnabled) {
+        groundTruthDepth[destination] = surface.depth;
+        instances[destination] = label.instanceId;
+        semantics[destination] = label.semanticId;
+      }
+      if (settings.depthDropoutProbability > 0) {
+        const auto uniform = double(mix(dropoutKey ^ uint64_t(destination)) >> 11) * 0x1.0p-53;
+        if (uniform < settings.depthDropoutProbability) { ++depthDropped; continue; }
+      }
       if (settings.depthNoiseStdDevMeters > 0)
-        depth += settings.depthNoiseStdDevMeters * normal(mix(frameKey ^ uint64_t(destination)));
+        depth += settings.depthNoiseStdDevMeters * normal(mix(depthKey ^ uint64_t(destination)));
       if (!std::isfinite(depth) || depth < settings.nearMeters || depth > settings.farMeters ||
           depth > std::numeric_limits<float>::max()) { ++rangeRejected; continue; }
       const auto storedDepth = static_cast<float>(depth);
@@ -186,19 +214,26 @@ EncodedSensorCameraFrame encodeSensorCameraFrame(
     }
   }
 
-  constexpr std::array<const char*, 6> names{"B", "G", "InstanceID", "R", "SemanticID", "Z"};
-  std::array<EXRChannelInfo, 6> channels{};
-  std::array<int, 6> types{TINYEXR_PIXELTYPE_FLOAT, TINYEXR_PIXELTYPE_FLOAT, TINYEXR_PIXELTYPE_UINT,
-                          TINYEXR_PIXELTYPE_FLOAT, TINYEXR_PIXELTYPE_UINT, TINYEXR_PIXELTYPE_FLOAT};
-  std::array<unsigned char*, 6> images{
-      reinterpret_cast<unsigned char*>(colorsAndDepth[2].data()), reinterpret_cast<unsigned char*>(colorsAndDepth[1].data()),
-      reinterpret_cast<unsigned char*>(instances.data()), reinterpret_cast<unsigned char*>(colorsAndDepth[0].data()),
-      reinterpret_cast<unsigned char*>(semantics.data()), reinterpret_cast<unsigned char*>(colorsAndDepth[3].data())};
-  for (size_t index = 0; index < channels.size(); ++index)
-    std::memcpy(channels[index].name, names[index], std::strlen(names[index]) + 1);
+  std::array<EXRChannelInfo, 7> channels{};
+  std::array<int, 7> types{};
+  std::array<unsigned char*, 7> images{};
+  int channelCount = 0;
+  const auto addChannel = [&](const char* name, int type, auto& plane) {
+    std::memcpy(channels[channelCount].name, name, std::strlen(name) + 1);
+    types[channelCount] = type;
+    images[channelCount] = reinterpret_cast<unsigned char*>(plane.data());
+    ++channelCount;
+  };
+  addChannel("B", TINYEXR_PIXELTYPE_FLOAT, colorsAndDepth[2]);
+  addChannel("G", TINYEXR_PIXELTYPE_FLOAT, colorsAndDepth[1]);
+  if (groundTruthEnabled) addChannel("GroundTruthZ", TINYEXR_PIXELTYPE_FLOAT, groundTruthDepth);
+  addChannel("InstanceID", TINYEXR_PIXELTYPE_UINT, instances);
+  addChannel("R", TINYEXR_PIXELTYPE_FLOAT, colorsAndDepth[0]);
+  addChannel("SemanticID", TINYEXR_PIXELTYPE_UINT, semantics);
+  addChannel("Z", TINYEXR_PIXELTYPE_FLOAT, colorsAndDepth[3]);
   EXRHeader header;
   InitEXRHeader(&header);
-  header.num_channels = int(channels.size());
+  header.num_channels = channelCount;
   header.channels = channels.data();
   header.pixel_types = types.data();
   header.requested_pixel_types = types.data();
@@ -223,7 +258,7 @@ EncodedSensorCameraFrame encodeSensorCameraFrame(
     distortion = {{"model", "Brown-Conrady"}, {"k1", lens.k1}, {"k2", lens.k2},
                    {"p1", lens.p1}, {"p2", lens.p2}, {"k3", lens.k3}};
   }
-  const Json metadata{{"schema", "container.sensor-camera-frame"}, {"version", 1},
+  Json metadata{{"schema", "container.sensor-camera-frame"}, {"version", 1},
       {"tick", frame.tick}, {"seconds", frame.seconds}, {"sampleIndex", frame.sampleIndex},
       {"intrinsics", {{"width", settings.width}, {"height", settings.height}, {"fx", settings.fx},
                        {"fy", settings.fy}, {"cx", settings.cx}, {"cy", settings.cy},
@@ -239,6 +274,19 @@ EncodedSensorCameraFrame encodeSensorCameraFrame(
                       {"seed", settings.depthNoiseSeed}, {"key", "seed,sampleIndex,destinationPixel"},
                       {"outOfRange", "zero depth and labels; RGB retained"}}},
       {"unmappedPixelCount", unmapped}, {"rangeRejectedPixelCount", rangeRejected}};
+  if (groundTruthEnabled) {
+    metadata["channels"]["GroundTruthZ"] = "axial metres FLOAT before observation noise; zero invalid/background";
+    metadata["depthNoise"]["dropoutProbability"] = settings.depthDropoutProbability;
+    metadata["depthNoise"]["outOfRange"] = "zero observed depth; ground truth and labels retained";
+    metadata["depthDroppedPixelCount"] = depthDropped;
+  }
+  if (rgbNoiseEnabled)
+    metadata["rgbNoise"] = {{"model", "independent Gaussian read noise"}, {"stdDevLinear", settings.rgbNoiseStdDevLinear},
+                            {"seed", settings.rgbNoiseSeed}, {"key", "seed,sampleIndex,destinationPixel,channel"}};
+  if (settings.appearance)
+    metadata["appearance"] = {{"seed", settings.appearance->seed},
+                              {"lightingVariation", settings.appearance->lightingVariation},
+                              {"materialVariation", settings.appearance->materialVariation}};
   encoded.metadataJson = metadata.dump(2) + '\n';
   return encoded;
 }

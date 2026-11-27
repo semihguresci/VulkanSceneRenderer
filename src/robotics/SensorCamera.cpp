@@ -224,9 +224,22 @@ SensorCameraSettings readSettings(const Json& spec) {
         numberOr(*distortion, "distortion", "k3")};
   }
   if (const auto noise = spec.find("depthNoise"); noise != spec.end()) {
-    checkKeys(*noise, "depthNoise", {"stdDevMeters", "seed"});
+    checkKeys(*noise, "depthNoise", {"stdDevMeters", "seed", "dropoutProbability"});
     result.depthNoiseStdDevMeters = numberOr(*noise, "depthNoise", "stdDevMeters");
     result.depthNoiseSeed = naturalOr(*noise, "depthNoise", "seed", 0, std::numeric_limits<uint64_t>::max());
+    result.depthDropoutProbability = numberOr(*noise, "depthNoise", "dropoutProbability");
+  }
+  if (const auto noise = spec.find("rgbNoise"); noise != spec.end()) {
+    checkKeys(*noise, "rgbNoise", {"stdDevLinear", "seed"});
+    result.rgbNoiseStdDevLinear = numberOr(*noise, "rgbNoise", "stdDevLinear");
+    result.rgbNoiseSeed = naturalOr(*noise, "rgbNoise", "seed", 0, std::numeric_limits<uint64_t>::max());
+  }
+  if (const auto appearance = spec.find("appearance"); appearance != spec.end()) {
+    checkKeys(*appearance, "appearance", {"seed", "lightingVariation", "materialVariation"});
+    result.appearance = SensorAppearanceSettings{
+        .seed = naturalOr(*appearance, "appearance", "seed", 0, std::numeric_limits<uint64_t>::max()),
+        .lightingVariation = numberOr(*appearance, "appearance", "lightingVariation"),
+        .materialVariation = numberOr(*appearance, "appearance", "materialVariation")};
   }
   return result;
 }
@@ -275,6 +288,12 @@ void validateSensorCameraSettings(const SensorCameraSettings& settings) {
   }
   requireFinite(settings.depthNoiseStdDevMeters, "depthNoise.stdDevMeters");
   if (settings.depthNoiseStdDevMeters < 0) invalid("depthNoise.stdDevMeters", "must be nonnegative");
+  requireFinite(settings.depthDropoutProbability, "depthNoise.dropoutProbability");
+  if (settings.depthDropoutProbability < 0 || settings.depthDropoutProbability > 1)
+    invalid("depthNoise.dropoutProbability", "must be in [0, 1]");
+  requireFinite(settings.rgbNoiseStdDevLinear, "rgbNoise.stdDevLinear");
+  if (settings.rgbNoiseStdDevLinear < 0) invalid("rgbNoise.stdDevLinear", "must be nonnegative");
+  if (settings.appearance) validateSensorAppearanceSettings(*settings.appearance);
 }
 
 void validateSensorCameraFrame(const SensorCameraFrame& frame) {
@@ -339,7 +358,7 @@ namespace {
 Json readSpec(std::string_view specJson) {
   auto spec = parseJson(specJson, "spec", maxSpecBytes);
   checkKeys(spec, "spec", {"schema", "version", "intrinsics", "timing", "baseFromCamera", "worldFromBase",
-                            "distortion", "depthNoise"});
+                            "distortion", "depthNoise", "rgbNoise", "appearance"});
   requireSchema(spec, "spec", "container.sensor-camera");
   return spec;
 }

@@ -23,7 +23,7 @@ using Json = nlohmann::json;
 using enum DatasetReportStream;
 
 // Match the producer's v1 history and LiDAR limits. Allow one complete scan
-// with 65,536 objects and their three fields in the observation DOM.
+// with 65,536 returns, including optional ideal ranges, in the observation DOM.
 constexpr uint64_t maxTicks = 8192;
 constexpr uint64_t maxRaysPerScan = 65'536;
 constexpr uint64_t maxLidarReturns = 1'000'000;
@@ -185,8 +185,12 @@ void validateImu(const Json& row, std::string_view context) {
 struct LidarReturns {
   std::optional<size_t> raysPerScan;
   uint64_t total{};
+  uint64_t idealFieldCount{};
   double minimum{std::numeric_limits<double>::infinity()};
   double maximum{-std::numeric_limits<double>::infinity()};
+  double nearestIdealInRange{std::numeric_limits<double>::infinity()};
+  double farthestIdealHit{-std::numeric_limits<double>::infinity()};
+  double farthestIdealBelowMinimum{-std::numeric_limits<double>::infinity()};
 
   void validate(const Json& row, std::string_view context) {
     lidarPose(required(row, "worldFromSensor", context), field(context, "worldFromSensor"));
@@ -220,6 +224,21 @@ struct LidarReturns {
         if (!range.is_null()) invalid(rangeField, "must be null for an invalid return");
         if (status == "no-hit" && !entity.is_null())
           invalid(field(hitField, "entityId"), "must be null for a miss");
+      }
+      if (const auto ideal = hit.find("idealRangeMeters"); ideal != hit.end()) {
+        ++idealFieldCount;
+        const auto idealField = field(hitField, "idealRangeMeters");
+        if (status == "no-hit") {
+          if (!ideal->is_null()) invalid(idealField, "must be null for a miss");
+          continue;
+        }
+        const auto distance = number(*ideal, idealField);
+        if (distance < 0) invalid(idealField, "must be nonnegative");
+        farthestIdealHit = std::max(farthestIdealHit, distance);
+        if (status == "below-minimum")
+          farthestIdealBelowMinimum = std::max(farthestIdealBelowMinimum, distance);
+        else
+          nearestIdealInRange = std::min(nearestIdealInRange, distance);
       }
     }
   }
@@ -486,6 +505,26 @@ private:
       invalid("lidar", "calibration requires 0 <= minRangeMeters < maxRangeMeters");
     if (lidarReturns_.minimum < minimum || lidarReturns_.maximum > maximum)
       invalid("lidar.scans", "valid ranges must lie inside the authored calibration interval");
+    bool recordIdeal = false;
+    if (const auto record = calibration.find("recordIdealRanges"); record != calibration.end()) {
+      if (!record->is_boolean()) invalid("lidar.recordIdealRanges", "must be a boolean");
+      recordIdeal = record->get<bool>();
+    }
+    if (lidarReturns_.idealFieldCount != (recordIdeal ? lidarReturns_.total : 0))
+      invalid("lidar.scans", "idealRangeMeters presence must match recordIdealRanges for every return");
+    if (lidarReturns_.nearestIdealInRange < minimum || lidarReturns_.farthestIdealHit > maximum ||
+        lidarReturns_.farthestIdealBelowMinimum >= minimum)
+      invalid("lidar.scans", "idealRangeMeters must agree with calibrated range limits and return status");
+    if (const auto slope = calibration.find("noiseStdDevPerMeter"); slope != calibration.end()) {
+      const auto rate = number(*slope, "lidar.noiseStdDevPerMeter");
+      const auto readoutNoise = calibration.find("noiseStdDevMeters");
+      const auto floor = readoutNoise == calibration.end() ? 0 : number(*readoutNoise, "lidar.noiseStdDevMeters");
+      if (rate < 0 || floor < 0 || !std::isfinite(floor + rate * maximum))
+        invalid("lidar.noiseStdDevPerMeter", "requires finite nonnegative noise across the range interval");
+    }
+    if (const auto resolution = calibration.find("rangeResolutionMeters"); resolution != calibration.end() &&
+        number(*resolution, "lidar.rangeResolutionMeters") < 0)
+      invalid("lidar.rangeResolutionMeters", "must be nonnegative");
     for (const auto& elevation : elevations)
       if (std::abs(number(elevation, "lidar.elevationAngles")) > std::numbers::pi / 2)
         invalid("lidar.elevationAngles", "angles must lie in [-pi/2, pi/2]");
