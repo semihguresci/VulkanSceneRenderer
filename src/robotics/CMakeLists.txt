@@ -84,8 +84,14 @@ if(ENABLE_ROBOTICS_URDF)
     target_link_libraries(VulkanSceneRenderer_urdf PUBLIC Dep_Math VulkanSceneRenderer_robotics_clock
         PRIVATE tinyxml2::tinyxml2)
 
+    add_library(VulkanSceneRenderer_urdf_assets UrdfAssetExport.cpp UrdfAssetGeometry.cpp)
+    target_compile_features(VulkanSceneRenderer_urdf_assets PUBLIC cxx_std_23)
+    target_include_directories(VulkanSceneRenderer_urdf_assets PUBLIC ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(VulkanSceneRenderer_urdf_assets PUBLIC VulkanSceneRenderer_urdf
+        PRIVATE VulkanSceneRenderer_geometry tinygltf::tinygltf)
+
     add_executable(BimRoboticsUrdf ${CMAKE_SOURCE_DIR}/tools/bim_robotics_urdf.cpp)
-    target_link_libraries(BimRoboticsUrdf PRIVATE VulkanSceneRenderer_urdf nlohmann_json::nlohmann_json)
+    target_link_libraries(BimRoboticsUrdf PRIVATE VulkanSceneRenderer_urdf_assets nlohmann_json::nlohmann_json)
     set_target_properties(BimRoboticsUrdf PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     container_stage_runtime_dlls(BimRoboticsUrdf)
 
