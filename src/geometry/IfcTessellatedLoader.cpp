@@ -773,6 +773,7 @@ public:
     cacheStyleColors();
     cacheVoidRelations();
     cacheFillRelations();
+    cacheSpaceBoundaryRelations();
     cacheSpatialContainmentRelations();
     cacheMaterialRelations();
     cachePropertyRelations();
@@ -784,6 +785,7 @@ public:
     appendSweptSolidGeometry();
     appendProductElements();
     appendFallbackElements();
+    appendSemanticOpeningBounds();
     finishImportReport();
     compactDrawableGeometry();
     checkCancellation();
@@ -2666,6 +2668,26 @@ private:
         appendRelationshipReference(hostIt->second, "IFCRELFILLSELEMENT",
                                     "FilledBy", *fillerRef);
       }
+    }
+  }
+
+  void cacheSpaceBoundaryRelations() {
+    for (const auto id : sortedEntityIds_) {
+      checkCancellation();
+      const auto *relation = entity(id);
+      if (!relation || (relation->type != "IFCRELSPACEBOUNDARY" &&
+                        relation->type != "IFCRELSPACEBOUNDARY1STLEVEL" &&
+                        relation->type != "IFCRELSPACEBOUNDARY2NDLEVEL") ||
+          enumValue(argAt(*relation, 7)) != "PHYSICAL")
+        continue;
+      const auto spaceRef = firstRef(*relation, 4);
+      const auto elementRef = firstRef(*relation, 5);
+      const auto *space = spaceRef ? entity(*spaceRef) : nullptr;
+      const auto *element = elementRef ? entity(*elementRef) : nullptr;
+      if (space && space->type == "IFCSPACE" && element &&
+          element->type != "IFCVIRTUALELEMENT")
+        appendSemanticRelationship(*spaceRef, *elementRef,
+                                   dotbim::SemanticRelationshipKind::SpaceBoundary);
     }
   }
 
@@ -7993,7 +8015,81 @@ private:
         }
       }
     }
+    if (semantic.hasPlacement && (product.type == "IFCOPENINGELEMENT" ||
+                                  product.type == "IFCOPENINGSTANDARDCASE"))
+      openingsWithSemanticPlacement_.emplace_back(product.id,
+                                                  model_.semanticProducts.size());
     model_.semanticProducts.push_back(std::move(semantic));
+  }
+
+  std::optional<dotbim::SemanticBounds>
+  openingRendererBounds(const Entity &opening,
+                        const glm::dmat4 &rendererFromOpening) {
+    const auto representationRef = firstRef(opening, 6);
+    const auto *representation = representationRef ? entity(*representationRef) : nullptr;
+    if (!representation || representation->type != "IFCPRODUCTDEFINITIONSHAPE")
+      return std::nullopt;
+
+    // Body defines the cutter. Reference describes an opening already cut in its host.
+    std::optional<uint32_t> aperture;
+    for (const auto shapeRef : refList(argAt(*representation, 2))) {
+      const auto *shape = entity(shapeRef);
+      if (!shape || shape->type != "IFCSHAPEREPRESENTATION") continue;
+      const auto identifier = upperAscii(stringValue(argAt(*shape, 1)).value_or(""));
+      if (identifier != "BODY" && identifier != "REFERENCE") continue;
+      if (aperture) return std::nullopt;
+      aperture = shapeRef;
+    }
+    if (!aperture) return std::nullopt;
+
+    std::vector<GeometryInstance> instances;
+    collectGeometryInstances(*aperture, glm::mat4(1.0f), instances);
+    if (instances.size() != 1 || instances.front().contextualGroup)
+      return std::nullopt;
+    const auto &instance = instances.front();
+    const auto rendererFromCutter = rendererFromOpening * glm::dmat4(instance.transform);
+    const auto determinant = glm::determinant(glm::dmat3(rendererFromCutter));
+    if (!std::isfinite(determinant) || determinant == 0.0) return std::nullopt;
+    const double infinity = std::numeric_limits<double>::infinity();
+    dotbim::SemanticBounds bounds{glm::dvec3(infinity), glm::dvec3(-infinity)};
+    const auto includePoint = [&](const glm::dvec3 &localPoint) {
+      const glm::dvec3 point(rendererFromCutter * glm::dvec4(localPoint, 1.0));
+      for (int axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(point[axis])) return false;
+      bounds.minimum = glm::min(bounds.minimum, point);
+      bounds.maximum = glm::max(bounds.maximum, point);
+      return true;
+    };
+
+    if (const auto box = boxSolidsByItem_.find(instance.geometryId);
+        box != boxSolidsByItem_.end()) {
+      for (const auto &corner : boxCorners(box->second))
+        if (!includePoint(glm::dvec3(corner))) return std::nullopt;
+    } else {
+      std::unordered_set<uint32_t> visiting;
+      const auto solid = evaluateSolid(instance.geometryId, visiting);
+      if (!solid || solid->IsEmpty()) return std::nullopt;
+      const auto mesh = solid->GetMeshGL64();
+      for (size_t i = 0; i < mesh.vertProperties.size(); i += mesh.numProp) {
+        if (i % (4096u * mesh.numProp) == 0) checkCancellation();
+        if (!includePoint({mesh.vertProperties[i], mesh.vertProperties[i + 1],
+                           mesh.vertProperties[i + 2]}))
+          return std::nullopt;
+      }
+    }
+    for (int axis = 0; axis < 3; ++axis)
+      if (!(bounds.minimum[axis] < bounds.maximum[axis])) return std::nullopt;
+    return bounds;
+  }
+
+  void appendSemanticOpeningBounds() {
+    // Process after choosing the drawable rows. Any meshes introduced by the
+    // representation walk are unreferenced and compacted out of the model.
+    for (const auto &[id, index] : openingsWithSemanticPlacement_) {
+      checkCancellation();
+      auto &product = model_.semanticProducts[index];
+      product.rendererBounds = openingRendererBounds(*entity(id), product.transform);
+    }
   }
 
   void compactDrawableGeometry() {
@@ -8113,6 +8209,7 @@ private:
   std::unordered_map<uint32_t, BoxSolid> boxSolidsByItem_{};
   std::unordered_map<uint32_t, std::vector<uint32_t>> openingsByHostProduct_{};
   std::unordered_map<uint32_t, uint32_t> hostByOpeningProduct_{};
+  std::vector<std::pair<uint32_t, size_t>> openingsWithSemanticPlacement_;
   std::unordered_map<uint32_t, StoreyMetadata> storeyByProduct_{};
   std::unordered_set<uint32_t> ambiguousStoreyProducts_{};
   std::unordered_map<uint32_t, SemanticMaterialMetadata> materialByProduct_{};

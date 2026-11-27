@@ -20,7 +20,9 @@ product world placements, separate drawable representation placements, and
 spatial relations. Project, site, building, storey, space, wall, slab, door,
 and opening records can survive without drawable geometry. Native STEP
 relations retain containment, aggregation, nesting, opening and filling
-roles. IFCX preserves explicit composition links and any authored GUIDs. Its
+roles and physical space boundaries. Metric opening bounds are included when the
+source cutter geometry and its placement are available. IFCX preserves explicit
+composition links, unambiguous typed space-boundary references and any authored GUIDs. Its
 stable IDs include the composition path, so repeated GUID instances stay
 distinct as instances are added or removed. When a GUID is unavailable, the
 ID uses the source occurrence.
@@ -33,10 +35,9 @@ scale you have verified, pass `--metres-per-renderer-unit N`. Missing or
 unsupported product placements are also `null`. The loader reports unresolved
 relations and ambiguous storeys under `diagnostics`. [Coordinate contract](coordinate-conventions.md#semantic-bim-export-for-robotics)
 
-The manifest records semantic classes and placements. It carries no inferred
-room boundaries, door passability, collision geometry, navigability or global
-map projection. Source relations and authoring gaps remain explicit for
-downstream robotics applications.
+The manifest records source relationships and authoring gaps. For doorway
+clearance and room connectivity, use the separate collision report.
+[BIM room connectivity graph](physics-integration.md#export-a-bim-room-connectivity-graph)
 
 Set `CONTAINER_IFC_SAMPLE_ROOT` to the buildingSMART examples directory to run
 the optional Tekla checks within `bim_robotics_scene_tests`.

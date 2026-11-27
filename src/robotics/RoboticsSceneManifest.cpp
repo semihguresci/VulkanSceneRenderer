@@ -63,6 +63,16 @@ std::optional<glm::dmat4> decodeOptionalMatrix(const Json& value) {
   return value.is_null() ? std::nullopt : std::optional(decodeMatrix(value));
 }
 
+Json encodePoint(const glm::dvec3& point) {
+  return Json::array({point.x, point.y, point.z});
+}
+
+glm::dvec3 decodePoint(const Json& value) {
+  if (!value.is_array() || value.size() != 3)
+    invalid("a coordinate point must contain three numbers");
+  return {value[0].get<double>(), value[1].get<double>(), value[2].get<double>()};
+}
+
 Json encodeNumber(const std::optional<double>& value) {
   return value ? Json(*value) : Json(nullptr);
 }
@@ -144,6 +154,13 @@ void validate(const RoboticsScene& scene) {
     if (entity.id.empty() || !ids.emplace(entity.id, entity.kind).second)
       invalid("entity IDs must be nonempty and unique");
     checkPlacement(entity.rendererWorldFromLocal, entity.roboticsWorldFromLocal);
+    if (const auto& bounds = entity.roboticsBounds) {
+      if (!metric) invalid("robotics bounds require a known metric frame");
+      for (glm::length_t axis = 0; axis < 3; ++axis)
+        if (!std::isfinite(bounds->minimum[axis]) || !std::isfinite(bounds->maximum[axis]) ||
+            bounds->minimum[axis] > bounds->maximum[axis])
+          invalid("robotics bounds must be finite and ordered on each axis");
+    }
     for (const auto& rep : entity.representations)
       checkPlacement(rep.rendererWorldFromLocal, rep.roboticsWorldFromLocal);
   }
@@ -179,12 +196,7 @@ RoboticsScene decode(const Json& root) {
   const auto& geo = root.at("georeference");
   scene.georeference.sourceUpAxis = geo.at("sourceUpAxis").get<std::string>();
   const auto& offset = geo.at("coordinateOffset");
-  if (!offset.is_null()) {
-    if (!offset.is_array() || offset.size() != 3)
-      invalid("coordinate offset must contain three numbers");
-    scene.georeference.coordinateOffset = glm::dvec3(offset[0].get<double>(), offset[1].get<double>(),
-                                                     offset[2].get<double>());
-  }
+  if (!offset.is_null()) scene.georeference.coordinateOffset = decodePoint(offset);
   scene.georeference.coordinateOffsetSource = geo.at("coordinateOffsetSource").get<std::string>();
   scene.georeference.crsName = geo.at("crsName").get<std::string>();
   scene.georeference.crsAuthority = geo.at("crsAuthority").get<std::string>();
@@ -203,6 +215,8 @@ RoboticsScene decode(const Json& root) {
     entity.kind = decodeEnum(value.at("kind"), SemanticKind::Other, semanticKindName);
     entity.rendererWorldFromLocal = decodeOptionalMatrix(value.at("rendererWorldFromLocal"));
     entity.roboticsWorldFromLocal = decodeOptionalMatrix(value.at("roboticsWorldFromLocal"));
+    if (const auto bounds = value.find("roboticsBounds"); bounds != value.end() && !bounds->is_null())
+      entity.roboticsBounds = SemanticBounds{decodePoint(bounds->at("minimum")), decodePoint(bounds->at("maximum"))};
     entity.storeyIds = arrayField(value, "storeyIds").get<std::vector<std::string>>();
     for (const auto& rep : arrayField(value, "representations")) {
       const auto& meshId = rep.at("meshId");
@@ -220,7 +234,7 @@ RoboticsScene decode(const Json& root) {
   for (const auto& value : arrayField(root, "relationships")) {
     scene.relationships.push_back({.from = value.at("from").get<std::string>(),
         .to = value.at("to").get<std::string>(),
-        .kind = decodeEnum(value.at("kind"), SemanticRelationshipKind::Child, semanticRelationshipKindName)});
+        .kind = decodeEnum(value.at("kind"), SemanticRelationshipKind::SpaceBoundary, semanticRelationshipKindName)});
   }
   for (const auto& value : arrayField(root, "diagnostics")) {
     scene.diagnostics.push_back({.code = value.at("code").get<std::string>(),
@@ -246,7 +260,7 @@ std::string serializeRoboticsScene(const RoboticsScene& scene) {
                            {"unitProvenance", scene.frame.unitProvenance},
                            {"roboticsFromRenderer", optionalMatrix(scene.frame.roboticsFromRenderer)}}},
                 {"georeference", {{"sourceUpAxis", geo.sourceUpAxis},
-                    {"coordinateOffset", offset ? Json::array({offset->x, offset->y, offset->z}) : Json(nullptr)},
+                     {"coordinateOffset", offset ? encodePoint(*offset) : Json(nullptr)},
                     {"coordinateOffsetSource", geo.coordinateOffsetSource},
                     {"crsName", geo.crsName}, {"crsAuthority", geo.crsAuthority},
                     {"crsCode", geo.crsCode}, {"mapConversionName", geo.mapConversionName}}},
@@ -265,6 +279,9 @@ std::string serializeRoboticsScene(const RoboticsScene& scene) {
         {"rendererWorldFromLocal", optionalMatrix(entity.rendererWorldFromLocal)},
         {"roboticsWorldFromLocal", optionalMatrix(entity.roboticsWorldFromLocal)},
         {"storeyIds", entity.storeyIds}, {"representations", std::move(representations)}});
+    if (const auto& bounds = entity.roboticsBounds)
+      entities.back()["roboticsBounds"] = {{"minimum", encodePoint(bounds->minimum)},
+                                         {"maximum", encodePoint(bounds->maximum)}};
   }
   for (const auto& relationship : scene.relationships) {
     manifest["relationships"].push_back({{"from", relationship.from}, {"to", relationship.to},

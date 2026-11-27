@@ -69,6 +69,41 @@ TEST(IfcxLoader, SemanticFeedRetainsNonDrawableAndHiddenProducts) {
   EXPECT_FALSE(model.unitMetadata.hasMetersPerUnit);
 }
 
+TEST(IfcxLoader, SpaceBoundaryReferencesResolveOnlyUnambiguousPhysicalProducts) {
+  constexpr auto source = R"json({"data":[
+    {"path":"ground","attributes":{"bsi::ifc::class":"IfcBuildingStorey"},
+      "children":{"RoomA":"room-a","RoomB":"room-b","Door":"door","RepeatedDoor":"reused"}},
+    {"path":"upper","attributes":{"bsi::ifc::class":"IfcBuildingStorey"},
+      "children":{"RepeatedDoor":"reused"}},
+    {"path":"room-a","attributes":{"bsi::ifc::class":"IfcSpace"}},
+    {"path":"room-b","attributes":{"bsi::ifc::class":"IfcSpace"}},
+    {"path":"door","attributes":{"bsi::ifc::class":"IfcDoor"}},
+    {"path":"other-door","attributes":{"bsi::ifc::class":"IfcDoor"}},
+    {"path":"reused","attributes":{"bsi::ifc::class":"IfcDoor"}},
+    {"path":"virtual","attributes":{"bsi::ifc::class":"IfcVirtualElement"}},
+    {"path":"boundary-a","attributes":{"bsi::ifc::spaceBoundary":{
+      "relatingspace":{"ref":"room-a"},"relatedelement":{"ref":"door"}}}},
+    {"path":"boundary-b","attributes":{"bsi::ifc::spaceBoundary":{
+      "relatingspace":{"ref":"room-b"},"relatedelement":{"ref":"door"}}}},
+    {"path":"boundary-reused","attributes":{"bsi::ifc::spaceBoundary":{
+      "relatingspace":{"ref":"room-a"},"relatedelement":{"ref":"reused"}}}},
+    {"path":"boundary-malformed","attributes":{"bsi::ifc::spaceBoundary":{
+      "relatingspace":{"ref":"room-a"},"relatedelement":"other-door"}}},
+    {"path":"boundary-virtual","attributes":{"bsi::ifc::spaceBoundary":{
+      "relatingspace":{"ref":"room-a"},"relatedelement":{"ref":"virtual"}}}}
+  ]})json";
+  const auto model = container::geometry::ifcx::LoadFromJson(source);
+  using container::geometry::dotbim::SemanticRelationship;
+  using container::geometry::dotbim::SemanticRelationshipKind;
+  EXPECT_EQ(std::ranges::count(model.semanticRelationships, SemanticRelationshipKind::SpaceBoundary,
+                              &SemanticRelationship::kind), 2);
+  for (const auto *room : {"ground/room-a", "ground/room-b"})
+    EXPECT_TRUE(std::ranges::any_of(model.semanticRelationships, [room](const auto &relationship) {
+      return relationship.kind == SemanticRelationshipKind::SpaceBoundary &&
+             relationship.fromSourceId == room && relationship.toSourceId == "ground/door";
+    }));
+}
+
 TEST(IfcxLoader, SemanticOccurrencesKeepDoubleNestedMirroredPlacements) {
   constexpr auto source = R"json({"data":[
     {"path":"root","attributes":{"usd::xformop":{"transform":[
