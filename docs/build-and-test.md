@@ -276,6 +276,23 @@ statistics, submission-matched GPU timings and collection latency, and VMA
 allocations on device-local heaps. The whole-graphics timestamp span includes
 GPU waits within the command buffer. Presentation has its own CPU phase.
 The final screenshot writes the telemetry and is excluded from the steady sample.
+The benchmark disables editor input, so desktop cursor hover cannot insert a
+synchronous pick readback into the measurement. Add `--visible` to measure
+presentation with a visible window. On a ray-query device, `--width 1920
+--height 1080 --soft-ray-samples 24` supplies a heavier graphics workload.
+
+For glTF deformation, the native playback regression exercises skinning and
+morph targets at the same three slot counts and compares the final pose with
+independently baked geometry. The GPU test holds three image slots pending
+while supplying different poses, then verifies both vertex streams for each
+slot. Point `VK_LAYER_PATH` at a Khronos validation-layer installation.
+
+```powershell
+python tests/validation/gltf_deformation_lifecycle_regression.py `
+  --renderer $renderer --output out/deformation-playback --suite playback
+$env:CONTAINER_RUN_GPU_GLTF_DEFORMATION = '1'
+ctest --test-dir out/build/windows-release -C Release -R '^gltf_deformation_gpu_tests$' --output-on-failure
+```
 
 CPU tests are enabled by default through `ENABLE_TESTS`. Window/Vulkan tests are
 opt-in with `ENABLE_WINDOWED_TESTS=ON`.

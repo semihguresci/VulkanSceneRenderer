@@ -120,17 +120,24 @@ def summarize(state, warmup, count):
 
 def make_command(args, model, technique, slots, policy, image):
     command = [
-        str(args.renderer), "--model", model["path"], "--import-scale", "1", "--hidden", "--no-ui",
+        str(args.renderer), "--model", model["path"], "--import-scale", "1", "--no-ui",
         "--validation" if args.validation_manifest else "--no-validation",
         "--render-technique", technique, "--frames-in-flight", str(slots),
         "--width", str(args.width), "--height", str(args.height), "--msaa", "1",
         "--camera-position", *map(str, model["cameraPosition"]), "--camera-target", *map(str, model["cameraTarget"]),
         "--camera-fov", "45", "--display-mode", "lit", "--taa", "--bloom", "--auto-exposure",
-        "--fixed-dt", ".016666667", "--ray-shadows", "raster", "--no-ray-query", "--no-ddgi",
+        "--fixed-dt", ".016666667", "--no-ddgi",
         "--warmup-frames", str(args.warmup + args.samples),
         "--capture-frame", str(args.warmup + args.samples + 1),
         "--screenshot-viewport", "--screenshot", str(image),
     ]
+    if not args.visible:
+        command.append("--hidden")
+    if args.soft_ray_samples is None:
+        command.extend(("--ray-shadows", "raster", "--no-ray-query"))
+    else:
+        command.extend(("--ray-shadows", "soft", "--ray-shadow-samples", str(args.soft_ray_samples),
+                        "--ray-shadow-light-budget", "4"))
     if policy == "serialized":
         command.append("--serialize-graphics")
     return command
@@ -178,6 +185,10 @@ def run_case(args, model, row, output, environment, validation):
             and Path(state["scene"][route]).resolve() == Path(model["path"]),
             f"Renderer did not execute the requested steady scene configuration. See {log}")
     require(args.revision is None or state["build"]["revision"] == args.revision, f"Wrong build revision. See {log}")
+    if args.soft_ray_samples is not None:
+        ray = state["rayShadows"]
+        require(ray["active"] and ray["mode"] == 2 and ray["areaSamples"] == args.soft_ray_samples,
+                f"Requested soft ray-shadow workload is unavailable. See {log}")
     row["configuration"] = {field: state[field] for field in (
         "gpu", "vendorId", "deviceId", "driverVersion", "vulkanApiVersion", "build",
         "swapchainImages", "swapchainFormat", "swapchainColorSpace",
@@ -230,6 +241,9 @@ def main():
     parser.add_argument("--repeat", type=int, default=2)
     parser.add_argument("--width", type=int, default=960)
     parser.add_argument("--height", type=int, default=540)
+    parser.add_argument("--visible", action="store_true", help="Present to a visible window with editor input disabled")
+    parser.add_argument("--soft-ray-samples", choices=range(1, 33), type=int, metavar="N",
+                        help="Use soft ray shadows with N area samples (1–32) instead of raster shadows")
     parser.add_argument("--timeout", type=int, default=300, help="Timeout per renderer process in seconds")
     parser.add_argument("--plan-only", action="store_true", help="Write the run manifest without launching the renderer")
     args = parser.parse_args()
@@ -264,6 +278,8 @@ def main():
         "warmupFrames": args.warmup,
         "framesPerWindow": args.samples,
         "resolution": [args.width, args.height],
+        "windowVisible": args.visible,
+        "softRaySamples": args.soft_ray_samples,
         "runs": [],
         "pairs": [],
     }

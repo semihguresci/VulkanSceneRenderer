@@ -98,10 +98,12 @@ limits. Full-width motion/depth preserve signed range and expected-depth precisi
 All histories stay in `GENERAL`. Sync2 barriers order all previous graphics-queue
 read/write consumers before the next compute access, including RAW and WAR across
 submissions. Per-image/parity descriptors prevent mutation of in-flight bindings.
-The existing frame-fence policy retires shared scene buffers; TAA adds no per-frame
-device-wide idle. Resize/destruction retires existing submitted work before views,
-descriptors or VMA allocations are freed. A submission failure is fatal and never
-commits pending temporal state.
+Raster pose uploads and current/previous glTF deformation streams belong to the
+acquired image. Retire that image before reusing its writable resources. Scene
+topology changes retire all readers of the shared bind stream before replacing
+it. TAA adds no per-frame device-wide idle. Resize and destruction retire
+submitted work before freeing views, descriptors or VMA allocations. A
+submission failure is fatal and never commits pending temporal state.
 
 ## Frame and surface identity
 
