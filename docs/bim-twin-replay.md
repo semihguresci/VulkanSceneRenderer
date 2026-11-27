@@ -92,7 +92,7 @@ view and leave the authored door geometry and properties intact.
 
 ## Import external telemetry
 
-Write a version-1 `container.bim-twin-telemetry` recording and pass it to
+Write a `container.bim-twin-telemetry` recording and pass it to
 `BimRoboticsTwin import INPUT.json NEW_LOG.json`. Events use unsigned integer
 nanoseconds in a single declared `clockId` and retain their producer
 `source`. An external adapter can normalize its timestamps to this domain
@@ -104,10 +104,12 @@ before importing. The recorder has no middleware dependency.
 | `planned-path` | Same robot ID with `points: [[x, y, z], …]` in the same frame. An empty plan clears the path. |
 | `sensor-status` | Sensor ID with text `state`. |
 | `bim-asset-state` | BIM semantic entity ID with text `state`. Use the entity's ID from the semantic scene export. |
+| `robot-health` | Robot ID with text `state` and optional `batteryPercent`. Available in version 2. |
+| `task-status` | Robot ID with `taskId`, text `state` and optional `progress` from zero to one. Available in version 2. |
 
 The importer sorts out-of-order observations and rejects two events with the
-same payload kind, entity ID and timestamp. Replay holds the latest eligible
-state. It interpolates position and shortest-arc yaw only between robot
+same track and timestamp. Each robot's task has its own track. Replay holds
+the latest eligible state. It interpolates position and shortest-arc yaw only between robot
 samples whose spacing is within the freshness timeout. State becomes stale
 once its age exceeds that timeout. Before a track's first event it has no
 state. A recording accepts up to 65,536 events and 32 MiB of JSON. The
@@ -118,3 +120,6 @@ metric scale. Its coordinate conversion accounts for the renderer's
 `--import-scale`, so the overlay remains aligned when the model is enlarged
 for inspection. [Coordinate conventions](coordinate-conventions.md#semantic-bim-export-for-robotics)
 · [Export semantic BIM identities](ifc-import.md#export-a-semantic-scene-for-robotics)
+
+Use message ingestion for an arriving feed that needs explicit duplicate,
+age and asset-resolution diagnostics. [Ingest robot telemetry](bim-twin-ingest.md)

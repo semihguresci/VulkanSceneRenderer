@@ -3256,6 +3256,12 @@ add_custom_test(twin_replay_tests
 )
 set_tests_properties(twin_replay_tests PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
 
+add_custom_test(twin_ingest_tests
+    ${TESTS_DIR}/robotics/twin_ingest_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics_twin
+)
+set_tests_properties(twin_ingest_tests PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
+
 if(Python3_Interpreter_FOUND)
     add_test(NAME robotics_usd_roundtrip
         COMMAND "${Python3_EXECUTABLE}" -B
@@ -3281,6 +3287,14 @@ if(Python3_Interpreter_FOUND)
             "${TESTS_DIR}/robotics/bim_twin_cli.py"
             --tool "$<TARGET_FILE:BimRoboticsTwin>")
     set_tests_properties(bim_twin_cli PROPERTIES LABELS "robotics;cpu" TIMEOUT 90)
+
+    add_test(NAME bim_twin_ingest_cli
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TESTS_DIR}/robotics/bim_twin_ingest_cli.py"
+            --tool "$<TARGET_FILE:BimRoboticsTwin>"
+            --scene-exporter "$<TARGET_FILE:BimRoboticsScene>"
+            --fixtures "${TESTS_DIR}/fixtures/robotics")
+    set_tests_properties(bim_twin_ingest_cli PROPERTIES LABELS "robotics;cpu" TIMEOUT 90)
 
     add_test(NAME bim_sensor_camera_gpu_regression
         COMMAND "${Python3_EXECUTABLE}" -B

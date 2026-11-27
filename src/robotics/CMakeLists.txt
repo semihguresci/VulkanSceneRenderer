@@ -41,7 +41,7 @@ add_library(VulkanSceneRenderer_robotics_dataset RoboticsDatasetReader.cpp Robot
 target_link_libraries(VulkanSceneRenderer_robotics_dataset PUBLIC nlohmann_json::nlohmann_json
     PRIVATE VulkanSceneRenderer_robotics_sensors VulkanSceneRenderer_fingerprint)
 
-add_library(VulkanSceneRenderer_robotics_twin TwinReplay.cpp TwinRecording.cpp)
+add_library(VulkanSceneRenderer_robotics_twin TwinReplay.cpp TwinRecording.cpp TwinIngest.cpp)
 target_link_libraries(VulkanSceneRenderer_robotics_twin PUBLIC Dep_Math
     PRIVATE VulkanSceneRenderer_robotics_scene nlohmann_json::nlohmann_json)
 
@@ -82,11 +82,14 @@ target_link_libraries(BimRoboticsDataset PRIVATE VulkanSceneRenderer_robotics_da
 set_target_properties(BimRoboticsDataset PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 container_stage_runtime_dlls(BimRoboticsDataset)
 
-add_executable(BimRoboticsTwin ${CMAKE_SOURCE_DIR}/tools/bim_robotics_twin.cpp)
+add_executable(BimRoboticsTwin
+    ${CMAKE_SOURCE_DIR}/tools/bim_robotics_twin.cpp
+    ${CMAKE_SOURCE_DIR}/tools/bim_robotics_twin_ingest.cpp)
 target_include_directories(BimRoboticsTwin PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}")
 target_link_libraries(BimRoboticsTwin PRIVATE
     VulkanSceneRenderer_robotics_twin VulkanSceneRenderer_robotics_sensors
-    VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_fingerprint nlohmann_json::nlohmann_json)
+    VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_geometry
+    VulkanSceneRenderer_fingerprint nlohmann_json::nlohmann_json)
 set_target_properties(BimRoboticsTwin PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 container_stage_runtime_dlls(BimRoboticsTwin)
 

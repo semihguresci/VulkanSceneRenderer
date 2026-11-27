@@ -190,6 +190,44 @@ def ink_counts(path):
             for name, rgb in COLORS.items()}
 
 
+def verify_ingested_status(args, work, model, recording):
+    source = json_at(recording)
+    robot = next(event["entityId"] for event in source["events"] if event["kind"] == "robot-pose")
+    events = [event for event in source["events"] if event["entityId"] != UNRESOLVED_ID]
+    events.extend({"kind": kind, "timestampNanoseconds": 2_200_000_000, "entityId": robot,
+                   "source": "gateway:plant", "payload": payload}
+                  for kind, payload in (
+                      ("robot-health", {"state": "nominal", "batteryPercent": 78}),
+                      ("task-status", {"taskId": "inspect", "state": "running", "progress": .75}),
+                      ("task-status", {"taskId": "report", "state": "queued"}),
+                  ))
+    feed = work / "external-telemetry.jsonl"
+    with feed.open("w", encoding="utf-8") as stream:
+        for event in sorted(events, key=lambda row: row["timestampNanoseconds"]):
+            row = {"schema": "container.bim-twin-event", "version": 1, "clockId": source["clockId"],
+                   "receivedTimestampNanoseconds": event["timestampNanoseconds"], "event": event}
+            if event["entityId"] == DOOR_ID:
+                row["event"] = dict(event, entityId="door-guid")
+                row["assetReference"] = "ifc-guid"
+            stream.write(json.dumps(row) + "\n")
+    ingested = work / "ingested.json"
+    code, output = run(args.tool, ["ingest", model, feed, ingested, source["sourceNamespace"], source["clockId"]],
+                       work / "ingest.log")
+    require(code == 0, f"Ingestion failed: {work / 'ingest.log'}")
+    receipt = json.loads(output)
+    require(receipt["accepted"] == len(events) and receipt["rejected"] == 0, receipt)
+    image, state = capture(args, work, "replay-ingested", model, "deferred-raster", ingested, LATE)
+    replay = state["bimTwinReplay"]
+    require(replay["sourceMatched"] and replay["resolvedAssetCount"] == 2, replay)
+    health = next(track for track in replay["tracks"] if track["kind"] == "robot-health")
+    tasks = {track["taskId"]: track for track in replay["tracks"] if track["kind"] == "task-status"}
+    require(health["state"] == "nominal" and health["batteryPercent"] == 78 and
+            health["source"] == "gateway:plant" and not health["stale"], health)
+    require(len(tasks) == 2 and tasks["inspect"]["state"] == "running" and tasks["inspect"]["progress"] == .75 and
+            tasks["report"]["state"] == "queued" and tasks["report"]["progress"] is None, tasks)
+    return {"image": image.name, "accepted": receipt["accepted"], "health": health, "tasks": tasks}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     for name in ("tool", "simulator", "scene-exporter", "renderer", "fixtures", "output"):
@@ -238,10 +276,11 @@ def main():
     write_json(wrong_scale, bad_recording)
     capture(args, work, "wrong-scale", model, "deferred-raster", wrong_scale, EARLY,
             failure="metre scale differs")
+    ingested = verify_ingested_status(args, work, model, recording)
     require(sha256(model) == before, "Replay modified the source IFC")
     write_json(work / "results.json", {"version": 1, "passed": True, "sourceSha256": before,
                                       "rawViewportSha256": sha256(viewport), "captures": summary,
-                                      "afterChangedSourceReload": detached})
+                                      "afterChangedSourceReload": detached, "ingested": ingested})
     print(f"PASS BIM digital twin playback, alignment, and provenance ({work})", flush=True)
     return 0
 

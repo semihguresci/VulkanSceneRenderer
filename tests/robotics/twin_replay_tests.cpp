@@ -61,6 +61,43 @@ TEST(TwinReplay, OrdersOutOfOrderObservationsByTimestampThenIdentityAndKind) {
   EXPECT_THROW(canonicalizeTwinRecording(log), std::invalid_argument);
 }
 
+TEST(TwinReplay, HoldsEachTaskIndependentlyAlongsideRobotHealth) {
+  auto log = recording({
+      {10, "robot/base", "dispatcher", TwinTaskStatus{"unload", "waiting", std::nullopt}},
+      {20, "robot/base", "dispatcher", TwinTaskStatus{"load", "finished", 1.0}},
+      {10, "robot/base", "monitor", TwinRobotHealth{"charging", 0.0}},
+      {10, "robot/base", "dispatcher", TwinTaskStatus{"load", "running", 0.0}},
+      {35, "robot/base", "monitor", TwinRobotHealth{"ready", 100.0}},
+  }, 12);
+  const TwinReplay replay(log);
+  const auto& ordered = replay.recording().events;
+  EXPECT_TRUE(std::holds_alternative<TwinRobotHealth>(ordered[0].payload));
+  EXPECT_EQ(std::get<TwinTaskStatus>(ordered[1].payload).taskId, "load");
+  EXPECT_EQ(std::get<TwinTaskStatus>(ordered[2].payload).taskId, "unload");
+
+  const auto initial = replay.sample(10);
+  ASSERT_EQ(initial.tracks.size(), 3u);
+  EXPECT_EQ(std::get<TwinRobotHealth>(initial.tracks[0].event.payload).batteryPercent, 0.0);
+  EXPECT_EQ(std::get<TwinTaskStatus>(initial.tracks[1].event.payload).state, "running");
+  EXPECT_FALSE(std::get<TwinTaskStatus>(initial.tracks[2].event.payload).progress.has_value());
+
+  const auto later = replay.sample(25);
+  ASSERT_EQ(later.tracks.size(), 3u);
+  EXPECT_TRUE(later.tracks[0].stale);
+  EXPECT_EQ(std::get<TwinTaskStatus>(later.tracks[1].event.payload),
+            (TwinTaskStatus{"load", "finished", 1.0}));
+  EXPECT_FALSE(later.tracks[1].stale);
+  EXPECT_EQ(std::get<TwinTaskStatus>(later.tracks[2].event.payload),
+            (TwinTaskStatus{"unload", "waiting", std::nullopt}));
+  EXPECT_TRUE(later.tracks[2].stale);
+  EXPECT_EQ(later.tracks[2].event.timestampNanoseconds, 10u);
+  const auto recharged = replay.sample(35);
+  EXPECT_EQ(std::get<TwinRobotHealth>(recharged.tracks[0].event.payload).batteryPercent, 100.0);
+
+  log.events.push_back({10, "robot/base", "other source", TwinTaskStatus{"load", "blocked", 0.0}});
+  EXPECT_THROW(canonicalizeTwinRecording(log), std::invalid_argument);
+}
+
 TEST(TwinReplay, InterpolatesShortFreshGapsByTheShortestYawArcAndKeepsSampleProvenance) {
   const TwinReplay replay(recording({pose(100, {1, 2, 3}, 170 * pi / 180, "robot/base", "simulator"),
                                      pose(110, {3, 6, 9}, -170 * pi / 180, "robot/base", "logger"),
@@ -162,6 +199,24 @@ TEST(TwinReplay, RejectsMissingProvenanceAndInvalidMetricObservations) {
   reject([](auto& log) { log.events[0].payload = TwinRobotPose{{0, 0, 0}, std::numeric_limits<double>::quiet_NaN()}; });
   reject([](auto& log) { log.events[0].payload = TwinPlannedPath{{{0, -std::numeric_limits<double>::infinity(), 0}}}; });
   reject([](auto& log) { log.events[0].payload = TwinPlannedPath{std::vector<glm::dvec3>(4'097, glm::dvec3(0))}; });
+}
+
+TEST(TwinReplay, ValidatesHealthAndTaskIdentifiersStatesAndNumericRanges) {
+  constexpr auto nan = std::numeric_limits<double>::quiet_NaN();
+  constexpr auto inf = std::numeric_limits<double>::infinity();
+  for (const auto& event : std::vector<TwinPayload>{
+           TwinRobotHealth{"ready", -1.0}, TwinRobotHealth{"ready", 100.01}, TwinRobotHealth{"ready", nan},
+           TwinRobotHealth{"", std::nullopt}, TwinTaskStatus{"", "running", 0.5},
+           TwinTaskStatus{"task\ncontrol", "running", 0.5}, TwinTaskStatus{"task", "", 0.5},
+           TwinTaskStatus{"task", "running", -0.01}, TwinTaskStatus{"task", "running", 1.01},
+           TwinTaskStatus{"task", "running", inf},
+       }) {
+    auto input = recording({{1, "robot/base", "observer", event}});
+    EXPECT_THROW(canonicalizeTwinRecording(input), std::invalid_argument);
+  }
+  auto valid = recording({{1, "robot/base", "observer", TwinRobotHealth{"ready", std::nullopt}},
+                          {1, "robot/base", "observer", TwinTaskStatus{"task", "running", 0.5}}});
+  EXPECT_NO_THROW(canonicalizeTwinRecording(valid));
 }
 
 TEST(TwinReplay, BoundsTheTapeAndAggregatePlanGeometry) {
