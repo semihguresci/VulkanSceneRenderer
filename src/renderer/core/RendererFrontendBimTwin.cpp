@@ -275,7 +275,10 @@ void RendererFrontend::drawBimTwinReplay() {
             const auto& track = state.sample.tracks[static_cast<size_t>(row)];
             ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
-            ImGui::TextUnformatted(trackStyle(track.event.payload).label);
+            if (const auto* task = std::get_if<robotics::TwinTaskStatus>(&track.event.payload))
+              ImGui::Text("Task / %s", task->taskId.c_str());
+            else
+              ImGui::TextUnformatted(trackStyle(track.event.payload).label);
             if (ImGui::IsItemHovered())
               ImGui::SetTooltip("%s\nSource: %s", track.event.entityId.c_str(), track.event.source.c_str());
             ImGui::TableSetColumnIndex(1);
