@@ -961,6 +961,26 @@ private:
     container::gpu::ComputePipeline pipeline{};
     std::vector<SceneDataReadbackSlot> slots;
   } sceneDataCapture_{};
+  struct SensorCameraBenchmarkSample {
+    uint64_t tick{};
+    uint64_t sampleIndex{};
+    uint64_t rgbReadbackBytes{};
+    uint64_t depthLabelsReadbackBytes{};
+    uint64_t outputBytes{};
+    std::optional<double> gpuRgbReadbackMs;
+    std::optional<double> gpuDepthLabelsReadbackMs;
+    double cpuRgbInvalidateMs{};
+    double cpuDepthLabelsInvalidateMs{};
+    double cpuEncodeMs{};
+    double cpuWriteMs{};
+  };
+  struct SensorCameraBenchmark {
+    VkQueryPool queryPool{VK_NULL_HANDLE};
+    uint32_t timestampValidBits{};
+    double timestampPeriodNs{};
+    std::string_view timestampStatus{"graphics queue does not support timestamps"};
+    std::vector<SensorCameraBenchmarkSample> samples;
+  };
   struct SensorCameraCaptureState {
     std::filesystem::path directory;
     std::optional<container::robotics::SensorCameraFrame> requested;
@@ -969,6 +989,7 @@ private:
     std::vector<container::robotics::BimSensorLabel> labels;
     container::robotics::BimSceneSource sceneSource;
     container::robotics::SensorLightingGains lighting;
+    std::optional<SensorCameraBenchmark> benchmark;
     double metersPerRendererUnit{1.0};
     uint64_t bimRevision{};
     size_t completed{};
@@ -1179,6 +1200,8 @@ private:
   void prepareSceneDataCapture(FrameRecordParams& frame, const glm::mat4& projection);
   void writeSceneDataCapture(uint32_t frameSlot);
   void destroySceneDataCapture();
+  void initializeSensorCameraBenchmark();
+  void writeSensorCameraBenchmark(double finalFenceWaitMs);
   void submitSensorCameraFrame(uint32_t frameSlot);
   void retireSensorCameraFrame(uint32_t frameSlot);
   void ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot);

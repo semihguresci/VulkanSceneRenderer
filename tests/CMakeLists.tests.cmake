@@ -3264,6 +3264,12 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(robotics_gpu_smoke_runner_tests PROPERTIES
         LABELS "robotics;cpu" TIMEOUT 30)
 
+    add_test(NAME bim_robotics_benchmark_runner_tests
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TESTS_DIR}/benchmarks/bim_robotics_benchmark_runner_tests.py")
+    set_tests_properties(bim_robotics_benchmark_runner_tests PROPERTIES
+        LABELS "robotics;cpu" TIMEOUT 30)
+
     add_test(NAME bim_sensor_camera_gpu_regression
         COMMAND "${Python3_EXECUTABLE}" -B
             "${TEST_VALIDATION_DIR}/bim_sensor_camera_runtime_regression.py"

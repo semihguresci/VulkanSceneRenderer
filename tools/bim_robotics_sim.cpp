@@ -30,9 +30,12 @@ namespace {
 
 using Json = nlohmann::json;
 namespace robotics = container::robotics;
+using BenchmarkClock = std::chrono::steady_clock;
+using Nanoseconds = std::chrono::nanoseconds;
 
 constexpr std::string_view usage =
-    "Usage: BimRoboticsSim INPUT.ifc|INPUT.ifcx OUTPUT.json SOURCE_NAMESPACE SCENARIO.json\n";
+    "Usage: BimRoboticsSim INPUT.ifc|INPUT.ifcx OUTPUT.json SOURCE_NAMESPACE SCENARIO.json"
+    " [--benchmark TIMINGS.json]\n";
 constexpr uint64_t nanosPerSecond = 1'000'000'000;
 constexpr uint64_t maxScenarioBytes = 4u * 1024u * 1024u;
 constexpr uint64_t maxTicks = 8191;
@@ -64,6 +67,49 @@ struct Scenario {
   std::optional<robotics::DriveSensorModel> driveSensors;
   bool reportMotionModel{};
 };
+
+struct BenchmarkMeasurements {
+  robotics::BimAssetPreprocessTimings assets;
+  Nanoseconds collisionInstall{}, simulationSetup{}, physicsTicks{}, observationTime{}, lidarSampling{};
+  std::string_view cacheStatus;
+  uint64_t sourceBytes{};
+  size_t bimElements{}, semanticEntities{}, collisionColliders{}, walkableSurfaces{};
+};
+
+class BenchmarkTimer {
+public:
+  explicit BenchmarkTimer(Nanoseconds* elapsed)
+      : elapsed_(elapsed), start_(elapsed ? BenchmarkClock::now() : BenchmarkClock::time_point{}) {}
+  ~BenchmarkTimer() {
+    if (elapsed_)
+      *elapsed_ += std::chrono::duration_cast<Nanoseconds>(BenchmarkClock::now() - start_);
+  }
+  BenchmarkTimer(const BenchmarkTimer&) = delete;
+  BenchmarkTimer& operator=(const BenchmarkTimer&) = delete;
+
+private:
+  Nanoseconds* elapsed_;
+  BenchmarkClock::time_point start_;
+};
+
+Json benchmarkReport(const BenchmarkMeasurements& benchmark, uint64_t ticks, size_t scans, size_t rays) {
+  const auto& assets = benchmark.assets;
+  const auto elapsed = [](const std::optional<Nanoseconds>& duration) {
+    return duration ? Json(duration->count()) : Json(nullptr);
+  };
+  return {{"schema", "container.bim-robotics-cpu-benchmark"}, {"version", 1}, {"clock", "steady_clock"},
+          {"assetCacheStatus", benchmark.cacheStatus}, {"physicsWorkerThreads", 1},
+          {"timingsNanoseconds",
+           {{"sourceReadAndFingerprint", assets.sourceReadAndFingerprint.count()},
+            {"bimImport", elapsed(assets.bimImport)}, {"semanticScene", elapsed(assets.semanticScene)},
+            {"collisionCook", elapsed(assets.collisionCook)}, {"walkableSurfaces", elapsed(assets.walkableSurfaces)},
+            {"collisionInstall", benchmark.collisionInstall.count()}, {"simulationSetup", benchmark.simulationSetup.count()},
+            {"physicsTicks", benchmark.physicsTicks.count()}, {"lidarSampling", benchmark.lidarSampling.count()}}},
+          {"counts", {{"sourceBytes", benchmark.sourceBytes}, {"bimElements", benchmark.bimElements},
+                      {"semanticEntities", benchmark.semanticEntities}, {"collisionColliders", benchmark.collisionColliders},
+                      {"walkableSurfaces", benchmark.walkableSurfaces}, {"physicsTicks", ticks},
+                      {"lidarScans", scans}, {"lidarRays", scans * rays}}}};
+}
 
 void checkKeys(const Json& object, std::initializer_list<std::string_view> keys) {
   if (!object.is_object()) throw std::invalid_argument("Expected a JSON scenario object");
@@ -523,13 +569,8 @@ Json driveSensorReport(const robotics::DriveSensorModel& sensors, Json samples) 
                      {"odometryYaw", "rad"}}}, {"samples", std::move(samples)}};
 }
 
-void play(robotics::DifferentialDriveSimulation& simulation, const Scenario& scenario,
-          const robotics::DifferentialDriveSimulation::TickObserver& observe) {
-  for (const auto& command : scenario.commands) {
-    if (const auto* twist = std::get_if<robotics::DriveTwist>(&command.target)) simulation.queueCommand(command.tick, *twist);
-    else simulation.queueWheelCommand(command.tick, std::get<robotics::DriveWheels>(command.target));
-  }
-  if (observe) observe(simulation.state());
+void runTicks(robotics::DifferentialDriveSimulation& simulation, const Scenario& scenario,
+              const robotics::DifferentialDriveSimulation::TickObserver& observe) {
   if (!scenario.frameNanos && scenario.frameNanosSequence.empty()) {
     for (uint64_t tick = 0; tick < scenario.ticks; ++tick) simulation.step(observe);
     return;
@@ -552,6 +593,26 @@ void play(robotics::DifferentialDriveSimulation& simulation, const Scenario& sce
     throw std::logic_error("Simulation did not execute the scenario's expected ticks");
 }
 
+void play(robotics::DifferentialDriveSimulation& simulation, const Scenario& scenario,
+          const robotics::DifferentialDriveSimulation::TickObserver& observe, BenchmarkMeasurements* benchmark) {
+  for (const auto& command : scenario.commands) {
+    if (const auto* twist = std::get_if<robotics::DriveTwist>(&command.target)) simulation.queueCommand(command.tick, *twist);
+    else simulation.queueWheelCommand(command.tick, std::get<robotics::DriveWheels>(command.target));
+  }
+  if (observe) observe(simulation.state());
+  if (!benchmark) {
+    runTicks(simulation, scenario, observe);
+    return;
+  }
+  const auto observationsBeforeTicks = benchmark->observationTime;
+  {
+    const BenchmarkTimer timer(&benchmark->physicsTicks);
+    runTicks(simulation, scenario, observe);
+  }
+  // Observers query the live world while each timed tick is committed.
+  benchmark->physicsTicks -= benchmark->observationTime - observationsBeforeTicks;
+}
+
 bool sameFile(const std::filesystem::path& first, const std::filesystem::path& second) {
   std::error_code error;
   return std::filesystem::equivalent(first, second, error);
@@ -563,7 +624,8 @@ int run(int count, Char** args) {
     std::cout << usage;
     return 0;
   }
-  if (count != 5) {
+  if ((count != 5 && count != 7) ||
+      (count == 7 && std::filesystem::path(args[5]) != "--benchmark")) {
     std::cerr << usage;
     return 2;
   }
@@ -572,6 +634,18 @@ int run(int count, Char** args) {
     if (output.extension() != ".json") throw std::invalid_argument("Output must be a .json trajectory report");
     if (sameFile(output, scenarioPath) || sameFile(output, input))
       throw std::invalid_argument("Output must be separate from the scene and scenario inputs");
+    std::filesystem::path benchmarkPath;
+    BenchmarkMeasurements measurements;
+    BenchmarkMeasurements* benchmark = nullptr;
+    if (count == 7) {
+      benchmarkPath = args[6];
+      if (benchmarkPath.extension() != ".json")
+        throw std::invalid_argument("Benchmark output must be a .json timing sidecar");
+      if (std::filesystem::exists(std::filesystem::symlink_status(benchmarkPath)) ||
+          std::filesystem::weakly_canonical(benchmarkPath) == std::filesystem::weakly_canonical(output))
+        throw std::invalid_argument("Benchmark timing output must be a fresh file separate from the simulation report");
+      benchmark = &measurements;
+    }
     const auto sourceNamespace = container::util::pathToUtf8(std::filesystem::path(args[3]));
     auto scenario = readScenario(scenarioPath);
     Json assetCache;
@@ -579,7 +653,8 @@ int run(int count, Char** args) {
     auto collision = [&] {
       auto assets = robotics::loadBimPreprocessedAssets(input, scenario.cacheDirectory,
           {.scene = {.sourceNamespace = sourceNamespace, .metersPerRendererUnit = scenario.metersPerRendererUnit},
-           .maxSlopeDegrees = scenario.options.capsule.maxSlopeDegrees});
+           .maxSlopeDegrees = scenario.options.capsule.maxSlopeDegrees}, {},
+          benchmark ? &benchmark->assets : nullptr);
       if (!assets.cacheDiagnostic.empty()) std::cerr << assets.cacheDiagnostic << '\n';
       if (!assets.scene.frame.metersPerRendererUnit)
         throw std::invalid_argument("Simulation requires known metric units. Supply metersPerRendererUnit for an unknown source scale");
@@ -591,10 +666,25 @@ int run(int count, Char** args) {
       if (!scenario.cacheDirectory.empty())
         assetCache = {{"key", assets.cacheKey}, {"producerRevision", assets.producerRevision},
                       {"status", container::util::derivedAssetCacheStatusName(assets.cacheStatus)}};
+      if (benchmark) {
+        benchmark->cacheStatus = container::util::derivedAssetCacheStatusName(assets.cacheStatus);
+        benchmark->bimElements = assets.renderModel.elements.size();
+        benchmark->semanticEntities = assets.scene.entities.size();
+        benchmark->collisionColliders = assets.collision.colliders.size();
+        benchmark->walkableSurfaces = assets.walkableSurfaces.size();
+        for (const auto& layer : sceneSource.layers)
+          benchmark->sourceBytes += layer.byteSize;
+      }
       return std::move(assets.collision);
     }();
-    robotics::BimCollisionWorld world(std::move(collision), scenario.openDoorIds, 1);
-    robotics::DifferentialDriveSimulation simulation(world, scenario.spawn, scenario.options);
+    auto world = [&] {
+      const BenchmarkTimer timer(benchmark ? &benchmark->collisionInstall : nullptr);
+      return robotics::BimCollisionWorld(std::move(collision), scenario.openDoorIds, 1);
+    }();
+    auto simulation = [&] {
+      const BenchmarkTimer timer(benchmark ? &benchmark->simulationSetup : nullptr);
+      return robotics::DifferentialDriveSimulation(world, scenario.spawn, scenario.options);
+    }();
     Json scans = Json::array();
     Json driveSamples = Json::array();
     robotics::DifferentialDriveSimulation::TickObserver observe;
@@ -605,12 +695,17 @@ int run(int count, Char** args) {
           scenario.driveSensors->schedule().samplesThrough(scenario.ticks)));
     if (scenario.lidar || scenario.driveSensors) {
       auto cast = scenario.lidar ? world.lidarRaycasts() : robotics::LidarCast{};
-      observe = [&scenario, &scans, &driveSamples, cast = std::move(cast)](const robotics::DifferentialDriveState& state) {
+      observe = [&scenario, &scans, &driveSamples, benchmark,
+                 cast = std::move(cast)](const robotics::DifferentialDriveState& state) {
+        const BenchmarkTimer timer(benchmark ? &benchmark->observationTime : nullptr);
         if (const auto& lidar = scenario.lidar; lidar && lidar->schedule.due(state.tick)) {
           const robotics::LidarPose worldFromBase{
               state.base.position, glm::angleAxis(state.base.yaw, glm::dvec3(0.0, 0.0, 1.0))};
-          scans.push_back(lidarScan(lidar->sensor.scan(worldFromBase, lidar->schedule, state.tick, cast),
-                                    lidar->sensor.settings().recordIdealRanges));
+          const auto scan = [&] {
+            const BenchmarkTimer lidarTimer(benchmark ? &benchmark->lidarSampling : nullptr);
+            return lidar->sensor.scan(worldFromBase, lidar->schedule, state.tick, cast);
+          }();
+          scans.push_back(lidarScan(scan, lidar->sensor.settings().recordIdealRanges));
         }
         if (auto& sensors = scenario.driveSensors) {
           const auto reading = sensors->observe({.tick = state.tick, .base = state.base,
@@ -620,7 +715,7 @@ int run(int count, Char** args) {
         }
       };
     }
-    play(simulation, scenario, observe);
+    play(simulation, scenario, observe, benchmark);
     if (scenario.lidar && scans.size() != scenario.lidar->schedule.scansThrough(scenario.ticks))
       throw std::logic_error("Simulation did not produce every scheduled LiDAR scan");
     if (scenario.driveSensors && driveSamples.size() != scenario.driveSensors->schedule().samplesThrough(scenario.ticks))
@@ -646,6 +741,14 @@ int run(int count, Char** args) {
     if (scenario.driveSensors) report["driveSensors"] = driveSensorReport(*scenario.driveSensors, std::move(driveSamples));
     if (scenario.reportMotionModel) report["motionModel"] = motionModelReport(scenario.options);
     container::util::writeFileAtomically(output, report.dump(2) + '\n');
+    if (benchmark) {
+      const auto rays = scenario.lidar ? scenario.lidar->sensor.directions().size() : 0;
+      const auto timing = benchmarkReport(*benchmark, simulation.clock().tick(),
+                                          scenario.lidar ? scenario.lidar->schedule.scansThrough(scenario.ticks) : 0,
+                                          rays);
+      container::util::writeFileAtomically(benchmarkPath, timing.dump(2) + '\n',
+                                          container::util::AtomicFilePublication::CreateNew);
+    }
     std::cout << "Simulated " << simulation.clock().tick() << " fixed ticks\n";
     return 0;
   } catch (const std::exception& error) {

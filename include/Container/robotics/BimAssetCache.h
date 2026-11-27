@@ -7,7 +7,9 @@
 #include "Container/utility/ContentFingerprint.h"
 #include "Container/utility/DerivedAssetCache.h"
 
+#include <chrono>
 #include <filesystem>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <vector>
@@ -24,6 +26,15 @@ struct BimAssetPreprocessOptions {
   RoboticsSceneOptions scene;
   BimCollisionCookOptions cook;
   double maxSlopeDegrees{30.0};
+};
+
+struct BimAssetPreprocessTimings {
+  std::chrono::nanoseconds sourceReadAndFingerprint{};
+  // Preprocessing is bypassed on a cache hit.
+  std::optional<std::chrono::nanoseconds> bimImport;
+  std::optional<std::chrono::nanoseconds> semanticScene;
+  std::optional<std::chrono::nanoseconds> collisionCook;
+  std::optional<std::chrono::nanoseconds> walkableSurfaces;
 };
 
 struct BimPreprocessedAssets {
@@ -47,7 +58,8 @@ struct BimPreprocessedAssets {
 // evaluated by callers against the returned immutable source revision.
 [[nodiscard]] BimPreprocessedAssets loadBimPreprocessedAssets(
     const std::filesystem::path& source, const std::filesystem::path& cacheDirectory,
-    const BimAssetPreprocessOptions& options, std::stop_token stop = {});
+    const BimAssetPreprocessOptions& options, std::stop_token stop = {},
+    BimAssetPreprocessTimings* timings = nullptr);
 
 void writeBimCachedRenderPreview(const std::filesystem::path& destination,
                                 const geometry::dotbim::Model& model,

@@ -457,6 +457,7 @@ void printCommandLineHelp() {
   --sensor-camera FILE          Capture a calibrated BIM camera dataset from a JSON spec
   --sensor-trajectory FILE      Use fixed-tick BimRoboticsSim poses for the sensor camera
   --sensor-output DIRECTORY     Create a new output directory for the camera dataset
+  --sensor-benchmark FILE       Record calibrated camera timing to a new JSON file
   --sensor-namespace NAME       Semantic source namespace for dataset IDs (defaults to model stem)
   --sensor-meters-per-renderer-unit SCALE
                                 Supply metric scale for models without declared length units
@@ -972,6 +973,12 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     }
     if (arg == "--sensor-output") {
       config.sensorDatasetPath = container::util::pathFromUtf8(requireValue(argc, argv, i, arg));
+      continue;
+    }
+    if (arg == "--sensor-benchmark") {
+      config.sensorBenchmarkPath = container::util::pathFromUtf8(requireValue(argc, argv, i, arg));
+      if (config.sensorBenchmarkPath.empty())
+        throw std::invalid_argument("--sensor-benchmark requires a file path");
       continue;
     }
     if (arg == "--sensor-namespace") {
@@ -1535,9 +1542,9 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   }
 
   if (sensorCameraSpec.empty()) {
-    if (sensorTrajectory || !config.sensorDatasetPath.empty() ||
+    if (sensorTrajectory || !config.sensorDatasetPath.empty() || !config.sensorBenchmarkPath.empty() ||
         !config.sensorSourceNamespace.empty() || config.sensorMetersPerRendererUnit)
-      throw std::invalid_argument("Sensor trajectory, output, namespace and unit override require --sensor-camera");
+      throw std::invalid_argument("Sensor trajectory, output, benchmark, namespace and unit override require --sensor-camera");
   } else {
     if (config.sensorDatasetPath.empty())
       throw std::invalid_argument("--sensor-camera requires --sensor-output DIRECTORY");

@@ -171,13 +171,16 @@ class Harness:
             temporary.write_bytes(data)
             temporary.replace(directory / "summary.json")
 
-    def run(self, name, scenario, fixture="lidar-corner.ifc", namespace="replay-corner", rejection=None):
+    def run(self, name, scenario, fixture="lidar-corner.ifc", namespace="replay-corner", rejection=None,
+            benchmark=False):
         folder = self.run_dir / name
         folder.mkdir()
         scenario_path, report_path = folder / "scenario.json", folder / "report.json"
         encoded = (json.dumps(scenario, indent=2, allow_nan=False) + "\n").encode()
         scenario_path.write_bytes(encoded)
         command = [str(self.sim), str(self.fixtures / fixture), str(report_path), namespace, str(scenario_path)]
+        if benchmark:
+            command.extend(["--benchmark", str(folder / "timings.json")])
         record = {"name": name, "command": command, "scenarioSha256": digest(encoded)}
         self.summary["runs"].append(record)
         started = time.monotonic()
@@ -375,6 +378,41 @@ def lidar_readout_checks(harness, scenario, noisy):
                                       "measured": measured, "dropped": dropped, "perturbed": perturbed})
 
 
+def benchmark_checks(harness, quiet, baseline):
+    def timed_run(name, scenario, expected_status):
+        result = harness.run(name, scenario, benchmark=True)
+        timing = strict_json((harness.run_dir / name / "timings.json").read_bytes())
+        equal("CPU timing schema", "container.bim-robotics-cpu-benchmark", timing["schema"])
+        equal("CPU timing version", 1, timing["version"])
+        equal("CPU timing clock", "steady_clock", timing["clock"])
+        equal("CPU timing cache status", expected_status, timing["assetCacheStatus"])
+        phases = timing["timingsNanoseconds"]
+        for phase in ("bimImport", "semanticScene", "collisionCook", "walkableSurfaces"):
+            if expected_status == "hit":
+                equal(f"Cached phase {phase}", None, phases[phase])
+            else:
+                require(type(phases[phase]) is int and phases[phase] >= 0, f"Missing CPU timing for {phase}")
+        for phase in ("sourceReadAndFingerprint", "collisionInstall", "simulationSetup", "physicsTicks", "lidarSampling"):
+            require(type(phases[phase]) is int and phases[phase] >= 0, f"Missing CPU timing for {phase}")
+        counts = timing["counts"]
+        scans = result[1]["lidar"]["scans"]
+        equal("CPU timing source bytes", (harness.fixtures / "lidar-corner.ifc").stat().st_size, counts["sourceBytes"])
+        equal("CPU timing committed physics ticks", TICKS, counts["physicsTicks"])
+        equal("CPU timing LiDAR scans", len(scans), counts["lidarScans"])
+        equal("CPU timing LiDAR rays", sum(len(scan["returns"]) for scan in scans), counts["lidarRays"])
+        return result
+
+    framed = copy.deepcopy(quiet)
+    framed["frameNanosecondsSequence"] = partitions()["stalled"]
+    harness.exact("CPU benchmark preserves simulation report bytes", baseline,
+                  timed_run("benchmark-uncached", framed, "disabled"))
+    framed["assetCacheDirectory"] = str(harness.run_dir / "benchmark-cache")
+    timed_run("benchmark-cache-cold", framed, "miss")
+    timed = timed_run("benchmark-cache-warm", framed, "hit")
+    harness.exact("Warm CPU benchmark preserves simulation report bytes",
+                  harness.run("benchmark-cache-warm-baseline", framed), timed)
+
+
 def doorway_checks(harness):
     scenario = {"version": 1, "initialFeet": [-1.5, 0, 1.2], "ticks": TICKS, "ticksPerSecond": HZ,
                 "maxTicksPerAdvance": 7, "commands": [{"tick": 0, "linear": 1, "angular": 0}]}
@@ -438,11 +476,13 @@ def main():
     try:
         harness = Harness(args)
         quiet = corner_scenario()
-        quiet_oracles(harness, matrix(harness, "quiet", quiet)[1])
+        quiet_report = matrix(harness, "quiet", quiet)
+        quiet_oracles(harness, quiet_report[1])
         noisy = noisy_scenario(quiet)
         noisy_report = matrix(harness, "noisy", noisy)[1]
         seed_checks(harness, noisy, noisy_report)
         lidar_readout_checks(harness, noisy, noisy_report)
+        benchmark_checks(harness, quiet, quiet_report)
         doorway_checks(harness)
         negative_checks(harness, quiet)
         harness.summary["status"] = "passed"

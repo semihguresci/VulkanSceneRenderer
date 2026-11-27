@@ -1,5 +1,9 @@
 # BIM inspection performance
 
+The robotics benchmark uses the same Tekla House model to measure collision
+cooking, fixed ticks, native sensor readback and dataset throughput.
+[Benchmark large BIM robotics workloads](bim-robotics-benchmark.md)
+
 Tekla House IFCX has 8,790 render objects. The former GUI path built schedule
 and comparison inputs from all imported metadata and aggregated three schedules
 on every frame, before testing whether Scene Controls or its BIM sections were

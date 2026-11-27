@@ -804,6 +804,7 @@ void recordOpaqueSceneDataCapture(VkCommandBuffer cmd,
   if (depth == VK_NULL_HANDLE) {
     return;
   }
+  p.screenshot.sensorTimestamps.record(cmd, FrameSensorReadbackTimestamps::DepthBegin);
 
   // The G-buffer has already made its color attachments shader-readable.
   // Temporarily expose scene depth and restore its attachment layout for
@@ -836,6 +837,7 @@ void recordOpaqueSceneDataCapture(VkCommandBuffer cmd,
   // write color attachments. Those read-to-write hazards need execution order.
   barrier.dstStageMask |= VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
   vkCmdPipelineBarrier2(cmd, &dependency);
+  p.screenshot.sensorTimestamps.record(cmd, FrameSensorReadbackTimestamps::DepthEnd);
 }
 
 VkPipeline chooseDeferredRasterPipeline(VkPipeline preferred,
@@ -1896,6 +1898,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     BloomManager *bloomManager = deferred->bloomManager();
     const LightingManager *lightingManager = deferred->lightingManager();
     const ExposureManager *exposureManager = deferred->exposureManager();
+    p.screenshot.sensorTimestamps.record(cmd, FrameSensorReadbackTimestamps::RgbBegin);
     static_cast<void>(recordDeferredPostProcessPassCommands(
         {.commandBuffer = cmd,
          .renderPass = p.postProcess.renderPass,

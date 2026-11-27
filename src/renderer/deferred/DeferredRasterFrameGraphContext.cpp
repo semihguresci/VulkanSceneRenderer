@@ -243,6 +243,7 @@ void DeferredRasterFrameGraphContext::afterGraphExecution(
   }
   if (p.screenshot.sceneLinear) {
     recordLinearCaptureHostBarrier(cmd, p.screenshot.readbackBuffer);
+    p.screenshot.sensorTimestamps.record(cmd, FrameSensorReadbackTimestamps::RgbEnd);
     return;
   }
   recordScreenshotCaptureCopy({.commandBuffer = cmd,

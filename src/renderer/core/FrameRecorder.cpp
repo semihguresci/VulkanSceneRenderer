@@ -120,6 +120,7 @@ void FrameRecorder::record(VkCommandBuffer commandBuffer,
 
   if (p.services.gpuProfiler)
     p.services.gpuProfiler->beginFrame(commandBuffer, p.runtime.frameSlot);
+  p.screenshot.sensorTimestamps.reset(commandBuffer);
   if (p.lifecycle.afterCommandBufferBegin) {
     p.lifecycle.afterCommandBufferBegin(commandBuffer, p);
   }
