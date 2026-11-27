@@ -102,7 +102,7 @@ std::optional<Side> nearSide(const std::vector<Room>& rooms, const IdSet& candid
     for (const auto& [entry, exit] : room_geometry::interiorIntervals(*room.volume, origin, direction)) {
       if (entry < -boundaryTolerance || entry > portalDepth + roomApproachTolerance)
         continue;
-      const double anchor = std::max(entry + clearance, portalDepth + clearance);
+      const double anchor = std::max(entry, 0.0) + clearance;
       if (anchor > exit - clearance)
         continue;
       if (result)
@@ -115,15 +115,28 @@ std::optional<Side> nearSide(const std::vector<Room>& rooms, const IdSet& candid
 }
 
 std::optional<glm::dvec3> floorAt(const BimWalkabilityQueries& queries, const Side& side,
-                                 const Bounds& aperture, const BimWalkabilitySettings& agent) {
-  const auto& room = side.room->volume->bounds;
-  const double minHeight = std::max(room.minimum.z, aperture.minimum.z - agent.maxStepHeight);
+                                 const Bounds& aperture, glm::dvec3 direction,
+                                 const BimWalkabilitySettings& agent) {
+  const auto& volume = *side.room->volume;
+  const auto& room = volume.bounds;
+  const double allowedChange = std::max(agent.maxStepHeight, agent.maxDropHeight);
+  const double minHeight = std::max(room.minimum.z, aperture.minimum.z - allowedChange);
   const auto ray = queries.castSegment(
       side.point, glm::dvec3(0.0, 0.0, minHeight - side.point.z - agent.elevationTolerance));
   if (!ray || !ray->walkableSupport ||
       ray->position.z < minHeight - agent.elevationTolerance ||
       ray->position.z > room.maximum.z)
     return std::nullopt;
+  // A space may taper or move sideways with height. Certify the anchor
+  // again after moving it down to the physical floor.
+  for (const auto rise : {std::clamp(agent.skin, .001, .02), agent.height * .5}) {
+    const auto intervals = room_geometry::interiorIntervals(
+        volume, ray->position + glm::dvec3(0, 0, rise), direction);
+    if (!std::ranges::any_of(intervals, [](const auto& interval) {
+          return interval.first < 0 && interval.second > 0;
+        }))
+      return std::nullopt;
+  }
   return ray->position;
 }
 
@@ -288,8 +301,8 @@ BimRoomGraph buildBimRoomGraph(const geometry::dotbim::Model& model, const Robot
     if (portal.state == BimPortalState::Open) {
       if (host && staticColliders.contains(host->id)) {
         for (const auto& probe : probes) {
-          const auto start = floorAt(queries, probe.sides[0], *bounds, agent);
-          const auto end = floorAt(queries, probe.sides[1], *bounds, agent);
+          const auto start = floorAt(queries, probe.sides[0], *bounds, *axis, agent);
+          const auto end = floorAt(queries, probe.sides[1], *bounds, *axis, agent);
           if (start && end) {
             testDirection(portal.forward, *start, *end, queries, agent);
             testDirection(portal.reverse, *end, *start, queries, agent);

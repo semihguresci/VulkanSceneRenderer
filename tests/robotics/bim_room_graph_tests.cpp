@@ -250,4 +250,40 @@ TEST(BimRoomGraph, OpenDoorRetainsAdjacencyWhenAgentCannotClearLintel) {
   EXPECT_EQ(portal.reverse->result, BimWalkabilityFailure::Blocked);
 }
 
+TEST(BimRoomGraph, SupportPointMustBeInsideTheRoomAtFloorHeight) {
+  auto model = loadRoomFixture();
+  const auto west = std::ranges::find(model.elements, lowerWest, &bim::Element::guid);
+  ASSERT_NE(west, model.elements.end());
+  const auto mesh = std::ranges::find(model.meshRanges, west->meshId, &bim::MeshRange::meshId);
+  ASSERT_NE(mesh, model.meshRanges.end());
+  const auto lastMesh = std::ranges::max_element(model.meshRanges, {}, &bim::MeshRange::meshId);
+  auto sheared = *mesh;
+  sheared.meshId = lastMesh->meshId + 1;
+  sheared.firstIndex = static_cast<uint32_t>(model.indices.size());
+  // Give only Lower West a separate geometry range. Native IFC Y maps to REP-103 X.
+  // The shape is unchanged at the aperture midpoint (1.05 m above the floor),
+  // but at floor height the wall-facing side recedes from X=-.1 m to X=-1.15 m.
+  for (uint32_t i = 0; i < mesh->indexCount; ++i) {
+    auto vertex = model.vertices.at(model.indices.at(mesh->firstIndex + i));
+    vertex.position.y += vertex.position.z - 1050.f;
+    model.indices.push_back(static_cast<uint32_t>(model.vertices.size()));
+    model.vertices.push_back(vertex);
+  }
+  model.meshRanges.push_back(sheared);
+  west->meshId = sheared.meshId;
+
+  const auto scene = roomScene(model);
+  const std::array openDoors{byGuid(scene, roomDoor).id};
+  const BimCollisionWorld world(cookBimCollisionGeometry(model, scene), openDoors);
+  EXPECT_TRUE(traceWalkablePath({-.452, 0, 1.2}, {.452, 0, 1.2}, world.walkabilityQueries()).reachable);
+  const auto graph = buildBimRoomGraph(model, scene, world);
+  expectLowerPair(graph, scene);
+  ASSERT_EQ(graph.portals.size(), 1u);
+  const auto& portal = graph.portals.front();
+  EXPECT_EQ(portal.evidence, "authored-space-boundary");
+  EXPECT_EQ(portal.state, BimPortalState::Open);
+  EXPECT_FALSE(portal.forward && portal.forward->result == BimWalkabilityFailure::None);
+  EXPECT_FALSE(portal.reverse && portal.reverse->result == BimWalkabilityFailure::None);
+}
+
 } // namespace
