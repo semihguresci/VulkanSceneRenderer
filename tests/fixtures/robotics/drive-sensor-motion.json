@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "initialFeet": [0, 0, 0],
+  "ticks": 180,
+  "commands": [
+    { "tick": 30, "linear": 0.6, "angular": 0 },
+    { "tick": 90, "linear": 0.6, "angular": 1 },
+    { "tick": 150, "linear": 0, "angular": 0 }
+  ],
+  "driveSensors": {
+    "samplesPerSecondMilliHz": 12000,
+    "encoders": { "countsPerRevolution": 2048 }
+  }
+}

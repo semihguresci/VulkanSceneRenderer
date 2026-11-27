@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Container/robotics/SensorSchedule.h"
+
 #include <glm/gtc/quaternion.hpp>
 #include <glm/vec3.hpp>
 
@@ -55,19 +57,19 @@ struct LidarReturn {
 // tick at or after its ideal time. The rate cannot exceed one scan per tick.
 class LidarSchedule {
 public:
-  LidarSchedule(uint32_t ticksPerSecond, uint32_t scansPerSecondMilliHz, uint64_t firstTick = 0);
-  [[nodiscard]] bool due(uint64_t tick) const noexcept;
+  LidarSchedule(uint32_t ticksPerSecond, uint32_t scansPerSecondMilliHz, uint64_t firstTick = 0)
+      : timing_(ticksPerSecond, scansPerSecondMilliHz, firstTick) {}
+  [[nodiscard]] bool due(uint64_t tick) const noexcept { return timing_.due(tick); }
   // Inclusive count of due scans from the first tick through tick.
-  [[nodiscard]] uint64_t scansThrough(uint64_t tick) const;
-  [[nodiscard]] double seconds(uint64_t tick) const noexcept;
-  [[nodiscard]] uint32_t ticksPerSecond() const noexcept { return ticksPerSecond_; }
-  [[nodiscard]] uint32_t scansPerSecondMilliHz() const noexcept { return scanMilliHz_; }
-  [[nodiscard]] uint64_t firstTick() const noexcept { return firstTick_; }
+  [[nodiscard]] uint64_t scansThrough(uint64_t tick) const { return timing_.samplesThrough(tick); }
+  [[nodiscard]] double seconds(uint64_t tick) const noexcept { return timing_.seconds(tick); }
+  [[nodiscard]] uint32_t ticksPerSecond() const noexcept { return timing_.ticksPerSecond(); }
+  [[nodiscard]] uint32_t scansPerSecondMilliHz() const noexcept { return timing_.samplesPerSecondMilliHz(); }
+  [[nodiscard]] uint64_t firstTick() const noexcept { return timing_.firstTick(); }
 
 private:
-  uint32_t ticksPerSecond_;
-  uint32_t scanMilliHz_;
-  uint64_t firstTick_;
+  friend class RaycastLidar;
+  SensorSchedule timing_;
 };
 
 struct LidarScan {
