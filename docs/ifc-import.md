@@ -98,8 +98,8 @@ checks are free of validation and synchronization errors.
 | `IfcSurfaceOfLinearExtrusion`, `IfcSurfaceOfRevolution` | Drawable open surface charts and pcurve/advanced-face bases. Centerlines, rounded rectangles, hollow circles and rectangles, and disjoint composite `CURVE` members retain their own domains and placements. A standalone revolution can include one certified smooth endpoint on the axis. |
 | Auxiliary curves | Native lines and authored metric strokes for the concrete IFC 4.3 curve families listed below, including curves inside `IFCGEOMETRICCURVESET`. Closed paths retain their final segment; independent paths remain separate. Mapped instances, placements, units, source fonts, numeric model-space widths, colors and product identity are retained. Unbounded curves require explicit trims or segments. |
 
-Polygon triangulation uses Mapbox Earcut, a header-only vcpkg dependency
-(`earcut-hpp`, tested with 3.2.4). It is ISC licensed; Windows packages include
+Polygon triangulation uses Mapbox Earcut 3.2.4, pinned by the `earcut-hpp` vcpkg
+overlay. It is ISC licensed; Windows packages include
 `Earcut-ISC.txt`. Before triangulation, the importer checks finite coordinates,
 planarity, loop intersections and hole containment. Area checks reject an
 incomplete triangulation. This is not a general IFC schema or solid-manifold
