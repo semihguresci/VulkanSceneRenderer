@@ -1558,6 +1558,9 @@ void RendererFrontend::initialize() {
   if (!svc_.config.bimModelPath.empty()) {
     subs_.bimManager = std::make_unique<BimManager>(
         svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
+    if (svc_.config.sensorCameraPlayback)
+      subs_.bimManager->enableSensorLabels(svc_.config.sensorSourceNamespace,
+                                          svc_.config.sensorMetersPerRendererUnit);
     subs_.bimManager->resizeObjectFrames(static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
     subs_.bimManager->createMeshletResidencyResources(
         container::util::executableDirectory());
@@ -2182,6 +2185,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   auto phaseStart = frameStart;
   concurrencyPolicy.waitBeforeAcquire(*subs_.frameSyncManager,
                                       frame_.currentFrame);
+  retireSensorCameraFrame(frame_.currentFrame);
   if (subs_.renderPassGpuProfiler)
     subs_.renderPassGpuProfiler->markFenceComplete(frame_.currentFrame);
   processEnvironmentLoad();
@@ -2508,10 +2512,11 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   frameTemporalSettings.enabled =
       (frameTemporalSettings.enabled || temporal.upscalingActive()) && !referencePathActive() &&
       (mode == 0u || mode == 8u || (mode >= 100u && mode <= 104u));
-  const glm::mat4 projection = gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
+  const auto* renderCamera = renderCameraOverride();
+  const glm::mat4 projection = renderCamera ? renderCamera->projection :
       temporalCamera->projectionMatrix(float(displayExtent.width) / float(displayExtent.height));
   if (svc_.config.textureStreamingFallbackExtent) {
-    const auto view = gltfAnimationCamera_ ? gltfAnimationCamera_->view
+    const auto view = renderCamera ? renderCamera->view
                                           : temporalCamera->viewMatrix();
     updateTextureStreaming(view, projection, displayExtent);
   }
@@ -2600,8 +2605,8 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     const std::optional<ShadowCasterSceneBounds> shadowCasterBounds =
         accumulateShadowCasterSceneBounds(subs_.sceneController.get(),
                                           subs_.bimManager.get());
-    if (gltfAnimationCamera_) {
-      const auto& camera = *gltfAnimationCamera_;
+    if (renderCamera) {
+      const auto& camera = *renderCamera;
       subs_.shadowManager->update(
           camera.view, camera.shadowProjection, camera.nearPlane, camera.farPlane,
           glm::vec3(ld.directionalDirection), shadowSettings,
@@ -2668,7 +2673,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   }
   attachActiveTechniqueLifecycle(frameRecordParams);
   if (subs_.guiManager && subs_.guiManager->assetStreamingOverlay() != AssetStreamingOverlay::Off) {
-    const auto view = gltfAnimationCamera_ ? gltfAnimationCamera_->view : temporalCamera->viewMatrix();
+    const auto view = renderCamera ? renderCamera->view : temporalCamera->viewMatrix();
     drawAssetStreamingOverlay(frameRecordParams, projection * view);
   }
 
@@ -2677,7 +2682,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   if (frameRecordParams.screenshot.sceneLinear)
     subs_.frameResourceManager->setLinearCaptureTarget(
         imageIndex, frameRecordParams.screenshot.readbackBuffer);
-  if (screenshotThisFrame && screenshot_.sceneData)
+  if (screenshotThisFrame && (screenshot_.sceneData || sensorCameraCapture_.requested))
     prepareSceneDataCapture(frameRecordParams, projection);
   if (telemetry) {
     telemetry->setCpuPhase(RendererTelemetryPhase::DescriptorUpdate,
@@ -2805,7 +2810,9 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
     referenceSeriesSamples_ += batch;
   }
 
-  if (screenshotThisFrame) {
+  if (screenshotThisFrame && sensorCameraCapture_.requested) {
+    submitSensorCameraFrame(frame_.currentFrame);
+  } else if (screenshotThisFrame) {
     phaseStart = TelemetryClock::now();
     const VkFence fence = subs_.frameSyncManager->fence(frame_.currentFrame);
     if (vkWaitForFences(svc_.ctx.deviceWrapper->device(), 1, &fence, VK_TRUE,
@@ -7197,7 +7204,15 @@ void RendererFrontend::refreshCameraData() {
   // UI actions, viewpoint snapshots and the active ECS camera need the CPU
   // view immediately. The image fence owns publication to the GPU buffer.
   subs_.cameraController->updateCameraBuffer(buffers_.cameraData, {});
-  (void)applyGltfAnimationCamera();
+  if (sensorCameraCapture_.camera) {
+    const auto& camera = *sensorCameraCapture_.camera;
+    buffers_.cameraData = camera.data;
+    if (subs_.sceneController)
+      (void)subs_.sceneController->world().setActiveCamera(
+          buffers_.cameraData, camera.nearPlane, camera.farPlane);
+  } else {
+    (void)applyGltfAnimationCamera();
+  }
   // Keep weak viewport intent initialized in headless captures as well as the
   // editor. Failed writes then do not create a view revision by lazy setup.
   (void)refreshCameraViewPoseViewRevision();
@@ -7683,7 +7698,7 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
     return;
   }
   if (screenshot_.sceneData)
-    writeSceneDataCapture();
+    writeSceneDataCapture(frameSlot);
   const auto* referenceCapture = referencePathActive() ? subs_.referencePathTracePass.get() : nullptr;
   const auto ground = referenceCapture ? referenceCapture->effectiveGround() : ReferenceGroundSettings{};
   const bool shadowMatte = ground.mode == ReferenceGroundMode::ShadowMatte;
@@ -10145,12 +10160,13 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
   const float rasterLodError = rasterTechnique && !referencePathActive() && !exactGeometry
       ? svc_.config.geometryLodErrorPixels : 0.0f;
   geometry::GeometryLodView lodView{};
+  const auto* renderCamera = renderCameraOverride();
   if (rasterLodError > 0.0f) {
     const auto extent = svc_.swapChainManager.extent();
     const auto* camera = subs_.cameraController ? subs_.cameraController->camera() : nullptr;
     if (camera && extent.width && extent.height) {
-      lodView = {gltfAnimationCamera_ ? gltfAnimationCamera_->view : camera->viewMatrix(),
-                 gltfAnimationCamera_ ? gltfAnimationCamera_->projection :
+      lodView = {renderCamera ? renderCamera->view : camera->viewMatrix(),
+                 renderCamera ? renderCamera->projection :
                      camera->projectionMatrix(static_cast<float>(extent.width) / extent.height),
                  {extent.width, extent.height}};
     }
@@ -10183,9 +10199,14 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     const BimDrawFilter gpuVisibilityFilter =
         bimFilter.requiresCpuFiltering() ? BimDrawFilter{} : bimFilter;
     subs_.bimManager->updateVisibilityFilterSettings(gpuVisibilityFilter, imageIndex);
-    const auto bimLayers = subs_.guiManager
+    auto bimLayers = subs_.guiManager
                                ? subs_.guiManager->bimLayerVisibilityState()
                                : container::ui::BimLayerVisibilityState{};
+    const bool sensorFrame = sensorCameraCapture_.requested.has_value();
+    if (sensorFrame) {
+      bimLayers.pointCloudVisible = false;
+      bimLayers.curvesVisible = false;
+    }
     BimFrameDrawRoutingInputs bimRoutingInputs = bimFrameDrawRoutingInputs(
         *subs_.bimManager, bimFilter, bimLayers, nullptr);
     BimFrameDrawRoutingPlan bimRouting =
@@ -10222,6 +10243,13 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
         selectedBimObjectIndex_);
     assignFrameDrawLists(p.bim.draws, meshDraws);
     p.bim.draws.sourceRevision = meshDraws.sourceRevision;
+    if (sensorFrame) {
+      p.bim.draws.transparentDrawCommands = nullptr;
+      p.bim.draws.transparentSingleSidedDrawCommands = nullptr;
+      p.bim.draws.transparentWindingFlippedDrawCommands = nullptr;
+      p.bim.draws.transparentDoubleSidedDrawCommands = nullptr;
+      p.bim.transparentMeshDrawsUseGpuVisibility = false;
+    }
     if (bimLayers.pointCloudVisible) {
       if (bimRouting.pointPlaceholderDraws != nullptr) {
         assignFrameDrawLists(p.bim.pointDraws,
@@ -10637,7 +10665,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     }
   }
   p.camera.orthographic =
-      gltfAnimationCamera_ ? gltfAnimationCamera_->orthographic :
+      renderCamera ? renderCamera->orthographic :
       (subs_.cameraController != nullptr &&
        subs_.cameraController->isOrthographic());
   if (subs_.shadowManager) {

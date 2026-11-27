@@ -412,6 +412,15 @@ report. Planar wheel odometry starts at the origin and integrates the measured
 count increments on every tick. The report includes the sensor settings,
 units and synchronized samples. The C++ sensor model is usable without Jolt.
 
+### Capture calibrated BIM camera datasets
+
+The renderer can export aligned scene-linear RGB, axial metric depth, and
+integer instance/semantic masks from a static camera or fixed-tick
+`BimRoboticsSim` base-pose report. The hidden Vulkan capture uses a versioned
+camera specification and writes per-frame EXR/JSON pairs plus a label manifest.
+See [camera dataset capture](sensor-camera-datasets.md) for a doorway example,
+calibration, timing, distortion/noise settings and completion semantics.
+
 ### Import and pose an articulated URDF robot
 
 Build `BimRoboticsUrdf` with `ENABLE_ROBOTICS_URDF=ON`. The tool uses

@@ -7,6 +7,7 @@
 #include "Container/renderer/effects/DisplayGradePreset.h"
 #include "Container/renderer/lighting/SkyPreset.h"
 #include "Container/renderer/pathtracing/ReferenceFireflyClamp.h"
+#include "Container/robotics/SensorCamera.h"
 #include "Container/utility/Platform.h"
 
 #include <algorithm>
@@ -20,6 +21,7 @@
 #include <filesystem>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -452,6 +454,12 @@ void printCommandLineHelp() {
   --screenshot PATH             Capture window PNG or scene-linear EXR
   --screenshot-viewport         Omit editor overlays from PNG capture
   --capture-data                Add depth, normals and object IDs to a glTF Scene EXR capture
+  --sensor-camera FILE          Capture a calibrated BIM camera dataset from a JSON spec
+  --sensor-trajectory FILE      Use fixed-tick BimRoboticsSim poses for the sensor camera
+  --sensor-output DIRECTORY     Create a new output directory for the camera dataset
+  --sensor-namespace NAME       Semantic source namespace for dataset IDs (defaults to model stem)
+  --sensor-meters-per-renderer-unit SCALE
+                                Supply metric scale for models without declared length units
   --gpu-hardware-telemetry      Add optional NVML readings to capture telemetry
   --save-scene PATH              Save primary editable scene as .glb or .gltf
   --save-linked-scene PATH       Save a companion .gltf with retained URI links
@@ -498,6 +506,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   bool explicitDdgiDetailBudget = false;
   bool explicitFrameCapture = false;
   bool explicitPathSampleLimit = false;
+  std::filesystem::path sensorCameraSpec;
+  std::optional<std::filesystem::path> sensorTrajectory;
   container::geometry::vdb::ImportOptions vdbModelOptions;
   bool vdbModelOptionsRequested=false;
   VdbPreviewFlags previewFlags;
@@ -950,6 +960,29 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     }
     if (arg == "--capture-data") {
       config.screenshotSceneData = true;
+      continue;
+    }
+    if (arg == "--sensor-camera") {
+      sensorCameraSpec = container::util::pathFromUtf8(requireValue(argc, argv, i, arg));
+      continue;
+    }
+    if (arg == "--sensor-trajectory") {
+      sensorTrajectory = container::util::pathFromUtf8(requireValue(argc, argv, i, arg));
+      continue;
+    }
+    if (arg == "--sensor-output") {
+      config.sensorDatasetPath = container::util::pathFromUtf8(requireValue(argc, argv, i, arg));
+      continue;
+    }
+    if (arg == "--sensor-namespace") {
+      config.sensorSourceNamespace = requireValue(argc, argv, i, arg);
+      continue;
+    }
+    if (arg == "--sensor-meters-per-renderer-unit") {
+      const double scale = parseDouble(requireValue(argc, argv, i, arg), arg);
+      if (!std::isfinite(scale) || scale <= 0.0)
+        throw std::invalid_argument("--sensor-meters-per-renderer-unit must be finite and positive");
+      config.sensorMetersPerRendererUnit = scale;
       continue;
     }
     if (arg == "--serialize-graphics") {
@@ -1499,6 +1532,39 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     for (const auto &overrideSettings : ddgiOverrides)
       overrideSettings(preset.settings);
     config.ddgi = std::move(preset.settings);
+  }
+
+  if (sensorCameraSpec.empty()) {
+    if (sensorTrajectory || !config.sensorDatasetPath.empty() ||
+        !config.sensorSourceNamespace.empty() || config.sensorMetersPerRendererUnit)
+      throw std::invalid_argument("Sensor trajectory, output, namespace and unit override require --sensor-camera");
+  } else {
+    if (config.sensorDatasetPath.empty())
+      throw std::invalid_argument("--sensor-camera requires --sensor-output DIRECTORY");
+    const auto model = container::util::pathFromUtf8(config.bimModelPath);
+    const auto ext = lowerAscii(container::util::pathToUtf8(model.extension()));
+    if ((ext != ".ifc" && ext != ".ifcx" && ext != ".bim") || !config.modelPath.empty() ||
+        vdbSourceCount != 0 || !config.aslPosePath.empty())
+      throw std::invalid_argument("--sensor-camera requires --model pointing to one IFC, IFCX or BIM model");
+    if (config.renderTechnique != "deferred-raster" || config.msaaSamples != 1 ||
+        config.taa.enabled || config.upscaling.mode != container::renderer::UpscaleMode::Native ||
+        (!config.displayModeOverride.empty() && config.displayModeOverride != "lit"))
+      throw std::invalid_argument("--sensor-camera requires Lit Deferred raster at native resolution with 1x MSAA and TAA disabled");
+    if (config.screenshotSceneData || !config.screenshotCapturePath.empty() ||
+        !config.temporalCaptureSequencePath.empty() || !config.pathSampleSeries.empty() ||
+        !config.sceneExportPath.empty() || config.gfxrecon.enabled() || config.physicsDemo ||
+        !displayGradeOutput.empty() || !skyPresetOutput.empty())
+      throw std::invalid_argument("--sensor-camera owns the capture sequence and output format");
+    if (config.sensorSourceNamespace.empty())
+      config.sensorSourceNamespace = container::util::pathToUtf8(model.stem());
+    config.sensorCameraPlayback = std::make_shared<const container::robotics::SensorCameraPlayback>(
+        container::robotics::loadSensorCameraPlayback(sensorCameraSpec, sensorTrajectory));
+    config.windowWidth = config.sensorCameraPlayback->settings.width;
+    config.windowHeight = config.sensorCameraPlayback->settings.height;
+    config.windowVisible = false;
+    config.windowDecorated = false;
+    config.enableGui = false;
+    config.displayModeOverride = "lit";
   }
 
   container::temporal::validateSettings(config.taa, config.msaaSamples);

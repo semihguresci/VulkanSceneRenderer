@@ -1,5 +1,8 @@
 #pragma once
 
+#include "Container/robotics/BimSensorLabels.h"
+#include "Container/robotics/SensorCamera.h"
+
 #include "Container/renderer/core/AssetStreamingDiagnostics.h"
 
 #include <chrono>
@@ -225,6 +228,9 @@ public:
   void requestScreenshot(std::filesystem::path outputPath, bool viewportOnly = false,
                          std::optional<uint32_t> referenceSampleTarget = std::nullopt,
                          bool sceneData = false);
+  void beginSensorCameraCapture(const std::filesystem::path& directory);
+  void requestSensorCameraFrame(const container::robotics::SensorCameraFrame& frame);
+  void finishSensorCameraCapture();
   void saveSceneModel(const std::filesystem::path& outputPath, bool keepLinks = false);
   bool selectMaterialVariant(std::optional<size_t> variant,bool recordHistory=true);
   void applyTemporalCapture(const container::temporal::CaptureSample &sample);
@@ -943,16 +949,29 @@ private:
     std::vector<HostReadbackSlot> readbacks{};
   };
   ScreenshotState screenshot_{};
-  // A screenshot waits for its own submission before the next frame can reuse these bindings.
+  struct SceneDataReadbackSlot {
+    VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
+    HostReadbackSlot readback{};
+    bool recorded{false};
+  };
   struct SceneDataCaptureState {
     VkDescriptorSetLayout descriptorLayout{VK_NULL_HANDLE};
     VkDescriptorPool descriptorPool{VK_NULL_HANDLE};
-    VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
     VkPipelineLayout pipelineLayout{VK_NULL_HANDLE};
     container::gpu::ComputePipeline pipeline{};
-    HostReadbackSlot readback{};
-    bool recorded{false};
+    std::vector<SceneDataReadbackSlot> slots;
   } sceneDataCapture_{};
+  struct SensorCameraCaptureState {
+    std::filesystem::path directory;
+    std::optional<container::robotics::SensorCameraFrame> requested;
+    std::optional<container::geometry::gltf::AnimatedCameraState> camera;
+    std::vector<std::optional<container::robotics::SensorCameraFrame>> inFlight;
+    std::vector<container::robotics::BimSensorLabel> labels;
+    double metersPerRendererUnit{1.0};
+    uint64_t bimRevision{};
+    size_t completed{};
+  } sensorCameraCapture_{};
+  [[nodiscard]] const container::geometry::gltf::AnimatedCameraState* renderCameraOverride() const noexcept;
   std::unique_ptr<ComfyUiFrontendState> comfyUi_;
   std::string mcpCaptureStatus_;
   std::string mcpModelStatus_;
@@ -1156,8 +1175,10 @@ private:
                                       VkFormat format);
   void writePendingScreenshot(uint32_t frameSlot, const FrameRecordParams& params);
   void prepareSceneDataCapture(FrameRecordParams& frame, const glm::mat4& projection);
-  void writeSceneDataCapture();
+  void writeSceneDataCapture(uint32_t frameSlot);
   void destroySceneDataCapture();
+  void submitSensorCameraFrame(uint32_t frameSlot);
+  void retireSensorCameraFrame(uint32_t frameSlot);
   void ensureDepthVisibilityReadbackBuffer(uint32_t frameSlot);
   void markDepthVisibilityFrameComplete(uint32_t imageIndex,
                                         uint32_t frameSlot,

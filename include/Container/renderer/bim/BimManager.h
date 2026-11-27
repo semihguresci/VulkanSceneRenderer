@@ -53,6 +53,10 @@ struct Model;
 } // namespace container::geometry::dotbim
 namespace container::geometry::vdb { struct ImportOptions; }
 
+namespace container::robotics {
+struct BimSensorLabelMap;
+}
+
 namespace container::scene {
 class SceneManager;
 } // namespace container::scene
@@ -620,6 +624,13 @@ public:
   BimManager(const BimManager &) = delete;
   BimManager &operator=(const BimManager &) = delete;
 
+  // Enable before loading a model. The label map borrows the installed BIM
+  // scene lifetime and is replaced when its scene changes.
+  void enableSensorLabels(std::string sourceNamespace,
+                          std::optional<double> metersPerRendererUnit = std::nullopt);
+  [[nodiscard]] const robotics::BimSensorLabelMap* sensorLabels() const noexcept {
+    return sensorLabels_.get();
+  }
   void loadModel(const std::string &path, float importScale,
                  container::scene::SceneManager &sceneManager,
                  std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions = {},
@@ -1071,6 +1082,9 @@ private:
   container::gpu::PipelineManager &pipelineManager_;
   std::string modelPath_{};
   std::filesystem::path loadedSourcePath_;
+  std::string sensorLabelNamespace_;
+  std::optional<double> sensorLabelMetersPerRendererUnit_;
+  std::unique_ptr<robotics::BimSensorLabelMap> sensorLabels_;
   std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions_;
   container::geometry::ImportReport importReport_{};
   std::function<void(std::string_view)> loadProgressCallback_{};

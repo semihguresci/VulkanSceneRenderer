@@ -333,6 +333,10 @@ void Application::initVulkan() {
 }
 
 void Application::mainLoop() {
+  if (config_.sensorCameraPlayback) {
+    sensorCameraCaptureLoop();
+    return;
+  }
   if (!config_.screenshotCapturePath.empty() ||
       !config_.temporalCaptureSequencePath.empty()) {
     screenshotCaptureLoop();

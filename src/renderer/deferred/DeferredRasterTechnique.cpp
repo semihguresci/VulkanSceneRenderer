@@ -1506,8 +1506,9 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                                p, SceneRasterPassKind::GBuffer, *deferred));
                   if (!recorded) return;
                   if (p.pickIdWritten) *p.pickIdWritten = true;
-                  // Read the opaque IDs before transparent picking reuses the attachment.
-                  if (p.services.sceneDataCapture) recordOpaqueSceneDataCapture(cmd, p);
+                  if (p.services.sceneDataCapture &&
+                      !deferred->isPassActive(RenderPassId::BimGBuffer))
+                    recordOpaqueSceneDataCapture(cmd, p);
                 });
 
   graph.addPass(RenderPassId::BimGBuffer,
@@ -1518,6 +1519,9 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                       cmd, deferredRasterBimSurfacePassInputs(
                                p, BimSurfacePassKind::GBuffer, *deferred,
                                bimDescriptorSets)));
+                  // Both opaque producers have finished. Capture before
+                  // transparent picking reuses the ID attachment.
+                  if (p.services.sceneDataCapture) recordOpaqueSceneDataCapture(cmd, p);
                 });
 
   graph.addPass(RenderPassId::PbrAuxiliary,

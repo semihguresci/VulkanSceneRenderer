@@ -1,6 +1,6 @@
 add_library(VulkanSceneRenderer_robotics_clock SimClock.cpp)
 
-add_library(VulkanSceneRenderer_robotics_scene RoboticsScene.cpp RoboticsSceneManifest.cpp)
+add_library(VulkanSceneRenderer_robotics_scene RoboticsScene.cpp RoboticsSceneManifest.cpp BimSensorLabels.cpp)
 target_link_libraries(VulkanSceneRenderer_robotics_scene PUBLIC Dep_Math
     PRIVATE Vulkan::Headers nlohmann_json::nlohmann_json)
 
@@ -26,8 +26,9 @@ endif()
 add_library(VulkanSceneRenderer_robotics_drive DifferentialDrive.cpp DifferentialDriveActuation.cpp)
 target_link_libraries(VulkanSceneRenderer_robotics_drive PUBLIC Dep_Math)
 
-add_library(VulkanSceneRenderer_robotics_sensors DriveSensors.cpp RaycastLidar.cpp SensorSchedule.cpp)
-target_link_libraries(VulkanSceneRenderer_robotics_sensors PUBLIC VulkanSceneRenderer_robotics_drive)
+add_library(VulkanSceneRenderer_robotics_sensors DriveSensors.cpp RaycastLidar.cpp SensorSchedule.cpp SensorCamera.cpp)
+target_link_libraries(VulkanSceneRenderer_robotics_sensors PUBLIC VulkanSceneRenderer_robotics_drive
+    PRIVATE nlohmann_json::nlohmann_json)
 
 foreach(target IN ITEMS
         VulkanSceneRenderer_robotics_clock

@@ -3209,6 +3209,36 @@ target_sources(bim_robotics_scene_tests PRIVATE
     ${TESTS_DIR}/robotics/bim_robotics_units_tests.cpp
 )
 
+add_custom_test(bim_sensor_label_tests
+    ${TESTS_DIR}/robotics/bim_sensor_label_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics_scene Vulkan::Headers nlohmann_json::nlohmann_json
+)
+
+add_custom_test(sensor_camera_tests
+    ${TESTS_DIR}/robotics/sensor_camera_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics_sensors nlohmann_json::nlohmann_json
+)
+
+add_custom_test(sensor_camera_dataset_tests
+    ${TEST_RENDERER_CORE_DIR}/sensor_camera_dataset_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_exr VulkanSceneRenderer_robotics_sensors nlohmann_json::nlohmann_json
+)
+target_sources(sensor_camera_dataset_tests PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/renderer/core/SensorCameraDataset.cpp)
+set_tests_properties(bim_sensor_label_tests sensor_camera_tests sensor_camera_dataset_tests
+    PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME bim_sensor_camera_gpu_regression
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TEST_VALIDATION_DIR}/bim_sensor_camera_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/bim-sensor-camera" --managed-output)
+    set_tests_properties(bim_sensor_camera_gpu_regression PROPERTIES
+        LABELS "robotics;requires-vulkan;requires-display"
+        RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 900)
+endif()
+
 add_custom_test(bim_collision_geometry_tests
     ${TESTS_DIR}/robotics/bim_collision_geometry_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_robotics_collision_geometry VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_geometry
