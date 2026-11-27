@@ -54,6 +54,7 @@ struct Scenario {
   uint64_t ticks{};
   uint64_t elapsedNanos{};
   std::optional<uint64_t> frameNanos;
+  std::vector<uint64_t> frameNanosSequence;
   std::vector<Command> commands;
   std::vector<std::string> openDoorIds;
   std::optional<double> metersPerRendererUnit;
@@ -117,6 +118,20 @@ void readCapsule(const Json& value, robotics::BimWalkabilitySettings& capsule) {
   if (value.contains("maxSamples")) capsule.maxSamples = natural(value.at("maxSamples"), "maxSamples", 100'000);
 }
 
+uint64_t readFrameSequence(const Json& value, uint64_t limit, std::vector<uint64_t>& frames) {
+  if (!value.is_array() || value.empty() || value.size() > maxFrames)
+    throw std::invalid_argument("frameNanosecondsSequence must be a nonempty array within the frame limit");
+  frames.reserve(value.size());
+  uint64_t elapsed = 0;
+  for (const auto& entry : value) {
+    const auto frame = natural(entry, "frameNanosecondsSequence entry", limit - elapsed);
+    if (frame == 0) throw std::invalid_argument("frameNanosecondsSequence entries must be positive");
+    frames.push_back(frame);
+    elapsed += frame;
+  }
+  return elapsed;
+}
+
 void readTiming(const Json& value, Scenario& scenario) {
   auto& options = scenario.options;
   if (value.contains("ticksPerSecond"))
@@ -125,10 +140,18 @@ void readTiming(const Json& value, Scenario& scenario) {
     options.maxTicksPerAdvance = static_cast<uint32_t>(natural(value.at("maxTicksPerAdvance"), "maxTicksPerAdvance", maxTicks));
   if (options.ticksPerSecond == 0 || options.maxTicksPerAdvance == 0)
     throw std::invalid_argument("Simulation tick rate and batch budget must be positive");
+  const auto limit = ((maxTicks + 1) * nanosPerSecond - 1) / options.ticksPerSecond;
+  std::optional<uint64_t> sequenceElapsed;
   if (value.contains("frameNanoseconds")) {
     scenario.frameNanos = natural(value.at("frameNanoseconds"), "frameNanoseconds",
                                   static_cast<uint64_t>(std::chrono::nanoseconds::max().count()));
     if (*scenario.frameNanos == 0) throw std::invalid_argument("frameNanoseconds must be positive");
+  }
+  if (value.contains("frameNanosecondsSequence")) {
+    if (scenario.frameNanos)
+      throw std::invalid_argument("Specify only one of frameNanoseconds and frameNanosecondsSequence");
+    sequenceElapsed = readFrameSequence(value.at("frameNanosecondsSequence"), limit,
+                                       scenario.frameNanosSequence);
   }
   const bool hasTicks = value.contains("ticks");
   if (hasTicks == value.contains("durationNanoseconds"))
@@ -137,10 +160,17 @@ void readTiming(const Json& value, Scenario& scenario) {
     scenario.ticks = natural(value.at("ticks"), "ticks", maxTicks);
     // The shortest whole-nanosecond duration that reaches the requested tick.
     scenario.elapsedNanos = (scenario.ticks * nanosPerSecond + options.ticksPerSecond - 1) / options.ticksPerSecond;
+    if (sequenceElapsed) {
+      if (*sequenceElapsed * options.ticksPerSecond / nanosPerSecond != scenario.ticks)
+        throw std::invalid_argument("frameNanosecondsSequence must reach exactly the requested ticks");
+      scenario.elapsedNanos = *sequenceElapsed;
+    }
   } else {
-    if (!scenario.frameNanos) throw std::invalid_argument("durationNanoseconds requires frameNanoseconds");
-    const auto limit = ((maxTicks + 1) * nanosPerSecond - 1) / options.ticksPerSecond;
+    if (!scenario.frameNanos && !sequenceElapsed)
+      throw std::invalid_argument("durationNanoseconds requires frameNanoseconds or frameNanosecondsSequence");
     scenario.elapsedNanos = natural(value.at("durationNanoseconds"), "durationNanoseconds", limit);
+    if (sequenceElapsed && *sequenceElapsed != scenario.elapsedNanos)
+      throw std::invalid_argument("frameNanosecondsSequence total must equal durationNanoseconds");
     scenario.ticks = scenario.elapsedNanos * options.ticksPerSecond / nanosPerSecond;
   }
   if (scenario.frameNanos && scenario.elapsedNanos / *scenario.frameNanos +
@@ -294,6 +324,7 @@ Scenario readScenario(const std::filesystem::path& path) {
     throw std::runtime_error("Could not read the BIM simulation scenario");
   const auto value = Json::parse(contents);
   checkKeys(value, {"version", "initialFeet", "initialYaw", "ticks", "durationNanoseconds", "frameNanoseconds",
+                    "frameNanosecondsSequence",
                     "ticksPerSecond", "maxTicksPerAdvance", "commands", "openDoorIds", "assetCacheDirectory",
                     "metersPerRendererUnit", "seed", "encoderNoiseRadians", "robotId", "drive", "capsule", "lidar",
                     "driveSensors", "actuators", "wheelTravelVariancePerMeter"});
@@ -479,15 +510,20 @@ void play(robotics::DifferentialDriveSimulation& simulation, const Scenario& sce
     else simulation.queueWheelCommand(command.tick, std::get<robotics::DriveWheels>(command.target));
   }
   if (observe) observe(simulation.state());
-  if (!scenario.frameNanos) {
+  if (!scenario.frameNanos && scenario.frameNanosSequence.empty()) {
     for (uint64_t tick = 0; tick < scenario.ticks; ++tick) simulation.step(observe);
     return;
   }
-  uint64_t elapsed = 0;
-  while (elapsed < scenario.elapsedNanos) {
-    const auto frame = std::min(*scenario.frameNanos, scenario.elapsedNanos - elapsed);
-    simulation.advance(std::chrono::nanoseconds(static_cast<int64_t>(frame)), observe);
-    elapsed += frame;
+  if (scenario.frameNanos) {
+    uint64_t elapsed = 0;
+    while (elapsed < scenario.elapsedNanos) {
+      const auto frame = std::min(*scenario.frameNanos, scenario.elapsedNanos - elapsed);
+      simulation.advance(std::chrono::nanoseconds(static_cast<int64_t>(frame)), observe);
+      elapsed += frame;
+    }
+  } else {
+    for (const auto frame : scenario.frameNanosSequence)
+      simulation.advance(std::chrono::nanoseconds(static_cast<int64_t>(frame)), observe);
   }
   while (simulation.clock().pendingTicks() != 0)
     if (simulation.advance(std::chrono::nanoseconds::zero(), observe) == 0)

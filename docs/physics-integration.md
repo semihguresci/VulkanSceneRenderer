@@ -245,6 +245,10 @@ after three seconds through the open door. Omit `openDoorIds` to run the same
 command against the closed door. Each command takes effect at its zero-based
 tick and lasts until the next command. `ticks` runs explicit steps. For a
 frame-cadence replay, supply `durationNanoseconds` and `frameNanoseconds`.
+Use `frameNanosecondsSequence` in place of `frameNanoseconds` to supply the
+positive nanosecond duration of each individual frame. The sequence must sum
+to `durationNanoseconds` when a duration is supplied. With `ticks`, the
+sequence must advance exactly that many fixed ticks.
 Elapsed fractions and pending whole ticks carry across frames. The headless
 runner drains pending ticks at the end of the scenario.
 
@@ -265,6 +269,32 @@ Closing a door checks the attached capsule and rejects an occupied opening.
 The trajectory tests compare every tick at 30, 60 and 144 Hz and after a
 stalled frame with one Jolt worker. The reproducibility contract covers the
 same build, seed, scene and tick-addressed inputs.
+
+### Validate fixed-step physics determinism
+
+Build the replay runner and native determinism tests with `ENABLE_PHYSICS=ON`
+and Python available to CMake. Run them from the Developer Command Prompt.
+
+```powershell
+cmake --build out/build/windows-release --config Release --target BimRoboticsSim bim_physics_determinism_tests
+ctest --test-dir out/build/windows-release -C Release --output-on-failure `
+    -R '^(bim_fixed_step_replay|bim_physics_determinism_tests)$'
+```
+
+The replay test runs the same IFC motion and sensor scenarios across direct
+steps, 30, 60 and 144 Hz frame sequences, and irregular and stalled-frame
+sequences. It compares report bytes within one executable build and checks
+analytical poses within `1e-5` m and rad. A
+different encoder seed changes the encoder stream while leaving the physical
+trajectory and independently seeded LiDAR readings identical. On failure,
+the replay reports the first differing field and retains the JSON evidence.
+
+The native test exercises sustained door contact and a falling BIM prop that
+settles on the slab. It checks reset, retained commands, and simulation time
+across pauses and frame debt. These tests use one Jolt worker and the checked-in
+millimetre IFC fixtures. Native reset comparisons allow `1e-4` m and rad per
+tick. The GitHub Actions physics validation job runs the suite as a headless
+CPU check.
 
 ### Command wheel actuators and compare motion
 

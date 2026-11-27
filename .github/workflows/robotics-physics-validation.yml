@@ -1,0 +1,140 @@
+name: Robotics Physics Validation
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows-robotics:
+    name: Windows CPU physics and replay
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Restore vcpkg binaries
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/robotics-vcpkg-cache
+          key: windows-2025-vs2026-x64-robotics-vcpkg-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/vcpkg-overlay-ports/**') }}
+
+      - name: Provision Vulkan SDK for CMake configure
+        shell: pwsh
+        run: |
+          # The shared configure finds Vulkan and slangc even for these CPU-only targets.
+          $sdkVersion = '1.4.363.1'
+          $sdkSha256 = 'C02932BD9A968B22D404536108ADAACAC908C081CD6B0113F5BFEFC523DD0A6A'
+          $installerName = "vulkansdk-windows-X64-$sdkVersion.exe"
+          $installer = Join-Path $env:RUNNER_TEMP $installerName
+          $sdk = Join-Path $env:RUNNER_TEMP "VulkanSDK/$sdkVersion"
+          $download = @{
+            Uri = "https://sdk.lunarg.com/sdk/download/$sdkVersion/windows/$installerName"
+            OutFile = $installer
+            MaximumRetryCount = 3
+          }
+          Invoke-WebRequest @download
+          if ((Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash -ne $sdkSha256) {
+            throw "Vulkan SDK $sdkVersion installer SHA256 mismatch."
+          }
+
+          $setupArgs = @('--root', ('"{0}"' -f $sdk), '--accept-licenses', '--default-answer',
+                         '--confirm-command', 'install', 'copy_only=1')
+          $setup = Start-Process -FilePath $installer -ArgumentList $setupArgs -WindowStyle Hidden -Wait -PassThru
+          if ($setup.ExitCode -ne 0) {
+            throw "Vulkan SDK installer exited with code $($setup.ExitCode)."
+          }
+          foreach ($component in 'Include/vulkan/vulkan.h', 'Lib/vulkan-1.lib', 'Bin/slangc.exe') {
+            if (-not (Test-Path -LiteralPath (Join-Path $sdk $component) -PathType Leaf)) {
+              throw "Vulkan SDK installer did not provide $component."
+            }
+          }
+          "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
+
+      - name: Configure and build headless robotics targets
+        shell: pwsh
+        env:
+          VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/robotics-vcpkg-cache,readwrite"
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (-not $vs) {
+            throw 'Visual Studio C++ build tools are required.'
+          }
+          & (Join-Path $vs 'Common7/Tools/Launch-VsDevShell.ps1') -Arch amd64 -HostArch amd64 -SkipAutomaticLocation
+
+          $env:VCPKG_ROOT = $env:VCPKG_INSTALLATION_ROOT
+          if (-not (Test-Path -LiteralPath (Join-Path $env:VCPKG_ROOT 'scripts/buildsystems/vcpkg.cmake') -PathType Leaf)) {
+            throw 'The runner vcpkg toolchain was not found.'
+          }
+          New-Item -ItemType Directory -Force (Join-Path $env:RUNNER_TEMP 'robotics-vcpkg-cache') | Out-Null
+
+          $options = @(
+            '-DVCPKG_TARGET_TRIPLET=x64-windows'
+            '-DENABLE_TESTS=ON'
+            '-DENABLE_PHYSICS=ON'
+            '-DENABLE_WINDOWED_TESTS=OFF'
+            '-DENABLE_VULKAN_VALIDATION_LAYERS=OFF'
+            '-DENABLE_RENDERER_MCP=OFF'
+            '-DENABLE_TINYUSDZ_USD_LOADER=OFF'
+            '-DENABLE_OPENVDB=OFF'
+            '-DENABLE_ROBOTICS_URDF=OFF'
+            '-DENABLE_SAMPLE_MODEL_DOWNLOAD=OFF'
+            '-DENABLE_BIM_SAMPLE_MODEL_DOWNLOAD=OFF'
+            '-DENABLE_USD_SAMPLE_MODEL_DOWNLOAD=OFF'
+          )
+          cmake --preset windows-release @options
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          $targets = @(
+            'BimRoboticsSim'
+            'physics_world_tests'
+            'differential_drive_tests'
+            'bim_collision_world_tests'
+            'bim_physics_determinism_tests'
+            'bim_drive_actuation_tests'
+            'bim_drive_sensor_tests'
+            'bim_lidar_tests'
+          )
+          cmake --build out/build/windows-release --parallel 2 --target @targets
+
+      - name: Run physics tests and fixed-step BIM replay
+        shell: pwsh
+        run: |
+          $tests = @(
+            'physics_world_tests'
+            'differential_drive_tests'
+            'bim_collision_world_tests'
+            'bim_physics_determinism_tests'
+            'bim_drive_actuation_tests'
+            'bim_drive_sensor_tests'
+            'bim_lidar_tests'
+            'bim_fixed_step_replay'
+          )
+          $build = Join-Path $PWD 'out/build/windows-release'
+          $filter = '^(' + ($tests -join '|') + ')$'
+          $listed = ctest --test-dir $build -R $filter --show-only=json-v1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $registered = (($listed -join [Environment]::NewLine) | ConvertFrom-Json).tests.name
+          $missing = $tests | Where-Object { $_ -notin $registered }
+          if ($missing) { throw "Missing CTest registrations: $($missing -join ', ')." }
+          $junit = Join-Path $build 'robotics-physics.junit.xml'
+          ctest --test-dir $build -R $filter --no-tests=error --output-on-failure --output-junit $junit
+
+      - name: Upload physics failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: robotics-physics-failure
+          if-no-files-found: ignore
+          path: |
+            out/build/windows-release/Testing/Temporary/
+            out/build/windows-release/robotics-physics.junit.xml
+            out/build/windows-release/test_results/bim-fixed-step-replay/
