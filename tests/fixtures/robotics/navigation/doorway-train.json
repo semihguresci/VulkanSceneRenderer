@@ -1,0 +1,17 @@
+{
+  "schema": "container.navigation-training-scene",
+  "version": 1,
+  "id": "doorway-train",
+  "family": "doorway",
+  "split": "train",
+  "source": "../doorway.ifc",
+  "sourceNamespace": "doorway",
+  "start": { "position": [-1.5, 0.0, 1.2], "jitterMeters": 0.15 },
+  "goal": { "position": [1.5, 0.0, 1.2], "jitterMeters": 0.15 },
+  "initialYaw": 0.0,
+  "yawJitterRadians": 0.15,
+  "openDoorIds": ["bim/7:doorway/guid/9:door-guid"],
+  "furniture": [
+    { "guid": "prop-guid", "offsetX": [-0.35, 0.35], "offsetY": [-0.35, 0.35] }
+  ]
+}

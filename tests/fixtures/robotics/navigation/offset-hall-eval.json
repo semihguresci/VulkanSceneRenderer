@@ -1,0 +1,22 @@
+{
+  "schema": "container.navigation-training-scene",
+  "version": 1,
+  "id": "offset-hall-eval",
+  "family": "offset-hall",
+  "split": "held-out",
+  "source": "offset-hall.ifc",
+  "sourceNamespace": "offset-hall",
+  "start": { "position": [-2.6, -1.55, 0.0], "jitterMeters": 0.14 },
+  "goal": { "position": [2.65, 1.55, 0.0], "jitterMeters": 0.14 },
+  "initialYaw": 0.0,
+  "yawJitterRadians": 0.15,
+  "witnessWaypoints": [
+    [-1.12, -1.55, 0.0],
+    [0.05, -1.55, 0.0],
+    [0.05, 1.55, 0.0],
+    [1.28, 1.55, 0.0]
+  ],
+  "furniture": [
+    { "guid": "offset-hall-chair", "offsetX": [-0.30, 0.30], "offsetY": [-0.30, 0.30] }
+  ]
+}
