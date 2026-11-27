@@ -1,0 +1,27 @@
+<?xml version="1.0"?>
+<robot name="mesh_slider">
+  <material name="slider_blue"><color rgba="0.15 0.35 0.8 1"/></material>
+  <link name="base_link"/>
+  <link name="carriage">
+    <visual name="mirrored_wedge">
+      <origin xyz="0.2 -0.1 0.15" rpy="0.2 0 0.3"/>
+      <geometry><mesh filename="package://robot_preview/meshes/wedge.stl" scale="-2 3 0.5"/></geometry>
+      <material name="slider_blue"/>
+    </visual>
+    <collision name="wedge_proxy">
+      <origin xyz="0.1 0.2 0.3" rpy="0 0.4 0"/>
+      <geometry><mesh filename="robot_preview/meshes/wedge.stl"/></geometry>
+    </collision>
+  </link>
+  <link name="tool"/>
+  <joint name="slide" type="prismatic">
+    <parent link="base_link"/><child link="carriage"/>
+    <origin xyz="0.1 0.2 0.3" rpy="0 0 1.5707963267948966"/>
+    <axis xyz="1 0 0"/>
+    <limit lower="0" upper="0.4" effort="20" velocity="0.5"/>
+  </joint>
+  <joint name="tool_mount" type="fixed">
+    <parent link="carriage"/><child link="tool"/>
+    <origin xyz="0.05 0 -0.1" rpy="0.1 0.2 0.3"/>
+  </joint>
+</robot>

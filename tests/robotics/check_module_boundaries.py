@@ -115,6 +115,7 @@ def check(build, config, physics, urdf):
         **{PREFIX + suffix: physics for suffix in PHYSICS},
         "BimRoboticsUrdf": urdf,
         PREFIX + "urdf": urdf,
+        PREFIX + "urdf_assets": urdf,
         PREFIX + "urdf_physics": physics and urdf,
     }
     for name, enabled in optional.items():
@@ -138,7 +139,7 @@ def check(build, config, physics, urdf):
         executables["BimRoboticsCollision"] = {"robotics_assets", "robotics_collision", "robotics_diagnostics"}
         executables["BimRoboticsSim"] = {"robotics_assets", "robotics_sensors", "robotics_simulation"}
     if urdf:
-        executables["BimRoboticsUrdf"] = {"urdf"}
+        executables["BimRoboticsUrdf"] = {"urdf", "urdf_assets"}
     for name, modules in executables.items():
         if name not in targets:
             raise ValueError(f"The configured target graph is missing executable {name}.")

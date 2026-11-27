@@ -3322,6 +3322,14 @@ if(ENABLE_ROBOTICS_URDF)
     )
     target_compile_definitions(urdf_runtime_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME urdf_asset_roundtrip
+            COMMAND "${Python3_EXECUTABLE}" -B
+                "${TEST_VALIDATION_DIR}/urdf_asset_roundtrip.py"
+                --exporter "$<TARGET_FILE:BimRoboticsUrdf>")
+        set_tests_properties(urdf_asset_roundtrip PROPERTIES
+            LABELS "robotics;cpu" TIMEOUT 120)
+    endif()
 
     if(ENABLE_PHYSICS)
         add_custom_test(urdf_collision_tests

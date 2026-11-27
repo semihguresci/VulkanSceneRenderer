@@ -69,7 +69,8 @@ if ($physics) {
     $tools += @('BimRoboticsCollision', 'BimRoboticsSim')
 }
 if ($urdf) {
-    $tests += 'urdf_runtime_tests'
+    $tests += @('urdf_runtime_tests', 'urdf_asset_roundtrip')
+    $scriptTests += 'urdf_asset_roundtrip'
     $tools += 'BimRoboticsUrdf'
 }
 if ($physics -and $urdf) {

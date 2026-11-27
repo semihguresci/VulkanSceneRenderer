@@ -436,6 +436,9 @@ TinyXML2 and runs with physics disabled. It writes the link tree, inertial
 tensors, authored visual and collision origins, joint limits and derived
 world poses to JSON. [TinyXML2 license](https://github.com/leethomason/tinyxml2/blob/11.0.0/LICENSE.txt)
 
+Use a `.glb` destination to open the robot’s visual or collision hierarchy and
+sampled motion in the renderer. [URDF asset export and frame checks](robotics-urdf-assets.md)
+
 ```powershell
 cmake --build out/build/windows-release --config Release --target BimRoboticsUrdf
 & '.\out\build\windows-release\BimRoboticsUrdf.exe' `
@@ -454,8 +457,8 @@ collision world poses are derived independently from the same link state.
 
 The importer supports fixed, revolute, continuous and prismatic joints and
 diagnoses invalid trees, inertia tensors, dimensions and limits. Continuous
-positions retain their full turn count. Mesh and texture URIs are preserved
-for an asset adapter. Unsupported joint behaviors such as mimic, planar and
+positions retain their full turn count. The JSON report retains mesh and texture
+URIs. Unsupported joint behaviors such as mimic, planar and
 floating motion produce a parse diagnostic.
 
 With Jolt enabled, `UrdfCollisionBindings` places box, sphere and cylinder
