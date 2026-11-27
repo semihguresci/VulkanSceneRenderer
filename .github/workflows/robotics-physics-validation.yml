@@ -132,6 +132,39 @@ jobs:
           & ./tests/robotics/run_validation.ps1 -BuildDirectory out/build/windows-release `
               -Profile '${{ matrix.profile }}' -Phase Test
 
+      - name: Stage the Nav2 maps and physical verifier
+        id: nav2-input
+        if: success() && matrix.profile == 'physics-only'
+        shell: pwsh
+        run: |
+          $build = (Resolve-Path -LiteralPath 'out/build/windows-release').Path
+          $cases = @(Get-ChildItem -LiteralPath "$build/test_results/bim-nav2-map" -Filter cases.json -File -Recurse)
+          if ($cases.Count -ne 1) { throw 'Expected one generated Nav2 fixture bundle.' }
+          $native = Join-Path $env:RUNNER_TEMP 'nav2-collision'
+          New-Item -ItemType Directory -Path $native | Out-Null
+          Copy-Item -LiteralPath "$build/BimRoboticsCollision.exe" -Destination $native
+          foreach ($dll in (Get-ChildItem -LiteralPath $build -File -Filter '*.dll')) {
+            Copy-Item -LiteralPath $dll.FullName -Destination $native
+          }
+          "maps=$($cases[0].DirectoryName)" >> $env:GITHUB_OUTPUT
+          "native=$native" >> $env:GITHUB_OUTPUT
+
+      - name: Upload Nav2 fixture maps
+        if: success() && matrix.profile == 'physics-only'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bim-nav2-fixture-maps
+          path: ${{ steps.nav2-input.outputs.maps }}
+          if-no-files-found: error
+
+      - name: Upload BIM physical verifier
+        if: success() && matrix.profile == 'physics-only'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bim-nav2-collision-verifier
+          path: ${{ steps.nav2-input.outputs.native }}
+          if-no-files-found: error
+
       - name: Upload headless validation evidence
         if: success()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -153,3 +186,87 @@ jobs:
             out/build/windows-release/robotics-validation/
             out/build/windows-release/CMakeFiles/CMakeConfigureLog.yaml
             out/build/windows-release/test_results/bim-fixed-step-replay/
+            out/build/windows-release/test_results/bim-nav2-map/
+
+  nav2-planner:
+    name: Nav2 Jazzy map and planner
+    needs: windows-robotics
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    container:
+      image: ros:jazzy-ros-base-noble@sha256:3f3a309d342b0f8a9212d195a416d5c50deb1716edc8bdfe5e134bcaa38d708c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bim-nav2-fixture-maps
+          path: out/nav2-maps
+
+      - name: Install Nav2 planner components
+        shell: bash
+        run: |
+          mkdir -p out/nav2-planner
+          packages=(ros-jazzy-rclpy ros-jazzy-nav2-map-server ros-jazzy-nav2-planner
+                    ros-jazzy-nav2-navfn-planner ros-jazzy-tf2-ros-py python3-yaml)
+          apt-get update
+          apt-get install -y --no-install-recommends "${packages[@]}"
+          dpkg-query -W "${packages[@]}" > out/nav2-planner/packages.txt
+
+      - name: Load the BIM maps and plan fixture routes
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          python3 -B tests/robotics/bim_nav2_planner.py --maps out/nav2-maps \
+            --output out/nav2-planner/paths.json --log-dir out/nav2-planner/logs
+
+      - name: Upload Nav2 planner evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bim-nav2-planner-results
+          path: out/nav2-planner/
+          if-no-files-found: error
+
+  nav2-physical-verification:
+    name: Sweep Nav2 routes against the BIM source
+    needs: nav2-planner
+    runs-on: windows-2025-vs2026
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bim-nav2-fixture-maps
+          path: out/nav2-maps
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bim-nav2-planner-results
+          path: out/nav2-planner
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: bim-nav2-collision-verifier
+          path: out/nav2-collision
+
+      - name: Verify the returned routes against native geometry
+        shell: pwsh
+        run: |
+          python -B tests/robotics/bim_nav2_map.py --collision out/nav2-collision/BimRoboticsCollision.exe `
+            --fixtures tests/fixtures/robotics --output out/nav2-maps `
+            --verify-nav2 out/nav2-planner/paths.json
+          exit $LASTEXITCODE
+
+      - name: Upload physical route evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bim-nav2-physical-verification
+          path: out/nav2-maps/nav2-sweeps.json
+          if-no-files-found: warn

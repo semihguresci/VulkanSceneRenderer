@@ -3403,6 +3403,12 @@ if(ENABLE_PHYSICS)
     target_compile_definitions(bim_collision_world_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
+    add_custom_test(bim_navigation_map_tests
+        ${TESTS_DIR}/robotics/bim_navigation_map_tests.cpp "" ${TEST_RESULTS_DIR}
+        VulkanSceneRenderer_robotics_collision_geometry)
+    target_sources(bim_navigation_map_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/robotics/BimNavigationMap.cpp)
+    set_tests_properties(bim_navigation_map_tests PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 30)
+
     add_custom_test(differential_drive_tests
         ${TESTS_DIR}/robotics/differential_drive_tests.cpp "" ${TEST_RESULTS_DIR}
         VulkanSceneRenderer_robotics_simulation VulkanSceneRenderer_geometry
@@ -3464,6 +3470,14 @@ if(ENABLE_PHYSICS)
                 --executable "$<TARGET_FILE:BimRoboticsNavigation>"
                 --fixtures "${TESTS_DIR}/fixtures/robotics/navigation")
         set_tests_properties(bim_navigation_protocol PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 180)
+
+        add_test(NAME bim_nav2_map_export
+            COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_nav2_map.py"
+                --exporter "$<TARGET_FILE:BimRoboticsNavMap>"
+                --collision "$<TARGET_FILE:BimRoboticsCollision>"
+                --fixtures "${TESTS_DIR}/fixtures/robotics"
+                --output "${TEST_RESULTS_DIR}/bim-nav2-map")
+        set_tests_properties(bim_nav2_map_export PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 180)
 
         add_test(NAME bim_navigation_gym
             COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_navigation_gym.py"

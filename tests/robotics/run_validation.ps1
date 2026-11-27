@@ -64,6 +64,7 @@ if ($physics) {
         'physics_world_tests',
         'differential_drive_tests',
         'bim_collision_world_tests',
+        'bim_navigation_map_tests',
         'bim_physics_determinism_tests',
         'articulated_grasp_tests',
         'bim_drive_actuation_tests',
@@ -71,10 +72,11 @@ if ($physics) {
         'bim_lidar_tests',
         'bim_fixed_step_replay',
         'bim_fleet_missions',
-        'bim_navigation_protocol'
+        'bim_navigation_protocol',
+        'bim_nav2_map_export'
     )
-    $scriptTests += @('bim_fixed_step_replay', 'bim_fleet_missions', 'bim_navigation_protocol')
-    $tools += @('BimRoboticsCollision', 'BimRoboticsSim', 'BimRoboticsFleet', 'BimRoboticsNavigation')
+    $scriptTests += @('bim_fixed_step_replay', 'bim_fleet_missions', 'bim_navigation_protocol', 'bim_nav2_map_export')
+    $tools += @('BimRoboticsCollision', 'BimRoboticsSim', 'BimRoboticsFleet', 'BimRoboticsNavigation', 'BimRoboticsNavMap')
 }
 if ($urdf) {
     $tests += @('urdf_runtime_tests', 'urdf_asset_roundtrip')
