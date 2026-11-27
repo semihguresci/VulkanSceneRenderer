@@ -3230,6 +3230,13 @@ if(ENABLE_PHYSICS)
     target_sources(bim_collision_world_tests PRIVATE ${TESTS_DIR}/robotics/bim_room_graph_tests.cpp)
     target_compile_definitions(bim_collision_world_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+
+    add_custom_test(differential_drive_tests
+        ${TESTS_DIR}/robotics/differential_drive_tests.cpp "" ${TEST_RESULTS_DIR}
+        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
+    )
+    target_compile_definitions(differential_drive_tests PRIVATE
+        CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 endif()
 
 if(WIN32 AND Python3_Interpreter_FOUND)

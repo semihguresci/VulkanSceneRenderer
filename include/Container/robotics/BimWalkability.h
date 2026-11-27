@@ -80,6 +80,11 @@ struct BimWalkabilitySample {
   std::string entityId;
 };
 
+// Bottom of the upright capsule at a supported pose. normalUp is the Z
+// component of the unit support normal. Require a positive normalUp.
+[[nodiscard]] glm::dvec3 walkabilityCapsuleBottom(
+    glm::dvec3 feet, double normalUp, const BimWalkabilitySettings& settings);
+
 struct BimWalkabilityResult {
   bool reachable{};
   BimWalkabilityFailure reason{BimWalkabilityFailure::None};

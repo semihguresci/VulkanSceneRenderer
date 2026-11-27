@@ -62,15 +62,15 @@ std::optional<BimWalkabilityHit> checked(std::optional<BimWalkabilityHit> hit) {
   return hit;
 }
 
-glm::dvec3 capsuleBottom(const BimWalkabilitySample& support,
-                         const BimWalkabilitySettings& settings) {
+} // namespace
+
+glm::dvec3 walkabilityCapsuleBottom(glm::dvec3 feet, double normalUp,
+                                    const BimWalkabilitySettings& settings) {
   // Distance from the lower sphere centre to a sloped plane is n.z times
   // vertical separation. This preserves radius clearance on the uphill side.
-  return support.feet + glm::dvec3(0, 0,
-      (settings.radius + settings.skin) / support.normal.z - settings.radius);
+  return feet + glm::dvec3(0, 0,
+      (settings.radius + settings.skin) / normalUp - settings.radius);
 }
-
-} // namespace
 
 std::vector<BimWalkableSurface> extractWalkableSurfaces(
     const CookedBimCollision& geometry, double maxSlopeDegrees) {
@@ -192,7 +192,7 @@ BimWalkabilityResult traceWalkablePath(
     return true;
   };
   const auto bottomOf = [&](const BimWalkabilitySample& sample) {
-    const auto bottom = capsuleBottom(sample, settings);
+    const auto bottom = walkabilityCapsuleBottom(sample.feet, sample.normal.z, settings);
     if (!finite(bottom))
       throw std::invalid_argument("Walkability capsule placement exceeds its supported range");
     return bottom;
