@@ -122,20 +122,39 @@ paths. It also checks that blocked sidecars preserve earlier checkpoints and
 existing outputs, and that a retry can publish the full checkpoint.
 
 On an interactive Windows desktop, the opt-in visibility test compares PNG and
-EXR output with the renderer window visible, half covered, and hidden. It uses
-the local renderer MCP endpoint to request captures after startup.
+EXR output with the renderer window visible, half covered, cropped to half its
+client area by a Win32 window region, hidden, and restored. It verifies desktop
+coverage and client dimensions around every capture and uses the local renderer
+MCP endpoint to request captures. The script accepts `--window-origin X Y` to
+place the test window on an unobstructed monitor using physical screen pixels.
 
 ```powershell
 $env:CONTAINER_RUN_GPU_CAPTURE_VISIBILITY = '1'
 ctest --test-dir out/build/windows-release -C Release -R '^scene_linear_capture_visibility_gpu_regression$' --output-on-failure
 ```
 
-The separate Windows clipping regression uses a test-only Vulkan layer. It
-checks the clipping flag at startup and after resize, then emulates a partly
-or fully clipped drawable when the test forces `clipped = VK_TRUE`. The
-forced controls detect missing PNG pixels and stale EXR values. An application
+To measure native clipping with `VK_TRUE`, build the test layer and pass its
+directory to the visibility test. The control changes the swapchain flag
+at creation and forwards the original scissors. The report lists changed
+pixels by capture type and desktop state. Vulkan permits the driver to retain
+obscured pixels with `VK_TRUE`. Add `--require-native-clipping` when qualifying
+a driver that exhibits a measurable clipping effect. [Vulkan swapchain specification](https://docs.vulkan.org/refpages/latest/refpages/source/VkSwapchainCreateInfoKHR.html)
+
+```powershell
+$build = 'out/build/windows-release'
+cmake --build $build --config Release --target swapchain_capture_clip_layer VulkanSceneRenderer
+$env:CONTAINER_RUN_GPU_CAPTURE_VISIBILITY = '1'
+python -B tests/validation/scene_linear_capture_visibility_runtime_regression.py `
+    "$build/VulkanSceneRenderer.exe" out/native-capture-clipping --managed-output `
+    --clipping-control-layer-dir "$build/test-fixtures/swapchain-capture-clip/Release"
+```
+
+The deterministic Windows clipping regression checks the clipping flag at
+startup and after resize. Its test layer limits the scissors to emulate a
+partly or fully clipped drawable when the control forces `clipped = VK_TRUE`.
+The forced controls detect missing PNG pixels and stale EXR values. An application
 that requests `VK_FALSE` must preserve both PNG scopes and every EXR pixel. The
-desktop test above exercises actual window visibility on the installed driver.
+desktop test above exercises the installed Win32 driver.
 
 ```powershell
 cmake --build out/build/windows-release --config Release --target swapchain_capture_clip_layer VulkanSceneRenderer

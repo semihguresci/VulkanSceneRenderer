@@ -1,4 +1,4 @@
-"""Compare PNG and EXR captures while a Windows renderer is visible, covered, or hidden."""
+"""Compare PNG and EXR captures across native Win32 visibility and region changes."""
 
 import argparse
 import ctypes as ct
@@ -19,7 +19,7 @@ from renderer_mcp_runtime_regression import Client, initialize, wait_for
 
 WIDTH, HEIGHT = 640, 480
 TECHNIQUES = ("deferred-raster", "forward-raster")
-STATES = ("visible", "covered", "hidden")
+STATES = ("visible", "covered", "cropped", "hidden", "restored")
 INTENSITIES = (0, 3)
 
 
@@ -29,11 +29,12 @@ def require(condition, message):
 
 
 class Desktop:
-    """Create an opaque test popup and inspect its coverage of the renderer HWND."""
+    """Cover or crop the test renderer HWND and verify the resulting desktop state."""
 
-    def __init__(self):
+    def __init__(self, window_origin=None):
         user32 = ct.WinDLL("user32", use_last_error=True)
         gdi32 = ct.WinDLL("gdi32", use_last_error=True)
+        self.window_origin = window_origin
         self.callback_type = ct.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
         def bind(name, result, *arguments):
@@ -47,6 +48,8 @@ class Desktop:
         self.enum_windows = bind("EnumWindows", wt.BOOL, self.callback_type, wt.LPARAM)
         self.window_pid = bind("GetWindowThreadProcessId", wt.DWORD, wt.HWND, ct.POINTER(wt.DWORD))
         self.title = bind("GetWindowTextW", ct.c_int, wt.HWND, wt.LPWSTR, ct.c_int)
+        self.window_class = bind("GetClassNameW", ct.c_int, wt.HWND, wt.LPWSTR, ct.c_int)
+        self.ancestor = bind("GetAncestor", wt.HWND, wt.HWND, wt.UINT)
         self.client_rect = bind("GetClientRect", wt.BOOL, wt.HWND, ct.POINTER(wt.RECT))
         self.window_rect = bind("GetWindowRect", wt.BOOL, wt.HWND, ct.POINTER(wt.RECT))
         self.to_screen = bind("ClientToScreen", wt.BOOL, wt.HWND, ct.POINTER(wt.POINT))
@@ -54,6 +57,8 @@ class Desktop:
         self.is_visible = bind("IsWindowVisible", wt.BOOL, wt.HWND)
         self.is_iconic = bind("IsIconic", wt.BOOL, wt.HWND)
         self.show = bind("ShowWindow", wt.BOOL, wt.HWND, ct.c_int)
+        self.set_region = bind("SetWindowRgn", ct.c_int, wt.HWND, wt.HANDLE, wt.BOOL)
+        self.region_box = bind("GetWindowRgnBox", ct.c_int, wt.HWND, ct.POINTER(wt.RECT))
         self.place = bind("SetWindowPos", wt.BOOL, wt.HWND, wt.HWND, ct.c_int, ct.c_int, ct.c_int, ct.c_int, wt.UINT)
         self.update = bind("UpdateWindow", wt.BOOL, wt.HWND)
         self.destroy = bind("DestroyWindow", wt.BOOL, wt.HWND)
@@ -65,6 +70,12 @@ class Desktop:
         self.get_pixel = gdi32.GetPixel
         self.get_pixel.argtypes = [wt.HDC, ct.c_int, ct.c_int]
         self.get_pixel.restype = wt.DWORD
+        self.rect_region = gdi32.CreateRectRgn
+        self.rect_region.argtypes = [ct.c_int] * 4
+        self.rect_region.restype = wt.HANDLE
+        self.delete_object = gdi32.DeleteObject
+        self.delete_object.argtypes = [wt.HANDLE]
+        self.delete_object.restype = wt.BOOL
         create = bind("CreateWindowExW", wt.HWND, wt.DWORD, wt.LPCWSTR, wt.LPCWSTR, wt.DWORD,
                       ct.c_int, ct.c_int, ct.c_int, ct.c_int, wt.HWND, wt.HMENU, wt.HINSTANCE, wt.LPVOID)
         self.flush = ct.WinDLL("dwmapi").DwmFlush
@@ -117,22 +128,49 @@ class Desktop:
                 "Could not measure the renderer client area")
         return origin.x, origin.y, client.right, client.bottom
 
+    def left_half_region(self, hwnd, client_x, client_width):
+        outer = wt.RECT()
+        require(self.window_rect(hwnd, ct.byref(outer)), "Could not measure the renderer window for clipping")
+        # SetWindowRgn coordinates are window-relative, including the border.
+        return [0, 0, client_x - outer.left + client_width // 2, outer.bottom - outer.top]
+
+    def owner_details(self, hwnd):
+        if not hwnd:
+            return None
+        owner = wt.DWORD()
+        self.window_pid(hwnd, ct.byref(owner))
+        name = ct.create_unicode_buffer(128)
+        self.window_class(hwnd, name, len(name))
+        return {"pid": owner.value, "class": name.value, "visible": bool(self.is_visible(hwnd))}
+
     def apply(self, hwnd, state):
         x, y, width, height = self.geometry(hwnd)
         require((width, height) == (WIDTH, HEIGHT), "Renderer client size differs from the capture extent")
-        if state == "visible":
+        if state != "covered":
+            self.show(self.cover, 0)
+        if state in ("visible", "restored"):
             # Bring only the test window above unrelated windows without activating it.
-            # HWND_TOPMOST, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE | SWP_SHOWWINDOW.
-            require(self.place(hwnd, ct.c_void_p(-1), 0, 0, 0, 0, 0x0053),
+            # HWND_TOPMOST, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW and optional SWP_NOMOVE.
+            left, top = self.window_origin or (0, 0)
+            flags = 0x0051 if self.window_origin is not None else 0x0053
+            require(self.place(hwnd, ct.c_void_p(-1), left, top, 0, 0, flags),
                     "Could not show the test renderer above other windows")
         elif state == "hidden":
-            self.show(self.cover, 0)
             self.show(hwnd, 0)  # SW_HIDE leaves the window and swapchain extent intact.
+            require(self.set_region(hwnd, None, False), "Could not remove the crop from the hidden renderer window")
         elif state == "covered":
             # HWND_TOPMOST, SWP_NOACTIVATE | SWP_SHOWWINDOW. Cover the entire right half.
             require(self.place(self.cover, ct.c_void_p(-1), x + width // 2, y, width // 2, height, 0x0050),
                     "Could not position the opaque test window")
             self.update(self.cover)
+        elif state == "cropped":
+            region = self.rect_region(*self.left_half_region(hwnd, x, width))
+            require(region, "Could not create a Win32 region that crops the right half")
+            if not self.set_region(hwnd, region, True):
+                self.delete_object(region)  # On success Windows takes ownership.
+                raise RuntimeError("Could not crop the renderer's native client region")
+        else:
+            raise ValueError(f"Unknown test desktop state {state!r}")
         require(self.flush() == 0, "Could not wait for the Windows desktop compositor")
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
@@ -152,17 +190,31 @@ class Desktop:
                 "The capture window resized or was minimized")
         points = [(x + (width * column) // 4, y + (height * row) // 4)
                   for column in (1, 3) for row in (1, 2, 3)]
-        owners = [self.at_point(wt.POINT(*point)) for point in points]
+        hits = [self.at_point(wt.POINT(*point)) for point in points]
+        # WindowFromPoint may return a child inside the renderer or cover.
+        owners = [self.ancestor(hit, 2) or hit for hit in hits]  # GA_ROOT
         exposed = owners[:3] == [hwnd] * 3
-        if state == "visible":
+        rect = wt.RECT()
+        region_type = self.region_box(hwnd, ct.byref(rect))
+        window_region = [rect.left, rect.top, rect.right, rect.bottom] if region_type else None
+        if state in ("visible", "restored"):
             matches = visible and exposed and owners[3:] == [hwnd] * 3
         elif state == "covered":
             matches = visible and exposed and owners[3:] == [self.cover] * 3
+        elif state == "cropped":
+            matches = (visible and exposed and hwnd not in owners[3:] and self.cover not in owners[3:]
+                       and region_type == 2 and window_region == self.left_half_region(hwnd, x, width))
         else:
             matches = not visible and hwnd not in owners
+        if state != "cropped":
+            matches = matches and window_region is None
         sample = {"clientRect": [x, y, width, height], "windowVisible": visible,
+                  "windowRegion": window_region,
                   "clientProbeOwners": ["renderer" if owner == hwnd else "cover" if owner == self.cover
                                         else "other" for owner in owners]}
+        if not matches:
+            sample["rendererOwner"] = self.owner_details(hwnd)
+            sample["probeOwnerWindows"] = [self.owner_details(owner) for owner in owners]
         if state == "covered":
             cover = wt.RECT()
             require(self.window_rect(self.cover, ct.byref(cover)), "Could not measure the opaque test window")
@@ -188,7 +240,7 @@ class Desktop:
         return sample
 
 
-def read_image(path, *, viewport, includes_ui):
+def read_image(path, *, viewport, includes_ui, allow_nonfinite=False):
     import cv2
     import numpy as np
     from PIL import Image
@@ -199,8 +251,9 @@ def read_image(path, *, viewport, includes_ui):
         require(metadata["source"] == "raster-scene-composite" and metadata["colorSpace"] == "linear-sRGB"
                 and not metadata["exposureApplied"] and not metadata["toneMappingApplied"], metadata)
         bgr = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-        require(bgr is not None and bgr.shape == (HEIGHT, WIDTH, 3) and bgr.dtype == np.float32
-                and np.isfinite(bgr).all(), f"Missing or nonfinite float RGB capture: {path}")
+        require(bgr is not None and bgr.shape == (HEIGHT, WIDTH, 3) and bgr.dtype == np.float32,
+                f"Missing float RGB capture: {path}")
+        require(allow_nonfinite or np.isfinite(bgr).all(), f"Nonfinite float RGB capture: {path}")
         return bgr[:, :, ::-1], metadata
     require(metadata["source"] == ("viewport" if viewport else "window")
             and metadata["colorSpace"] in ("sRGB", "linear-sRGB"), metadata)
@@ -209,7 +262,8 @@ def read_image(path, *, viewport, includes_ui):
         return np.asarray(image.convert("RGBA")), metadata
 
 
-def capture(client, desktop, hwnd, folder, name, state, *, viewport=False, includes_ui=False):
+def capture(client, desktop, hwnd, folder, name, state, *, viewport=False, includes_ui=False,
+            allow_nonfinite=False):
     path = folder / name
     before = desktop.observe(hwnd, state)
     require(before, f"Incorrect window visibility before {path}")
@@ -224,7 +278,7 @@ def capture(client, desktop, hwnd, folder, name, state, *, viewport=False, inclu
     wait_for(saved, timeout=30)
     after = desktop.observe(hwnd, state)
     require(after == before, f"Window coverage changed during {path}")
-    image, metadata = read_image(path, viewport=viewport, includes_ui=includes_ui)
+    image, metadata = read_image(path, viewport=viewport, includes_ui=includes_ui, allow_nonfinite=allow_nonfinite)
     return image, {"image": str(path), "metadata": metadata, "desktop": before,
                    "decodedSha256": hashlib.sha256(image.tobytes()).hexdigest()}
 
@@ -248,9 +302,90 @@ def check_images(images):
             "viewportAndWindowDifferent": True, "allVisibilityCapturesEqual": True}
 
 
-def run_technique(renderer, output, technique, desktop, report):
-    folder = output / technique
-    folder.mkdir()
+def native_clipping_pixels(images, production_visible, row):
+    import numpy as np
+
+    visible = images["visible"]
+    for name, reference in production_visible.items():
+        np.testing.assert_array_equal(visible[name], reference, err_msg=f"VK_TRUE visible control {name}")
+
+    # Each rectangle describes the affected part in capture-local coordinates.
+    # For the native control, an unaffected pixel still has to match exactly.
+    regions = {"visible": WIDTH, "covered": WIDTH // 2, "cropped": WIDTH // 2,
+               "hidden": 0, "restored": WIDTH}
+    dark_exr, bright_exr = (f"radiance-{intensity}.exr" for intensity in INTENSITIES)
+    other_exr = {dark_exr: bright_exr, bright_exr: dark_exr}
+    reports = []
+    row["pixelComparisons"] = reports
+    for state in STATES:
+        start = regions[state]
+        for name, reference in visible.items():
+            sample = images[state][name]
+            differs = np.any(sample != reference, axis=-1)
+            exposed_count = int(np.count_nonzero(differs[:, :start]))
+            affected_count = int(np.count_nonzero(differs[:, start:]))
+            result = {"state": state, "kind": name, "referenceState": "visible",
+                      "exposedRect": [0, 0, start, HEIGHT], "affectedRect": [start, 0, WIDTH - start, HEIGHT],
+                      "changedExposedPixels": exposed_count, "changedAffectedPixels": affected_count}
+            if name in other_exr:
+                prior = visible[other_exr[name]]
+                prior_match = np.all(sample == prior, axis=-1)
+                result["nonfiniteAffectedPixels"] = int(np.count_nonzero(~np.isfinite(sample[:, start:]).all(axis=-1)))
+                result["affectedPixelsMatchingOtherIntensity"] = int(np.count_nonzero((differs & prior_match)[:, start:]))
+                if start < WIDTH:
+                    x, y = WIDTH // 2 + 20, HEIGHT // 2
+                    result["sentinel"] = {"pixel": [x, y], "expected": reference[y, x].tolist(),
+                                          "otherIntensity": prior[y, x].tolist(),
+                                          "captured": [float(value) if np.isfinite(value) else None
+                                                       for value in sample[y, x]]}
+            reports.append(result)
+            require(exposed_count == 0, f"VK_TRUE native control changed {exposed_count} exposed pixels in {state} {name}")
+
+    observed = any(item["changedAffectedPixels"] for item in reports)
+    row.update(nativeClippingObserved=observed, visibleMatchesProduction=True)
+
+
+def clipping_provenance(log_text, log, layer_name):
+    import re
+
+    for action in ("Insert instance", "Inserted device"):
+        require(f'{action} layer "{layer_name}"' in log_text, f"Native clipping control layer missing from {action}: {log}")
+    generations = re.findall(r"\[clip-fixture\] swapchain generation=(\d+) requestedClipped=(\d+) "
+                             r"effectiveClipped=(\d+) format=(\d+) extent=(\d+)x(\d+) mode=(\w+) startFrame=(\d+)",
+                             log_text)
+    require(generations and len(generations) == log_text.count("[clip-fixture] swapchain "),
+            f"Missing swapchain flag evidence: {log}")
+    swapchains = []
+    for generation, requested, effective, format_id, width, height, mode, first_frame in generations:
+        extent = [int(width), int(height)]
+        require((requested, effective, mode, first_frame, extent) == ("0", "1", "visible", "1", [WIDTH, HEIGHT]),
+                f"Unexpected native clipping control swapchain in {log}: {generations}")
+        swapchains.append({"generation": int(generation), "requestedClipped": False, "effectiveClipped": True,
+                           "format": int(format_id), "extent": extent})
+
+    scissors = re.findall(r"\[clip-fixture\] scissor generation=(\d+) mode=(\w+) applied=(\d+) frame=(\d+) "
+                          r"x=(-?\d+) y=(-?\d+) width=(\d+) height=(\d+) "
+                          r"clippedX=(-?\d+) clippedY=(-?\d+) clippedWidth=(\d+) clippedHeight=(\d+)", log_text)
+    require(scissors and len(scissors) == log_text.count("[clip-fixture] scissor "),
+            f"Missing scissor pass-through evidence: {log}")
+    require(all(mode == "visible" and applied == "0" and rect[:4] == rect[4:]
+                for _, mode, applied, _, *rect in scissors), f"Native clipping control mutated a scissor: {log}")
+    return {"swapchains": swapchains, "scissorsObserved": len(scissors), "scissorMutations": 0}
+
+
+def renderer_identity(log_text):
+    import re
+
+    gpu = re.search(r"\[Renderer\] \[info\] Vulkan ([\d.]+) on (.+?): dynamic rendering", log_text)
+    device = gpu[2] if gpu else None
+    driver = next((library for name, library in re.findall(r'Using "(.+?)" with driver: "(.+?)"', log_text)
+                   if name == device), None)
+    return {"wsi": "Win32", "vulkanApiVersion": gpu[1] if gpu else None, "device": device, "driverLibrary": driver}
+
+
+def run_technique(renderer, output, technique, desktop, report, *, clipping_control=None, production_visible=None):
+    folder = output / "native-clipping-control" / technique if clipping_control else output / technique
+    folder.mkdir(parents=True)
     log = folder / "renderer.log"
     model = output / "emitter.gltf"
     command = [str(renderer), "--hidden", "--validation", "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1",
@@ -265,7 +400,16 @@ def run_technique(renderer, output, technique, desktop, report):
         port = listener.getsockname()[1]
     token = secrets.token_hex(24)
     env = dict(os.environ, CONTAINER_MCP_PORT=str(port), CONTAINER_MCP_TOKEN=token, CONTAINER_MCP_ROOT=str(folder),
-               VK_LAYER_SETTINGS_PATH=str(output), VK_LOADER_DEBUG="layer")
+               VK_LAYER_SETTINGS_PATH=str(output), VK_LOADER_DEBUG="layer", VK_LOADER_LAYERS_DISABLE="~implicit~")
+    env.pop("VK_INSTANCE_LAYERS", None)
+    env.pop("VK_LOADER_LAYERS_ENABLE", None)
+    if clipping_control:
+        # The fixture's visible mode forwards every scissor unchanged. Desktop
+        # visibility below comes from Win32, independently of that mode name.
+        env.update(VK_LOADER_LAYERS_ENABLE=clipping_control["layerName"], CONTAINER_CLIP_TEST_MODE="visible",
+                   CONTAINER_CLIP_TEST_FORCE_TRUE="1", CONTAINER_CLIP_TEST_START_FRAME="1")
+        search_variable = "VK_LAYER_PATH" if env.get("VK_LAYER_PATH") else "VK_ADD_LAYER_PATH"
+        env[search_variable] = os.pathsep.join(filter(None, (env.get(search_variable), clipping_control["layerDir"])))
     images = {}
     row = {"technique": technique, "command": command, "log": str(log), "captures": []}
     report["techniques"].append(row)
@@ -284,7 +428,9 @@ def run_technique(renderer, output, technique, desktop, report):
                     setting = client.call("renderer_set_lighting", {"directionalIntensity": intensity})
                     require(setting["lighting"]["directionalIntensity"] == intensity, setting)
                     name = f"radiance-{intensity}.exr"
-                    images[state][name], evidence = capture(client, desktop, hwnd, folder, f"{state}-{name}", state)
+                    images[state][name], evidence = capture(
+                        client, desktop, hwnd, folder, f"{state}-{name}", state,
+                        allow_nonfinite=bool(clipping_control) and state in ("covered", "cropped", "hidden"))
                     row["captures"].append({"state": state, "kind": name, **evidence})
                 for name, viewport in (("viewport.png", True), ("window.png", False)):
                     images[state][name], evidence = capture(client, desktop, hwnd, folder, f"{state}-{name}", state,
@@ -303,8 +449,17 @@ def run_technique(renderer, output, technique, desktop, report):
     log_text = log.read_text(encoding="utf-8", errors="replace")
     require(row["exitCode"] == 0 and not validation_log_error(log_text)
             and 'Insert instance layer "VK_LAYER_KHRONOS_validation"' in log_text, f"Renderer or Vulkan validation failed: {log}")
-    row.update(check_images(images))
-    print(f"{technique}: {len(row['captures'])} visible, covered and hidden captures matched", flush=True)
+    row["renderer"] = renderer_identity(log_text)
+    if clipping_control:
+        row["clippingProvenance"] = clipping_provenance(log_text, log, clipping_control["layerName"])
+        native_clipping_pixels(images, production_visible, row)
+        outcome = "observed" if row["nativeClippingObserved"] else "not observed"
+        print(f"{technique}: VK_TRUE native clipping {outcome} in {len(row['captures'])} captures", flush=True)
+    else:
+        require("[clip-fixture]" not in log_text, f"The production run loaded the clipping fixture: {log}")
+        row.update(check_images(images))
+        print(f"{technique}: {len(row['captures'])} production captures matched across all window states", flush=True)
+    return images["visible"]
 
 
 def main():
@@ -313,7 +468,15 @@ def main():
     parser.add_argument("output", type=Path)
     parser.add_argument("--managed-output", action="store_true",
                         help="write to a fresh run directory under output")
+    parser.add_argument("--window-origin", nargs=2, type=int, metavar=("X", "Y"),
+                        help="physical screen coordinates for the test window's upper-left corner")
+    parser.add_argument("--clipping-control-layer-dir", type=Path,
+                        help="run an additional real-window VK_TRUE control using the pass-through fixture")
+    parser.add_argument("--require-native-clipping", action="store_true",
+                        help="require a pixel loss or stale sample caused by native clipping in the VK_TRUE control")
     args = parser.parse_args()
+    if args.require_native_clipping and args.clipping_control_layer_dir is None:
+        parser.error("--require-native-clipping requires --clipping-control-layer-dir")
     if os.name != "nt" or os.environ.get("CONTAINER_RUN_GPU_CAPTURE_VISIBILITY") != "1":
         print("SKIP: requires Windows desktop and CONTAINER_RUN_GPU_CAPTURE_VISIBILITY=1")
         return 77
@@ -332,11 +495,33 @@ def main():
         "pbrMetallicRoughness": {"baseColorFactor": [.45, .4, .35, 1], "metallicFactor": 0, "roughnessFactor": .65},
     })
     renderer_hash = hashlib.sha256(renderer.read_bytes()).hexdigest()
-    report = {"rendererSha256": renderer_hash, "techniques": [], "passed": False}
-    desktop = Desktop()
+    report = {"rendererSha256": renderer_hash, "windowOrigin": args.window_origin, "techniques": [], "passed": False}
+    control = None
+    if args.clipping_control_layer_dir is not None:
+        layer_dir = args.clipping_control_layer_dir.resolve(strict=True)
+        manifest = layer_dir / "VkLayer_clip_fixture.json"
+        manifest_bytes = manifest.read_bytes()
+        layer = json.loads(manifest_bytes)["layer"]
+        require(layer["name"] == "VK_LAYER_CONTAINER_clip_fixture", f"Unexpected Vulkan control layer: {manifest}")
+        library = layer_dir / layer["library_path"]
+        control = {"layerDir": str(layer_dir), "layerName": layer["name"],
+                   "manifestSha256": hashlib.sha256(manifest_bytes).hexdigest(),
+                   "librarySha256": hashlib.sha256(library.read_bytes()).hexdigest(),
+                   "qualificationRequired": args.require_native_clipping, "techniques": []}
+        report["nativeClippingControl"] = control
+    desktop = Desktop(args.window_origin)
     try:
+        visible = {}
         for technique in TECHNIQUES:
-            run_technique(renderer, output, technique, desktop, report)
+            visible[technique] = run_technique(renderer, output, technique, desktop, report)
+        if control is not None:
+            for technique in TECHNIQUES:
+                run_technique(renderer, output, technique, desktop, control, clipping_control=control,
+                              production_visible=visible[technique])
+            observed = any(technique["nativeClippingObserved"] for technique in control["techniques"])
+            control["nativeClippingObserved"] = observed
+            require(not args.require_native_clipping or observed,
+                    "The VK_TRUE real-window control observed no native clipping on this WSI/driver")
         require(hashlib.sha256(renderer.read_bytes()).hexdigest() == renderer_hash, "Renderer executable changed during the run")
         report["passed"] = True
     finally:
