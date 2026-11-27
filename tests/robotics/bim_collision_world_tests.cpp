@@ -96,6 +96,21 @@ TEST(BimCollisionWorld, NativeIfcDoorControlsCapsuleClearanceAndRespectsBothFloo
   EXPECT_THROW(world.setDoorOpen(wall->id, true), std::invalid_argument);
 }
 
+TEST(BimCollisionWorld, ReservesRobotCapacityWithoutChangingAuthoredBodies) {
+  const DoorwayFixture fixture;
+  const BimCollisionWorld ordinary(fixture.geometry);
+  const BimCollisionWorld fleet(fixture.geometry, {}, 1, 16);
+  EXPECT_EQ(ordinary.robotCapacity(), 1u);
+  EXPECT_EQ(fleet.robotCapacity(), 16u);
+  EXPECT_EQ(ordinary.activeColliderCount(), fleet.activeColliderCount());
+  EXPECT_EQ(ordinary.cachedStaticMeshCount(), fleet.cachedStaticMeshCount());
+  EXPECT_EQ(fleet.robotCount(), 0u);
+  EXPECT_FALSE(fleet.robotPose("never-attached"));
+  EXPECT_THROW(BimCollisionWorld(fixture.geometry, {}, 1, 0), std::invalid_argument);
+  EXPECT_THROW(BimCollisionWorld(fixture.geometry, {}, 1, BimCollisionWorld::maxRobotCapacity + 1),
+               std::invalid_argument);
+}
+
 BimCollider supportBox(std::string id, glm::dvec3 minimum, glm::vec3 size) {
   auto mesh = std::make_shared<BimCollisionMesh>();
   const float x = size.x, y = size.y, z = size.z;

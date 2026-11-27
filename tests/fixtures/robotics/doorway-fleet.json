@@ -1,0 +1,24 @@
+{
+  "schema": "container.bim-fleet-mission",
+  "version": 1,
+  "ticksPerSecond": 60,
+  "maxTicks": 360,
+  "waypointToleranceMeters": 0.08,
+  "openDoorIds": ["bim/7:doorway/guid/9:door-guid"],
+  "robots": [
+    {
+      "robotId": "robot/lower-inspector",
+      "taskId": "inspect-doorway",
+      "initialFeet": [-1.5, 0, 1.2],
+      "waypoints": [[-0.6, 0, 1.2], [1.5, 0, 1.2]]
+    },
+    {
+      "robotId": "robot/upper-survey",
+      "taskId": "survey-upper-deck",
+      "initialFeet": [1.5, 0, 3.7],
+      "initialYaw": 3.141592653589793,
+      "maxLinearMetersPerSecond": 0.7,
+      "waypoints": [[0.2, 0, 3.7], [-1.0, 0, 3.7]]
+    }
+  ]
+}

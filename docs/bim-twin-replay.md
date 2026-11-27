@@ -3,7 +3,7 @@
 Record a simulated run or import a timeline from an external producer.
 The BIM viewport shows the sampled robot pose, the observed trail, the active
 plan, sensor states and asset annotations. Scrubbing the timeline changes
-the annotations while preserving the imported building. [Inspect live operator overlays](bim-twin-operator-overlays.md)
+the annotations while preserving the imported building. [Inspect live operator overlays](bim-twin-operator-overlays.md) · [Replay a simulated fleet mission](bim-fleet-missions.md)
 
 ## Record and replay a doorway run
 

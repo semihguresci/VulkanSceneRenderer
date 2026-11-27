@@ -11,6 +11,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace container::robotics {
 
@@ -87,6 +89,39 @@ public:
   [[nodiscard]] const DifferentialDriveState& state() const noexcept;
   [[nodiscard]] const std::deque<DifferentialDriveState>& history() const noexcept;
   [[nodiscard]] DifferentialDriveFrames frames() const;
+
+private:
+  struct Impl;
+  std::unique_ptr<Impl> impl_;
+};
+
+struct FleetRobotSpawn {
+  DrivePose spawn;
+  DifferentialDriveSimulationOptions options;
+};
+
+// Owns all robot attachments on one BIM world. Robots share one fixed-rate
+// clock and one physics step per tick. The owning thread supplies per-robot
+// commands, door updates, and ticks. The world must outlive the fleet.
+class DifferentialDriveFleetSimulation {
+public:
+  DifferentialDriveFleetSimulation(BimCollisionWorld& world, std::vector<FleetRobotSpawn> robots);
+  ~DifferentialDriveFleetSimulation();
+  DifferentialDriveFleetSimulation(const DifferentialDriveFleetSimulation&) = delete;
+  DifferentialDriveFleetSimulation& operator=(const DifferentialDriveFleetSimulation&) = delete;
+
+  void queueCommand(std::string_view robotId, uint64_t tick, DriveTwist command);
+  void queueWheelCommand(std::string_view robotId, uint64_t tick, DriveWheels rates);
+  uint32_t advance(std::chrono::nanoseconds elapsed);
+  void step();
+  // Like the single-drive simulation, reset pauses wall-time advancement and
+  // retains queued commands for deterministic playback.
+  void reset();
+  void setPaused(bool paused) noexcept;
+
+  [[nodiscard]] const SimClock& clock() const noexcept;
+  [[nodiscard]] const DifferentialDriveState& state(std::string_view robotId) const;
+  [[nodiscard]] const std::deque<DifferentialDriveState>& history(std::string_view robotId) const;
 
 private:
   struct Impl;

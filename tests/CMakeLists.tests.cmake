@@ -3451,6 +3451,13 @@ if(ENABLE_PHYSICS)
                 --fixtures "${TESTS_DIR}/fixtures/robotics"
                 --output "${TEST_RESULTS_DIR}/bim-fixed-step-replay")
         set_tests_properties(bim_fixed_step_replay PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 180)
+
+        add_test(NAME bim_fleet_missions
+            COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_fleet_missions.py"
+                --fleet "$<TARGET_FILE:BimRoboticsFleet>"
+                --twin "$<TARGET_FILE:BimRoboticsTwin>"
+                --fixtures "${TESTS_DIR}/fixtures/robotics")
+        set_tests_properties(bim_fleet_missions PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 120)
     endif()
 endif()
 
