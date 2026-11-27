@@ -2,6 +2,8 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <functional>
+#include <iosfwd>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -18,5 +20,10 @@ struct ContentFingerprint {
                                                     std::stop_token stop = {});
 [[nodiscard]] ContentFingerprint FingerprintFileContent(const std::filesystem::path&,
                                                         std::stop_token stop = {});
+// The consumer must read to EOF. The returned digest covers exactly the
+// binary stream supplied to the consumer, with a fixed-size input buffer.
+[[nodiscard]] ContentFingerprint FingerprintFileWhileReading(
+    const std::filesystem::path&, const std::function<void(std::istream&)>& consume,
+    std::stop_token stop = {});
 
 } // namespace container::util

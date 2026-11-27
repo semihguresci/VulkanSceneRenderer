@@ -3228,6 +3228,19 @@ target_sources(sensor_camera_dataset_tests PRIVATE
 set_tests_properties(bim_sensor_label_tests sensor_camera_tests sensor_camera_dataset_tests
     PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
 
+add_custom_test(dataset_simulation_report_tests
+    ${TESTS_DIR}/robotics/dataset_simulation_report_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics_dataset VulkanSceneRenderer_robotics_sensors
+)
+target_include_directories(dataset_simulation_report_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/robotics)
+
+add_custom_test(robotics_dataset_reader_tests
+    ${TESTS_DIR}/robotics/robotics_dataset_reader_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics_dataset VulkanSceneRenderer_fingerprint
+)
+set_tests_properties(dataset_simulation_report_tests robotics_dataset_reader_tests
+    PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
+
 if(Python3_Interpreter_FOUND)
     add_test(NAME bim_sensor_camera_gpu_regression
         COMMAND "${Python3_EXECUTABLE}" -B
@@ -3237,6 +3250,19 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(bim_sensor_camera_gpu_regression PROPERTIES
         LABELS "robotics;requires-vulkan;requires-display"
         RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 900)
+    if(ENABLE_PHYSICS)
+        add_test(NAME bim_robotics_dataset_pipeline_gpu_regression
+            COMMAND "${Python3_EXECUTABLE}" -B
+                "${TEST_VALIDATION_DIR}/bim_robotics_dataset_pipeline_runtime_regression.py"
+                --recorder "$<TARGET_FILE:BimRoboticsDataset>"
+                --simulator "$<TARGET_FILE:BimRoboticsSim>"
+                --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+                --fixtures "${TESTS_DIR}/fixtures/robotics"
+                --output "${TEST_RESULTS_DIR}/bim-robotics-dataset" --managed-output)
+        set_tests_properties(bim_robotics_dataset_pipeline_gpu_regression PROPERTIES
+            LABELS "robotics;requires-vulkan;requires-display"
+            RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 600)
+    endif()
 endif()
 
 add_custom_test(bim_collision_geometry_tests

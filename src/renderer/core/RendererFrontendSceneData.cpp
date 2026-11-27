@@ -5,6 +5,7 @@
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/core/SceneDataCapture.h"
 #include "Container/renderer/core/SensorCameraDataset.h"
+#include "Container/robotics/BimSceneSourceManifest.h"
 #include "Container/renderer/deferred/DeferredRasterResourceBridge.h"
 #include "Container/renderer/platform/VulkanContextInitializer.h"
 #include "Container/renderer/temporal/TemporalManager.h"
@@ -216,6 +217,8 @@ void RendererFrontend::beginSensorCameraCapture(const std::filesystem::path& dir
   const auto* labels = bim ? bim->sensorLabels() : nullptr;
   if (!labels || !labels->metersPerRendererUnit)
     throw std::runtime_error("Sensor camera capture requires BIM length units or --sensor-meters-per-renderer-unit");
+  if (!labels->sceneSource)
+    throw std::runtime_error("Sensor camera capture requires BIM source fingerprints");
   if (bim->objectData().empty())
     throw std::runtime_error("Sensor camera capture requires drawable BIM objects");
 
@@ -226,6 +229,7 @@ void RendererFrontend::beginSensorCameraCapture(const std::filesystem::path& dir
       capture.labels[index] = labels->elements[metadata->sourceElementIndex];
   }
   capture.metersPerRendererUnit = *labels->metersPerRendererUnit;
+  capture.sceneSource = *labels->sceneSource;
   const auto depthScale = static_cast<float>(capture.metersPerRendererUnit);
   if (!std::isfinite(depthScale) || depthScale <= 0.0f)
     throw std::runtime_error("BIM metric scale cannot be represented in the camera pass");
@@ -334,9 +338,13 @@ void RendererFrontend::finishSensorCameraCapture() {
     retireSensorCameraFrame(slot);
   if (capture.requested || capture.completed != svc_.config.sensorCameraPlayback->frames.size())
     throw std::runtime_error("Sensor camera dataset stopped before capturing every scheduled frame");
+  const auto& simulationReportSha256 = svc_.config.sensorCameraPlayback->simulationReportSha256;
   const nlohmann::json manifest{
       {"schema", "container.sensor-camera-dataset"}, {"version", 1},
       {"frameCount", capture.completed}, {"labels", "labels.json"},
+      {"sceneSource", robotics::bimSceneSourceJson(capture.sceneSource)},
+      {"simulationReportSha256", simulationReportSha256
+          ? nlohmann::json(*simulationReportSha256) : nlohmann::json(nullptr)},
       {"frameImagePattern", "frame-%08d.exr"}, {"frameMetadataPattern", "frame-%08d.json"},
       {"colorSpace", "linear-sRGB"}, {"depthUnits", "metres"},
       {"surfacePolicy", "opaque-and-alpha-mask"}};

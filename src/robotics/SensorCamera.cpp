@@ -1,4 +1,6 @@
 #include "Container/robotics/SensorCamera.h"
+#include "Container/utility/ContentFingerprint.h"
+#include "DatasetSimulationReport.h"
 
 #include <glm/geometric.hpp>
 #include <nlohmann/json.hpp>
@@ -157,6 +159,24 @@ struct Trajectory {
   std::vector<SensorCameraPose> bases;
 };
 
+SensorCameraPose readTrajectoryPose(const Json& sample, std::string_view context) {
+  const auto& base = required(sample, context, "base");
+  const auto baseContext = field(context, "base");
+  const auto position = vector(required(base, baseContext, "position"), field(baseContext, "position"));
+  const double yaw = number(base, baseContext, "yaw");
+  return {position, fromRpy({0, 0, yaw})};
+}
+
+std::string trajectoryRow(size_t tick) {
+  return "trajectory.history[" + std::to_string(tick) + "]";
+}
+
+void validateTrajectoryTimestamp(double stamp, size_t tick, uint32_t frequency) {
+  const double expected = static_cast<double>(tick) / frequency;
+  if (std::abs(stamp - expected) > 1e-12 * std::max(1.0, expected))
+    invalid(field(trajectoryRow(tick), "seconds"), "does not match tick / ticksPerSecond");
+}
+
 Trajectory readTrajectory(std::string_view input) {
   const auto json = parseJson(input, "trajectory", maxTrajectoryBytes);
   requireSchema(json, "trajectory", "container.bim-robotics-simulation");
@@ -172,19 +192,12 @@ Trajectory readTrajectory(std::string_view input) {
   Trajectory result{.ticksPerSecond = frequency};
   result.bases.reserve(history.size());
   for (size_t tick = 0; tick < history.size(); ++tick) {
-    const auto context = "trajectory.history[" + std::to_string(tick) + "]";
+    const auto context = trajectoryRow(tick);
     const auto& sample = history[tick];
     if (natural(required(sample, context, "tick"), field(context, "tick"), maxPlaybackTick) != tick)
       invalid(field(context, "tick"), "must be contiguous from zero");
-    const double stamp = number(sample, context, "seconds");
-    const double expected = static_cast<double>(tick) / frequency;
-    if (std::abs(stamp - expected) > 1e-12 * std::max(1.0, expected))
-      invalid(field(context, "seconds"), "does not match tick / ticksPerSecond");
-    const auto& base = required(sample, context, "base");
-    const auto baseContext = field(context, "base");
-    const auto position = vector(required(base, baseContext, "position"), field(baseContext, "position"));
-    const double yaw = number(base, baseContext, "yaw");
-    result.bases.push_back({position, fromRpy({0, 0, yaw})});
+    validateTrajectoryTimestamp(number(sample, context, "seconds"), tick, frequency);
+    result.bases.push_back(readTrajectoryPose(sample, context));
   }
   return result;
 }
@@ -321,20 +334,24 @@ SensorCameraFrame makeSensorCameraFrame(const SensorCameraSettings& settings, co
   return result;
 }
 
-SensorCameraPlayback parseSensorCameraPlayback(std::string_view specJson, std::optional<std::string_view> trajectoryJson) {
-  const auto spec = parseJson(specJson, "spec", maxSpecBytes);
+namespace {
+
+Json readSpec(std::string_view specJson) {
+  auto spec = parseJson(specJson, "spec", maxSpecBytes);
   checkKeys(spec, "spec", {"schema", "version", "intrinsics", "timing", "baseFromCamera", "worldFromBase",
                             "distortion", "depthNoise"});
   requireSchema(spec, "spec", "container.sensor-camera");
+  return spec;
+}
+
+SensorCameraPlayback makePlayback(const Json& spec, const Trajectory* trajectory) {
   auto settings = readSettings(spec);
   // Validate the optical clipping configuration even when no renderer is present.
   (void)sensorCameraProjection(settings);
-  Trajectory trajectory;
   SensorCameraPose staticBase;
   const auto authoredBase = spec.find("worldFromBase");
-  if (trajectoryJson) {
+  if (trajectory) {
     if (authoredBase != spec.end()) invalid("worldFromBase", "cannot override a supplied trajectory");
-    trajectory = readTrajectory(*trajectoryJson);
   } else if (authoredBase != spec.end()) {
     staticBase = pose(*authoredBase, "worldFromBase");
   }
@@ -342,9 +359,9 @@ SensorCameraPlayback parseSensorCameraPlayback(std::string_view specJson, std::o
   const auto timing = spec.value("timing", Json::object());
   checkKeys(timing, "timing", {"ticksPerSecond", "framesPerSecondMilliHz", "firstTick", "lastTick"});
   const auto frequency = static_cast<uint32_t>(naturalOr(timing, "timing", "ticksPerSecond",
-      trajectoryJson ? trajectory.ticksPerSecond : 60, 1'000'000));
+      trajectory ? trajectory->ticksPerSecond : 60, 1'000'000));
   if (frequency == 0) invalid("timing.ticksPerSecond", "must be positive");
-  if (trajectoryJson && frequency != trajectory.ticksPerSecond)
+  if (trajectory && frequency != trajectory->ticksPerSecond)
     invalid("timing.ticksPerSecond", "does not match trajectory.ticksPerSecond");
   const auto maximumRate = uint64_t(frequency) * 1000;
   const auto rate = static_cast<uint32_t>(naturalOr(timing, "timing", "framesPerSecondMilliHz",
@@ -352,9 +369,9 @@ SensorCameraPlayback parseSensorCameraPlayback(std::string_view specJson, std::o
   if (rate == 0) invalid("timing.framesPerSecondMilliHz", "must be positive");
   const auto firstTick = naturalOr(timing, "timing", "firstTick", 0, maxPlaybackTick);
   const auto lastTick = naturalOr(timing, "timing", "lastTick",
-                               trajectoryJson ? trajectory.bases.size() - 1 : firstTick, maxPlaybackTick);
+                               trajectory ? trajectory->bases.size() - 1 : firstTick, maxPlaybackTick);
   if (lastTick < firstTick) invalid("timing.lastTick", "precedes firstTick");
-  if (trajectoryJson && lastTick >= trajectory.bases.size())
+  if (trajectory && lastTick >= trajectory->bases.size())
     invalid("timing.lastTick", "exceeds the committed trajectory history");
   const SensorSchedule schedule(frequency, rate, firstTick);
   const auto frameCount = schedule.samplesThrough(lastTick);
@@ -363,18 +380,44 @@ SensorCameraPlayback parseSensorCameraPlayback(std::string_view specJson, std::o
   playback.frames.reserve(static_cast<size_t>(frameCount));
   for (auto tick = firstTick; tick <= lastTick; ++tick) {
     if (!schedule.due(tick)) continue;
-    const auto& base = trajectoryJson ? trajectory.bases[static_cast<size_t>(tick)] : staticBase;
+    const auto& base = trajectory ? trajectory->bases[static_cast<size_t>(tick)] : staticBase;
     playback.frames.push_back(makeSensorCameraFrame(settings, schedule, tick, base));
   }
   return playback;
 }
 
+} // namespace
+
+SensorCameraPlayback parseSensorCameraPlayback(std::string_view specJson, std::optional<std::string_view> trajectoryJson) {
+  const auto spec = readSpec(specJson);
+  if (!trajectoryJson) return makePlayback(spec, nullptr);
+  const auto trajectory = readTrajectory(*trajectoryJson);
+  return makePlayback(spec, &trajectory);
+}
+
 SensorCameraPlayback loadSensorCameraPlayback(const std::filesystem::path& specPath,
     const std::optional<std::filesystem::path>& trajectoryPath) {
-  const auto spec = readText(specPath, "spec", maxSpecBytes);
-  if (!trajectoryPath) return parseSensorCameraPlayback(spec);
-  const auto trajectory = readText(*trajectoryPath, "trajectory", maxTrajectoryBytes);
-  return parseSensorCameraPlayback(spec, std::string_view(trajectory));
+  const auto spec = readSpec(readText(specPath, "spec", maxSpecBytes));
+  if (!trajectoryPath) return makePlayback(spec, nullptr);
+  Trajectory trajectory;
+  std::vector<double> stamps;
+  util::ContentFingerprint digest;
+  try {
+    digest = util::FingerprintFileWhileReading(*trajectoryPath, [&](std::istream& input) {
+      trajectory.ticksPerSecond = scanSimulationBaseHistory(input, [&](const Json& row) {
+        const auto context = trajectoryRow(trajectory.bases.size());
+        stamps.push_back(number(row, context, "seconds"));
+        trajectory.bases.push_back(readTrajectoryPose(row, context));
+      });
+    });
+  } catch (const std::invalid_argument& error) {
+    invalid("trajectory", error.what());
+  }
+  for (size_t tick = 0; tick < stamps.size(); ++tick)
+    validateTrajectoryTimestamp(stamps[tick], tick, trajectory.ticksPerSecond);
+  auto playback = makePlayback(spec, &trajectory);
+  playback.simulationReportSha256 = std::move(digest.digest);
+  return playback;
 }
 
 } // namespace container::robotics

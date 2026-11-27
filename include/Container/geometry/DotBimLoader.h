@@ -15,6 +15,10 @@
 #include <string_view>
 #include <vector>
 
+namespace container::util {
+struct ContentFingerprint;
+}
+
 namespace container::geometry::dotbim {
 
 struct MeshRange {
@@ -232,7 +236,8 @@ struct Model {
 
 [[nodiscard]] Model LoadFromFile(const std::filesystem::path& path,
                                  float importScale = 1.0f,
-                                 std::stop_token stop = {});
+                                 std::stop_token stop = {},
+                                 util::ContentFingerprint* sourceFingerprint = nullptr);
 [[nodiscard]] Model LoadFromJson(std::string_view jsonText,
                                  float importScale = 1.0f,
                                  std::stop_token stop = {});

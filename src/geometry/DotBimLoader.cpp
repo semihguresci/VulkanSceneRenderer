@@ -2,6 +2,7 @@
 #include "BimImportInput.h"
 
 #include "Container/geometry/CoordinateSystem.h"
+#include "Container/utility/ContentFingerprint.h"
 #include "Container/utility/Platform.h"
 
 #include <nlohmann/json.hpp>
@@ -663,14 +664,20 @@ Model LoadFromJson(std::string_view jsonText, float importScale,
 }
 
 Model LoadFromFile(const std::filesystem::path &path, float importScale,
-                   std::stop_token stop) {
+                   std::stop_token stop, util::ContentFingerprint* sourceFingerprint) {
   container::util::checkModelImportCancellation(stop);
   std::ifstream file(path, std::ios::binary);
   if (!file) {
     throw std::runtime_error("failed to open dotbim file: " +
                              container::util::pathToUtf8(path));
   }
-  return LoadFromJson(bim_import::readText(file, stop), importScale, stop);
+  const auto text = bim_import::readText(file, stop);
+  auto model = LoadFromJson(text, importScale, stop);
+  if (sourceFingerprint) {
+    const auto* bytes = reinterpret_cast<const unsigned char*>(text.data());
+    *sourceFingerprint = util::FingerprintContent({bytes, text.size()}, stop);
+  }
+  return model;
 }
 
 } // namespace container::geometry::dotbim

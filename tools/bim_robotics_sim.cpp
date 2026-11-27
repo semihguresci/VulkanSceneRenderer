@@ -1,4 +1,5 @@
 #include "Container/robotics/BimAssetCache.h"
+#include "Container/robotics/BimSceneSourceManifest.h"
 #include "Container/robotics/DifferentialDriveSimulation.h"
 #include "Container/robotics/DriveSensors.h"
 #include "Container/robotics/RaycastLidar.h"
@@ -555,6 +556,7 @@ int run(int count, Char** args) {
     const auto sourceNamespace = container::util::pathToUtf8(std::filesystem::path(args[3]));
     auto scenario = readScenario(scenarioPath);
     Json assetCache;
+    robotics::BimSceneSource sceneSource;
     auto collision = [&] {
       auto assets = robotics::loadBimPreprocessedAssets(input, scenario.cacheDirectory,
           {.scene = {.sourceNamespace = sourceNamespace, .metersPerRendererUnit = scenario.metersPerRendererUnit},
@@ -562,6 +564,11 @@ int run(int count, Char** args) {
       if (!assets.cacheDiagnostic.empty()) std::cerr << assets.cacheDiagnostic << '\n';
       if (!assets.scene.frame.metersPerRendererUnit)
         throw std::invalid_argument("Simulation requires known metric units. Supply metersPerRendererUnit for an unknown source scale");
+      std::vector<container::util::ContentFingerprint> sourceLayers;
+      sourceLayers.reserve(assets.sourceLayers.size());
+      for (auto& layer : assets.sourceLayers)
+        sourceLayers.push_back(std::move(layer.fingerprint));
+      sceneSource = robotics::makeBimSceneSource(std::move(sourceLayers), assets.scene.frame);
       if (!scenario.cacheDirectory.empty())
         assetCache = {{"key", assets.cacheKey}, {"producerRevision", assets.producerRevision},
                       {"status", container::util::derivedAssetCacheStatusName(assets.cacheStatus)}};
@@ -606,6 +613,7 @@ int run(int count, Char** args) {
     const auto transforms = simulation.frames();
     Json report{{"schema", "container.bim-robotics-simulation"}, {"version", 1},
                 {"sourceNamespace", sourceNamespace}, {"robotId", scenario.options.robotId},
+                {"sceneSource", robotics::bimSceneSourceJson(sceneSource)},
                 {"coordinateConvention", "ROS REP-103"}, {"matrixLayout", "column-major"},
                 {"seed", scenario.options.seed}, {"ticksPerSecond", scenario.options.ticksPerSecond},
                 {"state", sample(simulation.state(), scenario.reportMotionModel)}, {"history", std::move(history)},

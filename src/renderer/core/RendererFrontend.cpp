@@ -5828,7 +5828,7 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
             vdbOptionsForReload(path,requestedOptions,previousAuxiliaryPath,
                                 previousOpenVdbOptions,svc_.config.vdbModelOptions),
             {}, {}, {}, svc_.config.geometryLodErrorPixels > 0.0f,
-            svc_.config.assetCacheDirectory);
+            svc_.config.assetCacheDirectory, bool(svc_.config.sensorCameraPlayback));
         prepared = &*localPrepared;
       }
       auto* stagedGeometry = !localPrepared && modelLoad_->uploadedGeometry
@@ -6024,6 +6024,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
                                linked = svc_.config.experimentalGltfLinkedAssets && !remote,
                                generateGeometryLods = svc_.config.geometryLodErrorPixels > 0.0f,
                                derivedCacheDirectory = svc_.config.assetCacheDirectory,
+                               recordSourceFingerprints = bool(svc_.config.sensorCameraPlayback),
                                streamGeometry = svc_.config.geometryUploadChunkKiB != 0,
                                micromaps = svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !remote,
                                experimental = svc_.config.experimentalGltfMaterials,
@@ -6034,7 +6035,7 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
         auto prepared = std::make_unique<ModelLoadState::Prepared>();
         if (auxiliary) {
           prepared->bim = BimManager::prepareScene(path, scale, openVdbOptions, stop,
-                                                   {}, {}, generateGeometryLods, derivedCacheDirectory);
+              {}, {}, generateGeometryLods, derivedCacheDirectory, recordSourceFingerprints);
         } else {
           prepared->gltf = container::scene::SceneManager::prepareGltfModel(path,
               merge || remote ? 512ull * 1024 * 1024 : std::numeric_limits<uintmax_t>::max(),

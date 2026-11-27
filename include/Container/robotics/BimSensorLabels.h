@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Container/robotics/BimSceneSource.h"
 #include "Container/robotics/RoboticsScene.h"
 
 #include <cstdint>
@@ -32,6 +33,7 @@ struct BimSensorInstance {
 struct BimSensorLabelMap {
   std::string sourceNamespace;
   std::optional<double> metersPerRendererUnit;
+  std::optional<BimSceneSource> sceneSource;
   // Indexed by the CPU model's element row, which BIM draw metadata retains
   // as sourceElementIndex. Object and pick IDs are assigned by the renderer.
   std::vector<BimSensorLabel> elements;

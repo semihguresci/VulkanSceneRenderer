@@ -8,6 +8,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <optional>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -51,6 +52,8 @@ struct SensorCameraPlayback {
   SensorCameraSettings settings;
   SensorSchedule schedule{60, 10'000};
   std::vector<SensorCameraFrame> frames;
+  // Exact trajectory file bytes used by loadSensorCameraPlayback, if supplied.
+  std::optional<std::string> simulationReportSha256;
 };
 
 void validateSensorCameraSettings(const SensorCameraSettings& settings);

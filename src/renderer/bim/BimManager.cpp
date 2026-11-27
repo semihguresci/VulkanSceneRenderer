@@ -3227,7 +3227,8 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
     std::shared_ptr<const container::geometry::vdb::ImportOptions> openVdbOptions,
     std::stop_token stop, const std::function<void(std::string_view)> &progress,
     const std::function<void(std::string_view)> &profileStage,
-    bool generateGeometryLods, const std::filesystem::path &derivedCacheDirectory) {
+    bool generateGeometryLods, const std::filesystem::path &derivedCacheDirectory,
+    bool recordSourceFingerprints) {
   container::util::checkModelImportCancellation(stop);
   if (profileStage)
     profileStage("parse");
@@ -3237,6 +3238,18 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   prepared.requestedPath = path;
   prepared.openVdbOptions = std::move(openVdbOptions);
   const auto extension = lowerAscii(prepared.assetPath.extension().string());
+  util::ContentFingerprint nativeFingerprint;
+  auto* nativeEvidence = recordSourceFingerprints ? &nativeFingerprint : nullptr;
+  const auto loadIfcx = [&](const std::filesystem::path& input) {
+    if (!recordSourceFingerprints)
+      return geometry::ifcx::LoadFromFile(input, importScale, stop);
+    auto snapshot = geometry::ifcx::PrepareSource(input, stop);
+    auto model = geometry::ifcx::LoadFromSnapshot(snapshot, importScale, stop);
+    prepared.sourceLayerFingerprints.reserve(snapshot.layers.size());
+    for (auto& layer : snapshot.layers)
+      prepared.sourceLayerFingerprints.push_back(std::move(layer.fingerprint));
+    return model;
+  };
   auto requireGeometry = [&]() {
     if (!hasRenderableSourceGeometry(prepared.model)) {
       const auto &report = prepared.model.importReport;
@@ -3250,15 +3263,19 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
   };
   if (extension == ".bim") {
     prepared.format = "dotbim";
-    prepared.model = container::geometry::dotbim::LoadFromFile(prepared.assetPath, importScale, stop);
+    prepared.model = geometry::dotbim::LoadFromFile(prepared.assetPath, importScale, stop, nativeEvidence);
+    if (nativeEvidence)
+      prepared.sourceLayerFingerprints.push_back(std::move(nativeFingerprint));
   } else if (extension == ".ifcx") {
     prepared.format = "IFCX";
-    prepared.model = container::geometry::ifcx::LoadFromFile(prepared.assetPath, importScale, stop);
+    prepared.model = loadIfcx(prepared.assetPath);
   } else if (extension == ".ifc") {
     prepared.format = "IFC";
     try {
-      prepared.model = container::geometry::ifc::LoadFromFile(prepared.assetPath, importScale, stop);
+      prepared.model = geometry::ifc::LoadFromFile(prepared.assetPath, importScale, stop, nativeEvidence);
       requireGeometry();
+      if (nativeEvidence)
+        prepared.sourceLayerFingerprints.push_back(std::move(nativeFingerprint));
     } catch (const std::exception &error) {
       container::util::checkModelImportCancellation(stop);
       const auto sidecar = preparedIfcSidecarPath(prepared.assetPath);
@@ -3270,7 +3287,7 @@ BimManager::PreparedScene BimManager::prepareScene(const std::string &path,
         originalReport.diagnostics.push_back({"IFC_FILE", 0, 0, {}, error.what()});
         originalReport.representationWarnings["IFC_FILE"] = 1;
       }
-      prepared.model = container::geometry::ifcx::LoadFromFile(*sidecar, importScale, stop);
+      prepared.model = loadIfcx(*sidecar);
       originalReport.fallbackSource = sidecar->string();
       prepared.model.importReport = std::move(originalReport);
       prepared.assetPath = *sidecar;
@@ -3446,7 +3463,8 @@ void BimManager::loadModel(const std::string &path, float importScale,
        !derivedCacheDirectory.empty() || !sensorLabelNamespace_.empty()) &&
       extension != ".gltf" && extension != ".glb") {
     auto prepared = prepareScene(path, importScale, std::move(openVdbOptions),
-                                 {}, {}, {}, generateGeometryLods, derivedCacheDirectory);
+                                 {}, {}, {}, generateGeometryLods, derivedCacheDirectory,
+                                 !sensorLabelNamespace_.empty());
     loadPreparedScene(std::move(prepared), sceneManager);
     return;
   }
@@ -3582,6 +3600,12 @@ void BimManager::loadPreparedModel(
         .metersPerRendererUnit = sensorLabelMetersPerRendererUnit_,
     });
     labels = std::make_unique<robotics::BimSensorLabelMap>(robotics::buildBimSensorLabels(model, scene));
+    if (scene.frame.metersPerRendererUnit) {
+      if (!prepared)
+        throw std::logic_error("BIM sensor labels require prepared source evidence");
+      labels->sceneSource = robotics::makeBimSceneSource(
+          std::move(prepared->sourceLayerFingerprints), scene.frame);
+    }
   }
   notifyLoadProgress("Preparing BIM upload metadata");
   meshletClusters_ = prepared ? std::move(prepared->meshletClusters)
