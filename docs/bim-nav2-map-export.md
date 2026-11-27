@@ -51,9 +51,10 @@ scale when the source lacks unit evidence. [Semantic BIM export](ifc-import.md#e
 
 `map.yaml` and `map.pgm` are a trinary Nav2 map. White is free, black is
 occupied, and grey is unknown. A free cell requires floor support across its
-entire footprint and clearance from inflated obstacles. The PGM starts with
-the top row. Nav2 publishes
-the grid from its lower-left origin in map-frame metres. `waypoints.json`
+entire footprint and clearance from inflated obstacles at the selected
+support elevations. Set `floorToleranceMeters` to cover one floor band. The
+PGM starts with the top row. Nav2 publishes the grid from its lower-left
+origin in map-frame metres. `waypoints.json`
 stores the planar poses, selected floor elevation, source fingerprints, and
 the PGM SHA-256. Use the floor elevation when mapping a planned XY pose back
 into the BIM collision world. [BIM coordinate conventions](coordinate-conventions.md#semantic-bim-export-for-robotics)
@@ -80,13 +81,13 @@ python3 -B tests/robotics/bim_nav2_planner.py --maps out/nav2-cases --output out
 ```
 
 The runner activates the Nav2 map server and NavFn planner in isolated
-localhost ROS domains. It checks the map server's `/map` and the planner's
-static costmap against the image, then requests a path between explicit
-`map`-frame poses. The map already accounts for capsule clearance. The
-planner uses the static layer, prohibits travel in unknown cells, and uses
-zero goal tolerance. A disconnected fixture must return an empty path and
-Nav2's `NO_VALID_PATH` code. The results include the returned stamped poses,
-map image hash, action status and error code. Per-case logs appear next to
+localhost ROS domains. It checks every cell in the map server's `/map`
+against the image. The planner's inflation layer adds a one-cell guard
+around occupied and unknown cells for NavFn's sub-cell path interpolation.
+The runner checks the guarded costmap and requests a path between explicit
+`map`-frame poses with zero goal tolerance. A disconnected fixture must return
+an empty path and Nav2's `NO_VALID_PATH` code. The results include the returned
+stamped poses, map image hash, action status and error code. Per-case logs appear next to
 the results by default. [Jazzy planning action](https://github.com/ros-navigation/navigation2/blob/jazzy/nav2_msgs/action/ComputePathToPose.action)
 
 Copy `out/nav2-paths.json` back to the exporter host and replay the exact

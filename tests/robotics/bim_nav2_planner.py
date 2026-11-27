@@ -113,7 +113,7 @@ def read_fixture(root, row):
                    waypoints["start"], waypoints["goal"])
 
 
-def verify_occupancy(grid, fixture, label):
+def verify_occupancy(grid, fixture, label, *, guarded=None):
     info = grid.info
     require(grid.header.frame_id == FRAME, f"{label} published frame {grid.header.frame_id!r}")
     require((info.width, info.height) == (fixture.width, fixture.height), f"{label} dimensions differ from PGM")
@@ -126,12 +126,38 @@ def verify_occupancy(grid, fixture, label):
     require((orientation.x, orientation.y, orientation.z, orientation.w) == (0, 0, 0, 1),
             f"{label} has a rotated origin")
     require(len(grid.data) == len(fixture.cells), f"{label} forwarded the wrong number of map cells")
-    for index, (actual, expected) in enumerate(zip(grid.data, fixture.cells, strict=True)):
-        if actual != expected:
-            raise ValueError(f"{label} cell ({index % info.width}, {index // info.width}) is {actual}, expected {expected}")
+    observed = grid.data if guarded is None else cost_classes(grid.data)
+    expected = fixture.cells if guarded is None else guarded
+    for index, (actual, wanted) in enumerate(zip(observed, expected, strict=True)):
+        if actual != wanted:
+            raise ValueError(f"{label} cell ({index % info.width}, {index // info.width}) is {actual}, expected {wanted}")
+
+
+def cost_classes(cells):
+    # Costmap publication reserves 99 for inscribed and 100 for lethal cells.
+    return tuple(0 if 0 <= cost < 99 else cost for cost in cells)
+
+
+def guarded_cells(fixture):
+    width, height = fixture.width, fixture.height
+    cells = fixture.cells
+    result = []
+    for index, cell in enumerate(cells):
+        if cell != 0:
+            result.append(100)
+            continue
+        x, y = index % width, index // width
+        neighbors = ((x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1))
+        inscribed = any(0 <= a < width and 0 <= b < height and cells[b * width + a] != 0
+                        for a, b in neighbors)
+        result.append(99 if inscribed else 0)
+    return tuple(result)
 
 
 def planner_parameters(fixture):
+    # Add a cardinal-cell guard to the planner's copy for sub-cell NavFn
+    # interpolation. The exported map already includes the physical capsule.
+    guard_radius = fixture.resolution * 1.1
     return {
         "planner_server": {"ros__parameters": {
             "planner_plugins": [PLANNER], "costmap_update_timeout": 3.0,
@@ -141,11 +167,14 @@ def planner_parameters(fixture):
         "global_costmap": {"global_costmap": {"ros__parameters": {
             "global_frame": FRAME, "robot_base_frame": "base_link", "rolling_window": False,
             "resolution": fixture.resolution, "track_unknown_space": True,
-            "robot_radius": 0.01, "footprint_padding": 0.0,
+            "robot_radius": guard_radius, "footprint_padding": 0.0,
             "update_frequency": 10.0, "publish_frequency": 10.0, "always_send_full_costmap": True,
-            "plugins": ["static_layer"],
+            "plugins": ["static_layer", "inflation_layer"],
             "static_layer": {"plugin": "nav2_costmap_2d::StaticLayer", "map_topic": "/map",
                              "map_subscribe_transient_local": True},
+            "inflation_layer": {"plugin": "nav2_costmap_2d::InflationLayer", "inflation_radius": guard_radius,
+                                "cost_scaling_factor": 10.0, "inflate_unknown": False,
+                                "inflate_around_unknown": True},
         }}},
     }
 
@@ -317,9 +346,10 @@ def run_fixture(fixture, executables, domain, log_dir, timeout):
                 [executables["planner_server"], "--ros-args", "--params-file", params],
                 log_dir / "planner_server.stdout.log", env))
             activate(node, executor, deadline, processes, "planner_server")
-            spin_until(executor, deadline, processes, "global costmap to receive the static map",
-                       lambda: "costmap" in topics and tuple(topics["costmap"].data) == fixture.cells)
-            verify_occupancy(topics["costmap"], fixture, "global costmap")
+            guarded = guarded_cells(fixture)
+            spin_until(executor, deadline, processes, "global costmap to apply its one-cell guard",
+                       lambda: "costmap" in topics and cost_classes(topics["costmap"].data) == guarded)
+            verify_occupancy(topics["costmap"], fixture, "global costmap", guarded=guarded)
             return plan_path(node, executor, deadline, processes, fixture)
     finally:
         rclpy.try_shutdown(context=context)

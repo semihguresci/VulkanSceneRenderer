@@ -3404,7 +3404,8 @@ if(ENABLE_PHYSICS)
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
     add_custom_test(bim_navigation_map_tests
-        ${TESTS_DIR}/robotics/bim_navigation_map_tests.cpp "" ${TEST_RESULTS_DIR} Dep_Math)
+        ${TESTS_DIR}/robotics/bim_navigation_map_tests.cpp "" ${TEST_RESULTS_DIR}
+        VulkanSceneRenderer_robotics_collision_geometry)
     target_sources(bim_navigation_map_tests PRIVATE ${CMAKE_SOURCE_DIR}/src/robotics/BimNavigationMap.cpp)
     set_tests_properties(bim_navigation_map_tests PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 30)
 

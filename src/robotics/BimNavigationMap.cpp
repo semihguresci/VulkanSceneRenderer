@@ -7,6 +7,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <map>
 #include <stdexcept>
 #include <string_view>
 #include <unordered_map>
@@ -29,6 +30,14 @@ constexpr size_t maxStoredFragments = 262'144;
 constexpr size_t maxFragmentsPerCell = 64;
 constexpr double minimumResolution = 1e-5;
 constexpr double capsuleSkin = BimWalkabilitySettings{}.skin;
+
+using RepresentationKey = std::pair<std::string_view, std::string_view>;
+
+struct SupportSelection {
+  double bottom{std::numeric_limits<double>::infinity()};
+  double top{-std::numeric_limits<double>::infinity()};
+  std::map<RepresentationKey, std::vector<uint32_t>> triangles;
+};
 
 struct Bounds {
   Point minimum;
@@ -159,12 +168,15 @@ std::vector<Vector> clip(std::span<const Vector> polygon, Distance distance) {
   return result;
 }
 
-Polygon projectBand(const Triangle& triangle, double bottom, double top) {
+std::vector<glm::dvec3> clipBand(const Triangle& triangle, double bottom, double top) {
   auto clipped = clip<glm::dvec3>(triangle, [bottom](auto point) { return point.z - bottom; });
-  clipped = clip<glm::dvec3>(clipped, [top](auto point) { return top - point.z; });
+  return clip<glm::dvec3>(clipped, [top](auto point) { return top - point.z; });
+}
+
+Polygon project(std::span<const glm::dvec3> points) {
   Polygon result;
-  result.reserve(clipped.size());
-  for (const auto point : clipped)
+  result.reserve(points.size());
+  for (const auto point : points)
     result.emplace_back(point);
   return result;
 }
@@ -250,48 +262,97 @@ void markBox(Grid& grid, glm::dvec3 center, glm::dvec3 halfExtents, double botto
   markObstacle(grid, Polygon(footprint.begin(), footprint.end()));
 }
 
-bool isClosed(const BimCollisionMesh& mesh) {
-  // The cooker welds exactly equal local vertices. Two incident triangles
-  // per undirected edge are required before a cross-section can fill space.
-  std::vector<uint64_t> edges;
-  edges.reserve(mesh.indices.size());
-  for (size_t i = 0; i < mesh.indices.size(); i += 3) {
-    for (size_t corner = 0; corner < 3; ++corner) {
-      const auto first = mesh.indices[i + corner];
-      const auto second = mesh.indices[i + (corner + 1) % 3];
-      if (first == second)
-        return false;
-      edges.push_back((uint64_t(std::min(first, second)) << 32) | std::max(first, second));
-    }
+struct MeshComponent {
+  uint32_t parent{};
+  uint32_t size{1};
+  bool closed{true};
+};
+
+uint32_t rootOf(std::vector<MeshComponent>& components, uint32_t face) {
+  while (components[face].parent != face) {
+    components[face].parent = components[components[face].parent].parent;
+    face = components[face].parent;
   }
-  if (edges.size() % 2 != 0)
-    return false;
-  std::ranges::sort(edges);
-  for (size_t i = 0; i < edges.size(); i += 2)
-    if (edges[i] != edges[i + 1] || (i > 0 && edges[i] == edges[i - 1]))
-      return false;
-  return true;
+  return face;
 }
 
-void intersectSection(std::vector<Segment>& segments, const Triangle& triangle, double height) {
-  Segment section;
+std::vector<MeshComponent> meshComponents(const BimCollisionMesh& mesh) {
+  struct Edge {
+    std::array<uint32_t, 2> vertices;
+    uint32_t face;
+  };
+  std::vector<MeshComponent> components(mesh.indices.size() / 3);
+  std::vector<Edge> edges;
+  edges.reserve(mesh.indices.size());
+  for (uint32_t face = 0; face < components.size(); ++face) {
+    components[face].parent = face;
+    for (size_t corner = 0; corner < 3; ++corner) {
+      const auto first = mesh.indices[3 * size_t(face) + corner];
+      const auto second = mesh.indices[3 * size_t(face) + (corner + 1) % 3];
+      edges.push_back({{std::min(first, second), std::max(first, second)}, face});
+    }
+  }
+  std::ranges::sort(edges, {}, &Edge::vertices);
+  for (size_t first = 0; first < edges.size();) {
+    size_t end = first + 1;
+    auto root = rootOf(components, edges[first].face);
+    while (end < edges.size() && edges[end].vertices == edges[first].vertices) {
+      auto adjacent = rootOf(components, edges[end++].face);
+      if (adjacent == root)
+        continue;
+      if (components[root].size < components[adjacent].size)
+        std::swap(root, adjacent);
+      components[adjacent].parent = root;
+      components[root].size += components[adjacent].size;
+      components[root].closed &= components[adjacent].closed;
+    }
+    // Cooked vertices are welded by exact local position. A boundary,
+    // degenerate, or non-manifold edge invalidates only its own component.
+    components[root].closed &= end - first == 2 && edges[first].vertices[0] != edges[first].vertices[1];
+    first = end;
+  }
+  return components;
+}
+
+bool intersectSection(Segment& section, const Triangle& triangle, double height) {
   size_t points = 0;
   auto previous = triangle.back();
   for (const auto point : triangle) {
     if ((point.z > height) != (previous.z > height)) {
-      const double t = (height - previous.z) / (point.z - previous.z);
-      section[points++] = Point(previous + (point - previous) * t);
+      // Adjacent faces may traverse a shared edge in opposite directions.
+      // Interpolate from the same endpoint so their section vertices coincide.
+      const auto& low = point.z < previous.z ? point : previous;
+      const auto& high = point.z < previous.z ? previous : point;
+      const auto t = (height - low.z) / (high.z - low.z);
+      section[points++] = {std::lerp(low.x, high.x, t), std::lerp(low.y, high.y, t)};
     }
     previous = point;
   }
-  if (points == 2 && section[0] != section[1])
-    segments.push_back(section);
+  return points == 2 && section[0] != section[1];
 }
 
-void fillSection(Grid& grid, std::span<const Segment> segments) {
-  std::vector<std::vector<double>> crossings(grid.settings.height);
-  size_t count = 0;
-  for (auto [start, finish] : segments) {
+struct SectionCrossing {
+  uint32_t row;
+  uint32_t component;
+  double x;
+};
+
+void rasterizeClosedSections(Grid& grid, const BimCollisionMesh& mesh, glm::dvec3 offset, double sectionHeight) {
+  grid.budget.use(mesh.indices.size());
+  auto components = meshComponents(mesh);
+  std::vector<SectionCrossing> crossings;
+  for (uint32_t face = 0; face < components.size(); ++face) {
+    const auto component = rootOf(components, face);
+    if (!components[component].closed)
+      continue;
+    const auto index = 3 * size_t(face);
+    const Triangle triangle{offset + glm::dvec3(mesh.vertices[mesh.indices[index]]),
+                            offset + glm::dvec3(mesh.vertices[mesh.indices[index + 1]]),
+                            offset + glm::dvec3(mesh.vertices[mesh.indices[index + 2]])};
+    Segment section;
+    if (!intersectSection(section, triangle, sectionHeight))
+      continue;
+    auto [start, finish] = section;
     if (start.y > finish.y)
       std::swap(start, finish);
     const auto rows = cellsBetween(start.y, finish.y, grid.pitch, grid.settings.height);
@@ -301,25 +362,39 @@ void fillSection(Grid& grid, std::span<const Segment> segments) {
       // Half-open spans count shared vertices exactly once.
       if (center < start.y || center >= finish.y)
         continue;
-      if (count++ == maxSectionCrossings)
+      if (crossings.size() == maxSectionCrossings)
         throw std::length_error("BIM navigation map exceeds its cross-section limit");
       const auto t = (center - start.y) / (finish.y - start.y);
-      crossings[y].push_back(std::lerp(start.x, finish.x, t));
+      crossings.push_back({y, component, std::lerp(start.x, finish.x, t)});
     }
   }
-  for (uint32_t y = 0; y < grid.settings.height; ++y) {
-    auto& row = crossings[y];
-    if (row.size() % 2 != 0)
-      continue;
-    std::ranges::sort(row);
-    for (size_t i = 0; i < row.size(); i += 2) {
-      if (row[i + 1] - row[i] <= grid.tolerance)
+  // Pair crossings separately for each shell and each scanline, then mark
+  // their union. Pooling intersecting shells before pairing cancels overlap.
+  std::ranges::sort(crossings, [](const auto& first, const auto& second) {
+    if (first.row != second.row) return first.row < second.row;
+    if (first.component != second.component) return first.component < second.component;
+    return first.x < second.x;
+  });
+  for (size_t first = 0; first < crossings.size();) {
+    const auto start = first;
+    const auto y = crossings[first].row;
+    const auto component = crossings[first].component;
+    do {
+      ++first;
+    } while (first < crossings.size() && crossings[first].row == y && crossings[first].component == component);
+    if ((first - start) % 2 != 0)
+      throw std::runtime_error("BIM navigation map closed collider shell has an odd crossing count at row " +
+                               std::to_string(y) + " (component rooted at triangle " + std::to_string(component) + ")");
+    for (size_t i = start; i < first; i += 2) {
+      const auto left = crossings[i].x;
+      const auto right = crossings[i + 1].x;
+      if (right - left <= grid.tolerance)
         continue;
-      const auto columns = cellsBetween(row[i], row[i + 1], grid.pitch, grid.settings.width);
+      const auto columns = cellsBetween(left, right, grid.pitch, grid.settings.width);
       grid.budget.use(columns.end - columns.first);
       for (uint32_t x = columns.first; x < columns.end; ++x) {
         const auto center = (double(x) + 0.5) * grid.pitch;
-        if (row[i] <= center && center <= row[i + 1])
+        if (left <= center && center <= right)
           grid.values[grid.index(x, y)] = BimNavigationCell::Occupied;
       }
     }
@@ -327,7 +402,8 @@ void fillSection(Grid& grid, std::span<const Segment> segments) {
 }
 
 void rasterizeObstacles(Grid& grid, const CookedBimCollision& geometry,
-                        std::span<const std::string> openDoorIds, glm::dvec3 origin) {
+                        std::span<const std::string> openDoorIds, glm::dvec3 origin,
+                        const SupportSelection& support) {
   if (geometry.colliders.size() > BimCollisionCookOptions{}.maxColliders ||
       openDoorIds.size() > geometry.colliders.size())
     throw std::length_error("BIM navigation map exceeds its collider or open door limit");
@@ -335,9 +411,13 @@ void rasterizeObstacles(Grid& grid, const CookedBimCollision& geometry,
   for (const auto& id : openDoorIds)
     if (!foundDoors.emplace(id, false).second)
       throw std::invalid_argument("BIM navigation map received duplicate open door IDs");
-  const auto bottom = grid.settings.floorToleranceMeters + capsuleSkin;
-  const auto top = grid.settings.robotHeightMeters;
-  const auto sectionHeight = bottom + (top - bottom) * 0.5;
+  const auto height = grid.settings.robotHeightMeters;
+  const auto bottom = std::isfinite(support.bottom) ? support.bottom : capsuleSkin;
+  const auto top = std::isfinite(support.top) ? support.top : height + capsuleSkin;
+  const auto floorBand = grid.settings.floorToleranceMeters + grid.tolerance;
+  // Slice above the highest selected support, inside the corresponding
+  // capsule. Projected faces cover obstacles which start or end in the band.
+  const auto sectionHeight = top - height * 0.5;
   size_t triangles = 0;
   for (const auto& collider : geometry.colliders) {
     if (collider.kind == BimColliderKind::DoorMesh) {
@@ -359,7 +439,12 @@ void rasterizeObstacles(Grid& grid, const CookedBimCollision& geometry,
     if (mesh->indices.size() / 3 > maxTriangleReferences - triangles)
       throw std::length_error("BIM navigation map exceeds its collider triangle limit");
     triangles += mesh->indices.size() / 3;
-    std::vector<Segment> sections;
+    std::span<const uint32_t> selectedTriangles;
+    if (collider.supportCandidate) {
+      const auto found = support.triangles.find({collider.entityId, collider.representationId});
+      if (found != support.triangles.end()) selectedTriangles = found->second;
+    }
+    bool hasSection = false;
     for (size_t i = 0; i < mesh->indices.size(); i += 3) {
       Triangle triangle;
       for (size_t corner = 0; corner < 3; ++corner) {
@@ -372,15 +457,18 @@ void rasterizeObstacles(Grid& grid, const CookedBimCollision& geometry,
       }
       const auto lowest = std::min({triangle[0].z, triangle[1].z, triangle[2].z});
       const auto highest = std::max({triangle[0].z, triangle[1].z, triangle[2].z});
-      if (highest < bottom - grid.tolerance || lowest > top + grid.tolerance)
+      const auto ordinal = static_cast<uint32_t>(i / 3);
+      // Exclude only the part of a selected support triangle in the floor
+      // band. A ramp continuing above this floor can still block clearance.
+      const auto clipBottom = std::ranges::binary_search(selectedTriangles, ordinal)
+          ? std::max(bottom - grid.tolerance, floorBand + grid.tolerance) : bottom - grid.tolerance;
+      if (highest < clipBottom || lowest > top + grid.tolerance)
         continue;
-      markObstacle(grid, projectBand(triangle, bottom - grid.tolerance, top + grid.tolerance));
-      intersectSection(sections, triangle, sectionHeight);
-      if (sections.size() > maxSectionCrossings)
-        throw std::length_error("BIM navigation map exceeds its cross-section limit");
+      markObstacle(grid, project(clipBand(triangle, clipBottom, top + grid.tolerance)));
+      hasSection |= lowest <= sectionHeight && highest > sectionHeight;
     }
-    if (!sections.empty() && isClosed(*mesh))
-      fillSection(grid, sections);
+    if (hasSection)
+      rasterizeClosedSections(grid, *mesh, local, sectionHeight);
   }
   for (const auto& id : openDoorIds)
     if (!foundDoors.at(id))
@@ -430,10 +518,14 @@ void subtract(std::vector<Polygon>& result, Polygon remainder, std::span<const S
   }
 }
 
-void rasterizeSupport(Grid& grid, std::span<const BimWalkableSurface> support, glm::dvec3 origin) {
+SupportSelection rasterizeSupport(Grid& grid, std::span<const BimWalkableSurface> support, glm::dvec3 origin) {
   if (support.size() > maxTriangleReferences)
     throw std::length_error("BIM navigation map exceeds its support triangle limit");
   const auto band = grid.settings.floorToleranceMeters + grid.tolerance;
+  const BimWalkabilitySettings agent{.radius = grid.settings.robotRadiusMeters,
+                                     .height = grid.settings.robotHeightMeters};
+  const auto extent = Point(grid.settings.width, grid.settings.height) * grid.pitch;
+  SupportSelection selected;
   size_t storedFragments = 0;
   std::unordered_map<size_t, std::vector<Polygon>> partial;
   for (const auto& surface : support) {
@@ -443,12 +535,30 @@ void rasterizeSupport(Grid& grid, std::span<const BimWalkableSurface> support, g
       if (!finite(triangle[i]))
         throw std::invalid_argument("BIM navigation map support triangle has a nonfinite vertex");
     }
-    auto polygon = projectBand(triangle, -band, band);
+    const auto clipped = clipBand(triangle, -band, band);
+    auto polygon = project(clipped);
     const auto area = signedArea(polygon);
     if (!std::isfinite(area))
       throw std::invalid_argument("BIM navigation map support triangle exceeds the geometric range");
     if (std::abs(area) <= grid.tolerance * grid.tolerance)
       continue;
+    const auto box = bounds(polygon);
+    if (box.maximum.x < 0 || box.maximum.y < 0 || box.minimum.x > extent.x || box.minimum.y > extent.y)
+      continue;
+
+    const auto normalLength = std::hypot(surface.normal.x, surface.normal.y, surface.normal.z);
+    if (!std::isfinite(normalLength) || surface.normal.z <= 0)
+      throw std::invalid_argument("BIM navigation map support triangle must have a finite upward normal");
+    const auto normalUp = surface.normal.z / normalLength;
+    for (const auto point : clipped) {
+      const auto capsule = walkabilityCapsuleBottom({0, 0, point.z}, normalUp, agent);
+      const auto top = capsule.z + agent.height;
+      if (!std::isfinite(capsule.z) || !std::isfinite(top))
+        throw std::invalid_argument("BIM navigation map support triangle exceeds the capsule height range");
+      selected.bottom = std::min(selected.bottom, capsule.z);
+      selected.top = std::max(selected.top, top);
+    }
+    selected.triangles[{surface.entityId, surface.representationId}].push_back(surface.triangleIndex);
     if (area < 0)
       std::ranges::reverse(polygon);
     std::vector<SupportEdge> edges;
@@ -459,7 +569,6 @@ void rasterizeSupport(Grid& grid, std::span<const BimWalkableSurface> support, g
         edges.push_back({previous, (point - previous) / length});
       previous = point;
     }
-    const auto box = bounds(polygon);
     grid.visit({box.minimum - grid.tolerance, box.maximum + grid.tolerance}, [&](size_t index, const Bounds& square) {
       if (grid.values[index] != BimNavigationCell::Unknown)
         return;
@@ -491,6 +600,9 @@ void rasterizeSupport(Grid& grid, std::span<const BimWalkableSurface> support, g
       partial.emplace(index, std::move(uncovered));
     });
   }
+  for (auto& entry : selected.triangles)
+    std::ranges::sort(entry.second);
+  return selected;
 }
 
 } // namespace
@@ -501,8 +613,8 @@ std::vector<BimNavigationCell> rasterizeBimNavigationMap(
   validate(settings);
   Grid grid{settings};
   const glm::dvec3 origin(settings.originMeters, settings.floorMeters);
-  rasterizeObstacles(grid, geometry, openDoorIds, origin);
-  rasterizeSupport(grid, support, origin);
+  const auto selected = rasterizeSupport(grid, support, origin);
+  rasterizeObstacles(grid, geometry, openDoorIds, origin, selected);
   return std::move(grid.values);
 }
 
