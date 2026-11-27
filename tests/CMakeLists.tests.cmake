@@ -304,7 +304,7 @@ if(Python3_Interpreter_FOUND AND ENABLE_PHYSICS)
             "${CMAKE_SOURCE_DIR}/tests/validation/physics_runtime_regression.py"
             --exe "$<TARGET_FILE:VulkanSceneRenderer>"
             --output "${TEST_RESULTS_DIR}/physics-runtime-$<CONFIG>"
-            --require-opt-in)
+            --require-opt-in --managed-output)
     set_tests_properties(physics_runtime_regression PROPERTIES
         LABELS "requires-vulkan;requires-display;requires-ray-query;physics"
         RUN_SERIAL TRUE TIMEOUT 1200 SKIP_RETURN_CODE 77)
@@ -3242,6 +3242,12 @@ set_tests_properties(dataset_simulation_report_tests robotics_dataset_reader_tes
     PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
 
 if(Python3_Interpreter_FOUND)
+    add_test(NAME robotics_gpu_smoke_runner_tests
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TEST_VALIDATION_DIR}/robotics_gpu_smoke_runner_tests.py")
+    set_tests_properties(robotics_gpu_smoke_runner_tests PROPERTIES
+        LABELS "robotics;cpu" TIMEOUT 30)
+
     add_test(NAME bim_sensor_camera_gpu_regression
         COMMAND "${Python3_EXECUTABLE}" -B
             "${TEST_VALIDATION_DIR}/bim_sensor_camera_runtime_regression.py"
@@ -3308,6 +3314,16 @@ if(ENABLE_ROBOTICS_URDF)
         )
         target_compile_definitions(urdf_collision_tests PRIVATE
             CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+
+        add_custom_test(bim_robotics_frame_integration_tests
+            ${TESTS_DIR}/robotics/bim_robotics_frame_integration_tests.cpp "" ${TEST_RESULTS_DIR}
+            VulkanSceneRenderer_urdf VulkanSceneRenderer_robotics_collision
+            VulkanSceneRenderer_robotics_sensors VulkanSceneRenderer_geometry
+        )
+        target_compile_definitions(bim_robotics_frame_integration_tests PRIVATE
+            CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+        set_tests_properties(bim_robotics_frame_integration_tests PROPERTIES
+            LABELS "robotics;cpu;physics" TIMEOUT 30)
     endif()
 endif()
 

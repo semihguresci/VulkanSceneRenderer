@@ -1,0 +1,7 @@
+{
+  "name": "earcut-hpp",
+  "version": "3.2.4",
+  "description": "Mapbox Earcut header-only polygon triangulation",
+  "homepage": "https://github.com/mapbox/earcut.hpp",
+  "license": "ISC"
+}
