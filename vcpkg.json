@@ -3,6 +3,7 @@
     "gtest",
     "fmt",
     "nlohmann-json",
+    "tinyxml2",
     "glm",
     "earcut-hpp",
     "manifold",

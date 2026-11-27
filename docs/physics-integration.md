@@ -266,6 +266,42 @@ The trajectory tests compare every tick at 30, 60 and 144 Hz and after a
 stalled frame with one Jolt worker. The reproducibility contract covers the
 same build, seed, scene and tick-addressed inputs.
 
+### Import and pose an articulated URDF robot
+
+Build `BimRoboticsUrdf` with `ENABLE_ROBOTICS_URDF=ON`. The tool uses
+TinyXML2 and runs with physics disabled. It writes the link tree, inertial
+tensors, authored visual and collision origins, joint limits and derived
+world poses to JSON. [TinyXML2 license](https://github.com/leethomason/tinyxml2/blob/11.0.0/LICENSE.txt)
+
+```powershell
+cmake --build out/build/windows-release --config Release --target BimRoboticsUrdf
+& '.\out\build\windows-release\BimRoboticsUrdf.exe' `
+    tests/fixtures/robotics/two-link-arm.urdf arm.json `
+    tests/fixtures/robotics/two-link-arm-pose.json
+```
+
+The fixture places the forearm tip at `(0.05, 0.85, 0.25)` metres with
+both joints at zero. The sample commands both joints to π/2 and reaches
+`(-0.50, -0.25, 0.70)` metres. Omit the scenario file to inspect the initial
+pose. Use `positions` for a batch of measured joint positions, `targets` to
+move at the authored velocity limits and `ticks` for headless 60 Hz steps.
+An optional `root` with `xyz` and `rpy` places the root link in the metric
+world. Output matrices are column-major in the REP-103 world. Visual and
+collision world poses are derived independently from the same link state.
+
+The importer supports fixed, revolute, continuous and prismatic joints and
+diagnoses invalid trees, inertia tensors, dimensions and limits. Continuous
+positions retain their full turn count. Mesh and texture URIs are preserved
+for an asset adapter. Unsupported joint behaviors such as mimic, planar and
+floating motion produce a parse diagnostic.
+
+With Jolt enabled, `UrdfCollisionBindings` places box, sphere and cylinder
+colliders in a caller-owned `PhysicsWorld`. Synchronize the bindings after
+updating the joint state to move collision shapes into their derived poses.
+These are kinematic colliders. Inertia, effort, damping and friction are
+available as authored data for a dynamics adapter. A mesh collider requires
+a separate moving mesh adapter before binding.
+
 ## Current scope
 
 The scene panel attaches oriented box colliders derived from each selected

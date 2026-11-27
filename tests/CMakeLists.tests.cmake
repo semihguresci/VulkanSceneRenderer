@@ -3222,6 +3222,24 @@ add_custom_test(bim_asset_cache_tests
 target_compile_definitions(bim_asset_cache_tests PRIVATE
     CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
 
+if(ENABLE_ROBOTICS_URDF)
+    add_custom_test(urdf_runtime_tests
+        ${TESTS_DIR}/robotics/urdf_runtime_tests.cpp "" ${TEST_RESULTS_DIR}
+        VulkanSceneRenderer_urdf
+    )
+    target_compile_definitions(urdf_runtime_tests PRIVATE
+        CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+
+    if(ENABLE_PHYSICS)
+        add_custom_test(urdf_collision_tests
+            ${TESTS_DIR}/robotics/urdf_collision_tests.cpp "" ${TEST_RESULTS_DIR}
+            VulkanSceneRenderer_urdf_physics
+        )
+        target_compile_definitions(urdf_collision_tests PRIVATE
+            CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+    endif()
+endif()
+
 if(ENABLE_PHYSICS)
     add_custom_test(bim_collision_world_tests
         ${TESTS_DIR}/robotics/bim_collision_world_tests.cpp "" ${TEST_RESULTS_DIR}

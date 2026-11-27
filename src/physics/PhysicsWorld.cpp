@@ -12,6 +12,7 @@
 #include <Jolt/Physics/Body/MotionProperties.h>
 #include <Jolt/Physics/Collision/Shape/BoxShape.h>
 #include <Jolt/Physics/Collision/Shape/CapsuleShape.h>
+#include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
@@ -1136,6 +1137,15 @@ PhysicsBodyId PhysicsWorld::createCapsule(float halfHeight, float radius,
     throw std::invalid_argument("Physics capsule dimensions must be finite and nonnegative");
   return impl_->create(makeShape(JPH::CapsuleShapeSettings(halfHeight, radius)),
                         settings);
+}
+
+PhysicsBodyId PhysicsWorld::createCylinder(float halfHeight, float radius,
+                                           const PhysicsBodySettings &settings) {
+  validateBodySettings(settings);
+  if (!std::isfinite(halfHeight) || halfHeight <= 0.0f ||
+      !std::isfinite(radius) || radius <= 0.0f)
+    throw std::invalid_argument("Physics cylinder dimensions must be finite and positive");
+  return impl_->create(makeShape(JPH::CylinderShapeSettings(halfHeight, radius, 0.0f)), settings);
 }
 
 PhysicsBodyId PhysicsWorld::createStaticMesh(
