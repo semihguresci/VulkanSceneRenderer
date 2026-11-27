@@ -239,15 +239,21 @@ void DifferentialDriveSimulation::clearCommands() noexcept {
   impl_->held = {};
 }
 
-uint32_t DifferentialDriveSimulation::advance(std::chrono::nanoseconds elapsed) {
-  return impl_->time.advance(elapsed, [this](uint64_t tick, double seconds) { impl_->execute(tick, seconds); });
+uint32_t DifferentialDriveSimulation::advance(std::chrono::nanoseconds elapsed, const TickObserver& observe) {
+  SimClock::Tick afterTick;
+  if (observe) afterTick = [this, &observe](uint64_t, double) { observe(impl_->current); };
+  return impl_->time.advance(elapsed,
+      [this](uint64_t tick, double seconds) { impl_->execute(tick, seconds); }, afterTick);
 }
 
-void DifferentialDriveSimulation::step() {
-  impl_->time.step([this](uint64_t tick, double seconds) { impl_->execute(tick, seconds); });
+void DifferentialDriveSimulation::step(const TickObserver& observe) {
+  SimClock::Tick afterTick;
+  if (observe) afterTick = [this, &observe](uint64_t, double) { observe(impl_->current); };
+  impl_->time.step([this](uint64_t tick, double seconds) { impl_->execute(tick, seconds); }, afterTick);
 }
 
 void DifferentialDriveSimulation::reset() {
+  if (impl_->time.inTickCallback()) throw std::logic_error("A tick callback cannot reset the simulation");
   impl_->needsReset = true;
   impl_->world.resetAuthoredBodies();
   impl_->initialize();

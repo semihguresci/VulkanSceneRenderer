@@ -3,6 +3,7 @@
 #include "Container/physics/PhysicsWorld.h"
 #include "Container/robotics/BimCollisionGeometry.h"
 #include "Container/robotics/BimWalkability.h"
+#include "Container/robotics/RaycastLidar.h"
 
 #include <map>
 #include <span>
@@ -30,6 +31,8 @@ public:
   [[nodiscard]] size_t activeColliderCount() const { return bodyRows_.size(); }
   [[nodiscard]] size_t cachedStaticMeshCount() const { return meshShapes_.size(); }
   [[nodiscard]] BimWalkabilityQueries walkabilityQueries() const;
+  // The nearest live collision, excluding the currently attached robot.
+  [[nodiscard]] LidarCast lidarRaycasts() const;
 
 private:
   friend class DifferentialDriveSimulation;
