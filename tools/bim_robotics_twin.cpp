@@ -10,6 +10,7 @@
 #include <filesystem>
 #include <iostream>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <utility>
 #include <vector>
@@ -43,10 +44,14 @@ robotics::TwinRecording recordSimulation(const fs::path& simulation) {
   const auto report = robotics::scanDatasetSimulationReport(simulation, [&](auto stream, const Json& row) {
     const auto tick = row.at("tick").get<uint64_t>();
     if (stream == Base) {
-      const auto& pose = row.at("base");
-      const auto& p = pose.at("position");
-      observed.push_back({tick, stream, robotics::TwinRobotPose{
-          {p[0].get<double>(), p[1].get<double>(), p[2].get<double>()}, pose.at("yaw").get<double>()}});
+      const auto& base = row.at("base");
+      const auto& p = base.at("position");
+      robotics::TwinRobotPose pose{{p[0].get<double>(), p[1].get<double>(), p[2].get<double>()},
+                                 base.at("yaw").get<double>()};
+      if (const auto contact = row.find("contact"); contact != row.end())
+        pose.contact = robotics::twin_json::parseRobotContact(
+            *contact, "history[" + std::to_string(tick) + "].contact");
+      observed.push_back({tick, stream, std::move(pose)});
     } else {
       observed.push_back({tick, stream, robotics::TwinSensorStatus{"observed"}});
     }

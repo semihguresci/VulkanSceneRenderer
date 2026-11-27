@@ -432,6 +432,7 @@ def doorway_checks(harness):
             harness.near(f"{name} tick {row['tick']} floor", row["base"]["position"][2], 1.2, 1e-5, "doorFloorMeters")
         if opened:
             equal("Open doorway obstruction", "none", history[-1]["obstruction"])
+            require(all("contact" not in row for row in history), "An open doorway reported a collision contact")
             harness.near("Open doorway final X", history[-1]["base"]["position"][0], 1.5, 1e-5, "doorOpenPositionMeters")
         else:
             x = history[-1]["base"]["position"][0]
@@ -439,8 +440,12 @@ def doorway_checks(harness):
             for row in history[120:]:
                 equal(f"Closed door identity at tick {row['tick']}", door, row["blockingEntityId"])
                 equal(f"Closed door obstruction at tick {row['tick']}", "blocked", row["obstruction"])
-                for key in ("base", "wheelRates", "wheelAngles", "encoderAngles", "odometry"):
+                for key in ("base", "wheelRates", "wheelAngles", "encoderAngles", "odometry", "contact"):
                     equal(f"Closed contact stability {key} at tick {row['tick']}", history[120][key], row[key])
+            contact = history[-1]["contact"]
+            equal("Closed door contact collider identity", door, contact["otherEntityId"])
+            harness.near("Closed door face X", contact["positionMeters"][0], -.03, 1e-5, "doorContactPositionMeters")
+            require(math.dist(contact["normal"], [-1, 0, 0]) < 1e-6, f"Unexpected door normal: {contact}")
             equal("Closed door stopped rates", {"left": 0.0, "right": 0.0}, history[-1]["wheelRates"])
     harness.summary["checks"].append({"name": "native doorway clearance, semantic identity and stable contact", "result": "passed"})
 

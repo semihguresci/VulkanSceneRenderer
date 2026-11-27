@@ -72,7 +72,15 @@ struct Motion {
   double acceptedFraction{};
   BimWalkabilityFailure obstruction{BimWalkabilityFailure::None};
   std::string blocker;
+  std::optional<DifferentialDriveContact> contact;
 };
+
+DifferentialDriveContact describeContact(const BimWalkabilityHit& hit) {
+  DifferentialDriveContact contact{.position = hit.position};
+  if (hit.normal != glm::dvec3(0.0))
+    contact.normal = hit.normal;
+  return contact;
+}
 
 Motion checkMotion(DrivePose start, double initialNormalZ, DriveWheels travel,
                    const DifferentialDriveSimulationOptions& options,
@@ -99,7 +107,11 @@ Motion checkMotion(DrivePose start, double initialNormalZ, DriveWheels travel,
     const auto walk = traceWalkablePath(motion.pose.position, next.position, queries, capsule);
     if (!walk.reachable) {
       motion.obstruction = walk.reason;
-      if (walk.blockingHit) motion.blocker = walk.blockingHit->entityId;
+      if (walk.blockingHit) {
+        motion.blocker = walk.blockingHit->entityId;
+        if (walk.reason == BimWalkabilityFailure::Blocked)
+          motion.contact = describeContact(*walk.blockingHit);
+      }
       break;
     }
     next.position = walk.reachedFeet;
@@ -115,7 +127,8 @@ Motion checkMotion(DrivePose start, double initialNormalZ, DriveWheels travel,
     if (const auto hit = queries.sweepCapsule(from, to - from, options.capsule.radius,
                                              options.capsule.height)) {
       return {.pose = start, .normalZ = initialNormalZ,
-              .obstruction = BimWalkabilityFailure::Blocked, .blocker = hit->entityId};
+              .obstruction = BimWalkabilityFailure::Blocked, .blocker = hit->entityId,
+              .contact = describeContact(*hit)};
     }
   }
   return motion;
@@ -214,6 +227,7 @@ struct DriveKernel {
     next.base = movement.pose;
     next.obstruction = movement.obstruction;
     next.blockingEntityId = std::move(movement.blocker);
+    next.contact = movement.contact;
     next.targetWheelRates = target;
     next.wheelRates = {rates.shaft.left * movement.acceptedFraction, rates.shaft.right * movement.acceptedFraction};
     next.groundWheelRates = {rates.ground.left * movement.acceptedFraction, rates.ground.right * movement.acceptedFraction};

@@ -17,10 +17,21 @@
 
 namespace container::robotics {
 
+// A measured contact point in building-local REP-103 metres, with an optional
+// unit normal in the same frame.
+struct TwinRobotContact {
+  std::string otherEntityId;
+  glm::dvec3 position{0.0};
+  std::optional<glm::dvec3> normal{};
+  bool operator==(const TwinRobotContact&) const = default;
+};
+
 // Building-local REP-103 metres and a yaw about +Z in radians.
 struct TwinRobotPose {
   glm::dvec3 position{0.0};
   double yaw{};
+  // Each pose replaces the previous contact. An absent contact clears it.
+  std::optional<TwinRobotContact> contact{};
   bool operator==(const TwinRobotPose&) const = default;
 };
 
@@ -93,8 +104,8 @@ struct TwinRecording {
 };
 
 struct TwinTrackSample {
-  // Holds the latest event at or before the sample time. Its robot pose may
-  // be interpolated, but timestamp and source still identify the prior event.
+  // Holds the latest event at or before the sample time. Only robot position
+  // and yaw may be interpolated. Contact, timestamp, and source stay measured.
   TwinEvent event;
   bool stale{};
   // Robot pose tracks retain the observed trail through this time.

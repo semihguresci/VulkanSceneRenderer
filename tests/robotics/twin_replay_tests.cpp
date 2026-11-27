@@ -154,6 +154,101 @@ TEST(TwinReplay, HandlesFreshnessZeroAndUnsignedTimestampExtremes) {
   EXPECT_FALSE(track<TwinRobotPose>(strict.sample(end), "robot/base").stale);
 }
 
+TEST(TwinReplay, HoldsMeasuredContactThroughPoseInterpolationUntilClearedOrStale) {
+  const TwinRobotContact first{"bim/wall", {3, 4, 5}, glm::dvec3(-1, 0, 0)};
+  const TwinRobotContact second{"bim/door", {6, 7, 8}};
+  const TwinReplay replay(recording({pose(100, {0, 0, 0}),
+      {110, "robot/base", "simulator", TwinRobotPose{{2, 0, 0}, 0, first}},
+      {120, "robot/base", "simulator", TwinRobotPose{{4, 0, 0}, 0, second}},
+      pose(130, {6, 0, 0}),
+      {160, "robot/base", "simulator", TwinRobotPose{{7, 0, 0}, 0, first}}}));
+
+  const auto before = replay.sample(105);
+  const auto& approaching = std::get<TwinRobotPose>(track<TwinRobotPose>(before, "robot/base").event.payload);
+  EXPECT_EQ(approaching.position, glm::dvec3(1, 0, 0));
+  EXPECT_FALSE(approaching.contact);
+
+  const auto between = replay.sample(115);
+  const auto& held = track<TwinRobotPose>(between, "robot/base");
+  const auto& measured = std::get<TwinRobotPose>(held.event.payload);
+  EXPECT_FALSE(held.stale);
+  EXPECT_EQ(held.event.timestampNanoseconds, 110u);
+  EXPECT_EQ(measured.position, glm::dvec3(3, 0, 0));
+  EXPECT_EQ(measured.contact, std::optional{first});
+
+  const auto later = replay.sample(120);
+  EXPECT_EQ(std::get<TwinRobotPose>(track<TwinRobotPose>(later, "robot/base").event.payload).contact,
+            std::optional{second});
+  const auto cleared = replay.sample(130);
+  EXPECT_FALSE(std::get<TwinRobotPose>(track<TwinRobotPose>(cleared, "robot/base").event.payload).contact);
+  EXPECT_FALSE(track<TwinRobotPose>(replay.sample(180), "robot/base").stale);
+  const auto expired = replay.sample(181);
+  const auto& stale = track<TwinRobotPose>(expired, "robot/base");
+  EXPECT_TRUE(stale.stale);
+  EXPECT_EQ(std::get<TwinRobotPose>(stale.event.payload).contact, std::optional{first});
+}
+
+TEST(TwinRecording, RoundTripsContactAndKeepsTheHighestRequiredVersion) {
+  auto log = recording({pose(5, {1, 2, 3}, .25)});
+  const auto checkVersion = [](const TwinRecording& input, std::string_view version) {
+    const auto json = serializeTwinRecording(input);
+    EXPECT_NE(json.find(version), std::string::npos);
+    const auto decoded = parseTwinRecording(json);
+    EXPECT_EQ(decoded.events, input.events);
+    EXPECT_EQ(serializeTwinRecording(decoded), json);
+    return json;
+  };
+  EXPECT_EQ(checkVersion(log, R"("version":1)").find(R"("contact")"), std::string::npos);
+  log.events.push_back({6, "robot/base", "simulator", TwinRobotHealth{"active", 75}});
+  checkVersion(log, R"("version":2)");
+  log.events.push_back({7, "robot/base", "simulator", TwinOperatorAlarm{"halt", "warning", "Contact", true}});
+  log.events.push_back({8, "robot/base", "simulator", TwinRobotHealth{"active", 74}});
+  checkVersion(log, R"("version":3)");
+
+  const TwinRobotContact contact{"bim/wall", {3, 4, 5}, glm::dvec3(0, 0, 1.00000005)};
+  log.events.push_back({9, "robot/base", "simulator", TwinRobotPose{{2, 3, 4}, .25, contact}});
+  log.events.push_back({10, "robot/base", "simulator", TwinRobotPose{{2, 3, 4}, .25,
+      TwinRobotContact{"bim/door", {3, 4, 5}}}});
+  log.events.push_back(pose(11, {3, 4, 5}));
+  auto json = checkVersion(log, R"("version":4)");
+  EXPECT_NE(json.find(R"("otherEntityId":"bim/wall")"), std::string::npos);
+  EXPECT_NE(json.find(R"("positionMeters":[3.0,4.0,5.0])"), std::string::npos);
+  const auto version = json.find(R"("version":4)");
+  ASSERT_NE(version, std::string::npos);
+  json[version + std::string_view(R"("version":)").size()] = '3';
+  EXPECT_THROW((void)parseTwinRecording(json), std::invalid_argument);
+}
+
+TEST(TwinRecording, RejectsMalformedContactObjectsAndInvalidMetrics) {
+  const TwinRobotContact valid{"bim/wall", {3, 4, 5}, glm::dvec3(-1, 0, 0)};
+  const auto log = recording({{17, "robot/base", "simulator", TwinRobotPose{{}, 0, valid}}});
+  const auto canonical = serializeTwinRecording(log);
+  const auto rejectJson = [&](std::string_view key, std::string_view replacement) {
+    auto invalidJson = canonical;
+    const auto field = invalidJson.find(key);
+    ASSERT_NE(field, std::string::npos);
+    invalidJson.replace(field, key.size(), replacement);
+    EXPECT_THROW((void)parseTwinRecording(invalidJson), std::invalid_argument);
+  };
+  rejectJson(R"("otherEntityId")", R"("unknown")");
+  rejectJson(R"("positionMeters":[3.0,4.0,5.0])", R"("positionMeters":[3.0,4.0])");
+  rejectJson(R"("normal":[-1.0,0.0,0.0])", R"("normal":null)");
+
+  const auto rejectContact = [&](const TwinRobotContact& contact) {
+    auto malformed = log;
+    std::get<TwinRobotPose>(malformed.events[0].payload).contact = contact;
+    EXPECT_THROW(canonicalizeTwinRecording(malformed), std::invalid_argument);
+  };
+  rejectContact({"", valid.position, valid.normal});
+  rejectContact({std::string(1025, 'a'), valid.position, valid.normal});
+  rejectContact({"wall\n", valid.position, valid.normal});
+  rejectContact({valid.otherEntityId, {1e9, 0, 0}, valid.normal});
+  rejectContact({valid.otherEntityId, {0, std::numeric_limits<double>::infinity(), 0}, valid.normal});
+  rejectContact({valid.otherEntityId, valid.position, glm::dvec3(0)});
+  rejectContact({valid.otherEntityId, valid.position, glm::dvec3(2, 0, 0)});
+  rejectContact({valid.otherEntityId, valid.position, glm::dvec3(std::numeric_limits<double>::quiet_NaN(), 0, 0)});
+}
+
 TEST(TwinReplay, ComparesTheCurrentPositionAgainstOnlyAFreshMatchingPlan) {
   const TwinReplay replay(recording({
       pose(10, {2, 3, 4}), {10, "robot/base", "planner", TwinPlannedPath{{{0, 0, 0}, {4, 0, 0}, {4, 0, 0}}}},

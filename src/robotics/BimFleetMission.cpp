@@ -55,7 +55,10 @@ void sampleRobot(const BimFleetRobotMission& mission, BimFleetRobotResult& robot
                  TwinRecording& recording, std::size_t& activeRobots) {
   robot.finalPose = state.base;
   const uint64_t time = state.tick * nanosecondsPerSecond / options.ticksPerSecond;
-  recording.events.push_back({time, robot.robotId, "simulation:fleet", TwinRobotPose{state.base.position, state.base.yaw}});
+  TwinRobotPose pose{state.base.position, state.base.yaw};
+  if (state.contact)
+    pose.contact = TwinRobotContact{state.blockingEntityId, state.contact->position, state.contact->normal};
+  recording.events.push_back({time, robot.robotId, "simulation:fleet", std::move(pose)});
   if (robot.completionTick)
     return;
 

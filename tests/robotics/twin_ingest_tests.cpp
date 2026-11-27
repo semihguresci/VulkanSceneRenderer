@@ -109,6 +109,37 @@ TEST(TwinIngest, RejectsIncompatibleTimeAndAdvancesOnlyMatchingMonotonicReceipts
   EXPECT_EQ(ingest.recording().events.size(), 1u);
 }
 
+TEST(TwinIngest, AcceptsContactAndClearsItWithTheNextFullPose) {
+  TwinIngest ingest(scene(), fingerprints(), "sim-clock", 15);
+  const TwinRobotContact contact{std::string(door), {2, 3, 4}, glm::dvec3(0, -1, 0)};
+  const auto measured = message(100, 100, TwinRobotPose{{1, 0, 1}, 0, contact});
+  EXPECT_EQ(ingest.ingest(measured).code, Accepted);
+  EXPECT_EQ(ingest.ingest(measured).code, Duplicate);
+  const auto fresh = ingest.latest(115);
+  ASSERT_EQ(fresh.tracks.size(), 1u);
+  EXPECT_FALSE(fresh.tracks[0].stale);
+  EXPECT_EQ(fresh.tracks[0].event, measured.event);
+  const auto expired = ingest.latest(116);
+  EXPECT_TRUE(expired.tracks.at(0).stale);
+  EXPECT_EQ(expired.tracks.at(0).event, measured.event);
+
+  const auto cleared = message(121, 121, TwinRobotPose{{1.1, 0, 1}, 0});
+  EXPECT_EQ(ingest.ingest(cleared).code, Accepted);
+  auto conflicting = cleared;
+  std::get<TwinRobotPose>(conflicting.event.payload).contact = contact;
+  EXPECT_EQ(ingest.ingest(conflicting).code, Conflict);
+  auto invalid = message(122, 122, TwinRobotPose{{1, 0, 1}, 0, contact});
+  std::get<TwinRobotPose>(invalid.event.payload).contact->normal = glm::dvec3(2, 0, 0);
+  EXPECT_EQ(ingest.ingest(invalid).code, InvalidEvent);
+
+  const auto latest = ingest.latest(122);
+  ASSERT_EQ(latest.tracks.size(), 1u);
+  EXPECT_EQ(latest.tracks[0].event, cleared.event);
+  EXPECT_FALSE(std::get<TwinRobotPose>(latest.tracks[0].event.payload).contact);
+  const auto canonical = parseTwinRecording(serializeTwinRecording(ingest.recording()));
+  EXPECT_EQ(canonical.events, (std::vector{measured.event, cleared.event}));
+}
+
 TEST(TwinIngest, ResolvesCanonicalEntityAndUniqueIfcGuidWithoutChangingGeometry) {
   const auto model = scene();
   TwinIngest ingest(model, fingerprints(), "sim-clock");

@@ -63,8 +63,10 @@ unfinished task, and **1** for a request or publication failure.
 - `telemetry.json` uses the [BIM twin recording format](bim-twin-replay.md).
   Each robot has a planned path, actual poses at shared clock ticks, and
   `running`, `succeeded`, or `timed-out` task records with waypoint-based
-  progress. Both files carry the same ordered IFC or IFCX fingerprints,
-  source namespace, units evidence, and clock.
+  progress. A robot pose can include the measured contact from a blocked
+  collision query. The next pose without a contact clears the marker. Peer
+  avoidance has no measured contact point. Both files carry the same ordered
+  IFC or IFCX fingerprints, source namespace, units evidence, and clock.
 
 Use the journal with `VulkanSceneRenderer --model MODEL.ifc --bim-twin-replay
 OUTPUT_DIRECTORY/telemetry.json` for spatial review. Identical inputs on the

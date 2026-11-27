@@ -80,6 +80,7 @@ def verify_recording(tool, work):
     assert output.read_bytes() == repeated.read_bytes()
     assert (report.read_bytes(), supplement.read_bytes()) == authored
     data = json.loads(output.read_bytes())
+    assert data["version"] == 1
     assert data["sceneSource"] == SCENE_SOURCE and data["clockId"] == "simulation-fixed-step"
     assert len(data["events"]) == 8
     assert [row["timestampNanoseconds"] for row in data["events"]] == sorted(
@@ -134,6 +135,38 @@ def verify_recording(tool, work):
         entry for entry in data["events"] if entry["source"].startswith("simulation:")]
 
 
+def verify_contact_recording(tool, work):
+    door = "bim/7:doorway/guid/9:door-guid"
+    contact = {"otherEntityId": door, "positionMeters": [-.03, 0, 2.081], "normal": [-1, 0, 0]}
+    report = simulation()
+    report["history"][1].update(obstruction="blocked", blockingEntityId=door, contact=contact)
+    report["history"][2].update(obstruction="none", blockingEntityId="")
+    source = write_json(work / "contact-simulation.json", report)
+    output = work / "contact-recording.json"
+    run(tool, "record", source, output)
+    recording = json.loads(output.read_bytes())
+    assert recording["version"] == 4
+    checked = json.loads(run(tool, "verify", output))
+    assert checked["recordingVersion"] == 4 and checked["eventCount"] == 6
+    for timestamp in (NS // 4, NS // 2, 3 * NS // 4, NS):
+        sample = json.loads(run(tool, "sample", output, timestamp))
+        pose = find_track(sample, "rover", "robot-pose")["event"]["payload"]
+        if NS // 2 <= timestamp < NS:
+            assert pose["contact"] == contact
+        else:
+            assert "contact" not in pose
+
+    canonical = work / "canonical-contact.json"
+    run(tool, "import", output, canonical)
+    assert canonical.read_bytes() == output.read_bytes()
+
+    report["history"][1]["contact"] = {**contact, "normal": [0, 0, 0]}
+    malformed = write_json(work / "invalid-contact-simulation.json", report)
+    rejected = work / "invalid-contact-recording.json"
+    run(tool, "record", malformed, rejected, diagnostic="contact normal")
+    assert not rejected.exists()
+
+
 def verify_external_import(tool, work):
     last = (1 << 64) - 1
     start = event("sensor-status", "inspection/imu", last - 1, "external-feed", {"state": "offline"})
@@ -173,6 +206,7 @@ def main():
     tool = args.tool.resolve(strict=True)
     with tempfile.TemporaryDirectory(prefix="container-bim-twin-") as directory:
         verify_recording(tool, Path(directory))
+        verify_contact_recording(tool, Path(directory))
         verify_external_import(tool, Path(directory))
     print("BIM twin recording, canonical import, provenance, replay and validation passed")
 

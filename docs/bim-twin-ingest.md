@@ -42,6 +42,13 @@ ordered IFCX source layers and the physical scale used to resolve the model.
 | `sensor-status` | Text `state` for a sensor. |
 | `planned-path` | `points` in REP-103 metres. An empty array clears that robot's plan. |
 
+A complete `robot-pose` sample can carry one `contact`. Use the canonical
+collider or robot ID in `otherEntityId`, the measured contact in `positionMeters`
+in building-local REP-103, and an optional unit `normal` pointing toward the
+reporting robot. Send the next complete pose without `contact` to clear it.
+For a working feed, use `tests/fixtures/robotics/doorway-operator.jsonl`.
+[Review the doorway fixture](bim-twin-operator-overlays.md#review-the-doorway-fixture)
+
 For BIM asset state, `entityId` defaults to the stable occurrence ID from
 `BimRoboticsScene`. Set `assetReference` to `ifc-guid` to use an authored
 IFC GUID. A unique GUID resolves to the canonical occurrence ID. An
@@ -69,9 +76,11 @@ annotations. [Semantic BIM identity guide](ifc-import.md#export-a-semantic-scene
 
 The typed `latest(nowNanoseconds)` view returns the latest observation per
 track at or before the requested time, with a stale flag. Timeline replay can
-interpolate between fresh pose samples. Logs with health or task events use
-recording version 2. Operator alarms, sensor frusta and occupancy grids use
-version 3, with the same JSONL envelope. [Spatial payloads](bim-twin-operator-overlays.md#review-the-doorway-fixture)
+interpolate between fresh pose samples. A contact follows the freshness of its
+sample and stays at its measured position. Health and task events require
+recording version 2, alarms, frusta and occupancy grids require version 3, and
+a populated pose contact requires version 4. All use the version-1 JSONL event
+envelope. [Spatial payloads](bim-twin-operator-overlays.md#review-the-doorway-fixture)
 
 The viewer also opens existing version-1 logs. The feed
 limits are 512 KiB per row, 64 MiB total and 65,536 rows.

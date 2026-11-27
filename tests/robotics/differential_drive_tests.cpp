@@ -75,6 +75,7 @@ void expectSameHistory(const std::deque<DifferentialDriveState>& expected,
     expectWheelsNear(a.encoderAngles, e.encoderAngles, 1e-8);
     EXPECT_EQ(a.obstruction, e.obstruction);
     EXPECT_EQ(a.blockingEntityId, e.blockingEntityId);
+    EXPECT_EQ(a.contact, e.contact);
   }
 }
 
@@ -226,9 +227,19 @@ TEST(DifferentialDrive, NativeDoorBlocksThenSameWorldOpeningResumesAndResetResto
   EXPECT_NEAR(blocked.base.position.z, floorElevation, 1e-5);
   EXPECT_EQ(blocked.obstruction, BimWalkabilityFailure::Blocked);
   EXPECT_EQ(blocked.blockingEntityId, fixture.doorId);
+  ASSERT_TRUE(blocked.contact);
+  EXPECT_NEAR(blocked.contact->position.x, -.03, .003);
+  EXPECT_NEAR(blocked.contact->position.y, 0, .05);
+  EXPECT_GE(blocked.contact->position.z, floorElevation);
+  EXPECT_LE(blocked.contact->position.z, floorElevation + 1.6);
+  ASSERT_TRUE(blocked.contact->normal);
+  EXPECT_LT(blocked.contact->normal->x, -.99);
+  EXPECT_NEAR(glm::length(*blocked.contact->normal), 1, 1e-6);
 
   world.setDoorOpen(fixture.doorId, true);
-  stepTicks(simulation, 2 * ticksPerSecond);
+  simulation.step();
+  EXPECT_FALSE(simulation.state().contact);
+  stepTicks(simulation, 2 * ticksPerSecond - 1);
   EXPECT_GT(simulation.state().base.position.x, .75);
   EXPECT_NEAR(simulation.state().base.position.z, floorElevation, 1e-5);
   EXPECT_EQ(simulation.state().obstruction, BimWalkabilityFailure::None);
@@ -237,9 +248,12 @@ TEST(DifferentialDrive, NativeDoorBlocksThenSameWorldOpeningResumesAndResetResto
   EXPECT_FALSE(world.isDoorOpen(fixture.doorId));
   EXPECT_TRUE(simulation.clock().paused());
   expectPoseNear(simulation.state().base, spawn, 1e-5);
+  EXPECT_FALSE(simulation.state().contact);
   simulation.step();
   EXPECT_EQ(simulation.clock().tick(), 1u);
   EXPECT_GT(simulation.state().base.position.x, spawn.position.x);
+  stepTicks(simulation, 2 * ticksPerSecond - 1);
+  EXPECT_EQ(simulation.state().contact, blocked.contact);
 }
 
 TEST(DifferentialDrive, OpenNativeDoorPassesCenterlineButStopsAtJambOrLowHeadroom) {
@@ -307,6 +321,7 @@ TEST(DifferentialDriveFleet, SweptCrossingStopsBothRobotsEvenWhenEndpointsAreCle
       expectPoseNear(state.base, spawn->spawn, 1e-5);
       EXPECT_EQ(state.obstruction, BimWalkabilityFailure::Blocked);
       EXPECT_EQ(state.blockingEntityId, blocker);
+      EXPECT_FALSE(state.contact);
       expectWheelsNear(state.encoderAngles, {}, 1e-12);
       EXPECT_TRUE(state.commanded.has_value());
       if (state.commanded)

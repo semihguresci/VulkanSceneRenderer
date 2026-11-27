@@ -39,10 +39,11 @@ def artifacts(output):
     return tuple(json.loads((output / name).read_bytes()) for name in ("report.json", "telemetry.json"))
 
 
-def check_recording(twin, output, report, recording, identities, layer, scenario):
+def check_recording(twin, output, report, recording, identities, layer, scenario, *, contact_robot=None):
+    expected_version = 4 if contact_robot else 2
     assert report["schema"] == "container.bim-fleet-report" and report["version"] == 1
     assert report["coordinateConvention"] == "ROS REP-103"
-    assert recording["schema"] == "container.bim-twin-telemetry" and recording["version"] == 2
+    assert recording["schema"] == "container.bim-twin-telemetry" and recording["version"] == expected_version
     assert report["sourceNamespace"] == recording["sourceNamespace"] == NAMESPACE
     assert report["sceneSource"] == recording["sceneSource"]
     assert recording["sceneSource"]["layers"] == [layer]
@@ -57,7 +58,7 @@ def check_recording(twin, output, report, recording, identities, layer, scenario
     recording_file = output / "telemetry.json"
     verified = json.loads(success(twin, "verify", recording_file).stdout)
     assert verified["sceneSource"] == recording["sceneSource"]
-    assert verified["recordingVersion"] == 2 and verified["eventCount"] == len(recording["events"])
+    assert verified["recordingVersion"] == expected_version and verified["eventCount"] == len(recording["events"])
     assert verified["firstTimestampNanoseconds"] == 0
     assert verified["lastTimestampNanoseconds"] == ns(report["ticks"])
     start = json.loads(success(twin, "sample", recording_file, 0).stdout)
@@ -75,21 +76,37 @@ def check_recording(twin, output, report, recording, identities, layer, scenario
         assert result["taskId"] == specification["taskId"]
         pose = initial_tracks[(robot_id, "robot-pose")]["event"]["payload"]
         assert math.dist(pose["position"], specification["initialFeet"]) < 1e-5
+        assert "contact" not in pose
         assert initial_tracks[(robot_id, "planned-path")]["event"]["payload"]["points"] == [
             specification["initialFeet"], *specification["waypoints"]]
         assert initial_tracks[(robot_id, "task-status")]["event"]["payload"] == {
             "taskId": result["taskId"], "state": "running", "progress": 0}
 
-        positions = {row["timestampNanoseconds"]: row["payload"]["position"] for row in recording["events"]
-                     if row["entityId"] == robot_id and row["kind"] == "robot-pose"}
+        poses = {row["timestampNanoseconds"]: row["payload"] for row in recording["events"]
+                 if row["entityId"] == robot_id and row["kind"] == "robot-pose"}
+        positions = {timestamp: pose["position"] for timestamp, pose in poses.items()}
         assert sorted(positions) == [ns(tick) for tick in range(report["ticks"] + 1)]
         assert all(abs(position[2] - specification["initialFeet"][2]) < 1e-5 for position in positions.values())
+        contacts = [pose["contact"] for pose in poses.values() if "contact" in pose]
+        if robot_id == contact_robot:
+            assert len(contacts) == result["blockedTicks"] > 0
+            for contact in contacts:
+                assert contact["otherEntityId"] == DOOR_ID
+                x, y, z = contact["positionMeters"]
+                assert math.isclose(x, -0.03, abs_tol=0.003) and abs(y) < 0.05 and 1.2 <= z <= 2.8, contact
+                normal = contact["normal"]
+                assert normal[0] < -0.99 and math.isclose(math.hypot(*normal), 1, abs_tol=1e-6), contact
+        else:
+            assert not contacts
+
         for index, arrival in enumerate(result["arrivals"]):
             assert arrival["waypointIndex"] == index
             assert arrival["position"] == positions[ns(arrival["tick"])]
             assert math.dist(arrival["position"], specification["waypoints"][index]) <= report["waypointToleranceMeters"]
         pose_track = final_tracks[(robot_id, "robot-pose")]
-        assert not pose_track["stale"] and pose_track["event"]["payload"] == result["finalPose"]
+        final_pose = pose_track["event"]["payload"]
+        assert not pose_track["stale"] and final_pose == poses[ns(report["ticks"])]
+        assert {key: final_pose[key] for key in ("position", "yaw")} == result["finalPose"]
         assert len(pose_track["observedPath"]) > 1
 
         task = final_tracks[(robot_id, "task-status")]["event"]
@@ -136,8 +153,12 @@ def main():
 
         closed_scenario = {**scenario, "openDoorIds": []}
         closed_mission = publish_json(work / "closed.json", closed_scenario)
-        timeout = run(fleet, model, closed_mission, timed_out, NAMESPACE)
-        assert timeout.returncode == 2 and "timed out" in timeout.stdout, (timeout.stdout, timeout.stderr)
+        repeated_timeout = work / "repeated-timeout"
+        for output in (timed_out, repeated_timeout):
+            timeout = run(fleet, model, closed_mission, output, NAMESPACE)
+            assert timeout.returncode == 2 and "timed out" in timeout.stdout, (timeout.stdout, timeout.stderr)
+        for name in ARTIFACTS:
+            assert (timed_out / name).read_bytes() == (repeated_timeout / name).read_bytes(), name
         blocked, partial = artifacts(timed_out)
         assert not blocked["completed"] and blocked["ticks"] == scenario["maxTicks"]
         lower, upper = blocked["robots"]
@@ -146,7 +167,11 @@ def main():
         assert lower["lastObstruction"] == "blocked" and lower["blockingEntityId"] == DOOR_ID
         assert lower["blockedTicks"] > 0
         assert upper["robotId"] == UPPER and upper["completionTick"] is not None
-        check_recording(twin, timed_out, blocked, partial, {LOWER, UPPER}, layer, closed_scenario)
+        check_recording(twin, timed_out, blocked, partial, {LOWER, UPPER}, layer, closed_scenario,
+                        contact_robot=LOWER)
+        canonical_contact = work / "contact-reimport.json"
+        success(twin, "import", timed_out / "telemetry.json", canonical_contact)
+        assert canonical_contact.read_bytes() == (timed_out / "telemetry.json").read_bytes()
 
         for name, invalid, diagnostic in (
             ("unknown-field", {**scenario, "typo": 0}, "unknown field typo"),
@@ -174,7 +199,7 @@ def main():
         assert not list(work.glob(".bim-fleet-staging-*"))
 
     assert model.read_bytes() == source_bytes and mission.read_bytes() == raw_mission
-    print("PASS shared-clock fleet tasks, exact repeat, native replay, and authored door obstruction")
+    print("PASS shared-clock fleet tasks, deterministic contact telemetry, and native replay")
 
 
 if __name__ == "__main__":
