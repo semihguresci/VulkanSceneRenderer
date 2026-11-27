@@ -15,6 +15,7 @@
 #include <Jolt/Physics/Collision/Shape/CylinderShape.h>
 #include <Jolt/Physics/Collision/Shape/MeshShape.h>
 #include <Jolt/Physics/Collision/Shape/SphereShape.h>
+#include <Jolt/Physics/Collision/ContactListener.h>
 #include <Jolt/Physics/Collision/NarrowPhaseQuery.h>
 #include <Jolt/Physics/Collision/CollisionCollectorImpl.h>
 #include <Jolt/Physics/Collision/RayCast.h>
@@ -39,6 +40,7 @@
 #include <cstdarg>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <initializer_list>
 #include <limits>
 #include <mutex>
@@ -177,6 +179,131 @@ bool finite(glm::vec3 value) {
   return std::isfinite(value.x) && std::isfinite(value.y) &&
          std::isfinite(value.z);
 }
+
+auto contactPair(const PhysicsContact &contact) {
+  return std::pair{contact.bodyA, contact.bodyB};
+}
+
+bool includesBody(const PhysicsContact &contact, PhysicsBodyId id) {
+  return contact.bodyA == id || contact.bodyB == id;
+}
+
+class ContactTracker final : public JPH::ContactListener {
+public:
+  // The owning thread edits these buffers only outside Update. Callbacks
+  // touch the staging data under a lock and never call back into Jolt.
+  void beginStep() noexcept {
+    staged_.clear();
+    failure_ = nullptr;
+  }
+
+  void publish() {
+    if (failure_) {
+      const auto failure = failure_;
+      clear();
+      std::rethrow_exception(failure);
+    }
+    std::ranges::sort(staged_, [](const PhysicsContact &lhs, const PhysicsContact &rhs) {
+      // Each pair keeps its deepest manifold. Break equal-depth ties by
+      // normal so the result is independent of the worker callback order.
+      return std::tuple{contactPair(lhs), -lhs.penetrationDepth,
+                        lhs.normalFromAToB.x, lhs.normalFromAToB.y, lhs.normalFromAToB.z} <
+             std::tuple{contactPair(rhs), -rhs.penetrationDepth,
+                        rhs.normalFromAToB.x, rhs.normalFromAToB.y, rhs.normalFromAToB.z};
+    });
+    staged_.erase(std::unique(staged_.begin(), staged_.end(), [](const auto &lhs, const auto &rhs) {
+      return contactPair(lhs) == contactPair(rhs);
+    }), staged_.end());
+
+    // Compare the last committed observations even if some active rows were
+    // explicitly invalidated since then. No Jolt removal callbacks or backend
+    // BodyIDs are needed, including when multiple manifolds share one pair.
+    nextEvents_.clear();
+    auto old = events_.begin();
+    auto now = staged_.begin();
+    try {
+      while (old != events_.end() || now != staged_.end()) {
+        if (old != events_.end() && old->type == PhysicsContactEventType::Ended) {
+          ++old;
+        } else if (now != staged_.end() &&
+                   (old == events_.end() || contactPair(*now) < contactPair(old->contact))) {
+          nextEvents_.push_back({PhysicsContactEventType::Began, *now++});
+        } else if (now == staged_.end() || contactPair(old->contact) < contactPair(*now)) {
+          nextEvents_.push_back({PhysicsContactEventType::Ended, old++->contact});
+        } else {
+          nextEvents_.push_back({PhysicsContactEventType::Persisted, *now++});
+          ++old;
+        }
+      }
+    } catch (...) {
+      clear();
+      throw;
+    }
+    active_.swap(staged_);
+    events_.swap(nextEvents_);
+  }
+
+  void clear() noexcept {
+    beginStep();
+    active_.clear();
+    events_.clear();
+    nextEvents_.clear();
+  }
+
+  void invalidateBody(PhysicsBodyId id) noexcept {
+    std::erase_if(active_, [id](const PhysicsContact &contact) { return includesBody(contact, id); });
+  }
+
+  void invalidatePair(PhysicsBodyId first, PhysicsBodyId second) noexcept {
+    const auto pair = std::pair{std::min(first, second), std::max(first, second)};
+    std::erase_if(active_, [pair](const PhysicsContact &contact) { return contactPair(contact) == pair; });
+  }
+
+  std::span<const PhysicsContact> contacts() const noexcept { return active_; }
+  std::span<const PhysicsContactEvent> events() const noexcept { return events_; }
+
+  void OnContactAdded(const JPH::Body &first, const JPH::Body &second,
+                      const JPH::ContactManifold &manifold, JPH::ContactSettings &settings) noexcept override {
+    collect(first, second, manifold, settings);
+  }
+
+  void OnContactPersisted(const JPH::Body &first, const JPH::Body &second,
+                          const JPH::ContactManifold &manifold, JPH::ContactSettings &settings) noexcept override {
+    collect(first, second, manifold, settings);
+  }
+
+private:
+  void collect(const JPH::Body &first, const JPH::Body &second,
+               const JPH::ContactManifold &manifold, const JPH::ContactSettings &settings) noexcept {
+    const auto a = first.GetUserData(), b = second.GetUserData();
+    const auto depth = manifold.mPenetrationDepth;
+    if (a == kInvalidPhysicsBodyId || b == kInvalidPhysicsBodyId || a == b || settings.mIsSensor ||
+        depth < 0.0f || !std::isfinite(depth))
+      return;
+    const auto normal = a < b ? manifold.mWorldSpaceNormal : -manifold.mWorldSpaceNormal;
+    glm::vec3 direction(normal.GetX(), normal.GetY(), normal.GetZ());
+    if (!finite(direction))
+      return;
+    for (glm::length_t axis = 0; axis < 3; ++axis)
+      if (direction[axis] == 0.0f) direction[axis] = 0.0f;
+    const PhysicsContact sample{std::min(a, b), std::max(a, b), direction, std::max(0.0f, depth)};
+    const std::lock_guard lock(mutex_);
+    if (failure_) return;
+    try {
+      staged_.push_back(sample);
+    } catch (...) {
+      // Propagate allocation errors only after Update joins all worker jobs.
+      failure_ = std::current_exception();
+    }
+  }
+
+  std::mutex mutex_;
+  std::exception_ptr failure_;
+  std::vector<PhysicsContact> staged_;
+  std::vector<PhysicsContact> active_;
+  std::vector<PhysicsContactEvent> events_;
+  std::vector<PhysicsContactEvent> nextEvents_;
+};
 
 void validatePosition(glm::dvec3 position) {
   // Body origins retain double precision, but Jolt's broad-phase bounds remain
@@ -505,6 +632,8 @@ struct PhysicsWorld::Impl {
   ObjectFilter objectFilter;
   JPH::TempAllocatorImplWithMallocFallback temporary{8u * 1024u * 1024u};
   JPH::JobSystemThreadPool jobs;
+  // The listener must outlive the native system that borrows it.
+  std::unique_ptr<ContactTracker> contactTracker;
   JPH::PhysicsSystem system;
   std::unordered_map<PhysicsBodyId, JPH::BodyID> bodies;
   // Only prescribed Kinematic motion needs per-tick sleep maintenance. Keep
@@ -525,6 +654,10 @@ struct PhysicsWorld::Impl {
     system.Init(settings.maxBodies, 0u, contacts, contacts, broadPhaseLayers,
                 broadPhaseFilter, objectFilter);
     system.SetGravity(toJolt(settings.gravity));
+    if (settings.trackContacts) {
+      contactTracker = std::make_unique<ContactTracker>();
+      system.SetContactListener(contactTracker.get());
+    }
     // Traversal also serves noexcept joint/body removal. Allocate once while
     // constructing the world, not while committing a topology edit.
     componentPending.reserve(settings.maxBodies);
@@ -551,6 +684,7 @@ struct PhysicsWorld::Impl {
     }
     bodies.clear();
     kinematicDrivers.clear();
+    if (contactTracker) contactTracker->clear();
   }
 
   JPH::BodyID bodyForJoint(PhysicsBodyId body, bool allowWorld) const {
@@ -945,6 +1079,7 @@ struct PhysicsWorld::Impl {
       joints.erase(handle);
       throw;
     }
+    if (filterChanged && contactTracker) contactTracker->invalidatePair(bodyA, bodyB);
     return handle;
   }
 
@@ -1293,12 +1428,24 @@ bool PhysicsWorld::destroyBody(PhysicsBodyId id) noexcept {
   interface.DestroyBody(body->second);
   impl_->kinematicDrivers.erase(id);
   impl_->bodies.erase(body);
+  if (impl_->contactTracker) impl_->contactTracker->invalidateBody(id);
   impl_->wakeNearbyMovingBodies(oldBounds);
   return true;
 }
 
 bool PhysicsWorld::contains(PhysicsBodyId id) const noexcept {
   return impl_->bodies.contains(id);
+}
+
+std::optional<PhysicsMotionType> PhysicsWorld::motionType(PhysicsBodyId id) const noexcept {
+  const auto body = impl_->bodies.find(id);
+  if (body == impl_->bodies.end()) return std::nullopt;
+  switch (impl_->system.GetBodyInterface().GetMotionType(body->second)) {
+  case JPH::EMotionType::Static: return PhysicsMotionType::Static;
+  case JPH::EMotionType::Kinematic: return PhysicsMotionType::Kinematic;
+  case JPH::EMotionType::Dynamic: return PhysicsMotionType::Dynamic;
+  }
+  return std::nullopt;
 }
 
 std::optional<PhysicsBodyPose> PhysicsWorld::pose(PhysicsBodyId id) const {
@@ -1332,6 +1479,7 @@ bool PhysicsWorld::setPose(PhysicsBodyId id, const PhysicsBodyPose &pose,
   const auto body = impl_->bodies.find(id);
   if (body == impl_->bodies.end()) return false;
   validatePosition(pose.position);
+  const auto position = toJolt(pose.position);
   const auto rotation = toJolt(pose.rotation);
   auto &interface = impl_->system.GetBodyInterface();
   const bool isSupport = interface.GetMotionType(body->second) != JPH::EMotionType::Dynamic;
@@ -1339,11 +1487,15 @@ bool PhysicsWorld::setPose(PhysicsBodyId id, const PhysicsBodyPose &pose,
   bool movedSupport = false;
   bool changedPose = false;
   bool wakeContacts = false;
-  if (isSupport || activate) {
+  bool invalidateContacts = false;
+  if (isSupport || activate || impl_->contactTracker) {
     JPH::RVec3 previousPosition;
     JPH::Quat previousRotation;
     interface.GetPositionAndRotation(body->second, previousPosition, previousRotation);
-    changedPose = previousPosition != toJolt(pose.position) ||
+    const bool translated = previousPosition != position;
+    invalidateContacts = impl_->contactTracker &&
+                         (translated || (previousRotation != rotation && previousRotation != -rotation));
+    changedPose = translated ||
                    (!previousRotation.IsClose(rotation) &&
                     !previousRotation.IsClose(-rotation));
     movedSupport = isSupport && changedPose;
@@ -1355,8 +1507,9 @@ bool PhysicsWorld::setPose(PhysicsBodyId id, const PhysicsBodyPose &pose,
       ? impl_->dynamicJointComponent({id}, movedSupport)
       : std::span<const JPH::BodyID>{};
   interface.SetPositionAndRotation(
-      body->second, toJolt(pose.position), rotation,
+      body->second, position, rotation,
       activate ? JPH::EActivation::Activate : JPH::EActivation::DontActivate);
+  if (invalidateContacts) impl_->contactTracker->invalidateBody(id);
   // Consume the borrowed component before any neighborhood wake operation.
   interface.ActivateBodies(connected.data(), static_cast<int>(connected.size()));
   // Preserve activation of an explicitly moved Kinematic support, including
@@ -1555,14 +1708,29 @@ bool PhysicsWorld::setJointLimits(PhysicsJointId id, bool enabled, float lower, 
 
 size_t PhysicsWorld::jointCount() const noexcept { return impl_->joints.size(); }
 
+bool PhysicsWorld::tracksContacts() const noexcept { return bool(impl_->contactTracker); }
+
+std::span<const PhysicsContact> PhysicsWorld::contacts() const noexcept {
+  return impl_->contactTracker ? impl_->contactTracker->contacts() : std::span<const PhysicsContact>{};
+}
+
+std::span<const PhysicsContactEvent> PhysicsWorld::contactEvents() const noexcept {
+  return impl_->contactTracker ? impl_->contactTracker->events() : std::span<const PhysicsContactEvent>{};
+}
+
 void PhysicsWorld::step(float deltaSeconds) {
   validateDuration(deltaSeconds);
   impl_->wakeDrivenBodies();
+  auto *tracker = impl_->contactTracker.get();
+  if (tracker) tracker->beginStep();
   const auto error = impl_->system.Update(deltaSeconds, 1, &impl_->temporary,
                                           &impl_->jobs);
-  if (error != JPH::EPhysicsUpdateError::None)
+  if (error != JPH::EPhysicsUpdateError::None) {
+    if (tracker) tracker->clear();
     throw std::runtime_error("Physics update exhausted collision capacity (" +
                               std::to_string(static_cast<uint32_t>(error)) + ")");
+  }
+  if (tracker) tracker->publish();
 }
 
 void PhysicsWorld::clear() noexcept { impl_->clear(); }

@@ -55,7 +55,7 @@ endif()
 if(ENABLE_PHYSICS)
     add_library(VulkanSceneRenderer_robotics_physics
         BimCollisionWorld.cpp BimCollisionOverlay.cpp BimRoomGraph.cpp BimRoomGeometry.cpp
-        DifferentialDriveSimulation.cpp)
+        Articulation.cpp DifferentialDriveSimulation.cpp)
     target_link_libraries(VulkanSceneRenderer_robotics_physics PUBLIC
         VulkanSceneRenderer_robotics VulkanSceneRenderer_physics PRIVATE VulkanSceneRenderer_geometry)
 

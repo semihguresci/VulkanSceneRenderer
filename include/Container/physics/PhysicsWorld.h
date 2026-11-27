@@ -41,6 +41,7 @@ struct PhysicsWorldSettings {
   uint32_t maxBodies{16'384u};
   // Zero chooses at most four workers, leaving small systems on the caller.
   uint32_t workerThreads{0u};
+  bool trackContacts{false};
 };
 
 // Immutable cooked triangle mesh. Copies share the shape and retain the Jolt
@@ -69,6 +70,23 @@ struct PhysicsQueryHit {
   glm::vec3 normal{0.0f};
   float penetrationDepth{0.0f};
   uint32_t subShapeId{0u};
+};
+
+// A solver-observed contact between two live bodies. IDs are ordered, and
+// the normal points from body A toward body B. Depth in world units describes
+// the deepest non-speculative manifold seen during the step, before solving.
+struct PhysicsContact {
+  PhysicsBodyId bodyA{kInvalidPhysicsBodyId};
+  PhysicsBodyId bodyB{kInvalidPhysicsBodyId};
+  glm::vec3 normalFromAToB{0.0f};
+  float penetrationDepth{0.0f};
+};
+
+enum class PhysicsContactEventType : uint8_t { Began, Persisted, Ended };
+
+struct PhysicsContactEvent {
+  PhysicsContactEventType type{PhysicsContactEventType::Began};
+  PhysicsContact contact;
 };
 
 using PhysicsJointId = uint64_t;
@@ -182,6 +200,7 @@ public:
 
   [[nodiscard]] bool destroyBody(PhysicsBodyId id) noexcept;
   [[nodiscard]] bool contains(PhysicsBodyId id) const noexcept;
+  [[nodiscard]] std::optional<PhysicsMotionType> motionType(PhysicsBodyId id) const noexcept;
   [[nodiscard]] std::optional<PhysicsBodyPose> pose(PhysicsBodyId id) const;
   [[nodiscard]] std::optional<glm::vec3> linearVelocity(PhysicsBodyId id) const;
   [[nodiscard]] std::optional<glm::vec3> angularVelocity(PhysicsBodyId id) const;
@@ -214,6 +233,15 @@ public:
   [[nodiscard]] bool setJointLimits(PhysicsJointId id, bool enabled,
                                     float lower, float upper);
   [[nodiscard]] size_t jointCount() const noexcept;
+
+  [[nodiscard]] bool tracksContacts() const noexcept;
+  // Borrowed owner-thread views, ordered by body IDs with one row per pair.
+  // Contacts expire when a body moves explicitly, retires or the pair becomes
+  // filtered. The event view compares consecutive completed steps and retains
+  // that history until another step or clear. Ended can indicate separation,
+  // filtering, retirement or sleep. These views are empty when tracking is disabled.
+  [[nodiscard]] std::span<const PhysicsContact> contacts() const noexcept;
+  [[nodiscard]] std::span<const PhysicsContactEvent> contactEvents() const noexcept;
 
   // Executes exactly one simulation update. The caller supplies a fixed,
   // positive finite duration, typically 1/60 second.
