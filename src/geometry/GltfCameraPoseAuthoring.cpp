@@ -257,7 +257,7 @@ template<class Visit> bool scan(GltfCameraPoseSourceView source,int32_t node,con
       if(channel.target_path=="pointer") {
         if(channel.target_node!=-1 || ext==channel.target_extensions.end()) return false;
         const auto* pointer=objectLeaf(ext->second,"pointer");if(!pointer || !pointer->IsString()) return false;
-        const auto& path=pointer->Get<std::string>();
+        const auto& path=pointer->template Get<std::string>();
         if(path.size()>limits.maxPointerBytes || path.size()>limits.maxOwnedBytes-pointerBytes) return false;pointerBytes+=path.size();
         if(!selectedNodePointer(path,source.nodes.size(),node,binding)) return false;
       } else {

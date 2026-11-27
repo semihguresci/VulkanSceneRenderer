@@ -423,6 +423,10 @@ target_compile_definitions(BimImportAllocationBenchmark PRIVATE CONTAINER_BIM_IM
 if(ENABLE_PHYSICS)
     add_library(VulkanSceneRenderer_physics_world physics/PhysicsWorld.cpp)
     target_compile_features(VulkanSceneRenderer_physics_world PUBLIC cxx_std_23)
+    if(NOT MSVC)
+        # The private GroupFilter subclass must match Jolt's disabled RTTI.
+        target_compile_options(VulkanSceneRenderer_physics_world PRIVATE -fno-rtti)
+    endif()
     target_include_directories(VulkanSceneRenderer_physics_world PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/../include
     )

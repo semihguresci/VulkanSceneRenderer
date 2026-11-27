@@ -336,7 +336,7 @@ GltfExperimentalMaterialNormalization NormalizeGltfExperimentalMaterialsJson(
     size_t index = 0;
     for (const auto& entry : *names) {
       if (index++ % 1024 == 0) container::util::checkModelImportCancellation(stop);
-      if (entry.is_string()) declarations.add(entry.get_ref<const std::string&>());
+      if (entry.is_string()) declarations.add(entry.template get_ref<const std::string&>());
     }
     return declarations;
   };
