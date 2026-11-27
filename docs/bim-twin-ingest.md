@@ -70,6 +70,9 @@ annotations. [Semantic BIM identity guide](ifc-import.md#export-a-semantic-scene
 The typed `latest(nowNanoseconds)` view returns the latest observation per
 track at or before the requested time, with a stale flag. Timeline replay can
 interpolate between fresh pose samples. Logs with health or task events use
-recording version 2. The viewer also opens existing version-1 logs. The feed
+recording version 2. Operator alarms, sensor frusta and occupancy grids use
+version 3, with the same JSONL envelope. [Spatial payloads](bim-twin-operator-overlays.md#review-the-doorway-fixture)
+
+The viewer also opens existing version-1 logs. The feed
 limits are 512 KiB per row, 64 MiB total and 65,536 rows.
 [Open a recording in the BIM viewport](bim-twin-replay.md)

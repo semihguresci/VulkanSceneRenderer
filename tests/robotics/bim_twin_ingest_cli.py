@@ -173,6 +173,67 @@ def test_ifcx(tool, scene_exporter, work):
     assert [identity(assembly), identity(base)] == before
 
 
+def test_operator_overlays(tool, model, work):
+    alarm = {"alarmId": "doorway-obstruction", "severity": "warning", "message": "Doorway blocked",
+             "active": True, "position": [-.3, 0, 1.2]}
+    second_alarm = {**alarm, "alarmId": "low-clearance", "severity": "info", "message": "Low clearance"}
+    frustum = {"width": 640, "height": 480, "fx": 525, "fy": 510, "cx": 307, "cy": 232,
+               "nearMeters": .05, "farMeters": 2.5,
+               "worldFromCamera": [0, -1, 0, 0, 0, 0, 1, 0, -1, 0, 0, 0, -1.5, .2, 1.9, 1]}
+    grid = {"origin": [-1.5, -.5, 1.2], "yaw": .3, "resolutionMeters": .25,
+            "width": 3, "height": 2, "cells": "#?.#.."}
+    rows = [
+        delivery("robot-pose", 1000, 1000, {"position": [-1.5, 0, 1.2], "yaw": 0}),
+        delivery("robot-health", 1000, 1000, {"state": "ready", "batteryPercent": 80}),
+        delivery("operator-alarm", 1000, 1000, alarm),
+        delivery("operator-alarm", 1000, 1000, second_alarm),
+        delivery("sensor-frustum", 1000, 1000, frustum, entity="robot/base/camera"),
+        delivery("occupancy-grid", 1000, 1000, grid, entity="doorway/map"),
+        delivery("operator-alarm", 1010, 1011, {**alarm, "active": False}),
+        delivery("sensor-frustum", 1011, 1011, {**frustum, "width": 1 << 32}),
+        delivery("sensor-frustum", 1012, 1012, {**frustum, "worldFromCamera": [1] * 15}),
+        delivery("operator-alarm", 1013, 1013, {**alarm, "active": 1}),
+        delivery("operator-alarm", 1014, 1014, {**alarm, "severity": "unrecognized"}),
+        delivery("occupancy-grid", 1015, 1015, {**grid, "cells": "!....."}),
+    ]
+    feed, log = work / "operator-overlays.jsonl", work / "operator-overlays.json"
+    write_rows(feed, rows)
+    receipt = json.loads(run(tool, ["ingest", model, feed, log, "doorway", CLOCK,
+                                    "--stale-after-ns", 100]).stdout)
+    assert receipt["accepted"] == 7 and receipt["rejected"] == 5 and receipt["outputPublished"], receipt
+    assert [row["disposition"] for row in receipt["receipts"][7:]] == [
+        "malformed-row", "malformed-row", "malformed-row", "invalid-event", "invalid-event"]
+    assert "32-bit integer" in receipt["receipts"][7]["detail"]
+    assert "16 column-major entries" in receipt["receipts"][8]["detail"]
+    assert "boolean" in receipt["receipts"][9]["detail"]
+
+    data = json.loads(log.read_bytes())
+    assert data["version"] == 3 and len(data["events"]) == 7, data
+    checked = json.loads(run(tool, ["verify", log]).stdout)
+    assert checked["recordingVersion"] == 3 and checked["eventCount"] == 7, checked
+    for when, active in ((1000, True), (1010, False)):
+        replay = json.loads(run(tool, ["sample", log, when]).stdout)
+        assert replay["version"] == 3 and replay["timestampNanoseconds"] == when, replay
+        events = [row["event"] for row in replay["tracks"]]
+        payloads = {event["kind"]: event["payload"] for event in events if event["kind"] != "operator-alarm"}
+        alarms = {event["payload"]["alarmId"]: event["payload"] for event in events if event["kind"] == "operator-alarm"}
+        assert payloads["sensor-frustum"] == frustum and payloads["occupancy-grid"] == grid, payloads
+        assert alarms == {"doorway-obstruction": {**alarm, "active": active},
+                          "low-clearance": second_alarm}, alarms
+    canonical = work / "operator-overlays-reimported.json"
+    run(tool, ["import", log, canonical])
+    assert log.read_bytes() == canonical.read_bytes()
+
+    for version in (1, 2):
+        for kind in ("operator-alarm", "sensor-frustum", "occupancy-grid"):
+            lower = work / f"unsupported-{kind}-v{version}.json"
+            events = [row for row in data["events"] if row["kind"] == kind]
+            lower.write_text(json.dumps({**data, "version": version, "events": events}), encoding="utf-8")
+            output = lower.with_name(f"imported-{lower.name}")
+            error = run(tool, ["import", lower, output], success=False)
+            assert f"{kind} requires recording version 3" in error.stderr and not output.exists(), error
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--tool", type=Path, required=True)
@@ -181,9 +242,11 @@ def main():
     args = parser.parse_args()
     with tempfile.TemporaryDirectory(prefix="twin-ingest-") as output:
         work = Path(output)
-        test_ifc(args.tool.resolve(), (args.fixtures / "doorway.ifc").resolve(), work)
+        model = (args.fixtures / "doorway.ifc").resolve()
+        test_ifc(args.tool.resolve(), model, work)
         test_ifcx(args.tool.resolve(), args.scene_exporter.resolve(), work)
-    print("PASS canonical telemetry receipt, v2 replay, and IFC/IFCX entity resolution", flush=True)
+        test_operator_overlays(args.tool.resolve(), model, work)
+    print("PASS canonical telemetry receipts, v2/v3 replay, and IFC/IFCX entity resolution", flush=True)
     return 0
 
 

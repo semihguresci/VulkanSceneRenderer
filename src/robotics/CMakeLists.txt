@@ -43,7 +43,7 @@ target_link_libraries(VulkanSceneRenderer_robotics_dataset PUBLIC nlohmann_json:
 
 add_library(VulkanSceneRenderer_robotics_twin TwinReplay.cpp TwinRecording.cpp TwinIngest.cpp)
 target_link_libraries(VulkanSceneRenderer_robotics_twin PUBLIC Dep_Math
-    PRIVATE VulkanSceneRenderer_robotics_scene nlohmann_json::nlohmann_json)
+    PRIVATE VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_robotics_sensors nlohmann_json::nlohmann_json)
 
 foreach(target IN ITEMS
         VulkanSceneRenderer_robotics_clock

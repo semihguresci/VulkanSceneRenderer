@@ -10,6 +10,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <span>
 #include <stdexcept>
@@ -21,10 +22,20 @@ constexpr ImU32 plannedColor = IM_COL32(255, 183, 64, 255);
 constexpr ImU32 observedColor = IM_COL32(32, 231, 211, 255);
 constexpr ImU32 robotColor = IM_COL32(165, 243, 91, 255);
 constexpr ImU32 assetColor = IM_COL32(239, 114, 249, 255);
+constexpr ImU32 warningColor = IM_COL32(255, 133, 78, 255);
+constexpr ImU32 criticalColor = IM_COL32(255, 76, 103, 255);
+constexpr ImU32 infoColor = IM_COL32(126, 226, 243, 255);
+constexpr ImU32 frustumColor = IM_COL32(108, 160, 255, 255);
+constexpr ImU32 occupancyColor = IM_COL32(179, 151, 255, 255);
+constexpr ImU32 occupancyFill = IM_COL32(179, 151, 255, 46);
 constexpr ImU32 markerBorder = IM_COL32(19, 25, 33, 255);
 constexpr double nanosecondsPerSecond = 1'000'000'000.0;
 constexpr size_t maxPathSegments = 4096;
 constexpr size_t maxMarkers = 256;
+constexpr size_t maxAlarmMarkers = 128;
+constexpr size_t maxFrusta = 128;
+constexpr size_t maxOccupiedRuns = 1024;
+constexpr size_t maxRunProjections = maxOccupiedRuns * 8;
 
 struct TrackStyle {
   const char* kind;
@@ -37,11 +48,20 @@ TrackStyle trackStyle(const robotics::TwinPayload& payload) {
   if (std::holds_alternative<robotics::TwinAssetState>(payload)) return {"bim-asset-state", "BIM asset"};
   if (std::holds_alternative<robotics::TwinRobotHealth>(payload)) return {"robot-health", "Robot health"};
   if (std::holds_alternative<robotics::TwinTaskStatus>(payload)) return {"task-status", "Task"};
+  if (std::holds_alternative<robotics::TwinOperatorAlarm>(payload)) return {"operator-alarm", "Alarm"};
+  if (std::holds_alternative<robotics::TwinSensorFrustum>(payload)) return {"sensor-frustum", "Camera frustum"};
+  if (std::holds_alternative<robotics::TwinOccupancyGrid>(payload)) return {"occupancy-grid", "Occupancy"};
   return {"planned-path", "Planned path"};
 }
 
 bool finite(glm::dvec3 point) {
   return std::isfinite(point.x) && std::isfinite(point.y) && std::isfinite(point.z);
+}
+
+ImVec2 screenPoint(const ImGuiViewport& viewport, glm::dvec3 ndc) {
+  // Vulkan flips Y in the viewport. ImGui coordinates start at the top left.
+  return {viewport.Pos.x + static_cast<float>(0.5 * std::clamp(ndc.x, -32.0, 32.0) + 0.5) * viewport.Size.x,
+          viewport.Pos.y + static_cast<float>(0.5 - 0.5 * std::clamp(ndc.y, -32.0, 32.0)) * viewport.Size.y};
 }
 
 std::optional<ImVec2> projectPoint(const glm::dmat4& viewProjection, const ImGuiViewport& viewport,
@@ -52,12 +72,37 @@ std::optional<ImVec2> projectPoint(const glm::dmat4& viewProjection, const ImGui
   const auto ndc = glm::dvec3(clip) / clip.w;
   if (!finite(ndc) || ndc.z < 0.0 || ndc.z > 1.0)
     return std::nullopt;
-  // The renderer uses a negative-height viewport. ImGui uses top-left
-  // logical pixels, so invert NDC Y and scale to the GUI viewport directly.
-  return ImVec2{
-      viewport.Pos.x + static_cast<float>(0.5 * std::clamp(ndc.x, -32.0, 32.0) + 0.5) * viewport.Size.x,
-      viewport.Pos.y + static_cast<float>(0.5 - 0.5 * std::clamp(ndc.y, -32.0, 32.0)) * viewport.Size.y,
-  };
+  return screenPoint(viewport, ndc);
+}
+
+std::array<double, 6> clipDistances(glm::dvec4 p) {
+  return {p.w + p.x, p.w - p.x, p.w + p.y, p.w - p.y, p.z, p.w - p.z};
+}
+
+std::optional<std::array<ImVec2, 2>> projectSegment(const ImGuiViewport& viewport, glm::dvec4 a, glm::dvec4 b) {
+  // Clip to Vulkan's homogeneous frustum before the perspective divide.
+  // Reverse-Z still places both depth boundaries at 0 <= z <= w.
+  const auto start = clipDistances(a);
+  const auto end = clipDistances(b);
+  double first = 0.0, last = 1.0;
+  for (size_t i = 0; i < start.size(); ++i) {
+    if (!std::isfinite(start[i]) || !std::isfinite(end[i]) || (start[i] < 0.0 && end[i] < 0.0))
+      return std::nullopt;
+    if (start[i] < 0.0)
+      first = std::max(first, start[i] / (start[i] - end[i]));
+    else if (end[i] < 0.0)
+      last = std::min(last, start[i] / (start[i] - end[i]));
+  }
+  const glm::dvec4 p = glm::mix(a, b, first), q = glm::mix(a, b, last);
+  if (first > last || p.w <= 0.0 || q.w <= 0.0)
+    return std::nullopt;
+  return std::array{screenPoint(viewport, glm::dvec3(p) / p.w), screenPoint(viewport, glm::dvec3(q) / q.w)};
+}
+
+ImU32 alarmColor(const robotics::TwinOperatorAlarm& alarm) {
+  if (alarm.severity == "critical") return criticalColor;
+  if (alarm.severity == "warning") return warningColor;
+  return infoColor;
 }
 
 void drawTrackState(const robotics::TwinTrackSample& track, bool assetResolved) {
@@ -83,6 +128,16 @@ void drawTrackState(const robotics::TwinTrackSample& track, bool assetResolved) 
     else
       ImGui::TextUnformatted(task->state.c_str());
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Task: %s", task->taskId.c_str());
+  } else if (const auto* alarm = std::get_if<robotics::TwinOperatorAlarm>(&track.event.payload)) {
+    if (alarm->active && !track.stale)
+      ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(alarmColor(*alarm)), "%s", alarm->message.c_str());
+    else
+      ImGui::TextDisabled("%s", alarm->active ? alarm->message.c_str() : "Cleared");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s\n%s", alarm->severity.c_str(), alarm->message.c_str());
+  } else if (const auto* camera = std::get_if<robotics::TwinSensorFrustum>(&track.event.payload)) {
+    ImGui::Text("%u x %u, %.2f m range", camera->width, camera->height, camera->farMeters);
+  } else if (const auto* grid = std::get_if<robotics::TwinOccupancyGrid>(&track.event.payload)) {
+    ImGui::Text("%u x %u, %.2f m cells", grid->width, grid->height, grid->resolutionMeters);
   }
 }
 
@@ -94,13 +149,16 @@ void RendererFrontend::initializeBimTwinReplay() {
     return;
   if (!subs_.bimManager)
     throw std::runtime_error("BIM twin replay: no active BIM model");
-  bimTwin_.emplace();
+  auto& state = bimTwin_.emplace();
+  state.replay = replay;
+  state.followLatest = !svc_.config.bimTwinFollowPath.empty() && !svc_.config.bimTwinStartNanoseconds;
   refreshBimTwinBinding();
-  if (!bimTwin_->sourceError.empty())
-    throw std::runtime_error("BIM twin replay: " + bimTwin_->sourceError);
-  const auto requested = svc_.config.bimTwinStartNanoseconds.value_or(replay->firstTimestamp());
+  if (!state.sourceError.empty())
+    throw std::runtime_error("BIM twin replay: " + state.sourceError);
+  const auto requested = svc_.config.bimTwinStartNanoseconds.value_or(
+      state.followLatest ? replay->lastTimestamp() : replay->firstTimestamp());
   const auto time = std::clamp(requested, replay->firstTimestamp(), replay->lastTimestamp());
-  bimTwin_->sample = replay->sample(time);
+  state.sample = replay->sample(time);
 }
 
 void RendererFrontend::refreshBimTwinBinding() {
@@ -117,7 +175,7 @@ void RendererFrontend::refreshBimTwinBinding() {
   state.assetObjects.clear();
   state.sourceError.clear();
 
-  const auto& recording = svc_.config.bimTwinReplay->recording();
+  const auto& recording = state.replay->recording();
   const auto* labels = model && model->hasScene() ? model->sensorLabels() : nullptr;
   if (!labels || !labels->sceneSource || !labels->metersPerRendererUnit) {
     state.sourceError = "the active model has no BIM source and metre evidence";
@@ -170,11 +228,74 @@ void RendererFrontend::refreshBimTwinBinding() {
     logger->warn("BIM twin replay: {} additional unresolved BIM assets", missing - individualDiagnostics);
 }
 
+void RendererFrontend::updateBimTwinFollow() {
+  auto& state = *bimTwin_;
+  if (state.followJob.valid()) {
+    if (state.followJob.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+      return;
+    if (auto update = state.followJob.get()) {
+      state.watchedVersion = update->version;
+      if (update->snapshot) {
+        const auto& next = update->snapshot->recording();
+        const auto& current = state.replay->recording();
+        if (next.clockId != current.clockId || next.sourceNamespace != current.sourceNamespace ||
+            next.sceneSource.layers != current.sceneSource.layers ||
+            next.sceneSource.metersPerUnscaledRendererUnit != current.sceneSource.metersPerUnscaledRendererUnit) {
+          update->error = "Snapshot uses a different BIM source, scale or clock";
+        } else if (update->snapshot->lastTimestamp() < state.replay->lastTimestamp()) {
+          update->error = "Snapshot ends before the latest accepted telemetry";
+        } else {
+          auto nextReplay = std::move(update->snapshot);
+          const auto time = state.followLatest ? nextReplay->lastTimestamp()
+              : std::clamp(state.sample.timestampNanoseconds, nextReplay->firstTimestamp(), nextReplay->lastTimestamp());
+          state.sample = nextReplay->sample(time);
+          state.replay = std::move(nextReplay);
+          state.checkedModel = nullptr;
+          const bool wasPlaying = state.playing;
+          refreshBimTwinBinding();
+          state.playing = wasPlaying && state.sourceError.empty();
+        }
+      }
+      if (!update->error.empty() && update->error != state.followError)
+        container::log::ContainerLogger::instance().renderer()->warn("BIM twin follow: {}", update->error);
+      state.followError = std::move(update->error);
+    }
+  }
+
+  const auto now = std::chrono::steady_clock::now();
+  if (now < state.nextFollowPoll)
+    return;
+  state.nextFollowPoll = now + std::chrono::milliseconds(500);
+  state.followJob = std::async(std::launch::async,
+      [path = svc_.config.bimTwinFollowPath, seen = state.watchedVersion]() -> std::optional<BimTwinReplayState::FollowUpdate> {
+        const auto version = [&] {
+          return BimTwinReplayState::FileVersion{std::filesystem::last_write_time(path), std::filesystem::file_size(path)};
+        };
+        BimTwinReplayState::FollowUpdate update;
+        try {
+          update.version = version();
+          if (update.version == seen)
+            return std::nullopt;
+          update.snapshot = std::make_shared<const robotics::TwinReplay>(robotics::loadTwinRecording(path));
+          if (*update.version != version())
+            return std::nullopt;
+        } catch (const std::exception& error) {
+          update.snapshot.reset();
+          update.error = error.what();
+        }
+        return update;
+      });
+}
+
 void RendererFrontend::advanceBimTwinReplay(float seconds) {
-  if (!bimTwin_ || !bimTwin_->playing || !std::isfinite(seconds) || seconds <= 0.0f)
+  if (!bimTwin_)
+    return;
+  if (!svc_.config.bimTwinFollowPath.empty())
+    updateBimTwinFollow();
+  if (!bimTwin_->playing || !std::isfinite(seconds) || seconds <= 0.0f)
     return;
   auto& state = *bimTwin_;
-  const auto& replay = *svc_.config.bimTwinReplay;
+  const auto& replay = *state.replay;
   const auto step = static_cast<uint64_t>(std::min(double(seconds), 0.25) * nanosecondsPerSecond);
   const auto current = state.sample.timestampNanoseconds;
   const auto next = current + std::min(step, replay.lastTimestamp() - current);
@@ -215,7 +336,7 @@ void RendererFrontend::drawBimTwinReplay() {
   if (!bimTwin_)
     return;
   auto& state = *bimTwin_;
-  const auto& replay = *svc_.config.bimTwinReplay;
+  const auto& replay = *state.replay;
   const auto* viewport = ImGui::GetMainViewport();
   ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + 12.0f,
                                 viewport->WorkPos.y + viewport->WorkSize.y - 12.0f),
@@ -229,7 +350,15 @@ void RendererFrontend::drawBimTwinReplay() {
     } else {
       const auto first = replay.firstTimestamp();
       const auto last = replay.lastTimestamp();
-      ImGui::BeginDisabled(first == last);
+      if (!svc_.config.bimTwinFollowPath.empty()) {
+        if (ImGui::Checkbox("Follow latest", &state.followLatest) && state.followLatest) {
+          state.playing = false;
+          state.sample = replay.sample(last);
+        }
+        if (!state.followError.empty())
+          ImGui::TextWrapped("Keeping the previous snapshot. %s", state.followError.c_str());
+      }
+      ImGui::BeginDisabled(first == last || state.followLatest);
       if (ImGui::Button(state.playing ? "Pause" : "Play")) {
         if (!state.playing && state.sample.timestampNanoseconds == last)
           state.sample = replay.sample(first);
@@ -258,6 +387,18 @@ void RendererFrontend::drawBimTwinReplay() {
       ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(observedColor), "Observed");
       ImGui::SameLine();
       ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(assetColor), "BIM asset");
+      if (std::ranges::any_of(state.sample.tracks, [](const auto& track) {
+            return std::holds_alternative<robotics::TwinSensorFrustum>(track.event.payload);
+          })) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(frustumColor), "Camera");
+      }
+      if (std::ranges::any_of(state.sample.tracks, [](const auto& track) {
+            return std::holds_alternative<robotics::TwinOccupancyGrid>(track.event.payload);
+          })) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(occupancyColor), "Occupied");
+      }
       if (state.sample.tracks.empty())
         ImGui::TextDisabled("No observations at this time");
       const ImVec2 tableSize(0.0f, std::max(55.0f, ImGui::GetContentRegionAvail().y));
@@ -277,6 +418,8 @@ void RendererFrontend::drawBimTwinReplay() {
             ImGui::TableSetColumnIndex(0);
             if (const auto* task = std::get_if<robotics::TwinTaskStatus>(&track.event.payload))
               ImGui::Text("Task / %s", task->taskId.c_str());
+            else if (const auto* alarm = std::get_if<robotics::TwinOperatorAlarm>(&track.event.payload))
+              ImGui::Text("Alarm / %s", alarm->alarmId.c_str());
             else
               ImGui::TextUnformatted(trackStyle(track.event.payload).label);
             if (ImGui::IsItemHovered())
@@ -306,6 +449,81 @@ void RendererFrontend::drawBimTwinReplay() {
     const auto world = bimTwinRendererPosition(meters);
     return world ? projectPoint(viewProjection, *viewport, *world) : std::nullopt;
   };
+  const auto drawSegment = [&](glm::dvec3 a, glm::dvec3 b, ImU32 color, float width) {
+    const auto start = bimTwinRendererPosition(a), end = bimTwinRendererPosition(b);
+    if (start && end) {
+      const auto line = projectSegment(*viewport, viewProjection * glm::dvec4(*start, 1.0),
+                                       viewProjection * glm::dvec4(*end, 1.0));
+      if (line) {
+        overlay->AddLine((*line)[0], (*line)[1], color, width);
+        return true;
+      }
+    }
+    return false;
+  };
+  const auto mayBeVisible = [&](std::span<const glm::dvec3> corners) {
+    std::array<bool, 6> excluded;
+    excluded.fill(true);
+    for (const auto& corner : corners) {
+      const auto world = bimTwinRendererPosition(corner);
+      if (!world)
+        return false;
+      const auto distances = clipDistances(viewProjection * glm::dvec4(*world, 1.0));
+      for (size_t plane = 0; plane < excluded.size(); ++plane)
+        excluded[plane] = excluded[plane] && distances[plane] < 0.0;
+    }
+    return std::ranges::none_of(excluded, [](bool outside) { return outside; });
+  };
+  size_t remainingRuns = maxOccupiedRuns, remainingProjections = maxRunProjections, remainingFrusta = maxFrusta;
+  for (const auto& track : state.sample.tracks) {
+    if (track.stale)
+      continue;
+    if (const auto* grid = std::get_if<robotics::TwinOccupancyGrid>(&track.event.payload)) {
+      if (remainingRuns == 0 || remainingProjections == 0)
+        continue;
+      const glm::dvec3 column = grid->resolutionMeters * glm::dvec3(std::cos(grid->yaw), std::sin(grid->yaw), 0.0);
+      const glm::dvec3 row{-column.y, column.x, 0.0};
+      const auto u = double(grid->width) * column, v = double(grid->height) * row;
+      const std::array bounds{grid->origin, grid->origin + u, grid->origin + u + v, grid->origin + v};
+      if (!mayBeVisible(bounds))
+        continue;
+      for (uint32_t y = 0; y < grid->height && remainingRuns > 0 && remainingProjections > 0; ++y) {
+        const auto cells = std::string_view(grid->cells).substr(size_t(y) * grid->width, grid->width);
+        for (size_t x = cells.find('#'); x != cells.npos && remainingRuns > 0 && remainingProjections > 0;) {
+          auto end = cells.find_first_not_of('#', x);
+          if (end == cells.npos) end = cells.size();
+          const auto a = grid->origin + double(x) * column + double(y) * row;
+          const auto b = a + double(end - x) * column;
+          const std::array corners{a, b, b + row, a + row};
+          if (mayBeVisible(corners)) {
+            const auto p = project(corners[0]), q = project(corners[1]);
+            const auto r = project(corners[2]), s = project(corners[3]);
+            if (p && q && r && s)
+              overlay->AddQuadFilled(*p, *q, *r, *s, occupancyFill);
+            for (size_t i = 0; i < corners.size(); ++i)
+              drawSegment(corners[i], corners[(i + 1) % corners.size()], occupancyColor, 2.5f);
+            --remainingRuns;
+          }
+          --remainingProjections;
+          x = cells.find('#', end);
+        }
+      }
+    } else if (const auto* camera = std::get_if<robotics::TwinSensorFrustum>(&track.event.payload);
+               camera && remainingFrusta > 0) {
+      const auto corners = robotics::twinFrustumCorners(*camera);
+      if (!mayBeVisible(corners))
+        continue;
+      bool visible = false;
+      for (size_t i = 0; i < 4; ++i) {
+        const size_t next = (i + 1) % 4;
+        visible = drawSegment(corners[i], corners[next], frustumColor, 2.75f) || visible;
+        visible = drawSegment(corners[i + 4], corners[next + 4], frustumColor, 2.75f) || visible;
+        visible = drawSegment(corners[i], corners[i + 4], frustumColor, 2.75f) || visible;
+      }
+      if (visible)
+        --remainingFrusta;
+    }
+  }
   const auto drawPath = [&](std::span<const glm::dvec3> path, ImU32 color, float width) {
     if (path.size() < 2 || remainingSegments == 0)
       return;
@@ -359,6 +577,24 @@ void RendererFrontend::drawBimTwinReplay() {
       }
     }
   }
+  size_t remainingAlarms = maxAlarmMarkers;
+  for (const auto& track : state.sample.tracks) {
+    if (remainingAlarms == 0)
+      break;
+    const auto* alarm = std::get_if<robotics::TwinOperatorAlarm>(&track.event.payload);
+    if (!alarm || !alarm->active || track.stale)
+      continue;
+    if (const auto center = project(alarm->position)) {
+      const ImVec2 top{center->x, center->y - 13.0f};
+      const ImVec2 left{center->x - 12.0f, center->y + 9.0f};
+      const ImVec2 right{center->x + 12.0f, center->y + 9.0f};
+      overlay->AddTriangleFilled(top, right, left, alarmColor(*alarm));
+      overlay->AddTriangle(top, right, left, markerBorder, 2.0f);
+      overlay->AddLine({center->x, center->y - 5.0f}, {center->x, center->y + 1.0f}, markerBorder, 2.0f);
+      overlay->AddCircleFilled({center->x, center->y + 5.0f}, 1.25f, markerBorder, 8);
+      --remainingAlarms;
+    }
+  }
 }
 
 nlohmann::json RendererFrontend::bimTwinCaptureTelemetry() const {
@@ -367,7 +603,7 @@ nlohmann::json RendererFrontend::bimTwinCaptureTelemetry() const {
     return point ? Json::array({point->x, point->y, point->z}) : Json(nullptr);
   };
   const auto& state = *bimTwin_;
-  const auto& recording = svc_.config.bimTwinReplay->recording();
+  const auto& recording = state.replay->recording();
   const bool matched = state.sourceError.empty();
   Json tracks = Json::array();
   size_t resolved = 0, unresolved = 0;
@@ -399,14 +635,39 @@ nlohmann::json RendererFrontend::bimTwinCaptureTelemetry() const {
         row["taskId"] = task->taskId;
         row["state"] = task->state;
         row["progress"] = task->progress ? Json(*task->progress) : Json(nullptr);
+      } else if (const auto* alarm = std::get_if<robotics::TwinOperatorAlarm>(&track.event.payload)) {
+        row["alarmId"] = alarm->alarmId;
+        row["severity"] = alarm->severity;
+        row["message"] = alarm->message;
+        row["active"] = alarm->active;
+        row["position"] = xyz(alarm->position);
+        row["rendererPosition"] = xyz(bimTwinRendererPosition(alarm->position));
+      } else if (const auto* camera = std::get_if<robotics::TwinSensorFrustum>(&track.event.payload)) {
+        Json corners = Json::array();
+        for (const auto& point : robotics::twinFrustumCorners(*camera))
+          corners.push_back(xyz(bimTwinRendererPosition(point)));
+        row["rendererCorners"] = std::move(corners);
+      } else if (const auto* grid = std::get_if<robotics::TwinOccupancyGrid>(&track.event.payload)) {
+        row["width"] = grid->width;
+        row["height"] = grid->height;
+        row["yaw"] = grid->yaw;
+        row["resolutionMeters"] = grid->resolutionMeters;
+        row["origin"] = xyz(grid->origin);
+        row["rendererOrigin"] = xyz(bimTwinRendererPosition(grid->origin));
+        row["occupiedCells"] = std::ranges::count(grid->cells, '#');
       }
       tracks.push_back(std::move(row));
     }
   }
-  return {{"sourceMatched", matched}, {"sourceError", state.sourceError},
-          {"sourceNamespace", recording.sourceNamespace}, {"clockId", recording.clockId},
-          {"timestampNanoseconds", state.sample.timestampNanoseconds}, {"playing", state.playing},
-          {"resolvedAssetCount", resolved}, {"unresolvedAssetCount", unresolved}, {"tracks", std::move(tracks)}};
+  Json result{{"sourceMatched", matched}, {"sourceError", state.sourceError},
+              {"sourceNamespace", recording.sourceNamespace}, {"clockId", recording.clockId},
+              {"timestampNanoseconds", state.sample.timestampNanoseconds}, {"playing", state.playing},
+              {"resolvedAssetCount", resolved}, {"unresolvedAssetCount", unresolved}, {"tracks", std::move(tracks)}};
+  if (!svc_.config.bimTwinFollowPath.empty()) {
+    result["following"] = state.followLatest;
+    result["followError"] = state.followError;
+  }
+  return result;
 }
 
 } // namespace container::renderer

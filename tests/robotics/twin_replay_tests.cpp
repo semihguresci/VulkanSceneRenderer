@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <numbers>
@@ -22,6 +23,12 @@ TwinRecording recording(std::vector<TwinEvent> events, uint64_t freshness = 20) 
 TwinEvent pose(uint64_t time, glm::dvec3 position, double yaw = 0,
                std::string id = "robot/base", std::string source = "simulator") {
   return {time, std::move(id), std::move(source), TwinRobotPose{position, yaw}};
+}
+
+TwinSensorFrustum inspectionFrustum() {
+  return {.width = 8, .height = 6, .fx = 4, .fy = 3, .cx = 2, .cy = 1.5, .nearMeters = 2, .farMeters = 4,
+          .worldFromCamera = glm::dmat4(glm::dvec4(0, -1, 0, 0), glm::dvec4(0, 0, 1, 0),
+                                      glm::dvec4(-1, 0, 0, 0), glm::dvec4(10, 20, 30, 1))};
 }
 
 template<class Payload>
@@ -235,6 +242,118 @@ TEST(TwinReplay, BoundsTheTapeAndAggregatePlanGeometry) {
   EXPECT_NO_THROW(canonicalizeTwinRecording(log));
   log.events.push_back({64, "robot/base", "planner", TwinPlannedPath{{glm::dvec3(0)}}});
   EXPECT_THROW(canonicalizeTwinRecording(log), std::invalid_argument);
+}
+
+TEST(TwinReplay, ProjectsUncenteredSensorImageEdgesIntoRep103) {
+  const auto camera = inspectionFrustum();
+  const std::array<glm::dvec3, 8> expected{{
+      {12, 21, 31}, {12, 17, 31}, {12, 17, 27}, {12, 21, 27},
+      {14, 22, 32}, {14, 14, 32}, {14, 14, 24}, {14, 22, 24},
+  }};
+  EXPECT_EQ(twinFrustumCorners(camera), expected);
+  const TwinReplay replay(recording({{5, "robot/rgbd", "camera", camera}}));
+  EXPECT_TRUE(replay.sample(4).tracks.empty());
+  const auto sample = replay.sample(10);
+  EXPECT_EQ(std::get<TwinSensorFrustum>(track<TwinSensorFrustum>(sample, "robot/rgbd").event.payload), camera);
+}
+
+TEST(TwinReplay, RejectsInvalidSensorIntrinsicsAndNonRigidOrUnboundedCameraTransforms) {
+  const auto reject = [](auto change) {
+    auto invalid = inspectionFrustum();
+    change(invalid);
+    EXPECT_THROW((void)twinFrustumCorners(invalid), std::invalid_argument);
+    auto log = recording({{1, "camera", "source", invalid}});
+    EXPECT_THROW(canonicalizeTwinRecording(log), std::invalid_argument);
+  };
+  reject([](auto& camera) { camera.width = 0; });
+  reject([](auto& camera) { camera.width = camera.height = 8192; });
+  reject([](auto& camera) { camera.fx = 0; });
+  reject([](auto& camera) { camera.fy = std::numeric_limits<double>::infinity(); });
+  reject([](auto& camera) { camera.cx = std::numeric_limits<double>::quiet_NaN(); });
+  reject([](auto& camera) { camera.farMeters = camera.nearMeters; });
+  reject([](auto& camera) { camera.nearMeters = -1; });
+  reject([](auto& camera) { camera.worldFromCamera[0] *= 2.0; });
+  reject([](auto& camera) { camera.worldFromCamera[0] *= -1.0; });
+  reject([](auto& camera) { camera.worldFromCamera[1][3] = .01; });
+  reject([](auto& camera) { camera.worldFromCamera[3][0] = std::numeric_limits<double>::infinity(); });
+  reject([](auto& camera) { camera.worldFromCamera[3][0] = 100'000'000; });
+  reject([](auto& camera) { camera.farMeters = 500'000'000; });
+}
+
+TEST(TwinReplay, RetainsIndependentAlarmsAndTheirClearEvents) {
+  const auto doorActive = TwinOperatorAlarm{"door", "warning", "Door obstructed", true, {3, 2, 1}};
+  auto doorClear = doorActive;
+  doorClear.active = false;
+  const auto motor = TwinOperatorAlarm{"motor", "critical", "Motor fault", true, {4, 2, 1}};
+  const auto wifi = TwinOperatorAlarm{"wifi", "info", "Radio reconnecting", true, {5, 2, 1}};
+  auto log = recording({{13, "robot/base", "controller", wifi},
+                        {10, "robot/base", "controller", motor},
+                        {10, "robot/base", "controller", doorActive},
+                        {13, "robot/base", "controller", doorClear}}, 10);
+  const TwinReplay replay(log);
+  const auto beforeClear = replay.sample(12);
+  ASSERT_EQ(beforeClear.tracks.size(), 2u);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(beforeClear.tracks[0].event.payload), doorActive);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(beforeClear.tracks[1].event.payload), motor);
+  const auto afterClear = replay.sample(22);
+  ASSERT_EQ(afterClear.tracks.size(), 3u);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(afterClear.tracks[0].event.payload), doorClear);
+  EXPECT_FALSE(afterClear.tracks[0].stale);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(afterClear.tracks[1].event.payload), motor);
+  EXPECT_TRUE(afterClear.tracks[1].stale);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(afterClear.tracks[2].event.payload), wifi);
+  EXPECT_FALSE(afterClear.tracks[2].stale);
+
+  log.events.push_back({13, "robot/base", "other source", doorActive});
+  EXPECT_THROW(canonicalizeTwinRecording(log), std::invalid_argument);
+  const auto reject = [&](auto change) {
+    auto invalid = motor;
+    change(invalid);
+    auto bad = recording({{1, "robot/base", "source", invalid}});
+    EXPECT_THROW(canonicalizeTwinRecording(bad), std::invalid_argument);
+  };
+  reject([](auto& alarm) { alarm.alarmId.clear(); });
+  reject([](auto& alarm) { alarm.severity = "urgent"; });
+  reject([](auto& alarm) { alarm.message = "unexpected\nnewline"; });
+  reject([](auto& alarm) { alarm.position.y = std::numeric_limits<double>::quiet_NaN(); });
+}
+
+TEST(TwinReplay, KeepsOccupancyGridSnapshotsAndValidatesCellsAndBudgets) {
+  const TwinOccupancyGrid grid{.origin = {10, 5, 2}, .yaw = pi / 2, .resolutionMeters = .25,
+                               .width = 3, .height = 2, .cells = ".#??#."};
+  auto changed = grid;
+  changed.cells = "###...";
+  auto onTape = recording({{4, "level/map", "sim", grid}, {6, "level/map", "sim", changed}});
+  const TwinReplay replay(onTape);
+  const auto held = replay.sample(5);
+  EXPECT_EQ(std::get<TwinOccupancyGrid>(track<TwinOccupancyGrid>(held, "level/map").event.payload), grid);
+  const auto stale = replay.sample(27);
+  EXPECT_EQ(std::get<TwinOccupancyGrid>(track<TwinOccupancyGrid>(stale, "level/map").event.payload), changed);
+  EXPECT_TRUE(track<TwinOccupancyGrid>(stale, "level/map").stale);
+
+  const auto reject = [&](auto change) {
+    auto invalid = grid;
+    change(invalid);
+    auto bad = recording({{1, "map", "source", invalid}});
+    EXPECT_THROW(canonicalizeTwinRecording(bad), std::invalid_argument);
+  };
+  reject([](auto& map) { map.width = 0; });
+  reject([](auto& map) { map.height = 129; });
+  reject([](auto& map) { map.cells[0] = 'x'; });
+  reject([](auto& map) { map.cells.pop_back(); });
+  reject([](auto& map) { map.resolutionMeters = 0; });
+  reject([](auto& map) { map.resolutionMeters = std::numeric_limits<double>::infinity(); });
+  reject([](auto& map) { map.yaw = std::numeric_limits<double>::quiet_NaN(); });
+  reject([](auto& map) { map.origin.x = 100'000'001; });
+  reject([](auto& map) { map.origin.y = 100'000'000; });
+
+  const TwinOccupancyGrid full{.resolutionMeters = 1, .width = 128, .height = 128, .cells = std::string(128 * 128, '?')};
+  onTape.events.clear();
+  for (uint64_t time = 0; time < 64; ++time)
+    onTape.events.push_back({time, "level/map", "sim", full});
+  EXPECT_NO_THROW(canonicalizeTwinRecording(onTape));
+  onTape.events.push_back({64, "level/map", "sim", grid});
+  EXPECT_THROW(canonicalizeTwinRecording(onTape), std::invalid_argument);
 }
 
 } // namespace

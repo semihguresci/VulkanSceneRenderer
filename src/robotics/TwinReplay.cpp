@@ -1,4 +1,5 @@
 #include "Container/robotics/TwinTelemetry.h"
+#include "Container/robotics/SensorCamera.h"
 
 #include "TwinTelemetryLimits.h"
 #include "TwinTelemetryValidation.h"
@@ -34,6 +35,28 @@ void validatePoint(glm::dvec3 point, std::string_view field) {
   const auto coordinate = [](double value) { return std::isfinite(value) && std::abs(value) <= maxPositionMeters; };
   if (!coordinate(point.x) || !coordinate(point.y) || !coordinate(point.z))
     invalid(field, "must have finite coordinates in [-100000000, 100000000] metres");
+}
+
+void validateYaw(double yaw, std::string_view field) {
+  if (!std::isfinite(yaw) || std::abs(yaw) > maxYawRadians)
+    invalid(field, "must be finite and in [-1000000000, 1000000000] radians");
+}
+
+void validateOccupancyGrid(const TwinOccupancyGrid& grid) {
+  validatePoint(grid.origin, "occupancy grid origin");
+  validateYaw(grid.yaw, "occupancy grid yaw");
+  if (!std::isfinite(grid.resolutionMeters) || grid.resolutionMeters <= 0.0)
+    invalid("occupancy grid resolutionMeters", "must be finite and positive");
+  if (!grid.width || grid.width > maxOccupancyDimension || !grid.height || grid.height > maxOccupancyDimension)
+    invalid("occupancy grid dimensions", "must each be in [1, 128]");
+  if (grid.cells.size() != std::size_t(grid.width) * grid.height ||
+      !std::ranges::all_of(grid.cells, [](char cell) { return cell == '.' || cell == '#' || cell == '?'; }))
+    invalid("occupancy grid cells", "must contain width * height characters from '.#?'");
+  const auto x = glm::dvec3(std::cos(grid.yaw), std::sin(grid.yaw), 0.0) * (grid.resolutionMeters * grid.width);
+  const auto y = glm::dvec3(-std::sin(grid.yaw), std::cos(grid.yaw), 0.0) * (grid.resolutionMeters * grid.height);
+  validatePoint(grid.origin + x, "occupancy grid corner");
+  validatePoint(grid.origin + y, "occupancy grid corner");
+  validatePoint(grid.origin + x + y, "occupancy grid corner");
 }
 
 void validateSceneSource(const BimSceneSource& source) {
@@ -72,6 +95,33 @@ double distanceToPath(glm::dvec3 position, const std::vector<glm::dvec3>& points
 
 } // namespace
 
+std::array<glm::dvec3, 8> twinFrustumCorners(const TwinSensorFrustum& frustum) {
+  validateSensorCameraSettings({.width = frustum.width, .height = frustum.height,
+                                .fx = frustum.fx, .fy = frustum.fy, .cx = frustum.cx, .cy = frustum.cy,
+                                .nearMeters = frustum.nearMeters, .farMeters = frustum.farMeters});
+  validateSensorCameraFrame({.worldFromCamera = frustum.worldFromCamera});
+  validatePoint(glm::dvec3(frustum.worldFromCamera[3]), "sensor frustum origin");
+
+  const double width = frustum.width;
+  const double height = frustum.height;
+  const std::array<double, 4> imageX{0, width, width, 0};
+  const std::array<double, 4> imageY{0, 0, height, height};
+  const std::array<double, 2> depths{frustum.nearMeters, frustum.farMeters};
+  std::array<glm::dvec3, 8> corners{};
+  for (size_t plane = 0; plane < depths.size(); ++plane) {
+    const auto depth = depths[plane];
+    for (size_t corner = 0; corner < imageX.size(); ++corner) {
+      // Pixels increase downward while camera Y increases upward.
+      const auto x = (imageX[corner] - frustum.cx) / frustum.fx * depth;
+      const auto y = (frustum.cy - imageY[corner]) / frustum.fy * depth;
+      const auto point = glm::dvec3(frustum.worldFromCamera * glm::dvec4(x, y, -depth, 1.0));
+      validatePoint(point, "sensor frustum corner");
+      corners[plane * imageX.size() + corner] = point;
+    }
+  }
+  return corners;
+}
+
 namespace twin_telemetry_validation {
 
 void validateRecordingMetadata(const TwinRecording& recording) {
@@ -80,20 +130,19 @@ void validateRecordingMetadata(const TwinRecording& recording) {
   validateSceneSource(recording.sceneSource);
 }
 
-size_t validateEvent(const TwinEvent& event) {
+EventGeometrySize validateEvent(const TwinEvent& event) {
   validateText(event.entityId, maxIdentityBytes, "event entityId");
   validateText(event.source, maxLabelBytes, "event source");
   if (event.payload.valueless_by_exception()) invalid("event payload", "is missing");
-  return std::visit([]<class Payload>(const Payload& payload) -> size_t {
+  return std::visit([]<class Payload>(const Payload& payload) -> EventGeometrySize {
     if constexpr (std::is_same_v<Payload, TwinRobotPose>) {
       validatePoint(payload.position, "robot position");
-      if (!std::isfinite(payload.yaw) || std::abs(payload.yaw) > maxYawRadians)
-        invalid("robot yaw", "must be finite and in [-1000000000, 1000000000] radians");
+      validateYaw(payload.yaw, "robot yaw");
     } else if constexpr (std::is_same_v<Payload, TwinPlannedPath>) {
       if (payload.points.size() > maxPlanPoints)
         invalid("planned path", "exceeds the per-path point limit");
       for (const auto point : payload.points) validatePoint(point, "planned path point");
-      return payload.points.size();
+      return {.planPoints = payload.points.size()};
     } else if constexpr (std::is_same_v<Payload, TwinSensorStatus>) {
       validateText(payload.state, maxLabelBytes, "sensor state");
     } else if constexpr (std::is_same_v<Payload, TwinAssetState>) {
@@ -103,15 +152,26 @@ size_t validateEvent(const TwinEvent& event) {
       if (payload.batteryPercent && (!std::isfinite(*payload.batteryPercent) ||
           *payload.batteryPercent < 0.0 || *payload.batteryPercent > 100.0))
         invalid("robot health batteryPercent", "must be finite and in [0, 100]");
-    } else {
-      static_assert(std::is_same_v<Payload, TwinTaskStatus>, "Unhandled twin telemetry payload");
+    } else if constexpr (std::is_same_v<Payload, TwinTaskStatus>) {
       validateText(payload.taskId, maxIdentityBytes, "taskId");
       validateText(payload.state, maxLabelBytes, "task state");
       if (payload.progress && (!std::isfinite(*payload.progress) ||
           *payload.progress < 0.0 || *payload.progress > 1.0))
         invalid("task progress", "must be finite and in [0, 1]");
+    } else if constexpr (std::is_same_v<Payload, TwinOperatorAlarm>) {
+      validateText(payload.alarmId, maxIdentityBytes, "alarmId");
+      validateText(payload.message, maxLabelBytes, "alarm message");
+      if (payload.severity != "info" && payload.severity != "warning" && payload.severity != "critical")
+        invalid("alarm severity", "must be info, warning, or critical");
+      validatePoint(payload.position, "alarm position");
+    } else if constexpr (std::is_same_v<Payload, TwinSensorFrustum>) {
+      (void)twinFrustumCorners(payload);
+    } else {
+      static_assert(std::is_same_v<Payload, TwinOccupancyGrid>, "Unhandled twin telemetry payload");
+      validateOccupancyGrid(payload);
+      return {.occupancyCells = payload.cells.size()};
     }
-    return 0;
+    return {};
   }, event.payload);
 }
 
@@ -123,12 +183,15 @@ void canonicalizeTwinRecording(TwinRecording& recording) {
   if (recording.events.empty() || recording.events.size() > maxEvents)
     invalid("events", "must contain 1..65,536 observations");
 
-  size_t totalPlanPoints = 0;
+  EventGeometrySize total;
   for (const auto& event : recording.events) {
-    const auto points = validateEvent(event);
-    if (points > maxTotalPlanPoints - totalPlanPoints)
+    const auto geometry = validateEvent(event);
+    if (geometry.planPoints > maxTotalPlanPoints - total.planPoints)
       invalid("planned path", "exceeds the recording point limit");
-    totalPlanPoints += points;
+    if (geometry.occupancyCells > maxTotalOccupancyCells - total.occupancyCells)
+      invalid("occupancy grid", "exceeds the recording cell limit");
+    total.planPoints += geometry.planPoints;
+    total.occupancyCells += geometry.occupancyCells;
   }
 
   std::stable_sort(recording.events.begin(), recording.events.end(), [](const auto& a, const auto& b) {
@@ -142,6 +205,8 @@ void canonicalizeTwinRecording(TwinRecording& recording) {
                    " for " + duplicate->entityId;
     if (const auto* task = std::get_if<TwinTaskStatus>(&duplicate->payload))
       context += " task " + task->taskId;
+    else if (const auto* alarm = std::get_if<TwinOperatorAlarm>(&duplicate->payload))
+      context += " alarm " + alarm->alarmId;
     invalid("events", context);
   }
 }

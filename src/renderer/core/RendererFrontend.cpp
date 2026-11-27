@@ -2059,7 +2059,7 @@ void RendererFrontend::processMcpRequests() {
               {"technique", subs_.activeTechnique ? renderTechniqueName(subs_.activeTechnique->id()) : ""}};
     }
     if (tool == "renderer_get_status") {
-      return {{"activeModel", activePrimaryModelPath_.empty() ? activeAuxiliaryModelPath_ : activePrimaryModelPath_},
+      Json status{{"activeModel", activePrimaryModelPath_.empty() ? activeAuxiliaryModelPath_ : activePrimaryModelPath_},
               {"modelLoading", modelLoad_ && (modelLoad_->request || modelLoad_->queued)},
               {"modelStage", modelLoad_ ? modelLoad_->stage : ""},
               {"modelStatus", mcpModelStatus_},
@@ -2068,6 +2068,13 @@ void RendererFrontend::processMcpRequests() {
               {"shaderReloadBusy", shaderReloadJob_.valid()}, {"shaderReloadStatus", shaderReloadStatus_},
               {"shaderReloadGeneration", shaderReloadGeneration_},
               {"capturePending", screenshot_.pending}, {"captureStatus", mcpCaptureStatus_}};
+      if (bimTwin_) {
+        const auto& twin = *bimTwin_;
+        status["bimTwinReplay"] = {{"sourceMatched", twin.sourceError.empty()},
+                                   {"timestampNanoseconds", twin.sample.timestampNanoseconds},
+                                   {"following", twin.followLatest}, {"followError", twin.followError}};
+      }
+      return status;
     }
     if (tool == "renderer_set_lighting") {
       if (args.empty()) throw std::invalid_argument("Supply at least one lighting control");

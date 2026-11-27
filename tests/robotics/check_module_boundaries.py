@@ -17,7 +17,7 @@ CORE = {
     "robotics_drive": set(),
     "robotics_sensors": {"robotics_drive", "fingerprint"},
     "robotics_dataset": {"robotics_sensors", "robotics_drive", "fingerprint"},
-    "robotics_twin": {"robotics_scene"},
+    "robotics_twin": {"robotics_scene", "robotics_sensors", "robotics_drive", "fingerprint"},
     "robotics_scene": set(),
     "robotics_collision_geometry": {"robotics_scene"},
     "robotics_usd": {"robotics_scene", "robotics_collision_geometry", "fingerprint"},

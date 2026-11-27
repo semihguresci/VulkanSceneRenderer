@@ -19,12 +19,31 @@ PROP_ID = "bim/7:doorway/guid/9:prop-guid"
 UNRESOLVED_ID = "external-fixture/unknown-asset"
 EARLY = 500_000_000
 LATE = 2_250_000_000
+OPERATOR_EVENT = 400_000_000
+ALARM_CLEAR = 2_500_000_000
+CLEARED = 2_750_000_000
+VIEWPORT_REGION = (380, 140, 1080, 600)
 COLORS = {
     "plan": (255, 183, 64),
     "observed": (32, 231, 211),
     "pose": (165, 243, 91),
     "asset": (239, 114, 249),
 }
+OPERATOR_COLORS = {
+    "warning": (255, 133, 78), "critical": (255, 76, 103),
+    "frustum": (108, 160, 255), "occupancy": (179, 151, 255),
+}
+WARNING = {"alarmId": "route-deviation", "severity": "warning", "message": "Deviation from plan",
+           "active": True, "position": [.65, -.65, 1.68]}
+CRITICAL = {"alarmId": "door-obstruction", "severity": "critical", "message": "Doorway obstruction",
+            "active": True, "position": [1.08, .92, 2.15]}
+FRUSTUM = {
+    "width": 160, "height": 120, "fx": 105.0, "fy": 95.0, "cx": 63.5, "cy": 43.25,
+    "nearMeters": .35, "farMeters": 4.5,
+    "worldFromCamera": [.6, -.8, 0, 0, 0, 0, 1, 0, -.8, -.6, 0, 0, .48, -1.15, 1.86, 1],
+}
+GRID = {"width": 4, "height": 3, "origin": [-1.35, -1.75, 1.31], "yaw": math.pi / 6,
+        "resolutionMeters": .32, "cells": ".#?." ".#.." "#?.."}
 
 
 def require(condition, message):
@@ -94,8 +113,8 @@ def make_recording(args, work, model):
 
 
 def capture(args, work, name, model, technique, recording=None, cursor=None, raw=False, failure=None,
-            sequence=None):
-    image = work / f"{name}.png"
+            sequence=None, extension="png"):
+    image = work / f"{name}.{extension}"
     command = [
         "--model", model, "--import-scale", IMPORT_SCALE, "--hidden", "--validation",
         "--width", WIDTH, "--height", HEIGHT, "--msaa", 1, "--no-taa", "--no-bloom", "--no-ddgi",
@@ -123,6 +142,12 @@ def capture(args, work, name, model, technique, recording=None, cursor=None, raw
     require(code == 0 and image.is_file(), f"Renderer capture failed: {log}")
     require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in log_text,
             f"Capture used no Vulkan validation layer: {log}")
+    metadata = json_at(image.with_suffix(f".{extension}.capture.json"))
+    require((metadata["width"], metadata["height"], metadata["includesUi"]) ==
+            (WIDTH, HEIGHT, extension == "png" and not raw), metadata)
+    if extension == "exr":
+        require(metadata["source"] == "raster-scene-composite" and metadata["colorSpace"] == "linear-sRGB" and
+                not metadata["toneMappingApplied"] and not metadata["exposureApplied"], metadata)
     state = json_at(image.with_suffix(".telemetry.json"))
     require(state["technique"] == technique, f"Unexpected capture technique: {name}")
     return image, state
@@ -171,18 +196,18 @@ def check_state(state, simulation, semantic_scene, timestamp):
     return {"timestampNanoseconds": timestamp, "robot": robot, "asset": asset}
 
 
+def srgb(component):
+    linear = component / 255
+    encoded = 12.92 * linear if linear <= .0031308 else 1.055 * linear ** (1 / 2.4) - .055
+    return round(encoded * 255)
+
+
 def ink_counts(path):
     from PIL import Image
-
-    def srgb(component):
-        linear = component / 255
-        encoded = 12.92 * linear if linear <= .0031308 else 1.055 * linear ** (1 / 2.4) - .055
-        return round(encoded * 255)
-
     with Image.open(path) as image:
         require(image.size == (WIDTH, HEIGHT), f"Unexpected size for {path}")
         # Sample the center of the viewport, clear of the controls and labels.
-        colors = image.convert("RGB").crop((380, 140, 1080, 600)).getcolors(WIDTH * HEIGHT)
+        colors = image.convert("RGB").crop(VIEWPORT_REGION).getcolors(WIDTH * HEIGHT)
     # UI colors can pass through the swapchain's sRGB encode.
     return {name: sum(count for count, pixel in colors
                       if any(all(abs(a - b) <= 6 for a, b in zip(pixel, target))
@@ -190,7 +215,161 @@ def ink_counts(path):
             for name, rgb in COLORS.items()}
 
 
-def verify_ingested_status(args, work, model, recording):
+def operator_masks(path):
+    import numpy as np
+    from PIL import Image
+
+    with Image.open(path) as image:
+        require(image.size == (WIDTH, HEIGHT), f"Unexpected size for {path}")
+        pixels = np.asarray(image.convert("RGB").crop(VIEWPORT_REGION), dtype=np.int16)
+    return {name: np.logical_or(np.all(np.abs(pixels - rgb) <= 6, axis=2),
+                                np.all(np.abs(pixels - tuple(map(srgb, rgb))) <= 6, axis=2))
+            for name, rgb in OPERATOR_COLORS.items()}
+
+
+def clip_projected_pixel(state, renderer_position):
+    matrix = state["camera"]["unjitteredViewProjColumns"]
+    clip = [sum(column[row] * component for column, component in zip(matrix, (*renderer_position, 1), strict=True))
+            for row in range(4)]
+    require(clip[3] > 0 and 0 <= clip[2] <= clip[3], f"Operator fixture point is behind the editor camera: {clip}")
+    return (WIDTH * (.5 + .5 * clip[0] / clip[3]), HEIGHT * (.5 - .5 * clip[1] / clip[3]))
+
+
+def nearby_ink(mask, point):
+    x, y = map(round, point)
+    left, top, right, bottom = VIEWPORT_REGION
+    require(left + 9 <= x < right - 9 and top + 9 <= y < bottom - 9,
+            f"Operator fixture point left the unobstructed capture region: {point}")
+    return int(mask[y - top - 8:y - top + 9, x - left - 8:x - left + 9].sum())
+
+
+def expected_frustum_corners(meters_per_unscaled_unit):
+    camera = FRUSTUM["worldFromCamera"]
+    corners = []
+    for depth in (FRUSTUM["nearMeters"], FRUSTUM["farMeters"]):
+        for u, v in ((0, 0), (FRUSTUM["width"], 0), (FRUSTUM["width"], FRUSTUM["height"]),
+                     (0, FRUSTUM["height"])):
+            ray = ((u - FRUSTUM["cx"]) * depth / FRUSTUM["fx"],
+                   (FRUSTUM["cy"] - v) * depth / FRUSTUM["fy"], -depth, 1)
+            point = [sum(camera[column * 4 + axis] * value for column, value in enumerate(ray))
+                     for axis in range(3)]
+            corners.append(metric_to_renderer(point, meters_per_unscaled_unit))
+    return corners
+
+
+def grid_point(col, row, meters_per_unscaled_unit):
+    x, y, z = GRID["origin"]
+    theta, step = GRID["yaw"], GRID["resolutionMeters"]
+    return metric_to_renderer((x + step * (col * math.cos(theta) - row * math.sin(theta)),
+                               y + step * (col * math.sin(theta) + row * math.cos(theta)), z),
+                              meters_per_unscaled_unit)
+
+
+def check_operator_capture(path, state, source, cursor):
+    replay = state["bimTwinReplay"]
+    require(replay["sourceMatched"] and not replay["playing"] and replay["timestampNanoseconds"] == cursor, replay)
+    meters = source["sceneSource"]["metersPerUnscaledRendererUnit"]
+    alarms = {track["alarmId"]: track for track in replay["tracks"] if track["kind"] == "operator-alarm"}
+    frustum = next(track for track in replay["tracks"] if track["kind"] == "sensor-frustum")
+    grid = next(track for track in replay["tracks"] if track["kind"] == "occupancy-grid")
+    expired = cursor == CLEARED
+    require(set(alarms) == {WARNING["alarmId"], CRITICAL["alarmId"]}, alarms)
+    mask = operator_masks(path)
+    counts = {name: int(ink.sum()) for name, ink in mask.items()}
+    for name, payload in (("warning", WARNING), ("critical", CRITICAL)):
+        row = alarms[payload["alarmId"]]
+        cleared = expired and name == "critical"
+        expected = dict(payload, active=not cleared)
+        require(all(row[field] == value for field, value in expected.items()), row)
+        require(row["source"] == "gateway:safety" and row["stale"] == (expired and name == "warning") and
+                row["eventTimestampNanoseconds"] == (ALARM_CLEAR if cleared else OPERATOR_EVENT), row)
+        position = metric_to_renderer(payload["position"], meters)
+        close_point(row["rendererPosition"], position, f"{name} alarm")
+        if not expired:
+            require(nearby_ink(mask[name], clip_projected_pixel(state, position)) >= 5,
+                    f"Missing {name} around its projected world position: {path}")
+
+    require(frustum["source"] == "gateway:camera" and frustum["stale"] == expired and
+            frustum["eventTimestampNanoseconds"] == OPERATOR_EVENT, frustum)
+    corners = expected_frustum_corners(meters)
+    require(len(frustum["rendererCorners"]) == len(corners), frustum)
+    for index, (actual, expected) in enumerate(zip(frustum["rendererCorners"], corners, strict=True)):
+        close_point(actual, expected, f"Frustum corner {index}")
+
+    require(grid["source"] == "gateway:navigation" and grid["stale"] == expired and
+            grid["eventTimestampNanoseconds"] == OPERATOR_EVENT, grid)
+    require(all(grid[key] == GRID[key] for key in ("width", "height", "origin", "yaw", "resolutionMeters")), grid)
+    close_point(grid["rendererOrigin"], grid_point(0, 0, meters), "Occupancy grid origin")
+    require(grid["occupiedCells"] == GRID["cells"].count("#"), grid)
+    if expired:
+        require(not any(counts.values()), f"Cleared/expired overlays remain visible: {path}: {counts}")
+    else:
+        # One far-plane corner falls above the image. The visible portion
+        # of the connecting edge must survive clipping at the frame border.
+        require(clip_projected_pixel(state, corners[4])[1] < 0, "Frustum no longer exercises clipping")
+        edge = [.75 * a + .25 * b for a, b in zip(corners[0], corners[4], strict=True)]
+        require(nearby_ink(mask["frustum"], clip_projected_pixel(state, edge)) >= 5,
+                f"Missing visible part of a frustum edge with an off-screen end: {path}")
+        for col in (.5, 1.5, 2.5):
+            count = nearby_ink(mask["occupancy"], clip_projected_pixel(state, grid_point(col, 0, meters)))
+            require(count >= 5 if col == 1.5 else count == 0,
+                    f"Occupancy outline does not match occupied/free/unknown cells: {path}: {col}: {count}")
+        require(min(counts.values()) > 10, f"Missing active operator overlays: {path}: {counts}")
+    trajectories = ink_counts(path)
+    require(trajectories["plan"] > 10 and trajectories["observed"] > 10 and trajectories["pose"] > 10,
+            f"Robot paths or pose disappeared with operator overlays: {path}: {trajectories}")
+    return {"image": path.name, "cursorNanoseconds": cursor, "overlayPixels": counts,
+            "trajectoryPixels": trajectories, "alarms": alarms, "frustum": frustum, "occupancy": grid}, mask
+
+
+def verify_raw_exr(plain, replay):
+    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
+    import cv2
+    import numpy as np
+
+    def decode(path):
+        pixels = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        require(pixels is not None and pixels.shape == (HEIGHT, WIDTH, 3) and pixels.dtype == np.float32 and
+                np.isfinite(pixels).all() and pixels.max() > .01, f"Invalid scene-linear capture: {path}")
+        return pixels
+
+    expected, actual = decode(plain), decode(replay)
+    np.testing.assert_array_equal(actual, expected, err_msg=f"Operator overlays entered raw scene-linear render: {replay}")
+    return hashlib.sha256(actual.tobytes()).hexdigest()
+
+
+def verify_operator_rendering(args, work, model, ingested, source, deferred_baseline, deferred_active):
+    import numpy as np
+
+    results = {}
+    for technique in ("deferred-raster", "forward-raster"):
+        tag = technique.split("-")[0]
+        active, state = deferred_active if tag == "deferred" else capture(
+            args, work, "operator-forward-active", model, technique, ingested, LATE)
+        active_result, masks = check_operator_capture(active, state, source, LATE)
+        repeat, repeat_state = capture(args, work, f"operator-{tag}-repeat", model, technique, ingested, LATE)
+        require(repeat_state["bimTwinReplay"] == state["bimTwinReplay"], f"Repeated replay state changed: {repeat}")
+        repeat_masks = operator_masks(repeat)
+        for name, mask in masks.items():
+            np.testing.assert_array_equal(mask, repeat_masks[name], err_msg=f"Operator mask varied at same time: {name}")
+
+        cleared, cleared_state = capture(args, work, f"operator-{tag}-cleared", model, technique, ingested, CLEARED)
+        cleared_result, _ = check_operator_capture(cleared, cleared_state, source, CLEARED)
+        baseline = deferred_baseline if tag == "deferred" else capture(
+            args, work, "operator-forward-baseline-viewport", model, technique, raw=True)[0]
+        replay_raw, _ = capture(args, work, f"operator-{tag}-viewport", model, technique, ingested, LATE, raw=True)
+        require(sha256(replay_raw) == sha256(baseline), f"Operator overlays entered raw viewport capture: {replay_raw}")
+        plain_exr, _ = capture(args, work, f"operator-{tag}-baseline-linear", model, technique, extension="exr")
+        replay_exr, _ = capture(args, work, f"operator-{tag}-linear", model, technique, ingested, LATE,
+                                extension="exr")
+        results[technique] = {"active": active_result, "cleared": cleared_result,
+                              "sameTimestampPngBytes": sha256(active) == sha256(repeat),
+                              "sameTimestampOperatorMasks": True, "rawViewportSha256": sha256(replay_raw),
+                              "rawLinearPixelsSha256": verify_raw_exr(plain_exr, replay_exr)}
+    return results
+
+
+def verify_ingested_status(args, work, model, recording, deferred_baseline):
     source = json_at(recording)
     robot = next(event["entityId"] for event in source["events"] if event["kind"] == "robot-pose")
     events = [event for event in source["events"] if event["entityId"] != UNRESOLVED_ID]
@@ -200,6 +379,15 @@ def verify_ingested_status(args, work, model, recording):
                       ("robot-health", {"state": "nominal", "batteryPercent": 78}),
                       ("task-status", {"taskId": "inspect", "state": "running", "progress": .75}),
                       ("task-status", {"taskId": "report", "state": "queued"}),
+                  ))
+    events.extend({"kind": kind, "timestampNanoseconds": time, "entityId": entity, "source": producer,
+                   "payload": payload}
+                  for kind, time, entity, producer, payload in (
+                      ("operator-alarm", OPERATOR_EVENT, robot, "gateway:safety", WARNING),
+                      ("operator-alarm", OPERATOR_EVENT, robot, "gateway:safety", CRITICAL),
+                      ("operator-alarm", ALARM_CLEAR, robot, "gateway:safety", dict(CRITICAL, active=False)),
+                      ("sensor-frustum", OPERATOR_EVENT, f"{robot}/camera", "gateway:camera", FRUSTUM),
+                      ("occupancy-grid", OPERATOR_EVENT, "doorway/local-map", "gateway:navigation", GRID),
                   ))
     feed = work / "external-telemetry.jsonl"
     with feed.open("w", encoding="utf-8") as stream:
@@ -216,6 +404,7 @@ def verify_ingested_status(args, work, model, recording):
     require(code == 0, f"Ingestion failed: {work / 'ingest.log'}")
     receipt = json.loads(output)
     require(receipt["accepted"] == len(events) and receipt["rejected"] == 0, receipt)
+    require(json_at(ingested)["version"] == 3, "Spatial observations did not enter a version-3 replay")
     image, state = capture(args, work, "replay-ingested", model, "deferred-raster", ingested, LATE)
     replay = state["bimTwinReplay"]
     require(replay["sourceMatched"] and replay["resolvedAssetCount"] == 2, replay)
@@ -225,7 +414,9 @@ def verify_ingested_status(args, work, model, recording):
             health["source"] == "gateway:plant" and not health["stale"], health)
     require(len(tasks) == 2 and tasks["inspect"]["state"] == "running" and tasks["inspect"]["progress"] == .75 and
             tasks["report"]["state"] == "queued" and tasks["report"]["progress"] is None, tasks)
-    return {"image": image.name, "accepted": receipt["accepted"], "health": health, "tasks": tasks}
+    rendering = verify_operator_rendering(args, work, model, ingested, source, deferred_baseline, (image, state))
+    return {"image": image.name, "accepted": receipt["accepted"], "health": health, "tasks": tasks,
+            "operatorOverlays": rendering}
 
 
 def main():
@@ -276,7 +467,7 @@ def main():
     write_json(wrong_scale, bad_recording)
     capture(args, work, "wrong-scale", model, "deferred-raster", wrong_scale, EARLY,
             failure="metre scale differs")
-    ingested = verify_ingested_status(args, work, model, recording)
+    ingested = verify_ingested_status(args, work, model, recording, baseline)
     require(sha256(model) == before, "Replay modified the source IFC")
     write_json(work / "results.json", {"version": 1, "passed": True, "sourceSha256": before,
                                       "rawViewportSha256": sha256(viewport), "captures": summary,

@@ -11,6 +11,7 @@
 #include <cmath>
 #include <fstream>
 #include <initializer_list>
+#include <limits>
 #include <set>
 #include <stdexcept>
 #include <type_traits>
@@ -22,6 +23,7 @@ namespace {
 using Json = nlohmann::json;
 namespace limits = twin_telemetry_limits;
 constexpr std::string_view schema = "container.bim-twin-telemetry";
+constexpr uint32_t currentVersion = 3;
 constexpr size_t maxRecordingBytes = 32 * 1024 * 1024;
 constexpr size_t maxJsonNodes = 2 * 1024 * 1024;
 
@@ -56,6 +58,13 @@ uint64_t integer(const Json& value, std::string_view context) {
   return value.get<uint64_t>();
 }
 
+uint32_t dimension(const Json& value, std::string_view context) {
+  const auto result = integer(value, context);
+  if (result > (std::numeric_limits<uint32_t>::max)())
+    invalid(context, "must be a nonnegative 32-bit integer");
+  return static_cast<uint32_t>(result);
+}
+
 double number(const Json& value, std::string_view context) {
   if (!value.is_number() || !std::isfinite(value.get<double>()))
     invalid(context, "must be a finite number");
@@ -66,6 +75,16 @@ glm::dvec3 readPoint(const Json& value, std::string_view context) {
   if (!value.is_array() || value.size() != 3)
     invalid(context, "must be an XYZ array with three components");
   return {number(value[0], context), number(value[1], context), number(value[2], context)};
+}
+
+glm::dmat4 readMatrix(const Json& value, std::string_view context) {
+  if (!value.is_array() || value.size() != 16)
+    invalid(context, "must be a flat array of 16 column-major entries");
+  glm::dmat4 result(1.0);
+  for (glm::length_t column = 0; column < 4; ++column)
+    for (glm::length_t row = 0; row < 4; ++row)
+      result[column][row] = number(value[static_cast<size_t>(4 * column + row)], context);
+  return result;
 }
 
 Json parseJson(std::string_view input) {
@@ -139,6 +158,42 @@ TwinPayload readPayload(std::string_view kind, const Json& value, std::string_vi
                           text(value.at("state"), field(context, "state")),
                           optionalNumber(value, "progress", context)};
   }
+  if (kind == "operator-alarm") {
+    if (version < 3) invalid(context, "operator-alarm requires recording version 3");
+    requireKeys(value, context, {"alarmId", "severity", "message", "active", "position"});
+    if (!value.at("active").is_boolean()) invalid(field(context, "active"), "must be a boolean");
+    return TwinOperatorAlarm{
+        text(value.at("alarmId"), field(context, "alarmId")),
+        text(value.at("severity"), field(context, "severity")),
+        text(value.at("message"), field(context, "message")),
+        value.at("active").get<bool>(),
+        readPoint(value.at("position"), field(context, "position"))};
+  }
+  if (kind == "sensor-frustum") {
+    if (version < 3) invalid(context, "sensor-frustum requires recording version 3");
+    requireKeys(value, context, {"width", "height", "fx", "fy", "cx", "cy", "nearMeters", "farMeters", "worldFromCamera"});
+    return TwinSensorFrustum{
+        .width = dimension(value.at("width"), field(context, "width")),
+        .height = dimension(value.at("height"), field(context, "height")),
+        .fx = number(value.at("fx"), field(context, "fx")),
+        .fy = number(value.at("fy"), field(context, "fy")),
+        .cx = number(value.at("cx"), field(context, "cx")),
+        .cy = number(value.at("cy"), field(context, "cy")),
+        .nearMeters = number(value.at("nearMeters"), field(context, "nearMeters")),
+        .farMeters = number(value.at("farMeters"), field(context, "farMeters")),
+        .worldFromCamera = readMatrix(value.at("worldFromCamera"), field(context, "worldFromCamera"))};
+  }
+  if (kind == "occupancy-grid") {
+    if (version < 3) invalid(context, "occupancy-grid requires recording version 3");
+    requireKeys(value, context, {"origin", "yaw", "resolutionMeters", "width", "height", "cells"});
+    return TwinOccupancyGrid{
+        .origin = readPoint(value.at("origin"), field(context, "origin")),
+        .yaw = number(value.at("yaw"), field(context, "yaw")),
+        .resolutionMeters = number(value.at("resolutionMeters"), field(context, "resolutionMeters")),
+        .width = dimension(value.at("width"), field(context, "width")),
+        .height = dimension(value.at("height"), field(context, "height")),
+        .cells = text(value.at("cells"), field(context, "cells"))};
+  }
   invalid(context, "unknown event kind");
 }
 
@@ -203,6 +258,24 @@ Json event(const TwinEvent& value) {
       kind = "task-status";
       payload = {{"taskId", data.taskId}, {"state", data.state}};
       if (data.progress) payload["progress"] = *data.progress;
+    } else if constexpr (std::is_same_v<T, TwinOperatorAlarm>) {
+      kind = "operator-alarm";
+      payload = {{"alarmId", data.alarmId}, {"severity", data.severity}, {"message", data.message},
+                 {"active", data.active}, {"position", point(data.position)}};
+    } else if constexpr (std::is_same_v<T, TwinSensorFrustum>) {
+      kind = "sensor-frustum";
+      auto matrix = Json::array();
+      for (glm::length_t column = 0; column < 4; ++column)
+        for (glm::length_t row = 0; row < 4; ++row)
+          matrix.push_back(data.worldFromCamera[column][row]);
+      payload = {{"width", data.width}, {"height", data.height},
+                 {"fx", data.fx}, {"fy", data.fy}, {"cx", data.cx}, {"cy", data.cy},
+                 {"nearMeters", data.nearMeters}, {"farMeters", data.farMeters},
+                 {"worldFromCamera", std::move(matrix)}};
+    } else if constexpr (std::is_same_v<T, TwinOccupancyGrid>) {
+      kind = "occupancy-grid";
+      payload = {{"origin", point(data.origin)}, {"yaw", data.yaw}, {"resolutionMeters", data.resolutionMeters},
+                 {"width", data.width}, {"height", data.height}, {"cells", data.cells}};
     }
   }, value.payload);
   return {{"timestampNanoseconds", value.timestampNanoseconds}, {"entityId", value.entityId},
@@ -210,10 +283,17 @@ Json event(const TwinEvent& value) {
 }
 
 uint32_t recordingVersion(const TwinRecording& value) {
-  return std::ranges::any_of(value.events, [](const auto& entry) {
-    return std::holds_alternative<TwinRobotHealth>(entry.payload) ||
-           std::holds_alternative<TwinTaskStatus>(entry.payload);
-  }) ? 2u : 1u;
+  uint32_t version = 1;
+  for (const auto& entry : value.events) {
+    if (std::holds_alternative<TwinOperatorAlarm>(entry.payload) ||
+        std::holds_alternative<TwinSensorFrustum>(entry.payload) ||
+        std::holds_alternative<TwinOccupancyGrid>(entry.payload))
+      return 3;
+    if (std::holds_alternative<TwinRobotHealth>(entry.payload) ||
+        std::holds_alternative<TwinTaskStatus>(entry.payload))
+      version = 2;
+  }
+  return version;
 }
 
 TwinIngestMessage parseIngestMessage(std::string_view line) {
@@ -228,7 +308,7 @@ TwinIngestMessage parseIngestMessage(std::string_view line) {
       .clockId = text(value.at("clockId"), "envelope.clockId"),
       .receivedTimestampNanoseconds = integer(value.at("receivedTimestampNanoseconds"),
                                               "envelope.receivedTimestampNanoseconds"),
-      .event = readEvent(value.at("event"), "envelope.event", 2)};
+      .event = readEvent(value.at("event"), "envelope.event", currentVersion)};
   if (const auto reference = value.find("assetReference"); reference != value.end()) {
     const auto kind = text(*reference, "envelope.assetReference");
     if (!std::holds_alternative<TwinAssetState>(result.event.payload))
@@ -246,8 +326,8 @@ TwinRecording parseTwinRecording(std::string_view input) {
   requireKeys(json, "root", {"schema", "version", "sourceNamespace", "sceneSource", "clockId",
                              "staleAfterNanoseconds", "events"});
   const auto version = integer(json.at("version"), "version");
-  if (text(json.at("schema"), "schema") != schema || (version != 1 && version != 2))
-    invalid("schema", "expected container.bim-twin-telemetry version 1 or 2");
+  if (text(json.at("schema"), "schema") != schema || version < 1 || version > currentVersion)
+    invalid("schema", "expected container.bim-twin-telemetry version 1, 2, or 3");
   TwinRecording result{
       .sourceNamespace = text(json.at("sourceNamespace"), "sourceNamespace"),
       .sceneSource = twin_json::parseSceneSource(json.at("sceneSource")),

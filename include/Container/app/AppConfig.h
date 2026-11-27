@@ -151,6 +151,7 @@ struct AppConfig {
   std::string sensorSourceNamespace;
   std::optional<double> sensorMetersPerRendererUnit;
   std::shared_ptr<const container::robotics::TwinReplay> bimTwinReplay;
+  std::filesystem::path bimTwinFollowPath;
   std::optional<uint64_t> bimTwinStartNanoseconds;
   bool gpuHardwareTelemetry{false};
   // Export the initialized scene (or final capture-sequence scene) on exit.

@@ -13,7 +13,9 @@ namespace container::robotics {
 namespace {
 
 using twin_telemetry_limits::maxEvents;
+using twin_telemetry_limits::maxTotalOccupancyCells;
 using twin_telemetry_limits::maxTotalPlanPoints;
+using twin_telemetry_validation::EventGeometrySize;
 using twin_telemetry_validation::eventOrder;
 using twin_telemetry_validation::trackKey;
 using twin_telemetry_validation::validateEvent;
@@ -72,9 +74,9 @@ TwinIngestReceipt TwinIngest::ingest(TwinIngestMessage message) {
   if (receiptTime - timestamp > metadata_.staleAfterNanoseconds)
     return {StaleObservation, "Observation age exceeds the ingest freshness window"};
 
-  std::size_t points = 0;
+  EventGeometrySize geometry;
   try {
-    points = validateEvent(event);
+    geometry = validateEvent(event);
   } catch (const std::invalid_argument& error) {
     return {InvalidEvent, error.what()};
   }
@@ -116,8 +118,11 @@ TwinIngestReceipt TwinIngest::ingest(TwinIngestMessage message) {
               event.entityId, std::move(guid)};
     }
   }
-  if (eventCount_ == maxEvents || points > maxTotalPlanPoints - planPoints_)
+  if (eventCount_ == maxEvents || geometry.planPoints > maxTotalPlanPoints - planPoints_)
     return {LimitExceeded, "The ingest session has reached its observation or planned-point limit",
+            event.entityId, std::move(guid)};
+  if (geometry.occupancyCells > maxTotalOccupancyCells - occupancyCells_)
+    return {LimitExceeded, "The ingest session has reached its occupancy-cell limit",
             event.entityId, std::move(guid)};
   const bool older = track != tracks_.end() && timestamp < track->second.rbegin()->first;
   TwinIngestReceipt receipt{older ? AcceptedOutOfOrder : Accepted,
@@ -132,7 +137,8 @@ TwinIngestReceipt TwinIngest::ingest(TwinIngestMessage message) {
     track->second.emplace(timestamp, std::move(event));
   }
   ++eventCount_;
-  planPoints_ += points;
+  planPoints_ += geometry.planPoints;
+  occupancyCells_ += geometry.occupancyCells;
   return receipt;
 }
 

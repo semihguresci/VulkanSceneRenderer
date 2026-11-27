@@ -463,6 +463,7 @@ void printCommandLineHelp() {
   --sensor-meters-per-renderer-unit SCALE
                                 Supply metric scale for models without declared length units
   --bim-twin-replay FILE         Inspect a digital-twin recording on its BIM source
+  --bim-twin-follow              Watch the recording for updated live snapshots
   --bim-twin-time-ns N           Open paused at a recording timestamp in nanoseconds
   --gpu-hardware-telemetry      Add optional NVML readings to capture telemetry
   --save-scene PATH              Save primary editable scene as .glb or .gltf
@@ -513,6 +514,7 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   std::filesystem::path sensorCameraSpec;
   std::optional<std::filesystem::path> sensorTrajectory;
   std::filesystem::path bimTwinReplayPath;
+  bool bimTwinFollow = false;
   container::geometry::vdb::ImportOptions vdbModelOptions;
   bool vdbModelOptionsRequested=false;
   VdbPreviewFlags previewFlags;
@@ -971,6 +973,10 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       bimTwinReplayPath = container::util::pathFromUtf8(requireValue(argc, argv, i, arg));
       if (bimTwinReplayPath.empty())
         throw std::invalid_argument("--bim-twin-replay requires a recording path");
+      continue;
+    }
+    if (arg == "--bim-twin-follow") {
+      bimTwinFollow = true;
       continue;
     }
     if (arg == "--bim-twin-time-ns") {
@@ -1558,6 +1564,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   if (bimTwinReplayPath.empty()) {
     if (config.bimTwinStartNanoseconds)
       throw std::invalid_argument("--bim-twin-time-ns requires --bim-twin-replay");
+    if (bimTwinFollow)
+      throw std::invalid_argument("--bim-twin-follow requires --bim-twin-replay");
   } else {
     const auto model = container::util::pathFromUtf8(config.bimModelPath);
     const auto ext = lowerAscii(container::util::pathToUtf8(model.extension()));
@@ -1567,6 +1575,8 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       throw std::invalid_argument("--bim-twin-replay cannot be combined with --sensor-camera");
     config.bimTwinReplay = std::make_shared<const container::robotics::TwinReplay>(
         container::robotics::loadTwinRecording(bimTwinReplayPath));
+    if (bimTwinFollow)
+      config.bimTwinFollowPath = std::move(bimTwinReplayPath);
   }
   if (sensorCameraSpec.empty()) {
     if (sensorTrajectory || !config.sensorDatasetPath.empty() || !config.sensorBenchmarkPath.empty() ||
