@@ -46,6 +46,68 @@ include episode resets and actions after process startup.
 The reactive controller completed 21 of 24 held-out episodes. The three
 remaining episodes reached the action limit in the offset hall.
 
+## Parallel rollouts and profiling
+
+Add `--workers 4 --profile` to the evaluator command to run episodes for
+each scene concurrently. The effective worker count is capped at the
+number of episodes per scene. Each worker owns one headless simulator process
+and reuses it across its assigned episodes. Episode seeds and the order of
+the result records are independent of worker count and completion order.
+The workers use CPU physics and require no Vulkan context or GPU.
+
+`metrics.wallSeconds` measures the rollout window from the first worker's
+first reset to the last worker's completed episode. The reported episodes
+and actions per second use this interval. The report-level
+`profile.wallSeconds` covers split preflight, worker startup, all rollouts,
+and worker shutdown. Each scene's worker profile lists startup, reset,
+policy, step and episode record times. Adding each phase across workers
+measures their combined work, which can exceed the elapsed wall time.
+Step time includes the native simulation, subprocess communication and
+processing the resulting observation in Python.
+
+Use the benchmark runner to measure end-to-end throughput and peak resident
+memory with the same fixtures and seed. Run the command once per worker count
+with a separate output path so each width starts in a fresh Python process.
+The benchmark's `summary.episodesPerSecond` uses the report-level wall time.
+Matching `episodeDigest` values confirm that runs produced the same episode
+records.
+
+```powershell
+python -B tools/bim_navigation_rollout_benchmark.py --executable $tool `
+    --train "$scenes/doorway-train.json" --held-out "$scenes/corner-eval.json" `
+    --held-out "$scenes/offset-hall-eval.json" --episodes 20 --seed 20261127 `
+    --workers 4 --output out/bim-navigation-rollout-workers-4.json
+```
+
+On Windows and Linux the benchmark records resident memory high-water marks
+for the Python coordinator and each rollout worker's native simulator. The
+benchmark sums the native peaks within each scene and reports the largest
+scene sum as `nativePeakResidentBytesUpperBound`. Individual worker peaks can
+occur at different times, and shared pages can be counted in multiple
+processes. Missing memory counters appear as `null`.
+
+### Measured throughput and memory
+
+Three fresh runs per worker count used a Ryzen 9 3900X on Windows 11 with
+Python 3.13 and Gymnasium 1.2.3. The runs used a deliberately unavailable
+Vulkan driver manifest. Each run used seed `20261127` and 20 episodes per
+scene in `doorway-train`, `corner-eval`, and `offset-hall-eval`.
+
+| Workers | Median episodes/s | Run range (episodes/s) | Peak Python resident MiB | Native resident upper bound MiB |
+| ---: | ---: | ---: | ---: | ---: |
+| 1 | 26.48 | 26.38–27.22 | 58.84 | 9.56 |
+| 2 | 33.72 | 32.93–34.25 | 58.94 | 19.05 |
+| 4 | 33.08 | 32.47–34.30 | 59.99 | 37.79 |
+
+Memory columns give the maximum across the three runs. All nine runs returned
+the same episode digest, with 3,566 actions, 57 goals reached, zero collisions
+and three time limits across 60 episodes per run.
+
+With one worker, the step phase took the most time at 1.266 s across the run.
+Median summed policy time rose from 0.455 s with one worker to 3.309 s with
+four. For local tuning on this fixed workload, target at least 1.20× the
+serial median throughput with two workers. The measured speedup was 1.27×.
+
 ## Observations and episodes
 
 An action is a pair of signed values in `[-1, 1]`. Forward speed is scaled

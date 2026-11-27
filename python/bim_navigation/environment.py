@@ -119,6 +119,11 @@ class BimNavigationEnv(gym.Env):
         """A copy of the simulator's ID, source and train/held-out identity."""
         return dict(self._scene)
 
+    @property
+    def simulator_pid(self):
+        """Process ID for profiling, or None after the simulator closes."""
+        return self._native.pid
+
     def _parse_state(self, response):
         state = response.get("state")
         if not isinstance(state, dict):

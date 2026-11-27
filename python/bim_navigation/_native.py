@@ -57,6 +57,10 @@ class NativeNavigation:
         self._reader = Thread(target=_read_responses, args=(self._process.stdout, self._responses), daemon=True)
         self._reader.start()
 
+    @property
+    def pid(self):
+        return self._process.pid if self._process is not None else None
+
     def _exchange(self, operation, args, timeout):
         process = self._process
         if process is None:
