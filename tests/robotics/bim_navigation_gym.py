@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 import tempfile
 
-from bim_navigation_protocol import doorway_wall_actions, unit_variant_recipes
+from bim_navigation_protocol import doorway_recipe, doorway_wall_actions, make_fixture, unit_variant_recipes
 
 
 def evaluate_against_splits(evaluate, executable, fixtures, training_scene):
@@ -28,6 +28,36 @@ def evaluate_against_splits(evaluate, executable, fixtures, training_scene):
             assert "geometryFingerprint" in str(error), error
         else:
             raise AssertionError("A unit-equivalent BIM scene leaked into the held-out split")
+
+        randomized = doorway_recipe(fixtures / "doorway-randomized.json")
+        randomized.update(id="doorway-randomized-eval", family="doorway-randomized-eval", split="held-out")
+        randomized_holdout = make_fixture(Path(temporary), "randomized-held-out", randomized)
+        try:
+            evaluate(executable, [training_scene], [randomized_holdout], **configuration)
+        except ValueError as error:
+            assert "sourceSha256" in str(error), error
+        else:
+            raise AssertionError("A randomized recipe leaked the fixed doorway's BIM source into the held-out split")
+
+
+def verify_recipe_change(executable, fixtures):
+    from bim_navigation.evaluate import _run_scene, _scenes
+
+    max_episode_steps = 200
+    recipe = doorway_recipe(fixtures / "doorway-randomized.json")
+    with tempfile.TemporaryDirectory(prefix="bim-navigation-recipe-change-") as temporary:
+        directory = Path(temporary)
+        scene_path = make_fixture(directory, "editable-doorway", recipe)
+        paths = {"train": [scene_path], "held-out": [fixtures / "corner-eval.json"]}
+        (path, scene), _ = _scenes(executable, paths, max_episode_steps)
+        recipe["randomizedDoors"][0]["openProbability"] = 0
+        make_fixture(directory, "editable-doorway", recipe)
+        try:
+            _run_scene(executable, path, scene, [81], randomize=True, max_episode_steps=max_episode_steps)
+        except ValueError as error:
+            assert "Scene identity changed after validating splits" in str(error), error
+        else:
+            raise AssertionError("Changing a door probability after split validation went undetected")
 
 
 def main():
@@ -94,7 +124,8 @@ def main():
         collision_env.close()
 
     evaluate_against_splits(evaluate, executable, args.fixtures, scene)
-    print("Gymnasium check, episode outcomes, held-out leakage rejection, and reproducible evaluation passed")
+    verify_recipe_change(executable, args.fixtures)
+    print("Gymnasium check, episode outcomes, recipe identity, held-out leakage, and reproducible evaluation passed")
     return 0
 
 
