@@ -109,6 +109,33 @@ Prefer adding new behavior to the narrowest manager that already owns the data
 being mutated. Keep `RendererFrontend` as orchestration code rather than a home
 for feature-specific Vulkan resources.
 
+## Robotics and headless simulation
+
+The C++23 robotics libraries start with the CPU BIM importer model. Semantic
+scene extraction, collision geometry cooking, asset preprocessing, drive math,
+and sensor models can run with Jolt disabled. The live collision world and
+simulation link the optional Jolt wrapper through `VulkanSceneRenderer_physics_world`.
+The editor's physics scene integration is a separate consumer of that wrapper.
+The URDF parser and kinematics are independently optional. Their Jolt collision
+bindings are available when both options are enabled.
+
+`BimManager` owns renderer-side geometry and GPU state. `BimCollisionWorld`
+owns its Jolt world, native shapes, body handles and door state. The two paths
+share CPU import facts and match on stable semantic identities. Collision
+recipes and the semantic manifest keep IFC GUIDs and occurrence identity so a
+headless result can be compared with the imported model. The robotics frame is
+right-handed REP-103 in metres, with +X forward, +Y left and +Z up. The renderer
+works with −Z forward, −X left and +Y up. Preprocessing records the conversion
+once from the importer's unit evidence.
+
+Simulation advances on integer ticks. The simulation owner steps Jolt, commits
+robot state and then samples sensors against that tick. Display frames can read
+published values on their own cadence. Headless CLI targets run without a
+window, a Vulkan device, ROS or Isaac. The shared repository configure still
+discovers the Vulkan SDK and Slang. See the
+[robotics architecture decision](adr/0001-robotics-module-boundaries.md) for the
+library edges, frame and ownership contracts, and repeatable demo commands.
+
 ## Swapchain presentation lifetime
 
 `SwapChainManager` owns each generation's swapchain and per-image render-finished

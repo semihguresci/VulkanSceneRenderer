@@ -3,7 +3,7 @@
 #include "Container/physics/PhysicsWorld.h"
 #include "Container/robotics/BimCollisionGeometry.h"
 #include "Container/robotics/BimWalkability.h"
-#include "Container/robotics/RaycastLidar.h"
+#include "Container/robotics/LidarQuery.h"
 
 #include <map>
 #include <span>

@@ -415,21 +415,20 @@ target_sources(BimImportAllocationBenchmark PRIVATE ${CMAKE_SOURCE_DIR}/tools/bi
 target_compile_definitions(BimImportAllocationBenchmark PRIVATE CONTAINER_BIM_IMPORT_COUNT_ALLOCATIONS)
 
 if(ENABLE_PHYSICS)
+    add_library(VulkanSceneRenderer_physics_world physics/PhysicsWorld.cpp)
+    target_compile_features(VulkanSceneRenderer_physics_world PUBLIC cxx_std_23)
+    target_include_directories(VulkanSceneRenderer_physics_world PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/../include
+    )
+    target_link_libraries(VulkanSceneRenderer_physics_world PUBLIC Dep_Math PRIVATE Dep_Physics)
+
     add_library(VulkanSceneRenderer_physics
-        physics/PhysicsWorld.cpp
         physics/PhysicsScene.cpp
         physics/PhysicsElementBindings.cpp
     )
-    target_compile_features(VulkanSceneRenderer_physics PUBLIC cxx_std_23)
-    target_include_directories(VulkanSceneRenderer_physics PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/../include
-    )
-    target_link_libraries(VulkanSceneRenderer_physics PUBLIC
-        Dep_Math
-    )
-    target_link_libraries(VulkanSceneRenderer_physics PRIVATE
-        Dep_Physics
-        VulkanSceneRenderer_scene
+    target_link_libraries(VulkanSceneRenderer_physics
+        PUBLIC VulkanSceneRenderer_physics_world
+        PRIVATE VulkanSceneRenderer_scene
     )
     target_link_libraries(VulkanSceneRenderer_renderer PRIVATE
         VulkanSceneRenderer_physics

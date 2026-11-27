@@ -101,6 +101,15 @@ endif()
 # Include the tests configuration
 if(ENABLE_TESTS)
     include(${CMAKE_SOURCE_DIR}/tests/CMakeLists.tests.cmake)
+    if(Python3_Interpreter_FOUND AND COMMAND cmake_file_api)
+        cmake_file_api(QUERY API_VERSION 1 CODEMODEL 2)
+        add_test(NAME robotics_module_boundaries
+            COMMAND "${Python3_EXECUTABLE}" -B
+                "${CMAKE_SOURCE_DIR}/tests/robotics/check_module_boundaries.py"
+                --build "${CMAKE_BINARY_DIR}" "--config=$<CONFIG>"
+                --physics "$<BOOL:${ENABLE_PHYSICS}>" --urdf "$<BOOL:${ENABLE_ROBOTICS_URDF}>")
+        set_tests_properties(robotics_module_boundaries PROPERTIES LABELS "cpu;robotics")
+    endif()
 endif()
 
 
