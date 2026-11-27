@@ -7,6 +7,9 @@ and the BIM GUID and label mapping. The recorder and replay tool run on the
 CPU without Jolt, a display or a Vulkan device. Producing the inputs uses the
 physics-enabled simulator and the renderer's hidden Deferred capture.
 
+The large-model benchmark measures these operations on Tekla House and a
+generated IFC grid. [Run the BIM robotics benchmark](bim-robotics-benchmark.md)
+
 ## Produce matching inputs
 
 Build the input producers and recorder from a configured Release build with

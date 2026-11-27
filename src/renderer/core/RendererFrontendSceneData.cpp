@@ -1,5 +1,7 @@
 #include "Container/renderer/core/RendererFrontend.h"
 
+#include "Container/app/AppConfig.h"
+#include "Container/common/VulkanObjects.h"
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderTechnique.h"
@@ -18,6 +20,7 @@
 #include <algorithm>
 #include <array>
 #include <cctype>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <format>
@@ -30,6 +33,12 @@ namespace container::renderer {
 namespace {
 
 constexpr uint32_t kSceneDataGroupSize = 8;
+using BenchmarkClock = std::chrono::steady_clock;
+
+double milliseconds(BenchmarkClock::duration duration) {
+  return std::chrono::duration<double, std::milli>(duration).count();
+}
+
 struct SceneDataPushConstants {
   glm::mat4 inverseProjection;
   uint32_t width;
@@ -115,6 +124,9 @@ void RendererFrontend::prepareSceneDataCapture(FrameRecordParams& frame,
   }
 
   const uint32_t frameSlot = frame.runtime.frameSlot;
+  if (sensorFrame && sensorCameraCapture_.benchmark)
+    frame.screenshot.sensorTimestamps = {sensorCameraCapture_.benchmark->queryPool,
+                                       frameSlot * FrameSensorReadbackTimestamps::Count};
   auto& slot = capture.slots.at(frameSlot);
   slot.recorded = false;
   auto& readback = slot.readback;
@@ -206,7 +218,38 @@ void RendererFrontend::destroySceneDataCapture() {
   for (auto& slot : capture.slots)
     if (slot.readback.readbackBuffer.buffer)
       svc_.allocationManager.destroyBuffer(slot.readback.readbackBuffer);
+  if (auto& benchmark = sensorCameraCapture_.benchmark; benchmark && benchmark->queryPool) {
+    destroyOwnedQueryPool(svc_.ctx.deviceWrapper->device(), benchmark->queryPool, nullptr);
+    benchmark->queryPool = VK_NULL_HANDLE;
+  }
   capture = {};
+}
+
+void RendererFrontend::initializeSensorCameraBenchmark() {
+  auto& benchmark = sensorCameraCapture_.benchmark.emplace();
+  benchmark.samples.reserve(svc_.config.sensorCameraPlayback->frames.size());
+  const auto& device = *svc_.ctx.deviceWrapper;
+  VkPhysicalDeviceProperties properties{};
+  vkGetPhysicalDeviceProperties(device.physicalDevice(), &properties);
+  const auto graphicsFamily = device.queueFamilyIndices().graphicsFamily.value();
+  uint32_t familyCount = 0;
+  vkGetPhysicalDeviceQueueFamilyProperties(device.physicalDevice(), &familyCount, nullptr);
+  std::vector<VkQueueFamilyProperties> families(familyCount);
+  vkGetPhysicalDeviceQueueFamilyProperties(device.physicalDevice(), &familyCount, families.data());
+  if (graphicsFamily >= familyCount || families[graphicsFamily].timestampValidBits == 0 ||
+      !std::isfinite(properties.limits.timestampPeriod) || properties.limits.timestampPeriod <= 0)
+    return;
+  benchmark.timestampValidBits = families[graphicsFamily].timestampValidBits;
+  benchmark.timestampPeriodNs = properties.limits.timestampPeriod;
+  VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+  info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+  info.queryCount = svc_.config.maxFramesInFlight * FrameSensorReadbackTimestamps::Count;
+  if (createOwnedQueryPool(device.device(), &info, nullptr, &benchmark.queryPool) != VK_SUCCESS) {
+    benchmark.queryPool = VK_NULL_HANDLE;
+    benchmark.timestampStatus = "could not create camera benchmark timestamp queries";
+    return;
+  }
+  benchmark.timestampStatus = "using camera readback timestamps";
 }
 
 void RendererFrontend::beginSensorCameraCapture(const std::filesystem::path& directory) {
@@ -238,6 +281,8 @@ void RendererFrontend::beginSensorCameraCapture(const std::filesystem::path& dir
   capture.bimRevision = bim->metadataRevision();
   capture.inFlight.resize(svc_.config.maxFramesInFlight);
   capture.directory = directory;
+  if (!svc_.config.sensorBenchmarkPath.empty())
+    initializeSensorCameraBenchmark();
   container::util::writeFileAtomically(directory / "labels.json",
       container::robotics::serializeBimSensorLabelManifest(*labels),
       container::util::AtomicFilePublication::CreateNew);
@@ -321,21 +366,62 @@ void RendererFrontend::retireSensorCameraFrame(uint32_t frameSlot) {
   const auto& settings = svc_.config.sensorCameraPlayback->settings;
   const size_t pixels = size_t(settings.width) * settings.height;
   const auto& frame = *capture.inFlight[frameSlot];
+  const auto timeNow = [&] {
+    return capture.benchmark ? BenchmarkClock::now() : BenchmarkClock::time_point{};
+  };
+  const auto rgbStart = timeNow();
+  const auto* rgb = static_cast<const float*>(mappedReadback(color));
+  const auto depthStart = timeNow();
+  const auto* depthLabels = static_cast<const SceneDataCapturePixel*>(mappedReadback(surfaces));
+  const auto encodeStart = timeNow();
   const auto encoded = encodeSensorCameraFrame(
-      {static_cast<const float*>(mappedReadback(color)), pixels * 4},
-      {static_cast<const SceneDataCapturePixel*>(mappedReadback(surfaces)), pixels},
+      {rgb, pixels * 4}, {depthLabels, pixels},
       capture.labels, settings, frame);
+  const auto writeStart = timeNow();
   const auto stem = std::format("frame-{:08}", frame.sampleIndex);
   const auto publish = container::util::AtomicFilePublication::CreateNew;
   container::util::writeFileAtomically(capture.directory / (stem + ".exr"), encoded.exrBytes(), publish);
   container::util::writeFileAtomically(capture.directory / (stem + ".json"), encoded.metadataJson, publish);
+  if (auto& benchmark = capture.benchmark) {
+    using Timestamps = FrameSensorReadbackTimestamps;
+    SensorCameraBenchmarkSample sample{
+        .tick = frame.tick,
+        .sampleIndex = frame.sampleIndex,
+        .rgbReadbackBytes = color.readbackSize,
+        .depthLabelsReadbackBytes = surfaces.readbackSize,
+        .outputBytes = encoded.exrSize + encoded.metadataJson.size(),
+        .cpuRgbInvalidateMs = milliseconds(depthStart - rgbStart),
+        .cpuDepthLabelsInvalidateMs = milliseconds(encodeStart - depthStart),
+        .cpuEncodeMs = milliseconds(writeStart - encodeStart),
+        .cpuWriteMs = milliseconds(BenchmarkClock::now() - writeStart)};
+    if (benchmark->queryPool) {
+      // Both paths into retirement already waited the graphics fence. Read
+      // this slot's completed writes before its query range can be reused.
+      std::array<uint64_t, Timestamps::Count> timestamps{};
+      if (vkGetQueryPoolResults(svc_.ctx.deviceWrapper->device(), benchmark->queryPool,
+                               frameSlot * Timestamps::Count, Timestamps::Count,
+                               sizeof(timestamps), timestamps.data(), sizeof(uint64_t),
+                               VK_QUERY_RESULT_64_BIT) == VK_SUCCESS) {
+        const auto bits = benchmark->timestampValidBits;
+        const auto mask = bits >= 64 ? std::numeric_limits<uint64_t>::max() : (uint64_t{1} << bits) - 1;
+        const auto duration = [&](Timestamps::Boundary start, Timestamps::Boundary end) {
+          return double((timestamps[end] - timestamps[start]) & mask) * benchmark->timestampPeriodNs * 1e-6;
+        };
+        sample.gpuRgbReadbackMs = duration(Timestamps::RgbBegin, Timestamps::RgbEnd);
+        sample.gpuDepthLabelsReadbackMs = duration(Timestamps::DepthBegin, Timestamps::DepthEnd);
+      }
+    }
+    benchmark->samples.push_back(sample);
+  }
   capture.inFlight[frameSlot].reset();
   ++capture.completed;
 }
 
 void RendererFrontend::finishSensorCameraCapture() {
   auto& capture = sensorCameraCapture_;
+  const auto waitStart = capture.benchmark ? BenchmarkClock::now() : BenchmarkClock::time_point{};
   subs_.frameSyncManager->waitForAllFrames();
+  const auto finalFenceWaitMs = capture.benchmark ? milliseconds(BenchmarkClock::now() - waitStart) : 0.0;
   for (uint32_t slot = 0; slot < capture.inFlight.size(); ++slot)
     retireSensorCameraFrame(slot);
   if (capture.requested || capture.completed != svc_.config.sensorCameraPlayback->frames.size())
@@ -356,6 +442,66 @@ void RendererFrontend::finishSensorCameraCapture() {
         {"directionalGain", capture.lighting.directional}, {"environmentGain", capture.lighting.environment}};
   }
   container::util::writeFileAtomically(capture.directory / "dataset.json", manifest.dump(2) + '\n',
+      container::util::AtomicFilePublication::CreateNew);
+  if (capture.benchmark)
+    writeSensorCameraBenchmark(finalFenceWaitMs);
+}
+
+void RendererFrontend::writeSensorCameraBenchmark(double finalFenceWaitMs) {
+  using Json = nlohmann::json;
+  auto& benchmark = *sensorCameraCapture_.benchmark;
+  const auto& settings = svc_.config.sensorCameraPlayback->settings;
+  VkPhysicalDeviceDriverProperties driver{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DRIVER_PROPERTIES};
+  VkPhysicalDeviceProperties2 device{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+  device.pNext = &driver;
+  vkGetPhysicalDeviceProperties2(svc_.ctx.deviceWrapper->physicalDevice(), &device);
+
+  const auto allocator = svc_.allocationManager.memoryManager()->allocator();
+  VmaTotalStatistics statistics{};
+  vmaCalculateStatistics(allocator, &statistics);
+  const VkPhysicalDeviceMemoryProperties* memory = nullptr;
+  vmaGetMemoryProperties(allocator, &memory);
+  VkDeviceSize deviceLocalBytes = 0;
+  for (uint32_t heap = 0; heap < memory->memoryHeapCount; ++heap) {
+    if (memory->memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT)
+      deviceLocalBytes += statistics.memoryHeap[heap].statistics.allocationBytes;
+  }
+
+  std::ranges::sort(benchmark.samples, {}, &SensorCameraBenchmarkSample::sampleIndex);
+  Json frames = Json::array();
+  size_t timedFrames = 0;
+  for (const auto& sample : benchmark.samples) {
+    if (sample.gpuRgbReadbackMs && sample.gpuDepthLabelsReadbackMs) ++timedFrames;
+    frames.push_back({{"tick", sample.tick}, {"sampleIndex", sample.sampleIndex},
+        {"rgbReadbackBytes", sample.rgbReadbackBytes}, {"depthLabelsReadbackBytes", sample.depthLabelsReadbackBytes},
+        {"gpuRgbReadbackMs", sample.gpuRgbReadbackMs ? Json(*sample.gpuRgbReadbackMs) : Json(nullptr)},
+        {"gpuDepthLabelsReadbackMs", sample.gpuDepthLabelsReadbackMs ? Json(*sample.gpuDepthLabelsReadbackMs) : Json(nullptr)},
+        {"cpuRgbInvalidateMs", sample.cpuRgbInvalidateMs},
+        {"cpuDepthLabelsInvalidateMs", sample.cpuDepthLabelsInvalidateMs},
+        {"cpuEncodeMs", sample.cpuEncodeMs}, {"cpuWriteMs", sample.cpuWriteMs},
+        {"outputBytes", sample.outputBytes}});
+  }
+  const auto& gpu = device.properties;
+  const auto status = benchmark.queryPool && timedFrames < benchmark.samples.size()
+      ? "one or more timestamp pairs were unavailable after fence retirement" : benchmark.timestampStatus;
+  const Json report{
+      {"schema", "container.sensor-camera-benchmark"}, {"version", 1},
+      {"build", {{"revision", CONTAINER_GIT_REVISION}, {"configuration", CONTAINER_BUILD_CONFIG},
+                 {"compiler", CONTAINER_BUILD_COMPILER}}},
+      {"device", {{"name", gpu.deviceName}, {"vendorId", gpu.vendorID}, {"deviceId", gpu.deviceID},
+                  {"driverVersion", gpu.driverVersion}, {"apiVersion", gpu.apiVersion},
+                  {"driverId", driver.driverID}, {"driverName", driver.driverName}, {"driverInfo", driver.driverInfo}}},
+      {"width", settings.width}, {"height", settings.height},
+      {"gpuTiming", {{"source", benchmark.queryPool ? "timestamp-query" : "none"},
+                     {"available", timedFrames != 0}, {"status", status}, {"timedFrames", timedFrames},
+                     {"timestampValidBits", benchmark.timestampValidBits},
+                     {"timestampPeriodNs", benchmark.timestampPeriodNs},
+                     {"rgbScope", "scene-linear post-process shader, swapchain draw and RGB host visibility barrier"},
+                     {"depthLabelsScope", "depth layout transitions, metric depth and ID compute, host visibility barrier"}}},
+      {"memory", {{"allocationBytes", statistics.total.statistics.allocationBytes},
+                  {"deviceLocalBytes", deviceLocalBytes}}},
+      {"finalFenceWaitMs", finalFenceWaitMs}, {"frames", std::move(frames)}};
+  container::util::writeFileAtomically(svc_.config.sensorBenchmarkPath, report.dump(2) + '\n',
       container::util::AtomicFilePublication::CreateNew);
 }
 

@@ -147,6 +147,7 @@ struct AppConfig {
   bool screenshotSceneData{false};
   std::shared_ptr<const container::robotics::SensorCameraPlayback> sensorCameraPlayback;
   std::filesystem::path sensorDatasetPath;
+  std::filesystem::path sensorBenchmarkPath;
   std::string sensorSourceNamespace;
   std::optional<double> sensorMetersPerRendererUnit;
   bool gpuHardwareTelemetry{false};

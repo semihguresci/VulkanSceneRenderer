@@ -118,7 +118,8 @@ void decode(std::string_view payload, bool ifcx, const BimAssetPreprocessOptions
 
 BimPreprocessedAssets loadBimPreprocessedAssets(
     const std::filesystem::path& source, const std::filesystem::path& cacheDirectory,
-    const BimAssetPreprocessOptions& options, std::stop_token stop) {
+    const BimAssetPreprocessOptions& options, std::stop_token stop,
+    BimAssetPreprocessTimings* timings) {
   if (options.scene.sourceNamespace.empty())
     throw std::invalid_argument("BIM preprocessing requires a source namespace");
   if (options.scene.metersPerRendererUnit &&
@@ -129,10 +130,20 @@ BimPreprocessedAssets loadBimPreprocessedAssets(
       options.maxSlopeDegrees >= 90)
     throw std::invalid_argument("BIM preprocessing requires positive cook limits and a slope in [0, 90) degrees");
 
+  if (timings) *timings = {};
+  const auto measure = [timings](auto phase, auto&& operation) {
+    if (!timings) return operation();
+    const auto start = std::chrono::steady_clock::now();
+    auto value = operation();
+    timings->*phase = std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now() - start);
+    return value;
+  };
   BimPreprocessedAssets result;
   result.producerRevision = producerRevision;
   const auto path = std::filesystem::absolute(source).lexically_normal();
-  auto input = prepareSource(path, result.sourceLayers, stop);
+  auto input = measure(&BimAssetPreprocessTimings::sourceReadAndFingerprint,
+                       [&] { return prepareSource(path, result.sourceLayers, stop); });
   const auto* ifcx = std::get_if<geometry::ifcx::SourceSnapshot>(&input);
   result.cacheKey = makeKey(result.sourceLayers, ifcx != nullptr, options, stop);
   const auto cacheFile = cacheDirectory.empty()
@@ -161,12 +172,16 @@ BimPreprocessedAssets loadBimPreprocessedAssets(
       result.cacheDiagnostic = "BIM cache entry could not be read. Assets were built from the source.";
   }
 
-  result.renderModel = ifcx
-      ? geometry::ifcx::LoadFromSnapshot(*ifcx, 1.f, stop)
-      : geometry::ifc::LoadFromStep(std::get<std::string>(input), 1.f, stop);
-  result.scene = buildRoboticsScene(result.renderModel, options.scene);
-  result.collision = cookBimCollisionGeometry(result.renderModel, result.scene, options.cook);
-  result.walkableSurfaces = extractWalkableSurfaces(result.collision, options.maxSlopeDegrees);
+  result.renderModel = measure(&BimAssetPreprocessTimings::bimImport, [&] {
+    return ifcx ? geometry::ifcx::LoadFromSnapshot(*ifcx, 1.f, stop)
+                : geometry::ifc::LoadFromStep(std::get<std::string>(input), 1.f, stop);
+  });
+  result.scene = measure(&BimAssetPreprocessTimings::semanticScene,
+                         [&] { return buildRoboticsScene(result.renderModel, options.scene); });
+  result.collision = measure(&BimAssetPreprocessTimings::collisionCook,
+                             [&] { return cookBimCollisionGeometry(result.renderModel, result.scene, options.cook); });
+  result.walkableSurfaces = measure(&BimAssetPreprocessTimings::walkableSurfaces,
+                                  [&] { return extractWalkableSurfaces(result.collision, options.maxSlopeDegrees); });
   util::checkModelImportCancellation(stop);
   if (!cacheFile.empty()) {
     asset_cache::Writer payload;

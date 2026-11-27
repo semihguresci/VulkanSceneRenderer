@@ -362,6 +362,20 @@ struct FrameSwapchainResources {
   const std::vector<RenderingTargetHandle> *swapChainFramebuffers{nullptr};
 };
 
+struct FrameSensorReadbackTimestamps {
+  enum Boundary : uint32_t { DepthBegin, DepthEnd, RgbBegin, RgbEnd, Count };
+  VkQueryPool pool{VK_NULL_HANDLE};
+  uint32_t firstQuery{};
+
+  void reset(VkCommandBuffer cmd) const {
+    if (pool) vkCmdResetQueryPool(cmd, pool, firstQuery, Count);
+  }
+  void record(VkCommandBuffer cmd, Boundary boundary) const {
+    if (pool)
+      vkCmdWriteTimestamp2(cmd, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, pool, firstQuery + boundary);
+  }
+};
+
 struct FrameScreenshotCapture {
   bool enabled{false};
   bool viewportOnly{false};
@@ -369,6 +383,7 @@ struct FrameScreenshotCapture {
   VkImage sourceImage{VK_NULL_HANDLE};
   VkBuffer readbackBuffer{VK_NULL_HANDLE};
   VkExtent2D extent{};
+  FrameSensorReadbackTimestamps sensorTimestamps{};
 };
 
 struct FramePassServices {

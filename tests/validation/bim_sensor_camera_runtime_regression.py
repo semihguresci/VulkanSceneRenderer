@@ -279,7 +279,8 @@ def verify_dataset(directory, ticks, scale):
     return labels, frames
 
 
-def capture(renderer, work, model, spec, output, *, log_name, scale=1, trajectory=None, failure=None):
+def capture(renderer, work, model, spec, output, *, log_name, scale=1, trajectory=None, benchmark=None,
+            failure=None):
     command = [str(renderer), "--model", str(model), "--import-scale", str(scale),
                "--hidden", "--no-ui", "--validation", "--render-technique", "deferred-raster",
                "--msaa", "1", "--no-taa", "--no-bloom", "--no-ray-query", "--no-ddgi",
@@ -289,6 +290,8 @@ def capture(renderer, work, model, spec, output, *, log_name, scale=1, trajector
                "--sensor-namespace", NAMESPACE]
     if trajectory is not None:
         command.extend(("--sensor-trajectory", str(trajectory)))
+    if benchmark is not None:
+        command.extend(("--sensor-benchmark", str(benchmark)))
     log = work / log_name
     with log.open("w", encoding="utf-8") as stream:
         result = subprocess.run(command, cwd=renderer.parent, stdout=stream, stderr=subprocess.STDOUT,
@@ -308,6 +311,60 @@ def capture(renderer, work, model, spec, output, *, log_name, scale=1, trajector
 def hashes(directory):
     return {path.name: hashlib.sha256(path.read_bytes()).hexdigest()
             for path in directory.iterdir() if path.is_file()}
+
+
+def verify_benchmark_capture(renderer, work, model, spec, trajectory, baseline):
+    profiled = work / "moving-profiled"
+    sidecar = work / "camera-benchmark.json"
+    # Four frames exercise timestamp query reuse across the default two
+    # in-flight slots, as well as retirement at the final fence.
+    capture(renderer, work, model, spec, profiled, trajectory=trajectory, benchmark=sidecar,
+            log_name="moving-profiled.log")
+    profiled_hashes = hashes(profiled)
+    assert profiled_hashes == hashes(baseline), "Benchmark changed camera images, labels, or metadata"
+
+    report = json.loads(sidecar.read_bytes())
+    assert (report["schema"], report["version"], report["width"], report["height"]) == (
+        "container.sensor-camera-benchmark", 1, WIDTH, HEIGHT), sidecar
+    assert report["device"]["name"], sidecar
+    timing = report["gpuTiming"]
+    bits, period = timing["timestampValidBits"], timing["timestampPeriodNs"]
+    assert type(bits) is int and 0 <= bits <= 64, timing
+    assert timing["available"] is (bits > 0), timing
+    available = timing["available"]
+    assert timing["source"] == ("timestamp-query" if available else "none"), timing
+    assert timing["timedFrames"] == (len(SENSOR_TICKS) if available else 0), timing
+    assert math.isfinite(period) and (period > 0 if available else period == 0), timing
+
+    def check_duration(value):
+        assert type(value) in (int, float) and math.isfinite(value) and 0 <= value < 150_000, (sidecar, value)
+
+    check_duration(report["finalFenceWaitMs"])
+    frames = report["frames"]
+    assert [(row["sampleIndex"], row["tick"]) for row in frames] == list(enumerate(SENSOR_TICKS)), sidecar
+    gpu_pairs = []
+    for index, row in enumerate(frames):
+        stem = profiled / f"frame-{index:08}"
+        assert row["rgbReadbackBytes"] == WIDTH * HEIGHT * 16, row
+        assert row["depthLabelsReadbackBytes"] == WIDTH * HEIGHT * 20, row
+        assert row["outputBytes"] == sum(stem.with_suffix(suffix).stat().st_size for suffix in (".exr", ".json")), row
+        for key in ("cpuRgbInvalidateMs", "cpuDepthLabelsInvalidateMs", "cpuEncodeMs", "cpuWriteMs"):
+            check_duration(row[key])
+        rgb, depth = row["gpuRgbReadbackMs"], row["gpuDepthLabelsReadbackMs"]
+        if available:
+            check_duration(rgb)
+            check_duration(depth)
+            gpu_pairs.append((rgb, depth))
+        else:
+            assert rgb is None and depth is None, row
+    if available:
+        # A coarse clock can round both short spans to one hardware tick.
+        # With finer measurements, the independent intervals should differ.
+        assert all(any(pair[index] > 0 for pair in gpu_pairs) for index in (0, 1)), gpu_pairs
+        if max(max(pair) for pair in gpu_pairs) > period * 1e-6:
+            assert any(rgb != depth for rgb, depth in gpu_pairs), gpu_pairs
+    return {"sidecar": sidecar.name, "device": report["device"]["name"], "gpuTiming": timing,
+            "frames": frames, "identicalDatasetHashes": profiled_hashes}
 
 
 def verify_randomization(renderer, work, model, spec, baseline, clean):
@@ -434,12 +491,15 @@ def main():
     capture(renderer, work, reordered, moving, animated, scale=2.5, trajectory=trajectory,
             log_name="existing-output.log", failure="Sensor camera output directory already exists")
     assert hashes(animated) == before, "rejected capture wrote into an existing dataset"
+    benchmark = verify_benchmark_capture(renderer, work, model, moving, trajectory, animated)
     randomization = verify_randomization(renderer, work, model, spec, initial, initial_frames[0][0])
     write_json(work / "results.json", {"ticks": SENSOR_TICKS, "labels": moving_labels,
                                       "moving": [stats for _, stats in first],
                                       "reorderedAndScaled": [stats for _, stats in second],
+                                      "benchmark": benchmark,
                                       "randomization": randomization})
-    print(f"PASS calibrated RGB/depth/labels, playback, and seeded randomization ({work})", flush=True)
+    print(f"PASS calibrated RGB/depth/labels, playback, seeded randomization, and benchmark profiling ({work})",
+          flush=True)
     return 0
 
 

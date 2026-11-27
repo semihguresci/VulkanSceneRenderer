@@ -1,0 +1,993 @@
+{
+  "schema": "container.bim-robotics-benchmark-reference",
+  "version": 1,
+  "recordedAtUtc": "2026-11-27T11:52:26.021357+00:00",
+  "host": {
+    "platform": "Windows-11-10.0.26300-SP0",
+    "architecture": "AMD64",
+    "cpu": "AMD Ryzen 9 3900X 12-Core Processor",
+    "logicalCpus": 24,
+    "physicalMemoryBytes": 34305011712
+  },
+  "sourceRevision": "6fc58a964aee2d97baefeaf9433bdea8e0418800",
+  "protocol": {
+    "configuration": "Release",
+    "iterations": 3,
+    "physicsTicks": 60,
+    "cameraSize": [
+      640,
+      480
+    ],
+    "syntheticGrid": 32,
+    "syntheticProductCount": 12288,
+    "processes": "fresh, sequential, OS cache uncontrolled",
+    "preprocessingCache": "disabled",
+    "cameraMode": "lit-deferred-native-1x-msaa-no-taa",
+    "gpuTiming": "native GPU timestamps when supported"
+  },
+  "sources": {
+    "tekla": {
+      "file": "TeklaHouse.ifc",
+      "bytes": 19152920,
+      "sha256": "1e0e087b7b5a9a8aaaccb2896ad9317c5a1cf1a86da30236b04a3ead8d9eac71"
+    },
+    "synthetic": {
+      "file": "synthetic.ifc",
+      "bytes": 4638283,
+      "sha256": "7f948103f7419196f6ee351da46fa8832c36ae57e7b9714a2f6407c064a00217"
+    }
+  },
+  "executables": {
+    "simulator": {
+      "file": "BimRoboticsSim.exe",
+      "bytes": 3515392,
+      "sha256": "1f039529a310f00dd78c09ef49ecf1c28f6553ab99d15ef5221ebabcd44f93cf"
+    },
+    "renderer": {
+      "file": "VulkanSceneRenderer.exe",
+      "bytes": 15551488,
+      "sha256": "328c9bcd67192f3cfe2f9ff18bead92c188ec2ea2e624ebdd60113f4d639893d"
+    },
+    "dataset": {
+      "file": "BimRoboticsDataset.exe",
+      "bytes": 696320,
+      "sha256": "c6c4349afd89b9065e6fe55c1909a4f99a1cc954efdb8b2f4a5e4908f095050b"
+    }
+  },
+  "scenes": {
+    "tekla": {
+      "summary": {
+        "simulationCounts": {
+          "bimElements": 77736,
+          "collisionColliders": 5825,
+          "lidarRays": 8448,
+          "lidarScans": 11,
+          "physicsTicks": 60,
+          "semanticEntities": 11946,
+          "sourceBytes": 19152920,
+          "walkableSurfaces": 477
+        },
+        "gpuTiming": {
+          "depthLabelsScope": "depth layout transitions, metric depth and ID compute, host visibility barrier",
+          "rgbScope": "scene-linear post-process shader, swapchain draw and RGB host visibility barrier",
+          "source": "timestamp-query",
+          "timestampPeriodNs": 1.0,
+          "timestampValidBits": 64,
+          "status": [
+            "using camera readback timestamps"
+          ]
+        },
+        "cpuStageMs": {
+          "sourceReadAndFingerprint": {
+            "samples": 3,
+            "min": 105.1096,
+            "median": 105.1349,
+            "p95": 105.3421,
+            "max": 105.3421
+          },
+          "bimImport": {
+            "samples": 3,
+            "min": 3888.1882,
+            "median": 3900.0916,
+            "p95": 4018.9071,
+            "max": 4018.9071
+          },
+          "semanticScene": {
+            "samples": 3,
+            "min": 200.6311,
+            "median": 201.0715,
+            "p95": 205.6921,
+            "max": 205.6921
+          },
+          "collisionCook": {
+            "samples": 3,
+            "min": 69.1383,
+            "median": 69.3733,
+            "p95": 71.8477,
+            "max": 71.8477
+          },
+          "walkableSurfaces": {
+            "samples": 3,
+            "min": 0.2886,
+            "median": 0.3132,
+            "p95": 0.3285,
+            "max": 0.3285
+          },
+          "collisionInstall": {
+            "samples": 3,
+            "min": 95.1134,
+            "median": 95.3987,
+            "p95": 97.5704,
+            "max": 97.5704
+          },
+          "simulationSetup": {
+            "samples": 3,
+            "min": 0.344,
+            "median": 0.3449,
+            "p95": 0.3649,
+            "max": 0.3649
+          },
+          "physicsTicks": {
+            "samples": 3,
+            "min": 3.9255,
+            "median": 4.0906,
+            "p95": 5.0858,
+            "max": 5.0858
+          },
+          "lidarSampling": {
+            "samples": 3,
+            "min": 69.8688,
+            "median": 69.9054,
+            "p95": 71.1593,
+            "max": 71.1593
+          }
+        },
+        "meanPhysicsTickMs": {
+          "samples": 3,
+          "min": 0.065425,
+          "median": 0.06817666666666666,
+          "p95": 0.08476333333333333,
+          "max": 0.08476333333333333
+        },
+        "meanLidarScanMs": {
+          "samples": 3,
+          "min": 6.3517090909090905,
+          "median": 6.355036363636364,
+          "p95": 6.469027272727272,
+          "max": 6.469027272727272
+        },
+        "cameraFrameMs": {
+          "cpuRgbInvalidateMs": {
+            "samples": 33,
+            "min": 0.0004,
+            "median": 0.0006,
+            "p95": 0.0006,
+            "max": 0.0006
+          },
+          "cpuDepthLabelsInvalidateMs": {
+            "samples": 33,
+            "min": 0.0001,
+            "median": 0.0002,
+            "p95": 0.0003,
+            "max": 0.0003
+          },
+          "cpuEncodeMs": {
+            "samples": 33,
+            "min": 30.9352,
+            "median": 31.2204,
+            "p95": 31.6605,
+            "max": 33.3752
+          },
+          "cpuWriteMs": {
+            "samples": 33,
+            "min": 15.8147,
+            "median": 39.5402,
+            "p95": 44.4997,
+            "max": 47.1074
+          },
+          "gpuRgbReadbackMs": {
+            "samples": 33,
+            "min": 0.49718399999999996,
+            "median": 0.50608,
+            "p95": 0.91152,
+            "max": 0.91984
+          },
+          "gpuDepthLabelsReadbackMs": {
+            "samples": 33,
+            "min": 31.11392,
+            "median": 33.61136,
+            "p95": 35.991488,
+            "max": 36.47568
+          }
+        },
+        "cameraFrameBytes": {
+          "rgbReadbackBytes": {
+            "samples": 33,
+            "min": 4915200,
+            "median": 4915200,
+            "p95": 4915200,
+            "max": 4915200
+          },
+          "depthLabelsReadbackBytes": {
+            "samples": 33,
+            "min": 6144000,
+            "median": 6144000,
+            "p95": 6144000,
+            "max": 6144000
+          },
+          "outputBytes": {
+            "samples": 33,
+            "min": 7382332,
+            "median": 7382439,
+            "p95": 7382442,
+            "max": 7382442
+          }
+        },
+        "cameraFinalFenceWaitMs": {
+          "samples": 3,
+          "min": 0.0026,
+          "median": 0.0042,
+          "p95": 0.0051,
+          "max": 0.0051
+        },
+        "cameraVmaMiBAtCompletion": {
+          "allocationBytes": {
+            "samples": 3,
+            "min": 2528.6324768066406,
+            "median": 2528.6324768066406,
+            "p95": 2528.6324768066406,
+            "max": 2528.6324768066406
+          },
+          "deviceLocalBytes": {
+            "samples": 3,
+            "min": 2507.532272338867,
+            "median": 2507.532272338867,
+            "p95": 2507.532272338867,
+            "max": 2507.532272338867
+          }
+        },
+        "wallSeconds": {
+          "simulation": {
+            "samples": 3,
+            "min": 4.7002489,
+            "median": 4.7144696,
+            "p95": 4.9224422,
+            "max": 4.9224422
+          },
+          "capture": {
+            "samples": 3,
+            "min": 15.5827496,
+            "median": 15.7234461,
+            "p95": 40.5852588,
+            "max": 40.5852588
+          },
+          "record": {
+            "samples": 3,
+            "min": 1.3444595,
+            "median": 1.3444728,
+            "p95": 1.3506728,
+            "max": 1.3506728
+          },
+          "verify": {
+            "samples": 3,
+            "min": 0.6568154,
+            "median": 0.6616693,
+            "p95": 0.6675292,
+            "max": 0.6675292
+          }
+        },
+        "peakProcessResidentMiB": {
+          "simulation": {
+            "samples": 3,
+            "min": 2557.828125,
+            "median": 2557.84765625,
+            "p95": 2558.13671875,
+            "max": 2558.13671875
+          },
+          "capture": {
+            "samples": 3,
+            "min": 5624.734375,
+            "median": 5624.8828125,
+            "p95": 5644.8671875,
+            "max": 5644.8671875
+          },
+          "record": {
+            "samples": 3,
+            "min": 23.14453125,
+            "median": 23.1484375,
+            "p95": 23.1640625,
+            "max": 23.1640625
+          },
+          "verify": {
+            "samples": 3,
+            "min": 22.015625,
+            "median": 22.01953125,
+            "p95": 22.01953125,
+            "max": 22.01953125
+          }
+        },
+        "datasetThroughput": {
+          "outputBytes": {
+            "samples": 3,
+            "min": 85331009,
+            "median": 85331009,
+            "p95": 85331009,
+            "max": 85331009
+          },
+          "imageBytes": {
+            "samples": 3,
+            "min": 81189515,
+            "median": 81189515,
+            "p95": 81189515,
+            "max": 81189515
+          },
+          "outputMiBPerSecond": {
+            "samples": 3,
+            "min": 60.24996703593244,
+            "median": 60.527808131433055,
+            "p95": 60.528406899821505,
+            "max": 60.528406899821505
+          },
+          "cameraFramesPerSecond": {
+            "samples": 3,
+            "min": 8.144089375309846,
+            "median": 8.181645623474123,
+            "p95": 8.181726560004225,
+            "max": 8.181726560004225
+          },
+          "timelineRowsPerSecond": {
+            "samples": 3,
+            "min": 45.162677444900055,
+            "median": 45.37094391199287,
+            "p95": 45.37139274184161,
+            "max": 45.37139274184161
+          }
+        },
+        "device": {
+          "apiVersion": 4211029,
+          "deviceId": 7809,
+          "driverId": 4,
+          "driverInfo": "610.88",
+          "driverName": "NVIDIA",
+          "driverVersion": 2559967232,
+          "name": "NVIDIA GeForce RTX 2080 SUPER",
+          "vendorId": 4318
+        },
+        "build": {
+          "compiler": "MSVC-19.51.36260.0",
+          "configuration": "Release",
+          "revision": "6fc58a964aee2d97baefeaf9433bdea8e0418800"
+        },
+        "gpuReadbackSamples": 33
+      },
+      "runs": [
+        {
+          "simulation": {
+            "wallSeconds": 4.9224422,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 2682400768,
+              "peakCommitBytes": 3160072192
+            }
+          },
+          "capture": {
+            "wallSeconds": 40.5852588,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 5919072256,
+              "peakCommitBytes": 7260499968
+            }
+          },
+          "record": {
+            "wallSeconds": 1.3506728,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 24272896,
+              "peakCommitBytes": 18862080
+            },
+            "throughput": {
+              "outputBytes": 85331009,
+              "imageBytes": 81189515,
+              "outputMiBPerSecond": 60.24996703593244,
+              "cameraFramesPerSecond": 8.144089375309846,
+              "timelineRowsPerSecond": 45.162677444900055
+            }
+          },
+          "verify": {
+            "wallSeconds": 0.6675292,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 23085056,
+              "peakCommitBytes": 18542592
+            }
+          },
+          "simulationSha256": "6c8f576cb2d586954ef984c07cb7525d7aa1122917c10046b2b082e1e3b6640b",
+          "cpuStageNanoseconds": {
+            "bimImport": 4018907100,
+            "collisionCook": 71847700,
+            "collisionInstall": 97570400,
+            "lidarSampling": 71159300,
+            "physicsTicks": 5085800,
+            "semanticScene": 205692100,
+            "simulationSetup": 364900,
+            "sourceReadAndFingerprint": 105342100,
+            "walkableSurfaces": 328500
+          }
+        },
+        {
+          "simulation": {
+            "wallSeconds": 4.7002489,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 2682097664,
+              "peakCommitBytes": 3159912448
+            }
+          },
+          "capture": {
+            "wallSeconds": 15.7234461,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 5898117120,
+              "peakCommitBytes": 7257169920
+            }
+          },
+          "record": {
+            "wallSeconds": 1.3444728,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 24289280,
+              "peakCommitBytes": 18903040
+            },
+            "throughput": {
+              "outputBytes": 85331009,
+              "imageBytes": 81189515,
+              "outputMiBPerSecond": 60.527808131433055,
+              "cameraFramesPerSecond": 8.181645623474123,
+              "timelineRowsPerSecond": 45.37094391199287
+            }
+          },
+          "verify": {
+            "wallSeconds": 0.6568154,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 23089152,
+              "peakCommitBytes": 18550784
+            }
+          },
+          "simulationSha256": "6c8f576cb2d586954ef984c07cb7525d7aa1122917c10046b2b082e1e3b6640b",
+          "cpuStageNanoseconds": {
+            "bimImport": 3888188200,
+            "collisionCook": 69373300,
+            "collisionInstall": 95113400,
+            "lidarSampling": 69905400,
+            "physicsTicks": 4090600,
+            "semanticScene": 200631100,
+            "simulationSetup": 344000,
+            "sourceReadAndFingerprint": 105109600,
+            "walkableSurfaces": 313200
+          }
+        },
+        {
+          "simulation": {
+            "wallSeconds": 4.7144696,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 2682077184,
+              "peakCommitBytes": 3159912448
+            }
+          },
+          "capture": {
+            "wallSeconds": 15.5827496,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 5897961472,
+              "peakCommitBytes": 7257489408
+            }
+          },
+          "record": {
+            "wallSeconds": 1.3444595,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 24268800,
+              "peakCommitBytes": 18870272
+            },
+            "throughput": {
+              "outputBytes": 85331009,
+              "imageBytes": 81189515,
+              "outputMiBPerSecond": 60.528406899821505,
+              "cameraFramesPerSecond": 8.181726560004225,
+              "timelineRowsPerSecond": 45.37139274184161
+            }
+          },
+          "verify": {
+            "wallSeconds": 0.6616693,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 23089152,
+              "peakCommitBytes": 18542592
+            }
+          },
+          "simulationSha256": "6c8f576cb2d586954ef984c07cb7525d7aa1122917c10046b2b082e1e3b6640b",
+          "cpuStageNanoseconds": {
+            "bimImport": 3900091600,
+            "collisionCook": 69138300,
+            "collisionInstall": 95398700,
+            "lidarSampling": 69868800,
+            "physicsTicks": 3925500,
+            "semanticScene": 201071500,
+            "simulationSetup": 344900,
+            "sourceReadAndFingerprint": 105134900,
+            "walkableSurfaces": 288600
+          }
+        }
+      ]
+    },
+    "synthetic": {
+      "summary": {
+        "simulationCounts": {
+          "bimElements": 12288,
+          "collisionColliders": 12288,
+          "lidarRays": 8448,
+          "lidarScans": 11,
+          "physicsTicks": 60,
+          "semanticEntities": 12292,
+          "sourceBytes": 4638283,
+          "walkableSurfaces": 2048
+        },
+        "gpuTiming": {
+          "depthLabelsScope": "depth layout transitions, metric depth and ID compute, host visibility barrier",
+          "rgbScope": "scene-linear post-process shader, swapchain draw and RGB host visibility barrier",
+          "source": "timestamp-query",
+          "timestampPeriodNs": 1.0,
+          "timestampValidBits": 64,
+          "status": [
+            "using camera readback timestamps"
+          ]
+        },
+        "cpuStageMs": {
+          "sourceReadAndFingerprint": {
+            "samples": 3,
+            "min": 25.1677,
+            "median": 25.2745,
+            "p95": 83.7973,
+            "max": 83.7973
+          },
+          "bimImport": {
+            "samples": 3,
+            "min": 258.9712,
+            "median": 260.0936,
+            "p95": 261.9849,
+            "max": 261.9849
+          },
+          "semanticScene": {
+            "samples": 3,
+            "min": 111.0393,
+            "median": 111.5366,
+            "p95": 111.847,
+            "max": 111.847
+          },
+          "collisionCook": {
+            "samples": 3,
+            "min": 6.8236,
+            "median": 6.964,
+            "p95": 6.9972,
+            "max": 6.9972
+          },
+          "walkableSurfaces": {
+            "samples": 3,
+            "min": 1.4191,
+            "median": 1.4376,
+            "p95": 1.47,
+            "max": 1.47
+          },
+          "collisionInstall": {
+            "samples": 3,
+            "min": 10.5323,
+            "median": 10.618,
+            "p95": 10.9206,
+            "max": 10.9206
+          },
+          "simulationSetup": {
+            "samples": 3,
+            "min": 0.6516,
+            "median": 0.6556,
+            "p95": 0.6616,
+            "max": 0.6616
+          },
+          "physicsTicks": {
+            "samples": 3,
+            "min": 6.1481,
+            "median": 6.3612,
+            "p95": 6.6075,
+            "max": 6.6075
+          },
+          "lidarSampling": {
+            "samples": 3,
+            "min": 123.4839,
+            "median": 123.5967,
+            "p95": 123.724,
+            "max": 123.724
+          }
+        },
+        "meanPhysicsTickMs": {
+          "samples": 3,
+          "min": 0.10246833333333333,
+          "median": 0.10602,
+          "p95": 0.110125,
+          "max": 0.110125
+        },
+        "meanLidarScanMs": {
+          "samples": 3,
+          "min": 11.225809090909092,
+          "median": 11.236063636363637,
+          "p95": 11.247636363636364,
+          "max": 11.247636363636364
+        },
+        "cameraFrameMs": {
+          "cpuRgbInvalidateMs": {
+            "samples": 33,
+            "min": 0.0002,
+            "median": 0.0005,
+            "p95": 0.0012,
+            "max": 0.0015
+          },
+          "cpuDepthLabelsInvalidateMs": {
+            "samples": 33,
+            "min": 0.0001,
+            "median": 0.0002,
+            "p95": 0.0003,
+            "max": 0.0003
+          },
+          "cpuEncodeMs": {
+            "samples": 33,
+            "min": 30.2705,
+            "median": 31.4584,
+            "p95": 32.2165,
+            "max": 32.2449
+          },
+          "cpuWriteMs": {
+            "samples": 33,
+            "min": 28.7392,
+            "median": 44.4806,
+            "p95": 58.6262,
+            "max": 69.52
+          },
+          "gpuRgbReadbackMs": {
+            "samples": 33,
+            "min": 0.49529599999999996,
+            "median": 0.505728,
+            "p95": 0.522816,
+            "max": 0.554496
+          },
+          "gpuDepthLabelsReadbackMs": {
+            "samples": 33,
+            "min": 31.557792,
+            "median": 33.105536,
+            "p95": 35.231488,
+            "max": 35.469248
+          }
+        },
+        "cameraFrameBytes": {
+          "rgbReadbackBytes": {
+            "samples": 33,
+            "min": 4915200,
+            "median": 4915200,
+            "p95": 4915200,
+            "max": 4915200
+          },
+          "depthLabelsReadbackBytes": {
+            "samples": 33,
+            "min": 6144000,
+            "median": 6144000,
+            "p95": 6144000,
+            "max": 6144000
+          },
+          "outputBytes": {
+            "samples": 33,
+            "min": 7382329,
+            "median": 7382441,
+            "p95": 7382443,
+            "max": 7382443
+          }
+        },
+        "cameraFinalFenceWaitMs": {
+          "samples": 3,
+          "min": 0.0045,
+          "median": 0.0047,
+          "p95": 0.0049,
+          "max": 0.0049
+        },
+        "cameraVmaMiBAtCompletion": {
+          "allocationBytes": {
+            "samples": 3,
+            "min": 1516.4624938964844,
+            "median": 1516.4624938964844,
+            "p95": 1516.4624938964844,
+            "max": 1516.4624938964844
+          },
+          "deviceLocalBytes": {
+            "samples": 3,
+            "min": 1495.362289428711,
+            "median": 1495.362289428711,
+            "p95": 1495.362289428711,
+            "max": 1495.362289428711
+          }
+        },
+        "wallSeconds": {
+          "simulation": {
+            "samples": 3,
+            "min": 0.6828445,
+            "median": 0.684948,
+            "p95": 0.7422479,
+            "max": 0.7422479
+          },
+          "capture": {
+            "samples": 3,
+            "min": 5.9677361,
+            "median": 5.9925557,
+            "p95": 6.117689,
+            "max": 6.117689
+          },
+          "record": {
+            "samples": 3,
+            "min": 1.3429953,
+            "median": 1.3432674,
+            "p95": 1.3434384,
+            "max": 1.3434384
+          },
+          "verify": {
+            "samples": 3,
+            "min": 0.6605729,
+            "median": 0.6609071,
+            "p95": 0.6615688,
+            "max": 0.6615688
+          }
+        },
+        "peakProcessResidentMiB": {
+          "simulation": {
+            "samples": 3,
+            "min": 107.06640625,
+            "median": 107.0703125,
+            "p95": 107.1875,
+            "max": 107.1875
+          },
+          "capture": {
+            "samples": 3,
+            "min": 568.23828125,
+            "median": 568.40234375,
+            "p95": 608.0859375,
+            "max": 608.0859375
+          },
+          "record": {
+            "samples": 3,
+            "min": 24.0078125,
+            "median": 24.01171875,
+            "p95": 24.01953125,
+            "max": 24.01953125
+          },
+          "verify": {
+            "samples": 3,
+            "min": 22.8203125,
+            "median": 22.82421875,
+            "p95": 22.82421875,
+            "max": 22.82421875
+          }
+        },
+        "datasetThroughput": {
+          "outputBytes": {
+            "samples": 3,
+            "min": 85454430,
+            "median": 85454430,
+            "p95": 85454430,
+            "max": 85454430
+          },
+          "imageBytes": {
+            "samples": 3,
+            "min": 81189515,
+            "median": 81189515,
+            "p95": 81189515,
+            "max": 81189515
+          },
+          "outputMiBPerSecond": {
+            "samples": 3,
+            "min": 60.66202597315645,
+            "median": 60.66974834209164,
+            "p95": 60.68204044655685,
+            "max": 60.68204044655685
+          },
+          "cameraFramesPerSecond": {
+            "samples": 3,
+            "min": 8.187945200911333,
+            "median": 8.188987538892107,
+            "p95": 8.190646683573652,
+            "max": 8.190646683573652
+          },
+          "timelineRowsPerSecond": {
+            "samples": 3,
+            "min": 45.40587793232649,
+            "median": 45.411658170219866,
+            "p95": 45.4208588816357,
+            "max": 45.4208588816357
+          }
+        },
+        "device": {
+          "apiVersion": 4211029,
+          "deviceId": 7809,
+          "driverId": 4,
+          "driverInfo": "610.88",
+          "driverName": "NVIDIA",
+          "driverVersion": 2559967232,
+          "name": "NVIDIA GeForce RTX 2080 SUPER",
+          "vendorId": 4318
+        },
+        "build": {
+          "compiler": "MSVC-19.51.36260.0",
+          "configuration": "Release",
+          "revision": "6fc58a964aee2d97baefeaf9433bdea8e0418800"
+        },
+        "gpuReadbackSamples": 33
+      },
+      "runs": [
+        {
+          "simulation": {
+            "wallSeconds": 0.7422479,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 112394240,
+              "peakCommitBytes": 116072448
+            }
+          },
+          "capture": {
+            "wallSeconds": 6.117689,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 637624320,
+              "peakCommitBytes": 2468941824
+            }
+          },
+          "record": {
+            "wallSeconds": 1.3434384,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 25186304,
+              "peakCommitBytes": 19996672
+            },
+            "throughput": {
+              "outputBytes": 85454430,
+              "imageBytes": 81189515,
+              "outputMiBPerSecond": 60.66202597315645,
+              "cameraFramesPerSecond": 8.187945200911333,
+              "timelineRowsPerSecond": 45.40587793232649
+            }
+          },
+          "verify": {
+            "wallSeconds": 0.6605729,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 23932928,
+              "peakCommitBytes": 19521536
+            }
+          },
+          "simulationSha256": "54d8a884222efe084df75aebd2e708799e5cbd5a099fde51cd4e7485eaa0434b",
+          "cpuStageNanoseconds": {
+            "bimImport": 260093600,
+            "collisionCook": 6964000,
+            "collisionInstall": 10532300,
+            "lidarSampling": 123483900,
+            "physicsTicks": 6361200,
+            "semanticScene": 111039300,
+            "simulationSetup": 651600,
+            "sourceReadAndFingerprint": 83797300,
+            "walkableSurfaces": 1470000
+          }
+        },
+        {
+          "simulation": {
+            "wallSeconds": 0.6828445,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 112271360,
+              "peakCommitBytes": 115888128
+            }
+          },
+          "capture": {
+            "wallSeconds": 5.9925557,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 595841024,
+              "peakCommitBytes": 2302054400
+            }
+          },
+          "record": {
+            "wallSeconds": 1.3429953,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 25174016,
+              "peakCommitBytes": 19984384
+            },
+            "throughput": {
+              "outputBytes": 85454430,
+              "imageBytes": 81189515,
+              "outputMiBPerSecond": 60.68204044655685,
+              "cameraFramesPerSecond": 8.190646683573652,
+              "timelineRowsPerSecond": 45.4208588816357
+            }
+          },
+          "verify": {
+            "wallSeconds": 0.6609071,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 23928832,
+              "peakCommitBytes": 19513344
+            }
+          },
+          "simulationSha256": "54d8a884222efe084df75aebd2e708799e5cbd5a099fde51cd4e7485eaa0434b",
+          "cpuStageNanoseconds": {
+            "bimImport": 258971200,
+            "collisionCook": 6823600,
+            "collisionInstall": 10618000,
+            "lidarSampling": 123724000,
+            "physicsTicks": 6148100,
+            "semanticScene": 111847000,
+            "simulationSetup": 655600,
+            "sourceReadAndFingerprint": 25167700,
+            "walkableSurfaces": 1437600
+          }
+        },
+        {
+          "simulation": {
+            "wallSeconds": 0.684948,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 112267264,
+              "peakCommitBytes": 115884032
+            }
+          },
+          "capture": {
+            "wallSeconds": 5.9677361,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 596013056,
+              "peakCommitBytes": 2403536896
+            }
+          },
+          "record": {
+            "wallSeconds": 1.3432674,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 25178112,
+              "peakCommitBytes": 19980288
+            },
+            "throughput": {
+              "outputBytes": 85454430,
+              "imageBytes": 81189515,
+              "outputMiBPerSecond": 60.66974834209164,
+              "cameraFramesPerSecond": 8.188987538892107,
+              "timelineRowsPerSecond": 45.411658170219866
+            }
+          },
+          "verify": {
+            "wallSeconds": 0.6615688,
+            "processMemory": {
+              "source": "Windows process memory counters",
+              "peakResidentBytes": 23932928,
+              "peakCommitBytes": 19521536
+            }
+          },
+          "simulationSha256": "54d8a884222efe084df75aebd2e708799e5cbd5a099fde51cd4e7485eaa0434b",
+          "cpuStageNanoseconds": {
+            "bimImport": 261984900,
+            "collisionCook": 6997200,
+            "collisionInstall": 10920600,
+            "lidarSampling": 123596700,
+            "physicsTicks": 6607500,
+            "semanticScene": 111536600,
+            "simulationSetup": 661600,
+            "sourceReadAndFingerprint": 25274500,
+            "walkableSurfaces": 1419100
+          }
+        }
+      ]
+    }
+  }
+}
