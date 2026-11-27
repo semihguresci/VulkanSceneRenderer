@@ -74,3 +74,21 @@ The optional timing sidecars preserve the existing trajectory and camera
 dataset formats. The native simulator marks cache-skipped preprocessing
 stages with null timings.
 [Synchronized dataset recording](bim-robotics-datasets.md)
+
+## Windows reference run
+
+Windows 11, AMD Ryzen 9 3900X, 32 GiB RAM, and an NVIDIA GeForce RTX 2080 SUPER
+with driver 610.88. A native MSVC Release build completed and verified all six
+datasets. Each scene produced 33 paired GPU timing samples across three runs.
+[Hardware-stamped report](../tests/benchmarks/results/bim-robotics-windows.json)
+
+| Median | Tekla House IFC | Synthetic 32×32 |
+| --- | ---: | ---: |
+| IFC import | 3.90 s | 0.26 s |
+| Collision cook | 69.37 ms | 6.96 ms |
+| Mean physics tick | 0.068 ms | 0.106 ms |
+| Mean LiDAR scan | 6.36 ms | 11.24 ms |
+| GPU RGB readback scope | 0.51 ms | 0.51 ms |
+| GPU depth and labels readback scope | 33.61 ms | 33.11 ms |
+| Peak renderer process residency | 5,625 MiB | 568 MiB |
+| Dataset recording throughput | 60.5 MiB/s | 60.7 MiB/s |
