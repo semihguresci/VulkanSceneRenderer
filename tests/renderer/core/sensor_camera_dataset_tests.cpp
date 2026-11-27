@@ -5,6 +5,7 @@
 #include <nlohmann/json.hpp>
 #include <tinyexr.h>
 
+#include <algorithm>
 #include <array>
 #include <cstring>
 #include <limits>
@@ -207,6 +208,113 @@ TEST(SensorCameraDataset, SeededDepthNoiseReplaysPerPixelAndSampleWithoutChangin
       EXPECT_EQ(clipped.integers("InstanceID")[pixel], 0u);
       EXPECT_EQ(clipped.integers("SemanticID")[pixel], 0u);
     }
+}
+
+TEST(SensorCameraDataset, DepthDropoutPreservesIdealDepthAndExactLabels) {
+  auto settings = camera(4, 1);
+  settings.depthDropoutProbability = 1;
+  settings.depthNoiseStdDevMeters = 1e6;
+  const std::array<float, 16> rgba{1, 2, 3, 1, 4, 5, 6, 1, 7, 8, 9, 1, 10, 11, 12, 1};
+  auto pixels = surfaces({1, 2, .05f, 4});
+  pixels[3].objectId = 0;
+  const std::array labels{BimSensorLabel{101, 11}, BimSensorLabel{102, 12}, BimSensorLabel{103, 13}};
+  const auto encoded = encodeSensorCameraFrame(rgba, pixels, labels, settings, {});
+  Decoded image;
+  ASSERT_NO_THROW(image.read(encoded));
+  ASSERT_EQ(image.header.num_channels, 7);
+  const std::array<float, 4> expectedDepth{1, 2, 0, 0};
+  const std::array<uint32_t, 4> expectedInstances{101, 102, 0, 0};
+  const std::array<uint32_t, 4> expectedSemantics{11, 12, 0, 0};
+  for (size_t pixel = 0; pixel < expectedDepth.size(); ++pixel) {
+    EXPECT_FLOAT_EQ(image.floats("Z")[pixel], 0);
+    EXPECT_FLOAT_EQ(image.floats("GroundTruthZ")[pixel], expectedDepth[pixel]);
+    EXPECT_FLOAT_EQ(image.floats("R")[pixel], rgba[4 * pixel]);
+    EXPECT_EQ(image.integers("InstanceID")[pixel], expectedInstances[pixel]);
+    EXPECT_EQ(image.integers("SemanticID")[pixel], expectedSemantics[pixel]);
+  }
+  const auto metadata = nlohmann::json::parse(encoded.metadataJson);
+  EXPECT_TRUE(metadata.at("channels").contains("GroundTruthZ"));
+  EXPECT_EQ(metadata.at("depthNoise").at("dropoutProbability"), 1);
+  EXPECT_EQ(metadata.at("depthDroppedPixelCount"), 2);
+  EXPECT_EQ(metadata.at("rangeRejectedPixelCount"), 1);
+}
+
+TEST(SensorCameraDataset, ObservationEffectsReplayAndKeepTheirRandomStreamsIndependent) {
+  constexpr size_t count = 32;
+  auto settings = camera(static_cast<uint32_t>(count), 1);
+  settings.depthNoiseStdDevMeters = .1;
+  settings.depthNoiseSeed = 72;
+  std::array<float, 4 * count> rgba;
+  rgba.fill(3.f);
+  std::array<SceneDataCapturePixel, count> pixels;
+  pixels.fill({.depth = 2, .objectId = bim | 1});
+  const std::array labels{BimSensorLabel{123, 456}};
+  const auto clean = encodeSensorCameraFrame(rgba, pixels, labels, settings, {});
+  settings.rgbNoiseSeed = 72;
+  EXPECT_EQ(encodeSensorCameraFrame(rgba, pixels, labels, settings, {}).exrBytes(), clean.exrBytes());
+
+  settings.rgbNoiseStdDevLinear = .05;
+  settings.depthDropoutProbability = .35;
+  const auto first = encodeSensorCameraFrame(rgba, pixels, labels, settings, {});
+  const auto repeat = encodeSensorCameraFrame(rgba, pixels, labels, settings, {});
+  EXPECT_EQ(first.exrBytes(), repeat.exrBytes());
+  EXPECT_EQ(first.metadataJson, repeat.metadataJson);
+  const auto next = encodeSensorCameraFrame(rgba, pixels, labels, settings, {.sampleIndex = 1});
+  ++settings.rgbNoiseSeed;
+  const auto changedRgb = encodeSensorCameraFrame(rgba, pixels, labels, settings, {});
+  ++settings.depthNoiseSeed;
+  const auto changedDepth = encodeSensorCameraFrame(rgba, pixels, labels, settings, {});
+
+  Decoded baseline, image, nextImage, differentRgb, differentDepth;
+  ASSERT_NO_THROW(baseline.read(clean));
+  ASSERT_NO_THROW(image.read(first));
+  ASSERT_NO_THROW(nextImage.read(next));
+  ASSERT_NO_THROW(differentRgb.read(changedRgb));
+  ASSERT_NO_THROW(differentDepth.read(changedDepth));
+  const auto plane = [](const Decoded& decoded, const char* channel) {
+    return std::span(decoded.floats(channel), count);
+  };
+  const auto z = plane(image, "Z");
+  const auto r = plane(image, "R");
+  EXPECT_FALSE(std::ranges::equal(r, plane(image, "G")));
+  EXPECT_FALSE(std::ranges::equal(r, plane(image, "B")));
+  EXPECT_FALSE(std::ranges::equal(r, plane(baseline, "R")));
+  EXPECT_FALSE(std::ranges::equal(r, plane(nextImage, "R")));
+  EXPECT_FALSE(std::ranges::equal(z, plane(nextImage, "Z")));
+  EXPECT_FALSE(std::ranges::equal(r, plane(differentRgb, "R")));
+  EXPECT_TRUE(std::ranges::equal(z, plane(differentRgb, "Z")));
+  EXPECT_TRUE(std::ranges::equal(plane(differentRgb, "R"), plane(differentDepth, "R")));
+  EXPECT_FALSE(std::ranges::equal(z, plane(differentDepth, "Z")));
+  size_t dropped = 0;
+  for (size_t pixel = 0; pixel < count; ++pixel) {
+    EXPECT_FLOAT_EQ(image.floats("GroundTruthZ")[pixel], 2);
+    EXPECT_EQ(image.integers("InstanceID")[pixel], 123u);
+    EXPECT_EQ(image.integers("SemanticID")[pixel], 456u);
+    if (z[pixel] == 0) ++dropped;
+    else EXPECT_FLOAT_EQ(z[pixel], baseline.floats("Z")[pixel]);
+  }
+  EXPECT_GT(dropped, 0u);
+  EXPECT_LT(dropped, count);
+}
+
+TEST(SensorCameraDataset, AppearancePreservesGroundTruthForRejectedNoisyDepth) {
+  auto settings = camera(3, 1);
+  settings.appearance = SensorAppearanceSettings{.seed = 35, .materialVariation = .75};
+  settings.depthNoiseStdDevMeters = 1e6;
+  const std::array<float, 12> rgba{};
+  const auto pixels = surfaces({1, 2, 3});
+  const std::array labels{BimSensorLabel{1, 1}, BimSensorLabel{2, 2}, BimSensorLabel{3, 3}};
+  const auto encoded = encodeSensorCameraFrame(rgba, pixels, labels, settings, {});
+  Decoded image;
+  ASSERT_NO_THROW(image.read(encoded));
+  const auto metadata = nlohmann::json::parse(encoded.metadataJson);
+  EXPECT_GT(metadata.at("rangeRejectedPixelCount"), 0);
+  EXPECT_EQ(metadata.at("appearance").at("seed"), 35);
+  for (uint32_t pixel = 0; pixel < pixels.size(); ++pixel) {
+    EXPECT_FLOAT_EQ(image.floats("GroundTruthZ")[pixel], pixels[pixel].depth);
+    EXPECT_EQ(image.integers("InstanceID")[pixel], pixel + 1);
+    EXPECT_EQ(image.integers("SemanticID")[pixel], pixel + 1);
+  }
 }
 
 TEST(SensorCameraDataset, RejectsMisalignedNonfiniteOrUnlabelledForegroundBeforePublishingBytes) {

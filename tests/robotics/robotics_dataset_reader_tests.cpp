@@ -13,6 +13,7 @@
 #include <fstream>
 #include <functional>
 #include <limits>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -53,19 +54,24 @@ void attribute(std::string& bytes, std::string_view name, std::string_view type,
 }
 
 // Independent, tiny OpenEXR scanline fixture. It does not call the production
-// encoder or require TinyEXR. Its six channels each contain one zero row.
-std::string image(uint32_t width = 2, uint32_t height = 1, uint32_t depthType = 2) {
+// encoder or require TinyEXR. Each channel contains zero-valued pixels.
+std::string image(uint32_t width = 2, uint32_t height = 1, uint32_t depthType = 2,
+                  std::optional<uint32_t> groundTruthType = std::nullopt) {
   std::string bytes;
   integer(bytes, 20000630);
   integer(bytes, 2);
   std::string channels;
-  for (const auto& [name, type] : std::array<std::pair<std::string_view, uint32_t>, 6>{{
-           {"B", 2}, {"G", 2}, {"InstanceID", 0}, {"R", 2}, {"SemanticID", 0}, {"Z", depthType}}}) {
+  const auto addChannel = [&](std::string_view name, uint32_t type) {
     terminated(channels, name);
     integer(channels, type);
     integer(channels, 0); // pLinear and three reserved bytes.
     integer(channels, 1);
     integer(channels, 1);
+  };
+  for (const auto& [name, type] : std::array<std::pair<std::string_view, uint32_t>, 6>{{
+           {"B", 2}, {"G", 2}, {"InstanceID", 0}, {"R", 2}, {"SemanticID", 0}, {"Z", depthType}}}) {
+    addChannel(name, type);
+    if (name == "G" && groundTruthType) addChannel("GroundTruthZ", *groundTruthType);
   }
   channels.push_back('\0');
   attribute(bytes, "channels", "chlist", channels);
@@ -85,12 +91,13 @@ std::string image(uint32_t width = 2, uint32_t height = 1, uint32_t depthType = 
   attribute(bytes, "screenWindowWidth", "float", one);
   bytes.push_back('\0');
   const auto first = bytes.size() + size_t(height) * 8;
+  const auto rowBytes = size_t(width) * (groundTruthType ? 28 : 24);
   for (uint32_t row = 0; row < height; ++row)
-    integer(bytes, first + uint64_t(row) * (8 + uint64_t(width) * 24), 8);
+    integer(bytes, first + uint64_t(row) * (8 + rowBytes), 8);
   for (uint32_t row = 0; row < height; ++row) {
     integer(bytes, row);
-    integer(bytes, uint64_t(width) * 24);
-    bytes.append(size_t(width) * 24, '\0');
+    integer(bytes, rowBytes);
+    bytes.append(rowBytes, '\0');
   }
   return bytes;
 }
@@ -298,6 +305,30 @@ TEST_F(RoboticsDatasetReader, ReplaysMaximumSizeLidarScans) {
   EXPECT_EQ(scans, 2u);
 }
 
+TEST_F(RoboticsDatasetReader, PreservesAndChecksIdealLidarRangesAlongsideMeasuredReturns) {
+  manifest_["sensors"]["lidar"]["recordIdealRanges"] = true;
+  auto& miss = rows_[0]["lidar"]["returns"][0];
+  auto& hit = rows_[2]["lidar"]["returns"][0];
+  miss["idealRangeMeters"] = nullptr;
+  hit = {{"rangeMeters", nullptr}, {"status", "dropped"}, {"entityId", "wall"}, {"idealRangeMeters", 2.47}};
+  save();
+
+  size_t index = 0;
+  (void)readRoboticsDataset(directory_, [&](const Json& row) { EXPECT_EQ(row, rows_.at(index++)); });
+  EXPECT_EQ(index, rows_.size());
+
+  miss["idealRangeMeters"] = 2.47;
+  save();
+  expectInvalid("must be null for a miss");
+  miss["idealRangeMeters"] = nullptr;
+  hit["idealRangeMeters"] = 25.01;
+  save();
+  expectInvalid("calibrated range limits");
+  hit.erase("idealRangeMeters");
+  save();
+  expectInvalid("idealRangeMeters presence");
+}
+
 TEST_F(RoboticsDatasetReader, WriterRoundTripPreservesCameraLabelsAndEveryCommittedBasePose) {
   const auto [camera, report] = sourceCaptureAndReport();
   const auto output = root_ / "joined";
@@ -408,6 +439,48 @@ TEST_F(RoboticsDatasetReader, RejectsTruncatedExrEvenWithMatchingImageDigest) {
   rows_[0]["camera"].update(fingerprint(directory_ / "frame-00000000.exr"));
   save();
   expectInvalid("payload size");
+}
+
+TEST_F(RoboticsDatasetReader, WriterAndReplayPreserveOptionalGroundTruthDepthChannel) {
+  for (auto& row : rows_) {
+    auto& camera = row["camera"];
+    if (camera.is_null()) continue;
+    const auto path = directory_ / camera.at("image").get<std::string>();
+    write(path, image(2, 1, 2, 2));
+    camera.update(fingerprint(path));
+    camera["frame"]["channels"]["GroundTruthZ"] = "axial metres FLOAT";
+  }
+  save();
+  EXPECT_NO_THROW((void)readRoboticsDataset(directory_));
+  const auto [camera, report] = sourceCaptureAndReport();
+  const auto output = root_ / "augmented";
+  ASSERT_NO_THROW(writeRoboticsDataset(camera, report, output));
+  size_t frames = 0;
+  (void)readRoboticsDataset(output, [&](const Json& row) {
+    if (row.at("camera").is_null()) return;
+    EXPECT_EQ(row.at("camera"), rows_.at(row.at("tick").get<size_t>()).at("camera"));
+    ++frames;
+  });
+  EXPECT_EQ(frames, 2u);
+}
+
+TEST_F(RoboticsDatasetReader, RejectsMismatchedGroundTruthDepthDeclarationsAndLayouts) {
+  auto& first = rows_[0]["camera"];
+  const auto path = directory_ / first.at("image").get<std::string>();
+  first["frame"]["channels"]["GroundTruthZ"] = "axial metres FLOAT";
+  save();
+  expectInvalid("missing EXR dataset channel");
+  write(path, image(2, 1, 2, 0));
+  first.update(fingerprint(path));
+  save();
+  expectInvalid("pixel type");
+  write(path, image(2, 1, 2, 2));
+  first.update(fingerprint(path));
+  save();
+  expectInvalid("channel layout changed");
+  first["frame"].erase("channels");
+  save();
+  expectInvalid("invalid EXR channel");
 }
 
 TEST_F(RoboticsDatasetReader, RejectsWrongDimensionsLabelsCountsAndStrayChunk) {

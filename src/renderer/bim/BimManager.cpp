@@ -733,6 +733,12 @@ struct PreparedBimSceneMaterial {
   container::scene::SceneManager::MaterialTextureProvenance textures;
 };
 
+glm::vec4 tintSensorMaterial(glm::vec4 color, const robotics::SensorAppearanceSettings& settings,
+                             uint32_t sourceKey, bool authoredMaterial) {
+  const auto tint = robotics::sampleSensorMaterialTint(settings, sourceKey, authoredMaterial);
+  return {color.r * tint[0], color.g * tint[1], color.b * tint[2], color.a};
+}
+
 PreparedBimSceneMaterial
 makeSceneMaterial(const container::geometry::dotbim::Material &source,
                   container::scene::SceneManager &sceneManager,
@@ -1733,7 +1739,8 @@ BimManager::~BimManager() {
 }
 
 void BimManager::enableSensorLabels(std::string sourceNamespace,
-                                    std::optional<double> metersPerRendererUnit) {
+                                   std::optional<double> metersPerRendererUnit,
+                                   std::optional<robotics::SensorAppearanceSettings> appearance) {
   if (sourceNamespace.empty()) {
     throw std::invalid_argument("BIM sensor labels require a source namespace");
   }
@@ -1744,8 +1751,11 @@ void BimManager::enableSensorLabels(std::string sourceNamespace,
   if (hasScene()) {
     throw std::logic_error("Enable BIM sensor labels before loading the scene");
   }
+  if (appearance)
+    robotics::validateSensorAppearanceSettings(*appearance);
   sensorLabelNamespace_ = std::move(sourceNamespace);
   sensorLabelMetersPerRendererUnit_ = metersPerRendererUnit;
+  sensorAppearance_ = appearance;
 }
 
 void BimManager::setLoadProgressCallback(
@@ -3971,6 +3981,8 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
   std::unordered_map<uint32_t, uint32_t> colorMaterialCache;
   colorMaterialCache.reserve(model.elements.size());
   std::vector<uint32_t> sourceMaterialCache(model.materials.size(), kInvalidMaterialIndex);
+  const auto* appearance = sensorAppearance_ && sensorAppearance_->materialVariation > 0.0
+      ? &*sensorAppearance_ : nullptr;
   size_t installedMaterials = 0;
   for (const uint32_t objectIndex : sourceObjects) {
     if (objectIndex == kInvalidMaterialIndex)
@@ -3982,8 +3994,11 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
     if (isValidMaterialIndex(row.sourceMaterialIndex, model)) {
       auto &cached = sourceMaterialCache[row.sourceMaterialIndex];
       if (cached == kInvalidMaterialIndex) {
-        const auto material = makeSceneMaterial(
+        auto material = makeSceneMaterial(
             model.materials[row.sourceMaterialIndex], sceneManager, mipPolicy);
+        if (appearance)
+          material.value.baseColor = tintSensorMaterial(material.value.baseColor, *appearance,
+                                                        row.sourceMaterialIndex, true);
         cached = sceneManager.createMaterial(material.value, material.textures);
       }
       materialIndex = cached;
@@ -3993,7 +4008,9 @@ void BimManager::installDrawData(const container::geometry::dotbim::Model &model
       if (material == colorMaterialCache.end()) {
         const auto alphaMode = row.transparent ? container::material::AlphaMode::Blend
                                                : container::material::AlphaMode::Opaque;
-        const uint32_t created = sceneManager.createSolidMaterial(row.sourceColor, false, alphaMode);
+        const auto color = appearance
+            ? tintSensorMaterial(row.sourceColor, *appearance, key, false) : row.sourceColor;
+        const uint32_t created = sceneManager.createSolidMaterial(color, false, alphaMode);
         material = colorMaterialCache.emplace(key, created).first;
       }
       materialIndex = material->second;

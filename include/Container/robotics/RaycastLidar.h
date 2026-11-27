@@ -33,6 +33,11 @@ struct RaycastLidarSettings {
   double dropoutProbability{};
   uint64_t seed{};
   LidarPose baseFromSensor;
+  // Range error standard deviation = noiseStdDevMeters + ideal range × noiseStdDevPerMeter.
+  double noiseStdDevPerMeter{};
+  // Round noisy ranges to the nearest bin in metres. Zero leaves ranges continuous.
+  double rangeResolutionMeters{};
+  bool recordIdealRanges{};
 };
 
 enum class LidarReturnStatus { Valid, NoHit, BelowMinimum, Dropped, NoiseOutOfRange };
@@ -41,6 +46,8 @@ struct LidarReturn {
   std::optional<double> rangeMeters;
   LidarReturnStatus status{LidarReturnStatus::NoHit};
   std::string entityId;
+  // Unmodified collider distance, including near and rejected returns when requested.
+  std::optional<double> idealRangeMeters;
   bool operator==(const LidarReturn&) const = default;
 };
 

@@ -968,6 +968,7 @@ private:
     std::vector<std::optional<container::robotics::SensorCameraFrame>> inFlight;
     std::vector<container::robotics::BimSensorLabel> labels;
     container::robotics::BimSceneSource sceneSource;
+    container::robotics::SensorLightingGains lighting;
     double metersPerRendererUnit{1.0};
     uint64_t bimRevision{};
     size_t completed{};

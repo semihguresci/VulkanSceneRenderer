@@ -122,7 +122,7 @@ def camera_pose(tick):
             (x + cosine * mx - sine * my, y + sine * mx + cosine * my, z + mz, 1))
 
 
-def read_exr(path):
+def read_exr(path, *, include_ground_truth=False):
     # OpenEXR v2 scanlines. Decode IDs directly as UINT; a float image loader
     # can silently change instance IDs above the exact binary32 integer range.
     def c_string(data, start):
@@ -154,7 +154,8 @@ def read_exr(path):
         cursor += 16
         assert name not in channels and x_sample == y_sample == 1, (path, name)
         channels[name] = pixel_type
-    assert cursor == len(channel_list) - 1 and channels == CHANNELS, (path, channels)
+    expected_channels = dict(CHANNELS, GroundTruthZ=2) if include_ground_truth else CHANNELS
+    assert cursor == len(channel_list) - 1 and channels == expected_channels, (path, channels)
 
     planes = {name: [None] * HEIGHT for name in channels}
     offsets = struct.unpack_from(f"<{HEIGHT}Q", payload, position + 1)
@@ -309,6 +310,83 @@ def hashes(directory):
             for path in directory.iterdir() if path.is_file()}
 
 
+def verify_randomization(renderer, work, model, spec, baseline, clean):
+    seed = 7295
+    lighting = {"seed": seed, "lightingVariation": 0.7}
+    material = {"seed": seed, "materialVariation": 0.8}
+    cases = {
+        "lighting-only": {"appearance": lighting},
+        "material-only": {"appearance": material},
+        "rgb-noise-only": {"rgbNoise": {"stdDevLinear": 0.01, "seed": seed + 2}},
+    }
+    for case, profile_seed in (("randomized", seed), ("randomized-repeat", seed),
+                               ("randomized-alternate-seed", seed + 1)):
+        cases[case] = {
+            "appearance": {**lighting, **material, "seed": profile_seed},
+            "rgbNoise": {"stdDevLinear": 0.01, "seed": profile_seed + 2},
+            "depthNoise": {"dropoutProbability": 0.3, "seed": profile_seed + 4},
+        }
+
+    image_name, metadata_name = "frame-00000000.exr", "frame-00000000.json"
+    calibration = json.loads((baseline / metadata_name).read_bytes())
+    labels = (baseline / "labels.json").read_bytes()
+    foreground = [(row, column)
+                  for row, scanline in enumerate(clean["InstanceID"])
+                  for column, instance in enumerate(scanline) if instance]
+    observations, statistics, appearance_gains = {}, {}, {}
+    for case, profile in cases.items():
+        settings, directory = work / f"{case}.json", work / case
+        write_json(settings, {**spec, **profile})
+        capture(renderer, work, model, settings, directory, log_name=f"{case}.log")
+        planes = read_exr(directory / image_name, include_ground_truth=True)
+        metadata = json.loads((directory / metadata_name).read_bytes())
+        for key in ("worldFromCamera", "intrinsics", "sampleIndex", "tick", "seconds"):
+            assert metadata[key] == calibration[key], (case, key, metadata[key])
+        assert (directory / "labels.json").read_bytes() == labels, case
+        assert planes["InstanceID"] == clean["InstanceID"] and planes["SemanticID"] == clean["SemanticID"], case
+        assert planes["GroundTruthZ"] == clean["Z"], case
+        assert "GroundTruthZ" in metadata["channels"], case
+        if "appearance" in profile:
+            appearance = json.loads((directory / "dataset.json").read_bytes())["appearance"]
+            assert appearance["algorithm"] == "splitmix64-v1", appearance
+            for key, value in profile["appearance"].items():
+                assert appearance[key] == metadata["appearance"][key] == value, (case, key, appearance)
+            gains = appearance["directionalGain"], appearance["environmentGain"]
+            variation = profile["appearance"].get("lightingVariation", 0)
+            assert all(1 - variation <= gain <= 1 + variation for gain in gains), (case, gains)
+            appearance_gains[case] = gains
+
+        changed = sum(any(abs(planes[channel][row][column] - clean[channel][row][column]) > 1e-4
+                          for channel in "RGB") for row, column in foreground)
+        assert changed >= 100, (case, changed)
+        dropped = 0
+        for observed_row, truth_row in zip(planes["Z"], clean["Z"], strict=True):
+            for observed, truth in zip(observed_row, truth_row, strict=True):
+                assert observed in (0, truth), (case, observed, truth)
+                dropped += truth > 0 and observed == 0
+        if "depthNoise" in profile:
+            assert 0.2 * len(foreground) < dropped < 0.4 * len(foreground), (case, dropped)
+            assert metadata["depthDroppedPixelCount"] == dropped, (case, dropped)
+        else:
+            assert dropped == 0, (case, dropped)
+        for effect in ("rgbNoise", "depthNoise"):
+            for key, value in profile.get(effect, {}).items():
+                assert metadata[effect][key] == value, (case, key, metadata[effect])
+        noisy_rgb = "rgbNoise" in profile
+        assert all(math.isfinite(value) and (not noisy_rgb or value >= 0)
+                   for channel in "RGB" for row in planes[channel] for value in row), case
+        observations[case] = planes
+        statistics[case] = {"changedForegroundRgbPixels": changed, "droppedDepthPixels": dropped}
+
+    assert hashes(work / "randomized") == hashes(work / "randomized-repeat"), "seeded capture changed on repeat"
+    assert appearance_gains["lighting-only"] == appearance_gains["randomized"]
+    assert appearance_gains["randomized"] != appearance_gains["randomized-alternate-seed"]
+    first, alternate = observations["randomized"], observations["randomized-alternate-seed"]
+    assert first["Z"] != alternate["Z"], "seed change left depth dropout unchanged"
+    assert any(first[channel] != alternate[channel] for channel in "RGB"), "seed change left RGB unchanged"
+    return statistics
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", required=True, type=Path)
@@ -342,7 +420,7 @@ def main():
     (work / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="ascii")
     initial, animated, repeat = (work / name for name in ("static", "moving", "reordered-and-scaled"))
     capture(renderer, work, model, static, initial, log_name="static.log")
-    static_labels, _ = verify_dataset(initial, (0,), 1)
+    static_labels, initial_frames = verify_dataset(initial, (0,), 1)
     capture(renderer, work, model, moving, animated, trajectory=trajectory, log_name="moving.log")
     moving_labels, first = verify_dataset(animated, SENSOR_TICKS, 1)
     capture(renderer, work, reordered, moving, f"{repeat}{os.sep}", scale=2.5,
@@ -356,10 +434,12 @@ def main():
     capture(renderer, work, reordered, moving, animated, scale=2.5, trajectory=trajectory,
             log_name="existing-output.log", failure="Sensor camera output directory already exists")
     assert hashes(animated) == before, "rejected capture wrote into an existing dataset"
+    randomization = verify_randomization(renderer, work, model, spec, initial, initial_frames[0][0])
     write_json(work / "results.json", {"ticks": SENSOR_TICKS, "labels": moving_labels,
                                       "moving": [stats for _, stats in first],
-                                      "reorderedAndScaled": [stats for _, stats in second]})
-    print(f"PASS calibrated metric RGB/depth/labels, playback, and output ownership ({work})", flush=True)
+                                      "reorderedAndScaled": [stats for _, stats in second],
+                                      "randomization": randomization})
+    print(f"PASS calibrated RGB/depth/labels, playback, and seeded randomization ({work})", flush=True)
     return 0
 
 

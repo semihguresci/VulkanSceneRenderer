@@ -270,6 +270,7 @@ public:
   // every live reader to have retired. Indexed upload requires only that image.
   void uploadLightingData() const;
   void uploadLightingData(uint32_t imageIndex) const;
+  void uploadLightingData(uint32_t imageIndex, const container::gpu::LightingData& lighting) const;
   // Retire the image's submission before reading its mapped counters.
   void collectStats(uint32_t imageIndex);
   void onSubmitted(uint32_t imageIndex) noexcept;
@@ -474,7 +475,8 @@ private:
   void createTiledFrameDescriptors(LightingManager& target, uint32_t imageCount) const;
   void swapFrameResources(LightingManager& target) noexcept;
   void uploadLightingData(const LightingManager& source) const;
-  void uploadLightingData(uint32_t imageIndex, const LightingManager& source) const;
+  void uploadLightingData(uint32_t imageIndex, const LightingManager& source,
+                          const container::gpu::LightingData* lightingOverride = nullptr) const;
   void allocateClusterBuffers(VkExtent2D extent);
   void destroyClusterScratch() noexcept;
   void discardClusterSamples() noexcept;

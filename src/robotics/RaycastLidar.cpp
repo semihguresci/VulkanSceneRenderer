@@ -55,6 +55,11 @@ RaycastLidar::RaycastLidar(RaycastLidarSettings settings) : settings_(std::move(
   if (!std::isfinite(value.noiseStdDevMeters) || value.noiseStdDevMeters < 0 ||
       !std::isfinite(value.dropoutProbability) || value.dropoutProbability < 0 || value.dropoutProbability > 1)
     throw std::invalid_argument("LiDAR noise must be nonnegative and dropout probability in [0,1]");
+  if (!std::isfinite(value.noiseStdDevPerMeter) || value.noiseStdDevPerMeter < 0 ||
+      !std::isfinite(value.noiseStdDevMeters + value.noiseStdDevPerMeter * value.maxRangeMeters))
+    throw std::invalid_argument("LiDAR noiseStdDevPerMeter must be nonnegative with finite noise across the range interval");
+  if (!std::isfinite(value.rangeResolutionMeters) || value.rangeResolutionMeters < 0)
+    throw std::invalid_argument("LiDAR rangeResolutionMeters must be finite and nonnegative");
   settings_.baseFromSensor = normalizedPose(value.baseFromSensor);
 
   directions_.reserve(value.elevationAngles.size() * value.azimuthSamples);
@@ -94,6 +99,8 @@ LidarScan RaycastLidar::scan(const LidarPose& worldFromBase, const LidarSchedule
       throw std::invalid_argument("LiDAR raycast callback returned a fraction outside [0,1]");
     LidarReturn measurement{.entityId = std::move(hit->entityId)};
     const auto distance = hit->fraction * settings_.maxRangeMeters;
+    if (settings_.recordIdealRanges)
+      measurement.idealRangeMeters = distance;
     if (distance < settings_.minRangeMeters) {
       measurement.status = LidarReturnStatus::BelowMinimum;
     } else {
@@ -101,8 +108,11 @@ LidarScan RaycastLidar::scan(const LidarPose& worldFromBase, const LidarSchedule
       if (settings_.dropoutProbability > 0 && sensor_noise::uniform(key, 0) < settings_.dropoutProbability) {
         measurement.status = LidarReturnStatus::Dropped;
       } else {
-        const auto range = distance + (settings_.noiseStdDevMeters == 0 ? 0 :
-                                       settings_.noiseStdDevMeters * sensor_noise::normal(key));
+        const auto standardDeviation = settings_.noiseStdDevMeters + settings_.noiseStdDevPerMeter * distance;
+        auto range = distance + (standardDeviation == 0 ? 0 : standardDeviation * sensor_noise::normal(key));
+        // Remainder gives the nearest bin with ties to even without a potentially overflowing quotient.
+        if (settings_.rangeResolutionMeters > 0 && std::isfinite(range))
+          range -= std::remainder(range, settings_.rangeResolutionMeters);
         if (!std::isfinite(range) || range < settings_.minRangeMeters || range > settings_.maxRangeMeters) {
           measurement.status = LidarReturnStatus::NoiseOutOfRange;
         } else {

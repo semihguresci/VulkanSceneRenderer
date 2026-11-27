@@ -226,6 +226,43 @@ TEST(DatasetSimulationReport, BoundsIndividualTokensNestingAndObservationAllocat
   expectInvalid(oversized, "history: exceeds the JSON subtree limit");
 }
 
+TEST(DatasetSimulationReport, ValidatesOptInIdealRangesAgainstCalibrationAfterTheScans) {
+  auto source = report();
+  auto& calibration = source["lidar"];
+  calibration["recordIdealRanges"] = true;
+  calibration["noiseStdDevPerMeter"] = .015;
+  calibration["rangeResolutionMeters"] = .05;
+  for (auto& scan : calibration["scans"]) {
+    scan["returns"][0]["idealRangeMeters"] = 2.47;
+    scan["returns"][1]["idealRangeMeters"] = nullptr;
+  }
+  auto& returns = calibration["scans"][1]["returns"];
+  returns[0]["status"] = "dropped";
+  returns[0]["rangeMeters"] = nullptr;
+  const TemporaryReport input(source.dump());
+  const auto read = scanDatasetSimulationReport(input.path(), {});
+  EXPECT_EQ(read.lidarCalibration.at("recordIdealRanges"), true);
+  EXPECT_EQ(read.lidarCalibration.at("noiseStdDevPerMeter"), .015);
+  EXPECT_EQ(read.lidarCalibration.at("rangeResolutionMeters"), .05);
+
+  returns[0].erase("idealRangeMeters");
+  expectInvalid(source.dump(), "idealRangeMeters presence");
+  returns[0]["idealRangeMeters"] = .05;
+  expectInvalid(source.dump(), "calibrated range limits");
+  returns[0]["status"] = "below-minimum";
+  returns[1]["idealRangeMeters"] = 2.47;
+  expectInvalid(source.dump(), "must be null for a miss");
+  returns[1]["idealRangeMeters"] = nullptr;
+  calibration["recordIdealRanges"] = false;
+  expectInvalid(source.dump(), "idealRangeMeters presence");
+  calibration["recordIdealRanges"] = true;
+  calibration["noiseStdDevPerMeter"] = -.1;
+  expectInvalid(source.dump(), "lidar.noiseStdDevPerMeter");
+  calibration["noiseStdDevPerMeter"] = .015;
+  calibration["rangeResolutionMeters"] = -.1;
+  expectInvalid(source.dump(), "lidar.rangeResolutionMeters");
+}
+
 TEST(DatasetSimulationReport, AcceptsMaximumLegalOrganizedScan) {
   auto source = report();
   source.erase("driveSensors");
@@ -233,10 +270,12 @@ TEST(DatasetSimulationReport, AcceptsMaximumLegalOrganizedScan) {
   auto& calibration = source["lidar"];
   calibration["raysPerScan"] = 65'536;
   calibration["azimuthSamples"] = 65'536;
+  calibration["recordIdealRanges"] = true;
   calibration["scans"].erase(1);
   auto& returns = calibration["scans"][0]["returns"];
-  const auto miss = returns.back();
-  returns.get_ref<Json::array_t&>().resize(65'536, miss);
+  auto miss = returns.back();
+  miss["idealRangeMeters"] = nullptr;
+  returns = Json::array_t(65'536, miss);
   const TemporaryReport input(source.dump());
   uint64_t observedRays = 0;
   const auto read = scanDatasetSimulationReport(input.path(), [&](auto stream, const auto& row) {

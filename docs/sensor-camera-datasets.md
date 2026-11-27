@@ -130,9 +130,10 @@ Each sample index has two files, starting with `frame-00000000.exr` and
 | Channel | EXR type | Meaning |
 | --- | --- | --- |
 | `R`, `G`, `B` | 32-bit `FLOAT` | Scene-linear RGB in linear-sRGB primaries. HDR values are retained. |
-| `Z` | 32-bit `FLOAT` | Positive axial depth, `-camera.z`, in metres. Zero means background or invalid depth. |
-| `InstanceID` | 32-bit `UINT` | Exact instance label. Zero means background or invalid depth. |
-| `SemanticID` | 32-bit `UINT` | Exact semantic class label. Zero means background or invalid depth. |
+| `Z` | 32-bit `FLOAT` | Observed axial depth, `-camera.z`, in metres. Zero means background or an invalid observation. |
+| `InstanceID` | 32-bit `UINT` | Exact instance label. Aligned to `GroundTruthZ` when that channel is present. |
+| `SemanticID` | 32-bit `UINT` | Exact semantic class label. Aligned to `GroundTruthZ` when that channel is present. |
+| `GroundTruthZ` | 32-bit `FLOAT` | Optional ideal axial depth after lens resampling and before depth noise or dropout. Zero means no ideal surface sample. |
 
 Read the label channels as integers to preserve every ID. `labels.json`, with
 schema `container.bim-sensor-labels` version 1, maps instances to semantic
@@ -153,14 +154,16 @@ filename patterns, label manifest, colour space and surface policy. Treat this
 file as the completion marker. A directory left without it is incomplete.
 Choose a fresh destination for another run.
 
-## Add lens distortion and depth noise
+## Simulate camera observations
 
-These optional top-level camera-spec fields apply after the aligned ideal
-capture:
+Add optional fields to the camera spec to vary the appearance and sensor
+observations of a fixed scene.
 
 ```json
 "distortion": { "k1": -0.08, "k2": 0.01, "p1": 0.001, "p2": 0, "k3": 0 },
-"depthNoise": { "stdDevMeters": 0.002, "seed": 17 }
+"depthNoise": { "stdDevMeters": 0.002, "dropoutProbability": 0.08, "seed": 17 },
+"rgbNoise": { "stdDevLinear": 0.006, "seed": 19 },
+"appearance": { "lightingVariation": 0.4, "materialVariation": 0.25, "seed": 23 }
 ```
 
 Brown–Conrady coefficients use normalized image coordinates with +X right and
@@ -169,12 +172,35 @@ image. RGB uses bilinear interpolation. Depth and both labels use the same
 nearest source pixel. Out-of-image, singular or locally folded mappings write
 zero to all channels.
 
-Depth noise is independent Gaussian error in metres, deterministically keyed
-by seed, sample index and output pixel. Depth outside the inclusive
-`[nearMeters, farMeters]` window becomes zero together with both labels. RGB
-is retained. Background depth stays zero. Zero noise and omitted distortion
-preserve the ideal channels. Reusing a seed reproduces the CPU noise samples.
-GPU colour can vary across drivers or builds.
+Depth noise adds Gaussian error in metres. Depth dropout independently
+invalidates each ideal surface observation with the specified probability in
+`[0,1]`. Both use the depth seed, sample index and destination pixel. A dropped
+measurement or one outside the inclusive `[nearMeters, farMeters]` interval is
+written as zero in `Z`. RGB noise adds independent Gaussian samples to each
+scene-linear color component, with its own seed and a lower bound of zero.
+HDR values can exceed one.
+
+Active RGB noise, depth dropout or appearance variation adds `GroundTruthZ`.
+Its values and both ID channels describe the ideal visible surface, including
+when observed `Z` is zero due to dropout or noise. A capture using only legacy
+depth noise retains the six-channel format and clears the IDs where depth
+noise takes a measurement outside the clip interval. RGB noise and dropout
+operate after lens resampling.
+
+The appearance settings vary scene lighting and the BIM materials used by the
+camera draw. Both variation amounts range from zero to one. The directional
+and environment irradiance gains are independently sampled in
+`[1 − lightingVariation, 1 + lightingVariation]`. Each imported material or
+fallback color gets linear RGB tint factors in `[1 − materialVariation, 1]`.
+The experiment seed fixes these values throughout the recording. Light
+positions, weather, alpha tests, source materials, geometry and BIM identities
+retain their authored values. The camera manifest records the seed, variation
+amounts and applied lighting gains.
+
+Omitting these controls gives an ideal capture. Reusing a seed and the same
+camera path reproduces the sampled parameters and CPU noise. Rendered HDR
+values may vary across GPU drivers or builds. The simulator documents the other
+[seeded LiDAR observation settings](physics-integration.md#scan-bim-colliders-with-planar-or-multi-ring-lidar).
 
 Declared native IFC length units supply the metric scale automatically. For
 IFCX or BIM input without declared metric units, pass

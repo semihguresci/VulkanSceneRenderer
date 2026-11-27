@@ -203,7 +203,8 @@ robotics::LidarPose readMount(const Json& value) {
 ScenarioLidar readLidar(const Json& value, uint32_t ticksPerSecond, uint64_t lastTick) {
   checkKeys(value, {"scansPerSecondMilliHz", "firstTick", "azimuthSamples", "azimuthStart",
                     "azimuthSpan", "elevationAngles", "minRangeMeters", "maxRangeMeters",
-                    "noiseStdDevMeters", "dropoutProbability", "seed", "mount"});
+                    "noiseStdDevMeters", "noiseStdDevPerMeter", "rangeResolutionMeters",
+                    "dropoutProbability", "recordIdealRanges", "seed", "mount"});
   if (!value.contains("scansPerSecondMilliHz"))
     throw std::invalid_argument("lidar requires scansPerSecondMilliHz");
   const auto rate = static_cast<uint32_t>(natural(value.at("scansPerSecondMilliHz"), "scansPerSecondMilliHz",
@@ -219,7 +220,14 @@ ScenarioLidar readLidar(const Json& value, uint32_t ticksPerSecond, uint64_t las
   readReal(value, "minRangeMeters", settings.minRangeMeters);
   readReal(value, "maxRangeMeters", settings.maxRangeMeters);
   readReal(value, "noiseStdDevMeters", settings.noiseStdDevMeters);
+  readReal(value, "noiseStdDevPerMeter", settings.noiseStdDevPerMeter);
+  readReal(value, "rangeResolutionMeters", settings.rangeResolutionMeters);
   readReal(value, "dropoutProbability", settings.dropoutProbability);
+  if (const auto record = value.find("recordIdealRanges"); record != value.end()) {
+    if (!record->is_boolean())
+      throw std::invalid_argument("lidar.recordIdealRanges must be a boolean");
+    settings.recordIdealRanges = record->get<bool>();
+  }
   if (value.contains("seed"))
     settings.seed = natural(value.at("seed"), "lidar.seed", std::numeric_limits<uint64_t>::max());
   if (value.contains("mount")) settings.baseFromSensor = readMount(value.at("mount"));
@@ -450,26 +458,37 @@ Json lidarPose(const robotics::LidarPose& pose) {
   return {{"xyz", Json::array({p.x, p.y, p.z})}, {"quaternionXyzw", Json::array({q.x, q.y, q.z, q.w})}};
 }
 
-Json lidarScan(const robotics::LidarScan& scan) {
+Json lidarScan(const robotics::LidarScan& scan, bool recordIdealRanges) {
   Json returns = Json::array();
   returns.get_ref<Json::array_t&>().reserve(scan.returns.size());
-  for (const auto& hit : scan.returns)
-    returns.push_back({{"rangeMeters", hit.rangeMeters ? Json(*hit.rangeMeters) : Json(nullptr)},
-                       {"status", lidarStatus(hit.status)},
-                       {"entityId", hit.entityId.empty() ? Json(nullptr) : Json(hit.entityId)}});
+  for (const auto& hit : scan.returns) {
+    Json row{{"rangeMeters", hit.rangeMeters ? Json(*hit.rangeMeters) : Json(nullptr)},
+             {"status", lidarStatus(hit.status)},
+             {"entityId", hit.entityId.empty() ? Json(nullptr) : Json(hit.entityId)}};
+    if (recordIdealRanges)
+      row["idealRangeMeters"] = hit.idealRangeMeters ? Json(*hit.idealRangeMeters) : Json(nullptr);
+    returns.push_back(std::move(row));
+  }
   return {{"tick", scan.tick}, {"seconds", scan.seconds}, {"worldFromSensor", lidarPose(scan.worldFromSensor)},
           {"returns", std::move(returns)}};
 }
 
 Json lidarReport(const ScenarioLidar& lidar, Json scans) {
   const auto& settings = lidar.sensor.settings();
-  return {{"scansPerSecondMilliHz", lidar.schedule.scansPerSecondMilliHz()}, {"firstTick", lidar.schedule.firstTick()},
-          {"azimuthSamples", settings.azimuthSamples}, {"azimuthStart", settings.azimuthStart},
-          {"azimuthSpan", settings.azimuthSpan}, {"elevationAngles", settings.elevationAngles},
-          {"minRangeMeters", settings.minRangeMeters}, {"maxRangeMeters", settings.maxRangeMeters},
-          {"noiseStdDevMeters", settings.noiseStdDevMeters}, {"dropoutProbability", settings.dropoutProbability},
-          {"seed", settings.seed}, {"baseFromSensor", lidarPose(settings.baseFromSensor)},
-          {"raysPerScan", lidar.sensor.directions().size()}, {"scans", std::move(scans)}};
+  Json report{{"scansPerSecondMilliHz", lidar.schedule.scansPerSecondMilliHz()}, {"firstTick", lidar.schedule.firstTick()},
+              {"azimuthSamples", settings.azimuthSamples}, {"azimuthStart", settings.azimuthStart},
+              {"azimuthSpan", settings.azimuthSpan}, {"elevationAngles", settings.elevationAngles},
+              {"minRangeMeters", settings.minRangeMeters}, {"maxRangeMeters", settings.maxRangeMeters},
+              {"noiseStdDevMeters", settings.noiseStdDevMeters}, {"dropoutProbability", settings.dropoutProbability},
+              {"seed", settings.seed}, {"baseFromSensor", lidarPose(settings.baseFromSensor)},
+              {"raysPerScan", lidar.sensor.directions().size()}, {"scans", std::move(scans)}};
+  if (settings.noiseStdDevPerMeter > 0)
+    report["noiseStdDevPerMeter"] = settings.noiseStdDevPerMeter;
+  if (settings.rangeResolutionMeters > 0)
+    report["rangeResolutionMeters"] = settings.rangeResolutionMeters;
+  if (settings.recordIdealRanges)
+    report["recordIdealRanges"] = true;
+  return report;
 }
 
 Json xyz(glm::dvec3 value) {
@@ -590,7 +609,8 @@ int run(int count, Char** args) {
         if (const auto& lidar = scenario.lidar; lidar && lidar->schedule.due(state.tick)) {
           const robotics::LidarPose worldFromBase{
               state.base.position, glm::angleAxis(state.base.yaw, glm::dvec3(0.0, 0.0, 1.0))};
-          scans.push_back(lidarScan(lidar->sensor.scan(worldFromBase, lidar->schedule, state.tick, cast)));
+          scans.push_back(lidarScan(lidar->sensor.scan(worldFromBase, lidar->schedule, state.tick, cast),
+                                    lidar->sensor.settings().recordIdealRanges));
         }
         if (auto& sensors = scenario.driveSensors) {
           const auto reading = sensors->observe({.tick = state.tick, .base = state.base,

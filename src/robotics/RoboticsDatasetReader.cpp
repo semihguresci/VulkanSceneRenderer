@@ -230,6 +230,21 @@ void validateLidar(const Json& value, const Json& calibration) {
   const auto minimum = number(field(calibration, "minRangeMeters"), "minRangeMeters");
   const auto maximum = number(field(calibration, "maxRangeMeters"), "maxRangeMeters");
   require(minimum >= 0 && maximum > minimum, "invalid LiDAR range calibration");
+  bool recordIdeal = false;
+  if (const auto record = calibration.find("recordIdealRanges"); record != calibration.end()) {
+    require(record->is_boolean(), "LiDAR recordIdealRanges must be a boolean");
+    recordIdeal = record->get<bool>();
+  }
+  if (const auto slope = calibration.find("noiseStdDevPerMeter"); slope != calibration.end()) {
+    const auto rate = number(*slope, "LiDAR noiseStdDevPerMeter");
+    const auto readoutNoise = calibration.find("noiseStdDevMeters");
+    const auto floor = readoutNoise == calibration.end() ? 0 : number(*readoutNoise, "LiDAR noiseStdDevMeters");
+    require(rate >= 0 && floor >= 0 && std::isfinite(floor + rate * maximum),
+            "LiDAR noiseStdDevPerMeter requires finite nonnegative noise across the range interval");
+  }
+  if (const auto resolution = calibration.find("rangeResolutionMeters"); resolution != calibration.end())
+    require(number(*resolution, "LiDAR rangeResolutionMeters") >= 0,
+            "LiDAR rangeResolutionMeters must be nonnegative");
   for (const auto& hit : returns) {
     const auto status = string(field(hit, "status"), "LiDAR return status");
     const auto& range = field(hit, "rangeMeters");
@@ -242,6 +257,17 @@ void validateLidar(const Json& value, const Json& calibration) {
       require(status == "no-hit" || status == "below-minimum" || status == "dropped" || status == "noise-out-of-range",
               "invalid LiDAR return status");
       require(range.is_null() && (status != "no-hit" || entity.is_null()), "invalid LiDAR return payload");
+    }
+    const auto ideal = hit.find("idealRangeMeters");
+    require((ideal != hit.end()) == recordIdeal, "LiDAR idealRangeMeters presence must match recordIdealRanges");
+    if (recordIdeal) {
+      if (status == "no-hit") {
+        require(ideal->is_null(), "LiDAR idealRangeMeters must be null for a miss");
+      } else {
+        const auto distance = number(*ideal, "LiDAR idealRangeMeters");
+        require(distance >= 0 && distance <= maximum && (distance < minimum) == (status == "below-minimum"),
+                "LiDAR idealRangeMeters must agree with calibrated range limits and return status");
+      }
     }
   }
 }
@@ -347,7 +373,7 @@ private:
   uint64_t size_;
 };
 
-void validateExr(const fs::path& path, uint32_t width, uint32_t height) {
+void validateExr(const fs::path& path, uint32_t width, uint32_t height, bool groundTruthDepth) {
   ExrInput input(path);
   require(input.integer(4) == 20000630 && input.integer(4) == 2, "unsupported EXR magic, version or flags");
   bool channels = false, window = false, compression = false, order = false;
@@ -365,6 +391,7 @@ void validateExr(const fs::path& path, uint32_t width, uint32_t height) {
       require(type == "chlist", "invalid EXR channels attribute");
       std::map<std::string, uint64_t> expected{{"B", 2}, {"G", 2}, {"InstanceID", 0},
                                                {"R", 2}, {"SemanticID", 0}, {"Z", 2}};
+      if (groundTruthDepth) expected.emplace("GroundTruthZ", 2);
       for (;;) {
         const auto channel = input.terminated();
         if (channel.empty()) break;
@@ -394,7 +421,7 @@ void validateExr(const fs::path& path, uint32_t width, uint32_t height) {
   }
   require(channels && window && compression && order, "missing required EXR attribute");
   const auto table = input.position();
-  const uint64_t rowBytes = uint64_t(width) * 6 * 4;
+  const uint64_t rowBytes = uint64_t(width) * (groundTruthDepth ? 7 : 6) * 4;
   const uint64_t firstRow = table + uint64_t(height) * 8;
   require(input.size() == firstRow + uint64_t(height) * (8 + rowBytes), "EXR scanline payload size mismatch");
   for (uint32_t row = 0; row < height; ++row) {
@@ -515,6 +542,7 @@ RoboticsDatasetSummary validateRoboticsDatasetFiles(const fs::path& directory, J
   }
   uint64_t seenCamera = 0, seenImu = 0, seenLidar = 0;
   std::optional<Json> intrinsics;
+  std::optional<bool> groundTruthLayout;
   for (uint64_t chunk = 0; chunk < chunks; ++chunk) {
     const auto name = std::format("chunk-{:08}.jsonl", chunk);
     std::ifstream input(filePath(root, name), std::ios::binary);
@@ -554,8 +582,15 @@ RoboticsDatasetSummary validateRoboticsDatasetFiles(const fs::path& directory, J
         const auto [width, height] = cameraDimensions(frame);
         if (intrinsics) require(*intrinsics == field(frame, "intrinsics"), "camera calibration changed during dataset");
         else intrinsics = field(frame, "intrinsics");
+        const auto channels = frame.find("channels");
+        const bool groundTruthDepth = channels != frame.end() && channels->contains("GroundTruthZ");
+        if (groundTruthDepth)
+          (void)string(channels->at("GroundTruthZ"), "channels.GroundTruthZ");
+        if (groundTruthLayout)
+          require(*groundTruthLayout == groundTruthDepth, "camera ground-truth channel layout changed during dataset");
+        else groundTruthLayout = groundTruthDepth;
         verifyFingerprint(image, capture);
-        validateExr(image, width, height);
+        validateExr(image, width, height, groundTruthDepth);
         expected.insert(imageName);
         ++seenCamera;
       }

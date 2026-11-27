@@ -1560,7 +1560,8 @@ void RendererFrontend::initialize() {
         svc_.ctx.deviceWrapper, svc_.allocationManager, svc_.pipelineManager);
     if (svc_.config.sensorCameraPlayback)
       subs_.bimManager->enableSensorLabels(svc_.config.sensorSourceNamespace,
-                                          svc_.config.sensorMetersPerRendererUnit);
+                                          svc_.config.sensorMetersPerRendererUnit,
+                                          svc_.config.sensorCameraPlayback->settings.appearance);
     subs_.bimManager->resizeObjectFrames(static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
     subs_.bimManager->createMeshletResidencyResources(
         container::util::executableDirectory());
@@ -7461,6 +7462,13 @@ void RendererFrontend::updateFrameDescriptorSets(
               : 1u;
       if (imageIndex == UINT32_MAX) {
         subs_.lightingManager->uploadLightingData();
+      } else if (sensorCameraCapture_.requested) {
+        // Only the sensor draw sees these radiance gains. Leave shadow
+        // geometry, light positions and the editor's light state alone.
+        auto observationLighting = lightingData;
+        observationLighting.directionalColorIntensity.a *= sensorCameraCapture_.lighting.directional;
+        observationLighting.environmentIntensity *= sensorCameraCapture_.lighting.environment;
+        subs_.lightingManager->uploadLightingData(imageIndex, observationLighting);
       } else {
         subs_.lightingManager->uploadLightingData(imageIndex);
       }

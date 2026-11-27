@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Container/robotics/SensorAppearance.h"
 #include "Container/robotics/SensorSchedule.h"
 
 #include <glm/gtc/quaternion.hpp>
@@ -37,6 +38,13 @@ struct SensorCameraSettings {
   std::optional<SensorCameraDistortion> distortion;
   double depthNoiseStdDevMeters{};
   uint64_t depthNoiseSeed{};
+  // Probability that an in-range surface produces no observed axial depth.
+  // This does not change the source metric depth or its annotations.
+  double depthDropoutProbability{};
+  // Additive per-channel read noise in scene-linear RGB units.
+  double rgbNoiseStdDevLinear{};
+  uint64_t rgbNoiseSeed{};
+  std::optional<SensorAppearanceSettings> appearance;
 };
 
 struct SensorCameraFrame {

@@ -230,6 +230,8 @@ void RendererFrontend::beginSensorCameraCapture(const std::filesystem::path& dir
   }
   capture.metersPerRendererUnit = *labels->metersPerRendererUnit;
   capture.sceneSource = *labels->sceneSource;
+  if (const auto& appearance = svc_.config.sensorCameraPlayback->settings.appearance)
+    capture.lighting = robotics::sampleSensorLighting(*appearance);
   const auto depthScale = static_cast<float>(capture.metersPerRendererUnit);
   if (!std::isfinite(depthScale) || depthScale <= 0.0f)
     throw std::runtime_error("BIM metric scale cannot be represented in the camera pass");
@@ -339,7 +341,7 @@ void RendererFrontend::finishSensorCameraCapture() {
   if (capture.requested || capture.completed != svc_.config.sensorCameraPlayback->frames.size())
     throw std::runtime_error("Sensor camera dataset stopped before capturing every scheduled frame");
   const auto& simulationReportSha256 = svc_.config.sensorCameraPlayback->simulationReportSha256;
-  const nlohmann::json manifest{
+  nlohmann::json manifest{
       {"schema", "container.sensor-camera-dataset"}, {"version", 1},
       {"frameCount", capture.completed}, {"labels", "labels.json"},
       {"sceneSource", robotics::bimSceneSourceJson(capture.sceneSource)},
@@ -348,6 +350,11 @@ void RendererFrontend::finishSensorCameraCapture() {
       {"frameImagePattern", "frame-%08d.exr"}, {"frameMetadataPattern", "frame-%08d.json"},
       {"colorSpace", "linear-sRGB"}, {"depthUnits", "metres"},
       {"surfacePolicy", "opaque-and-alpha-mask"}};
+  if (const auto& appearance = svc_.config.sensorCameraPlayback->settings.appearance) {
+    manifest["appearance"] = {{"algorithm", "splitmix64-v1"}, {"seed", appearance->seed},
+        {"lightingVariation", appearance->lightingVariation}, {"materialVariation", appearance->materialVariation},
+        {"directionalGain", capture.lighting.directional}, {"environmentGain", capture.lighting.environment}};
+  }
   container::util::writeFileAtomically(capture.directory / "dataset.json", manifest.dump(2) + '\n',
       container::util::AtomicFilePublication::CreateNew);
 }

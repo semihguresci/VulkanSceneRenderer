@@ -32,7 +32,8 @@ add_library(VulkanSceneRenderer_robotics_drive DifferentialDrive.cpp Differentia
 target_link_libraries(VulkanSceneRenderer_robotics_drive PUBLIC Dep_Math)
 
 add_library(VulkanSceneRenderer_robotics_sensors
-    DriveSensors.cpp RaycastLidar.cpp SensorSchedule.cpp SensorCamera.cpp DatasetSimulationReport.cpp)
+    DriveSensors.cpp RaycastLidar.cpp SensorSchedule.cpp SensorCamera.cpp SensorAppearance.cpp
+    DatasetSimulationReport.cpp)
 target_link_libraries(VulkanSceneRenderer_robotics_sensors PUBLIC VulkanSceneRenderer_robotics_drive
     PRIVATE nlohmann_json::nlohmann_json VulkanSceneRenderer_fingerprint)
 
