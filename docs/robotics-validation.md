@@ -1,8 +1,8 @@
 # Validate BIM robotics
 
 The Windows Release CI matrix exercises each combination of Jolt physics
-and URDF support. All four profiles run the native BIM import, camera and
-dataset, drive and LiDAR, and dependency-boundary tests. The jobs use the
+and URDF support. All four profiles run the native BIM import and OpenUSD export,
+camera and dataset, drive and LiDAR, and dependency-boundary tests. The jobs use the
 committed fixtures and run on hosted CPU runners.
 
 | Profile | Jolt | URDF | Additional coverage |
@@ -44,6 +44,10 @@ checks the metric REP-103 sensor pose, hit point, range, and authored IFC
 wall identity against independent numeric witnesses. The scan transitions
 between perpendicular walls as the arm rotates, which makes axis and
 scale mistakes observable. [Coordinate conventions](coordinate-conventions.md#semantic-bim-export-for-robotics)
+
+The optional OpenUSD round-trip test checks the generated stage with an external
+SDK. The same fixture can run in Isaac Sim and verify collision queries.
+[Export and validate a robotics OpenUSD scene](robotics-openusd.md)
 
 ## Run the optional Vulkan smoke tests
 

@@ -60,6 +60,12 @@ struct ElementProperty {
   std::string category{};
 };
 
+struct AuthoredDrawablePlacement {
+  // The imported world transform before float rounding and render-only offsets.
+  // No value means this drawable has an invalid authored placement or ancestor.
+  std::optional<glm::dmat4> rendererWorldFromLocal;
+};
+
 struct Element {
   uint32_t meshId{0};
   GeometryKind geometryKind{GeometryKind::Mesh};
@@ -88,6 +94,8 @@ struct Element {
   std::string semanticSourceId{};
   // Standalone geometry with no owning semantic product.
   bool isRepresentationOnly{false};
+  // Importers without independent authored placement evidence leave this unset.
+  std::optional<AuthoredDrawablePlacement> authoredPlacement;
 };
 
 struct MaterialTextureAsset {

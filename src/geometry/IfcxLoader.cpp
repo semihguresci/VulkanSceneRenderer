@@ -31,6 +31,7 @@
 
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/matrix.hpp>
 
 namespace container::geometry::ifcx {
 namespace {
@@ -1969,6 +1970,11 @@ struct BoundaryEndpoint {
   size_t occurrenceCount{};
 };
 
+struct SemanticDrawable {
+  std::string owner;
+  dotbim::AuthoredDrawablePlacement placement;
+};
+
 struct SceneBuilder {
   Model model{};
   const NodeGraph &graph;
@@ -1979,7 +1985,7 @@ struct SceneBuilder {
   uint32_t nextMeshId{0};
   glm::mat4 importTransform{1.0f};
   std::stop_token stop;
-  std::unordered_map<std::string, std::string> semanticOwners{};
+  std::unordered_map<std::string, SemanticDrawable> semanticDrawables{};
   std::unordered_map<std::string_view, BoundaryEndpoint> boundaryEndpoints{};
 };
 
@@ -2064,10 +2070,19 @@ bool finiteTransform(const glm::dmat4 &transform) {
   return true;
 }
 
+bool validDrawableAffine(const glm::dmat4 &transform) {
+  if (!finiteTransform(transform) || transform[0][3] != 0.0 ||
+      transform[1][3] != 0.0 || transform[2][3] != 0.0 || transform[3][3] != 1.0)
+    return false;
+  const auto determinant = glm::determinant(glm::dmat3(transform));
+  return std::isfinite(determinant) && determinant != 0.0;
+}
+
 void traverseSemantics(SceneBuilder &builder, const std::string &path,
                        const std::string &logicalPath,
                        const glm::dmat4 &parentTransform, bool parentHasPlacement,
-                       const std::string &parentProduct, bool inheritedDefinition,
+                       bool parentHasAuthoredAffine, const std::string &parentProduct,
+                       bool inheritedDefinition,
                        std::unordered_set<std::string> &visiting) {
   container::util::checkModelImportCancellation(builder.stop);
   const auto found = builder.graph.nodes.find(path);
@@ -2077,6 +2092,7 @@ void traverseSemantics(SceneBuilder &builder, const std::string &path,
   const auto local = semanticUsdTransform(node.attributes);
   const glm::dmat4 world = parentTransform * local.value_or(glm::dmat4(1.0));
   const bool hasPlacement = parentHasPlacement && local && finiteTransform(world);
+  const bool hasAuthoredAffine = parentHasAuthoredAffine && local && validDrawableAffine(*local);
   std::string owner = parentProduct;
   // A referenced definition contributes its attributes/geometry to its
   // occurrence. It is not another product occurrence at the same placement.
@@ -2119,15 +2135,24 @@ void traverseSemantics(SceneBuilder &builder, const std::string &path,
     }
     owner = logicalPath;
   }
-  if (!owner.empty())
-    builder.semanticOwners.emplace(logicalPath, owner);
+  if (hasDrawable) {
+    const auto rendererPlacement = glm::dmat4(builder.importTransform) * world;
+    dotbim::AuthoredDrawablePlacement placement;
+    if (hasAuthoredAffine && validDrawableAffine(rendererPlacement))
+      placement.rendererWorldFromLocal = rendererPlacement;
+    const auto [drawable, inserted] = builder.semanticDrawables.try_emplace(
+        logicalPath, SemanticDrawable{owner, placement});
+    if (!inserted && (drawable->second.owner != owner ||
+                     drawable->second.placement.rendererWorldFromLocal != placement.rendererWorldFromLocal))
+      drawable->second.placement.rendererWorldFromLocal.reset();
+  }
   // Semantics survive hidden or non-drawable geometry, unlike render rows.
   for (const auto &child : node.children)
     traverseSemantics(builder, child, logicalPath + "/" + child, world,
-                      hasPlacement, owner, false, visiting);
+                      hasPlacement, hasAuthoredAffine, owner, false, visiting);
   for (const auto &inherited : node.inherits)
     traverseSemantics(builder, inherited, logicalPath + "=>" + inherited, world,
-                      hasPlacement, owner, true, visiting);
+                      hasPlacement, hasAuthoredAffine, owner, true, visiting);
   visiting.erase(path);
 }
 
@@ -2295,9 +2320,13 @@ void appendElement(SceneBuilder &builder, const std::string &geometryKey,
       inheritedStringAttribute(chain, builder.graph.nodes,
                                {"sourceId", "source_id"})
           .value_or(logicalPath);
-  if (const auto owner = builder.semanticOwners.find(logicalPath);
-      owner != builder.semanticOwners.end())
-    element.semanticSourceId = owner->second;
+  if (const auto drawable = builder.semanticDrawables.find(logicalPath);
+      drawable != builder.semanticDrawables.end()) {
+    element.semanticSourceId = drawable->second.owner;
+    element.authoredPlacement = drawable->second.placement;
+  } else {
+    element.authoredPlacement.emplace();
+  }
   element.properties = inheritedProperties(chain, builder.graph.nodes, builder.stop);
   builder.model.elements.push_back(std::move(element));
 }
@@ -2691,7 +2720,7 @@ Model loadFromRoot(const Json &root, float importScale,
   const auto spaceBoundaries = indexSpaceBoundaryReferences(builder);
   std::unordered_set<std::string> visiting;
   for (const std::string &rootPath : roots) {
-    traverseSemantics(builder, rootPath, rootPath, glm::dmat4(1.0), true, {},
+    traverseSemantics(builder, rootPath, rootPath, glm::dmat4(1.0), true, true, {},
                       false, visiting);
   }
   appendSpaceBoundaryRelationships(builder, spaceBoundaries);

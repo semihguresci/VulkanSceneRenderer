@@ -41,6 +41,7 @@ $tests = @(
     'robotics_dataset_reader_tests',
     'bim_sensor_label_tests',
     'bim_robotics_scene_tests',
+    'bim_robotics_usd_tests',
     'bim_collision_geometry_tests',
     'bim_asset_cache_tests',
     'dotbim_loader_tests',
@@ -50,7 +51,7 @@ $tests = @(
     'bim_model_compare_tests'
 )
 $scriptTests = @('robotics_module_boundaries', 'robotics_gpu_smoke_runner_tests')
-$tools = @('BimRoboticsScene', 'BimRoboticsAssets', 'BimRoboticsDataset')
+$tools = @('BimRoboticsScene', 'BimRoboticsUsd', 'BimRoboticsAssets', 'BimRoboticsDataset')
 
 if ($physics) {
     $tests += @(
