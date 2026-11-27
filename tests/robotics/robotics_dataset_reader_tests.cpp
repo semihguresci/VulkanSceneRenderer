@@ -277,6 +277,27 @@ TEST_F(RoboticsDatasetReader, ReplaysRowsThatSpanSeveralInputBlocks) {
   EXPECT_EQ(summary.manifest, manifest_);
 }
 
+TEST_F(RoboticsDatasetReader, ReplaysMaximumSizeLidarScans) {
+  constexpr size_t rays = 65'536;
+  manifest_["sensors"]["lidar"]["raysPerScan"] = rays;
+  const auto noHit = rows_[0]["lidar"]["returns"][0];
+  for (auto& row : rows_) {
+    if (!row["lidar"].is_null()) row["lidar"]["returns"] = Json::array_t(rays, noHit);
+  }
+  save();
+
+  size_t scans = 0;
+  (void)readRoboticsDataset(directory_, [&](const Json& row) {
+    if (row["lidar"].is_null()) return;
+    const auto& returns = row["lidar"]["returns"];
+    ASSERT_EQ(returns.size(), rays);
+    EXPECT_EQ(returns.front(), noHit);
+    EXPECT_EQ(returns.back(), noHit);
+    ++scans;
+  });
+  EXPECT_EQ(scans, 2u);
+}
+
 TEST_F(RoboticsDatasetReader, WriterRoundTripPreservesCameraLabelsAndEveryCommittedBasePose) {
   const auto [camera, report] = sourceCaptureAndReport();
   const auto output = root_ / "joined";

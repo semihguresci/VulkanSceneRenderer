@@ -104,20 +104,51 @@ fs::path filePath(const fs::path& directory, std::string_view name) {
   return result;
 }
 
+class JsonShapeValidator {
+ public:
+  explicit JsonShapeValidator(std::string_view name) : name_(name) {}
+
+  bool null() { return true; }
+  bool boolean(bool) { return true; }
+  bool number_integer(Json::number_integer_t) { return true; }
+  bool number_unsigned(Json::number_unsigned_t) { return true; }
+  bool number_float(Json::number_float_t value, const Json::string_t&) {
+    if (!std::isfinite(value)) fail("nonfinite JSON number");
+    return true;
+  }
+  bool string(Json::string_t&) { return true; }
+  bool binary(Json::binary_t&) { fail("unexpected binary JSON value"); }
+  bool start_object(size_t) { return start(); }
+  bool start_array(size_t) { return start(); }
+  bool end_object() { objectKeys_.pop_back(); return true; }
+  bool end_array() { objectKeys_.pop_back(); return true; }
+  bool key(Json::string_t& key) {
+    if (!objectKeys_.back().insert(key).second) fail("duplicate JSON key");
+    return true;
+  }
+  bool parse_error(size_t, const std::string&, const Json::exception&) { fail("invalid JSON"); }
+
+ private:
+  bool start() {
+    if (objectKeys_.size() == 64) fail("JSON nesting exceeds its limit");
+    objectKeys_.emplace_back();
+    return true;
+  }
+  [[noreturn]] void fail(std::string_view reason) const {
+    invalid(std::string(reason) + " in " + std::string(name_));
+  }
+
+  std::string_view name_;
+  std::vector<std::set<std::string>> objectKeys_;
+};
+
 Json parse(std::string_view bytes, std::string_view name) {
-  std::vector<std::set<std::string>> objectKeys;
+  // The DOM callback parser scans the parent array at each object end.
+  // Validate shape separately to keep a full LiDAR scan linear in its size.
+  JsonShapeValidator validate(name);
+  if (!Json::sax_parse(bytes, &validate)) invalid("invalid JSON in " + std::string(name));
   try {
-    return Json::parse(bytes, [&](int depth, Json::parse_event_t event, Json& value) {
-      if (depth > 64) invalid("JSON nesting exceeds its limit in " + std::string(name));
-      if (event == Json::parse_event_t::object_start) objectKeys.emplace_back();
-      if (event == Json::parse_event_t::key &&
-          (objectKeys.empty() || !objectKeys.back().insert(value.get<std::string>()).second))
-        invalid("duplicate JSON key in " + std::string(name));
-      if (event == Json::parse_event_t::object_end) objectKeys.pop_back();
-      if (event == Json::parse_event_t::value && value.is_number() && !std::isfinite(value.get<double>()))
-        invalid("nonfinite JSON number in " + std::string(name));
-      return true;
-    });
+    return Json::parse(bytes);
   } catch (const Json::exception& error) {
     invalid("invalid JSON in " + std::string(name) + ": " + error.what());
   }
