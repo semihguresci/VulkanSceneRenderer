@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import struct
 import sys
 import time
 
@@ -20,7 +21,7 @@ from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
 from rclpy.utilities import remove_ros_args
 from rosgraph_msgs.msg import Clock as ClockMessage
-from sensor_msgs.msg import CameraInfo, Image
+from sensor_msgs.msg import CameraInfo, Image, LaserScan, PointCloud2, PointField
 from tf2_ros import StaticTransformBroadcaster, TransformBroadcaster
 
 from .transport import DriveStream, native_input_path
@@ -33,6 +34,7 @@ _MAP = "map"
 _ODOM = "odom"
 _BASE = "base_link"
 _OPTICAL = "camera_optical_frame"
+_LIDAR = "lidar_link"
 
 
 def _number(value):
@@ -120,6 +122,108 @@ def _image(data, width, height, bytes_per_pixel, encoding, stamp):
     return message
 
 
+class LidarPublisher:
+    def __init__(self, node, calibration):
+        self.bearings = calibration["azimuthSamples"]
+        elevations = calibration["elevationAngles"]
+        if (type(self.bearings) is not int or self.bearings <= 0 or not isinstance(elevations, list) or
+                not elevations or self.bearings * len(elevations) > 4096):
+            raise ValueError("Invalid native LiDAR organized scan size")
+        self.elevations = tuple(map(_number, elevations))
+        if any(abs(elevation) > math.pi / 2 for elevation in self.elevations):
+            raise ValueError("Invalid native LiDAR elevation angles")
+        self.start, self.increment = (_number(calibration[key]) for key in ("azimuthStart", "azimuthIncrement"))
+        if abs(self.start) > math.pi or not 0 <= self.increment * (self.bearings - 1) <= math.tau:
+            raise ValueError("Invalid native LiDAR azimuth calibration")
+        self.min_range, self.max_range = (_number(calibration[key]) for key in ("minRangeMeters", "maxRangeMeters"))
+        if not 0 <= self.min_range < self.max_range <= 3.4028234663852886e38:
+            raise ValueError("Invalid native LiDAR range calibration")
+        if struct.unpack("<f", struct.pack("<f", self.min_range)) == struct.unpack("<f", struct.pack("<f", self.max_range)):
+            raise ValueError("Native LiDAR range interval collapses at ROS float32 precision")
+        rate = calibration["scansPerSecondMilliHz"]
+        if type(rate) is not int or rate <= 0:
+            raise ValueError("Invalid native LiDAR scan rate")
+        self.scan_period = 1000 / rate
+        mount = calibration["baseFromSensor"]
+        self.mount = TransformStamped()
+        self.mount.header.frame_id = _BASE
+        self.mount.header.stamp = Time(sec=1)
+        self.mount.child_frame_id = _LIDAR
+        offset = self.mount.transform.translation
+        offset.x, offset.y, offset.z = _vector(mount["xyz"], 3)
+        quaternion = _vector(mount["quaternionXyzw"], 4)
+        if not math.isclose(math.hypot(*quaternion), 1, abs_tol=1e-9):
+            raise ValueError("Invalid native LiDAR mounting rotation")
+        rotation = self.mount.transform.rotation
+        rotation.x, rotation.y, rotation.z, rotation.w = quaternion
+
+        self.index = 0
+        self.last_stamp_ns = None
+        self.planar = self.elevations == (0.0,)
+        self.directions = ()
+        if self.planar:
+            self.topic = node.create_publisher(LaserScan, "/scan", qos_profile_sensor_data)
+        else:
+            self.topic = node.create_publisher(PointCloud2, "/lidar/points", qos_profile_sensor_data)
+            azimuths = [self.start + self.increment * beam for beam in range(self.bearings)]
+            self.directions = tuple((math.cos(elevation) * math.cos(azimuth),
+                                     math.cos(elevation) * math.sin(azimuth), math.sin(elevation))
+                                    for elevation in self.elevations for azimuth in azimuths)
+
+    def _range(self, value):
+        if value == "no-hit":
+            return math.inf
+        if value == "below-minimum":
+            return -math.inf
+        if value in ("dropped", "noise-out-of-range"):
+            return math.nan
+        distance = _number(value)
+        if not self.min_range <= distance <= self.max_range:
+            raise ValueError("Native LiDAR return lies outside the calibrated interval")
+        return distance
+
+    def message(self, sample, stamp, stamp_ns):
+        index, values = sample["sampleIndex"], sample["rangesMeters"]
+        if (type(index) is not int or index != self.index or not isinstance(values, list) or
+                len(values) != self.bearings * len(self.elevations)):
+            raise ValueError("Invalid native LiDAR sample index or beam count")
+        ranges = tuple(map(self._range, values))
+        if self.planar:
+            message = LaserScan()
+            message.angle_min = self.start
+            message.angle_increment = self.increment
+            message.angle_max = self.start + self.increment * (self.bearings - 1)
+            message.scan_time = self.scan_period if self.last_stamp_ns is None else (
+                (stamp_ns - self.last_stamp_ns) / _NS_PER_SECOND)
+            message.range_min, message.range_max = self.min_range, self.max_range
+            message.ranges = array("f", ranges)
+        else:
+            message = PointCloud2()
+            message.width, message.height = self.bearings, len(self.elevations)
+            message.fields = [PointField(name=axis, offset=4 * index, datatype=PointField.FLOAT32, count=1)
+                              for index, axis in enumerate(("x", "y", "z"))]
+            message.point_step = 12
+            message.row_step = self.bearings * message.point_step
+            xyz = bytearray(len(ranges) * message.point_step)
+            message.is_dense = True
+            for beam, (distance, direction) in enumerate(zip(ranges, self.directions)):
+                if math.isfinite(distance):
+                    point = tuple(distance * component for component in direction)
+                else:
+                    point = (math.nan,) * 3
+                    message.is_dense = False
+                struct.pack_into("<fff", xyz, beam * message.point_step, *point)
+            message.data = array("B", xyz)
+        message.header.frame_id = _LIDAR
+        message.header.stamp = stamp
+        return message
+
+    def publish(self, message, stamp_ns):
+        self.topic.publish(message)
+        self.index += 1
+        self.last_stamp_ns = stamp_ns
+
+
 def _map_manifest(path, description):
     if path is None:
         return None
@@ -174,6 +278,10 @@ class Bridge:
         calibration = description["camera"]
         self.camera_info = None
         static = [_transform(_MAP, _ODOM, self.map_from_odom, Time(sec=1))]
+        self.lidar = None
+        if description.get("lidar") is not None:
+            self.lidar = LidarPublisher(node, description["lidar"])
+            static.append(self.lidar.mount)
         if calibration is not None:
             self.camera_info = _camera_info(calibration)
             self.camera_info_topic = node.create_publisher(CameraInfo, "/camera/camera_info", qos_profile_sensor_data)
@@ -265,12 +373,19 @@ class Bridge:
         odom.twist.twist.linear.x = _number(twist["linearMetersPerSecond"])
         odom.twist.twist.angular.z = _number(twist["angularRadiansPerSecond"])
         messages = self._camera_messages(state["camera"], stamp)
+        lidar_message = None
+        if state.get("lidar") is not None:
+            if self.lidar is None:
+                raise ValueError("Native LiDAR sample lacks calibration")
+            lidar_message = self.lidar.message(state["lidar"], stamp, stamp_ns)
 
         clock = ClockMessage()
         clock.clock = stamp
         self.clock.publish(clock)
         self.tf.sendTransform(transform)
         self.odom.publish(odom)
+        if lidar_message is not None:
+            self.lidar.publish(lidar_message, stamp_ns)
         camera_evidence = None
         if messages is not None:
             rgb, depth, camera_evidence = messages

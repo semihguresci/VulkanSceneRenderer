@@ -113,9 +113,40 @@ dimensions, and selected floor before the ROS graph starts.
 | `/cmd_vel` | Planar `geometry_msgs/Twist` in metres and radians per second. The bridge sends zero velocity when the last valid command is older than 0.5 seconds. |
 | `/camera/image_raw`, `/camera/camera_info` | Scheduled RGB8 and calibration in the camera optical frame, with the same native tick stamp. |
 | `/camera/depth/image_raw`, `/camera/depth/camera_info` | Little-endian `32FC1` axial metres and the same optical calibration. A missed ray gives NaN. |
+| `/scan` | Planar LiDAR in `lidar_link` as `sensor_msgs/LaserScan`. Angles turn counterclockwise from +X around +Z. |
+| `/lidar/points` | An organized `sensor_msgs/PointCloud2` for elevated or layered LiDAR. Rows follow the authored elevation order. Each point is little-endian XYZ in metres in `lidar_link`. |
 
 The CPU RGB-D camera traces the live collision geometry, including the door
 state, and colors hits from authored BIM material factors when available.
 It supports pinhole calibration and resolutions up to 256 × 256. Use the
 [hidden Vulkan camera capture](sensor-camera-datasets.md) for full render
 materials or lens and sensor appearance effects. [ROS frame conventions](https://www.ros.org/reps/rep-0103.html) · [Depth image representation](https://www.ros.org/reps/rep-0118.html)
+
+## Verify the live ROS sensor contract
+
+Add a `lidar` block to the scenario to publish scheduled scans. The mount sets
+the static transform from `base_link` to `lidar_link`. A single zero-elevation
+channel publishes `/scan`. All other channel layouts publish `/lidar/points`.
+Point-cloud misses keep their positions in the grid as NaN triples. LaserScan
+uses positive infinity for no return, negative infinity below minimum range,
+and NaN for invalid returns. Every beam in one scan uses the same committed
+tick, so `time_increment` is zero. [Distance measurement conventions](https://github.com/ros-infrastructure/rep/blob/master/rep-0117.rst)
+
+With the Jazzy package installed, run the subscriber against the native
+simulator. This example checks three known ranges in the millimetre IFC
+fixture and a beam that misses both walls.
+
+```bash
+python3 -B tests/robotics/bim_ros2_contract.py --sim-executable "$sim" \
+  --scene tests/fixtures/robotics/lidar-corner.ifc --namespace ros-contract-corner \
+  --scenario tests/fixtures/robotics/lidar-corner-ros2-planar.json \
+  --camera tests/fixtures/robotics/doorway-ros2-camera.json --output out/live-planar-scan \
+  --scan --expect-range 0=4 --expect-range 1=4.242640687119286 --expect-range 2=3 --expect-range 3=inf
+```
+
+For organized point clouds, use `--cloud` with `lidar-corner-ros2-layered.json`
+and a fresh output directory. The subscriber starts the installed launch file,
+verifies advertised topic types and QoS, joins static TF after start, compares
+sensor stamps to the native clock and odometry, and drives the command watchdog.
+It writes `contract.json`, the launch log, and the native command trace. The
+Jazzy CI job publishes both fixture results in `bim-ros2-jazzy-contract`.

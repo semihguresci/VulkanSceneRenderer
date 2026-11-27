@@ -22,6 +22,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <numbers>
 #include <numeric>
 #include <optional>
 #include <set>
@@ -56,6 +57,7 @@ constexpr uint64_t maxScenarioBytes = 4u * 1024u * 1024u;
 constexpr uint64_t maxTicks = 8191;
 constexpr uint64_t maxFrames = 1'000'000;
 constexpr uint64_t maxLidarReturns = 1'000'000;
+constexpr size_t maxStreamLidarRays = 4096;
 
 struct Command {
   uint64_t tick;
@@ -767,11 +769,43 @@ Json streamImage(const StreamCamera& camera, const robotics::DifferentialDriveSt
           {"depth32fc1Base64", streamBase64(depth)}};
 }
 
+Json describeStreamLidar(const ScenarioLidar& lidar) {
+  const auto& settings = lidar.sensor.settings();
+  constexpr auto revolution = 2 * std::numbers::pi;
+  const auto bearings = settings.azimuthSamples;
+  const auto intervals = settings.azimuthSpan == revolution ? bearings : bearings - 1;
+  return {{"baseFromSensor", lidarPose(settings.baseFromSensor)},
+          {"scansPerSecondMilliHz", lidar.schedule.scansPerSecondMilliHz()},
+          {"firstTick", lidar.schedule.firstTick()}, {"azimuthSamples", bearings},
+          {"azimuthStart", std::remainder(settings.azimuthStart, revolution)},
+          {"azimuthIncrement", bearings > 1 ? settings.azimuthSpan / intervals : 0.0},
+          {"elevationAngles", settings.elevationAngles}, {"minRangeMeters", settings.minRangeMeters},
+          {"maxRangeMeters", settings.maxRangeMeters}};
+}
+
+Json streamLidar(const ScenarioLidar& lidar, const robotics::DifferentialDriveState& state,
+                 const robotics::LidarCast& rays) {
+  if (!lidar.schedule.due(state.tick)) return nullptr;
+  const robotics::LidarPose worldFromBase{
+      state.base.position, glm::angleAxis(state.base.yaw, glm::dvec3(0.0, 0.0, 1.0))};
+  const auto scan = lidar.sensor.scan(worldFromBase, lidar.schedule, state.tick, rays);
+  Json ranges = Json::array();
+  ranges.get_ref<Json::array_t&>().reserve(scan.returns.size());
+  // Keep the committed reply bounded and use JSON-safe names for invalid ranges.
+  for (const auto& hit : scan.returns)
+    ranges.push_back(hit.rangeMeters ? Json(*hit.rangeMeters) : Json(lidarStatus(hit.status)));
+  return {{"sampleIndex", lidar.schedule.scansThrough(state.tick) - 1}, {"rangesMeters", std::move(ranges)}};
+}
+
 void validateStreamScenario(const Scenario& scenario) {
   if (!scenario.commands.empty() || scenario.frameNanos || !scenario.frameNanosSequence.empty())
     throw std::invalid_argument("Stream scenarios require ticks and no prerecorded commands or frame cadence");
-  if (scenario.lidar || scenario.driveSensors)
-    throw std::invalid_argument("Stream scenarios do not support batch LiDAR or drive sensor settings");
+  if (scenario.driveSensors)
+    throw std::invalid_argument("Stream scenarios do not support batch drive sensor settings");
+  if (const auto& lidar = scenario.lidar; lidar &&
+      (lidar->sensor.directions().size() > maxStreamLidarRays ||
+       lidar->sensor.settings().maxRangeMeters > std::numeric_limits<float>::max()))
+    throw std::invalid_argument("Stream LiDAR requires at most 4096 rays and float32 range in meters");
 }
 
 Json streamEnvelope(std::string_view op, bool ok) {
@@ -856,6 +890,7 @@ void serveDriveStream(robotics::DifferentialDriveSimulation& simulation, const S
   const auto observe = [&](robotics::DriveWheels previousEncoder) {
     auto sample = streamSample(simulation, scenario, previousEncoder);
     sample["camera"] = camera ? streamImage(*camera, simulation.state(), rays, colors) : Json(nullptr);
+    sample["lidar"] = scenario.lidar ? streamLidar(*scenario.lidar, simulation.state(), rays) : Json(nullptr);
     return sample;
   };
   auto committed = observe(simulation.state().encoderAngles);
@@ -928,10 +963,11 @@ void runDriveStream(const std::filesystem::path& input, const std::string& sourc
                          {"sourceNamespace", sourceNamespace}, {"sceneSource", robotics::bimSceneSourceJson(sceneSource)},
                          {"capsule", {{"radiusMeters", capsule.radius}, {"heightMeters", capsule.height}}},
                          {"openDoorIds", scenario.openDoorIds},
-                         {"camera", camera ? describeStreamCamera(camera->settings) : Json(nullptr)}};
+                         {"camera", camera ? describeStreamCamera(camera->settings) : Json(nullptr)},
+                         {"lidar", scenario.lidar ? describeStreamLidar(*scenario.lidar) : Json(nullptr)}};
   robotics::BimCollisionWorld world(std::move(collision), scenario.openDoorIds, 1);
   robotics::DifferentialDriveSimulation simulation(world, scenario.spawn, scenario.options);
-  const auto rays = camera ? world.lidarRaycasts(scenario.options.robotId) : robotics::LidarCast{};
+  const auto rays = camera || scenario.lidar ? world.lidarRaycasts(scenario.options.robotId) : robotics::LidarCast{};
   serveDriveStream(simulation, scenario, description, camera, rays, colors);
 }
 

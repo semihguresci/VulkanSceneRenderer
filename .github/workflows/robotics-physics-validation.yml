@@ -270,3 +270,127 @@ jobs:
           name: bim-nav2-physical-verification
           path: out/nav2-maps/nav2-sweeps.json
           if-no-files-found: warn
+
+  ros2-contract:
+    name: ROS 2 Jazzy headless contract
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    container:
+      image: ros:jazzy-ros-base-noble@sha256:3f3a309d342b0f8a9212d195a416d5c50deb1716edc8bdfe5e134bcaa38d708c
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the native build tools and ROS dependencies
+        shell: bash
+        run: |
+          mkdir -p out/ros2-contract out/ros2-vcpkg-cache
+          export DEBIAN_FRONTEND=noninteractive
+          packages=(build-essential cmake git curl ca-certificates ninja-build pkg-config zip unzip
+                    libvulkan-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
+                    libxt-dev libxkbcommon-dev libwayland-dev libegl-dev libgl-dev
+                    autoconf automake libtool bison gperf python3 python3-colcon-common-extensions
+                    ros-jazzy-builtin-interfaces ros-jazzy-geometry-msgs ros-jazzy-nav-msgs
+                    ros-jazzy-launch-ros ros-jazzy-rclpy ros-jazzy-ros2launch ros-jazzy-rosgraph-msgs ros-jazzy-sensor-msgs
+                    ros-jazzy-tf2-msgs ros-jazzy-tf2-ros-py)
+          apt-get update
+          apt-get install -y --no-install-recommends "${packages[@]}"
+          dpkg-query -W "${packages[@]}" > out/ros2-contract/packages.txt
+
+      - name: Check out the pinned vcpkg toolchain
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: microsoft/vcpkg
+          ref: 5f8c424e267b7360d451df406eeefb3767985b17
+          path: out/ros2-vcpkg
+          filter: blob:none
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check out Vulkan headers for CMake configure
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: KhronosGroup/Vulkan-Headers
+          ref: 6802bb4733b63ed5efd3adb308a6c885ef180ea1 # v1.4.363
+          path: out/ros2-vulkan-headers
+          persist-credentials: false
+
+      - name: Restore vcpkg binaries
+        id: ros2-vcpkg-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: out/ros2-vcpkg-cache
+          key: ubuntu-24.04-jazzy-x64-robotics-vcpkg-5f8c424e-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/vcpkg-overlay-ports/**') }}
+
+      - name: Build the native headless simulator
+        shell: bash
+        run: |
+          # Shared configure discovers Vulkan and slangc. This job builds only the native simulator.
+          export VCPKG_ROOT="$PWD/out/ros2-vcpkg"
+          export VCPKG_MAX_CONCURRENCY=4
+          export VCPKG_BINARY_SOURCES="clear;files,$PWD/out/ros2-vcpkg-cache,readwrite"
+          "$VCPKG_ROOT/bootstrap-vcpkg.sh" -disableMetrics
+          build="$PWD/out/build/linux-ros2-contract"
+          cmake --preset linux-release -B "$build" \
+            -DVCPKG_TARGET_TRIPLET=x64-linux \
+            -DVulkan_INCLUDE_DIR="$PWD/out/ros2-vulkan-headers/include" \
+            -DSLANGC_EXECUTABLE="$build/vcpkg_installed/x64-linux/tools/shader-slang/slangc" \
+            -DENABLE_TESTS=OFF -DENABLE_PHYSICS=ON -DENABLE_ROBOTICS_URDF=OFF \
+            -DENABLE_VULKAN_VALIDATION_LAYERS=OFF -DENABLE_RENDERER_MCP=OFF \
+            -DENABLE_TINYUSDZ_USD_LOADER=OFF -DENABLE_OPENVDB=OFF \
+            -DENABLE_SAMPLE_MODEL_DOWNLOAD=OFF -DENABLE_BIM_SAMPLE_MODEL_DOWNLOAD=OFF \
+            -DENABLE_USD_SAMPLE_MODEL_DOWNLOAD=OFF 2>&1 | tee out/ros2-contract/native-configure.log
+          cmake --build "$build" --parallel 4 --target BimRoboticsSim 2>&1 | tee out/ros2-contract/native-build.log
+
+      - name: Save vcpkg binaries
+        if: steps.ros2-vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: out/ros2-vcpkg-cache
+          key: ${{ steps.ros2-vcpkg-cache.outputs.cache-primary-key }}
+
+      - name: Build and install the optional ROS bridge
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          colcon --log-base out/ros2-contract/colcon-log build --paths ros2/bim_ros_bridge \
+            --build-base out/build/ros2-contract-bridge --install-base out/ros2-contract-bridge
+
+      - name: Check the native simulator and the live ROS contracts without a Vulkan driver
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source out/ros2-contract-bridge/local_setup.bash
+          export VK_DRIVER_FILES="$PWD/out/ros2-contract/no-vulkan-icd.json"
+          simulator="$PWD/out/build/linux-ros2-contract/BimRoboticsSim"
+          python3 -B tests/robotics/bim_drive_stream.py --executable "$simulator" \
+            --fixtures tests/fixtures/robotics 2>&1 | tee out/ros2-contract/native-stream.log
+          python3 -B - "$simulator" <<'PY'
+          import math
+          from pathlib import Path
+          import subprocess
+          import sys
+
+          simulator = sys.argv[1]
+          fixtures = Path("tests/fixtures/robotics")
+          planar = [4.0, 3 * math.sqrt(2), 3.0] + [math.inf] * 5
+          layered = [2.5] * 8 + planar + [distance / math.cos(math.pi / 12) for distance in planar]
+          for flag, case, ranges in (("--scan", "planar", planar), ("--cloud", "layered", layered)):
+              command = [sys.executable, "-B", "tests/robotics/bim_ros2_contract.py", "--sim-executable", simulator,
+                         "--scene", str(fixtures / "lidar-corner.ifc"), "--namespace", "ros-contract-corner",
+                         "--scenario", str(fixtures / f"lidar-corner-ros2-{case}.json"),
+                         "--camera", str(fixtures / "doorway-ros2-camera.json"),
+                         "--output", f"out/ros2-contract/{case}", flag]
+              for beam, metres in enumerate(ranges):
+                  command.extend(("--expect-range", f"{beam}={metres}"))
+              subprocess.run(command, check=True, timeout=60)
+          PY
+
+      - name: Upload ROS 2 contract evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: bim-ros2-jazzy-contract
+          path: out/ros2-contract/
+          if-no-files-found: warn
