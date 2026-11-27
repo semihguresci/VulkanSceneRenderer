@@ -32,7 +32,11 @@ COLORS = {
 OPERATOR_COLORS = {
     "warning": (255, 133, 78), "critical": (255, 76, 103),
     "frustum": (108, 160, 255), "occupancy": (179, 151, 255),
+    "collision": (255, 57, 49),
 }
+COLLISION = {"otherEntityId": DOOR_ID, "positionMeters": [-.03, .42, 1.72], "normal": [-1, 0, 0]}
+STALE_CONTACT_ROBOT = "fixture/inspection-robot"
+STALE_CONTACT = {"otherEntityId": DOOR_ID, "positionMeters": [-.03, -.47, 1.58]}
 WARNING = {"alarmId": "route-deviation", "severity": "warning", "message": "Deviation from plan",
            "active": True, "position": [.65, -.65, 1.68]}
 CRITICAL = {"alarmId": "door-obstruction", "severity": "critical", "message": "Doorway obstruction",
@@ -265,6 +269,32 @@ def grid_point(col, row, meters_per_unscaled_unit):
                               meters_per_unscaled_unit)
 
 
+def check_collision_capture(path, state, robot, meters, cursor, mask):
+    poses = {track["entityId"]: track for track in state["bimTwinReplay"]["tracks"] if track["kind"] == "robot-pose"}
+    measurements = {}
+    for entity, payload, observed_at in ((robot, COLLISION, LATE),
+                                         (STALE_CONTACT_ROBOT, STALE_CONTACT, OPERATOR_EVENT)):
+        row = poses[entity]
+        cleared = entity == robot and cursor == CLEARED
+        stale = entity == STALE_CONTACT_ROBOT and cursor == CLEARED
+        require(row["stale"] == stale and row["eventTimestampNanoseconds"] == (CLEARED if cleared else observed_at), row)
+        if cleared:
+            require("contact" not in row, f"Complete pose did not clear its contact: {row}")
+            measurements[entity] = {"cleared": True}
+            continue
+
+        contact = row.get("contact")
+        require(contact is not None, f"Missing sampled collision contact: {row}")
+        require({key: value for key, value in contact.items() if key != "rendererPosition"} == payload, contact)
+        position = metric_to_renderer(payload["positionMeters"], meters)
+        close_point(contact["rendererPosition"], position, f"Collision contact for {entity}")
+        if not stale:
+            require(nearby_ink(mask, clip_projected_pixel(state, position)) >= 5,
+                    f"Missing collision pixels near the projected contact for {entity}: {path}")
+        measurements[entity] = {"contact": contact, "stale": stale}
+    return measurements
+
+
 def check_operator_capture(path, state, source, cursor):
     replay = state["bimTwinReplay"]
     require(replay["sourceMatched"] and not replay["playing"] and replay["timestampNanoseconds"] == cursor, replay)
@@ -276,6 +306,8 @@ def check_operator_capture(path, state, source, cursor):
     require(set(alarms) == {WARNING["alarmId"], CRITICAL["alarmId"]}, alarms)
     mask = operator_masks(path)
     counts = {name: int(ink.sum()) for name, ink in mask.items()}
+    robot = next(event["entityId"] for event in source["events"] if event["kind"] == "robot-pose")
+    collisions = check_collision_capture(path, state, robot, meters, cursor, mask["collision"])
     for name, payload in (("warning", WARNING), ("critical", CRITICAL)):
         row = alarms[payload["alarmId"]]
         cleared = expired and name == "critical"
@@ -319,7 +351,8 @@ def check_operator_capture(path, state, source, cursor):
     require(trajectories["plan"] > 10 and trajectories["observed"] > 10 and trajectories["pose"] > 10,
             f"Robot paths or pose disappeared with operator overlays: {path}: {trajectories}")
     return {"image": path.name, "cursorNanoseconds": cursor, "overlayPixels": counts,
-            "trajectoryPixels": trajectories, "alarms": alarms, "frustum": frustum, "occupancy": grid}, mask
+            "trajectoryPixels": trajectories, "alarms": alarms, "frustum": frustum, "occupancy": grid,
+            "collisions": collisions}, mask
 
 
 def verify_raw_exr(plain, replay):
@@ -357,11 +390,15 @@ def verify_operator_rendering(args, work, model, ingested, source, deferred_base
         cleared_result, _ = check_operator_capture(cleared, cleared_state, source, CLEARED)
         baseline = deferred_baseline if tag == "deferred" else capture(
             args, work, "operator-forward-baseline-viewport", model, technique, raw=True)[0]
-        replay_raw, _ = capture(args, work, f"operator-{tag}-viewport", model, technique, ingested, LATE, raw=True)
+        replay_raw, raw_state = capture(args, work, f"operator-{tag}-viewport", model, technique, ingested, LATE,
+                                        raw=True)
         require(sha256(replay_raw) == sha256(baseline), f"Operator overlays entered raw viewport capture: {replay_raw}")
         plain_exr, _ = capture(args, work, f"operator-{tag}-baseline-linear", model, technique, extension="exr")
-        replay_exr, _ = capture(args, work, f"operator-{tag}-linear", model, technique, ingested, LATE,
-                                extension="exr")
+        replay_exr, linear_state = capture(args, work, f"operator-{tag}-linear", model, technique, ingested, LATE,
+                                           extension="exr")
+        for raw_capture_state in (raw_state, linear_state):
+            require(raw_capture_state["bimTwinReplay"]["tracks"] == state["bimTwinReplay"]["tracks"],
+                    "Clean capture lost sampled BIM telemetry")
         results[technique] = {"active": active_result, "cleared": cleared_result,
                               "sameTimestampPngBytes": sha256(active) == sha256(repeat),
                               "sameTimestampOperatorMasks": True, "rawViewportSha256": sha256(replay_raw),
@@ -373,6 +410,9 @@ def verify_ingested_status(args, work, model, recording, deferred_baseline):
     source = json_at(recording)
     robot = next(event["entityId"] for event in source["events"] if event["kind"] == "robot-pose")
     events = [event for event in source["events"] if event["entityId"] != UNRESOLVED_ID]
+    active_pose = next(event for event in events if event["kind"] == "robot-pose" and event["entityId"] == robot and
+                       event["timestampNanoseconds"] == LATE)
+    events[events.index(active_pose)] = dict(active_pose, payload=dict(active_pose["payload"], contact=COLLISION))
     events.extend({"kind": kind, "timestampNanoseconds": 2_200_000_000, "entityId": robot,
                    "source": "gateway:plant", "payload": payload}
                   for kind, payload in (
@@ -388,6 +428,8 @@ def verify_ingested_status(args, work, model, recording, deferred_baseline):
                       ("operator-alarm", ALARM_CLEAR, robot, "gateway:safety", dict(CRITICAL, active=False)),
                       ("sensor-frustum", OPERATOR_EVENT, f"{robot}/camera", "gateway:camera", FRUSTUM),
                       ("occupancy-grid", OPERATOR_EVENT, "doorway/local-map", "gateway:navigation", GRID),
+                      ("robot-pose", OPERATOR_EVENT, STALE_CONTACT_ROBOT, "gateway:odometry",
+                       {"position": [-.33, -.47, 1.2], "yaw": 0, "contact": STALE_CONTACT}),
                   ))
     feed = work / "external-telemetry.jsonl"
     with feed.open("w", encoding="utf-8") as stream:
@@ -404,7 +446,7 @@ def verify_ingested_status(args, work, model, recording, deferred_baseline):
     require(code == 0, f"Ingestion failed: {work / 'ingest.log'}")
     receipt = json.loads(output)
     require(receipt["accepted"] == len(events) and receipt["rejected"] == 0, receipt)
-    require(json_at(ingested)["version"] == 3, "Spatial observations did not enter a version-3 replay")
+    require(json_at(ingested)["version"] == 4, "Collision contacts did not enter a version-4 replay")
     image, state = capture(args, work, "replay-ingested", model, "deferred-raster", ingested, LATE)
     replay = state["bimTwinReplay"]
     require(replay["sourceMatched"] and replay["resolvedAssetCount"] == 2, replay)

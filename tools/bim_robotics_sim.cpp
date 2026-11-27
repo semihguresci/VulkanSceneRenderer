@@ -447,8 +447,12 @@ std::string_view obstructionName(robotics::BimWalkabilityFailure failure) {
   throw std::logic_error("Unknown simulation obstruction");
 }
 
+Json xyz(glm::dvec3 value) {
+  return Json::array({value.x, value.y, value.z});
+}
+
 Json pose(const robotics::DrivePose& value) {
-  return {{"position", Json::array({value.position.x, value.position.y, value.position.z})}, {"yaw", value.yaw}};
+  return {{"position", xyz(value.position)}, {"yaw", value.yaw}};
 }
 
 Json wheels(const robotics::DriveWheels& value) {
@@ -460,6 +464,12 @@ Json sample(const robotics::DifferentialDriveState& state, bool motionModel) {
               {"odometry", pose(state.odometry)}, {"wheelAngles", wheels(state.wheelAngles)},
               {"wheelRates", wheels(state.wheelRates)}, {"encoderAngles", wheels(state.encoderAngles)},
               {"obstruction", obstructionName(state.obstruction)}, {"blockingEntityId", state.blockingEntityId}};
+  if (state.contact) {
+    auto& contact = result["contact"];
+    contact = {{"otherEntityId", state.blockingEntityId}, {"positionMeters", xyz(state.contact->position)}};
+    if (state.contact->normal)
+      contact["normal"] = xyz(*state.contact->normal);
+  }
   if (motionModel) {
     result["commanded"] = state.commanded ? pose(*state.commanded) : Json(nullptr);
     result["targetWheelRates"] = wheels(state.targetWheelRates);
@@ -535,10 +545,6 @@ Json lidarReport(const ScenarioLidar& lidar, Json scans) {
   if (settings.recordIdealRanges)
     report["recordIdealRanges"] = true;
   return report;
-}
-
-Json xyz(glm::dvec3 value) {
-  return Json::array({value.x, value.y, value.z});
 }
 
 Json imuError(const robotics::ImuAxisError& error) {

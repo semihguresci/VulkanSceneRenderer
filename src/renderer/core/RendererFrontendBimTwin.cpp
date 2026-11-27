@@ -28,11 +28,13 @@ constexpr ImU32 infoColor = IM_COL32(126, 226, 243, 255);
 constexpr ImU32 frustumColor = IM_COL32(108, 160, 255, 255);
 constexpr ImU32 occupancyColor = IM_COL32(179, 151, 255, 255);
 constexpr ImU32 occupancyFill = IM_COL32(179, 151, 255, 46);
+constexpr ImU32 contactColor = IM_COL32(255, 57, 49, 255);
 constexpr ImU32 markerBorder = IM_COL32(19, 25, 33, 255);
 constexpr double nanosecondsPerSecond = 1'000'000'000.0;
 constexpr size_t maxPathSegments = 4096;
 constexpr size_t maxMarkers = 256;
 constexpr size_t maxAlarmMarkers = 128;
+constexpr size_t maxContactMarkers = 128;
 constexpr size_t maxFrusta = 128;
 constexpr size_t maxOccupiedRuns = 1024;
 constexpr size_t maxRunProjections = maxOccupiedRuns * 8;
@@ -112,9 +114,22 @@ void drawTrackState(const robotics::TwinTrackSample& track, bool assetResolved) 
     ImGui::TextUnformatted(assetResolved ? asset->state.c_str() : "Unresolved BIM asset");
     if (!assetResolved && ImGui::IsItemHovered()) ImGui::SetTooltip("%s", asset->state.c_str());
   } else if (const auto* robot = std::get_if<robotics::TwinRobotPose>(&track.event.payload)) {
-    ImGui::Text("%.2f, %.2f, %.2f m", robot->position.x, robot->position.y, robot->position.z);
-    if (track.distanceToPlanMeters && ImGui::IsItemHovered())
-      ImGui::SetTooltip("%.2f m from plan", *track.distanceToPlanMeters);
+    if (robot->contact) {
+      if (track.stale)
+        ImGui::TextDisabled("Contact");
+      else
+        ImGui::TextColored(ImGui::ColorConvertU32ToFloat4(contactColor), "Contact");
+      if (ImGui::IsItemHovered()) {
+        const auto& point = robot->contact->position;
+        ImGui::SetTooltip("%s\nContact %.2f, %.2f, %.2f m\nRobot %.2f, %.2f, %.2f m",
+                          robot->contact->otherEntityId.c_str(), point.x, point.y, point.z,
+                          robot->position.x, robot->position.y, robot->position.z);
+      }
+    } else {
+      ImGui::Text("%.2f, %.2f, %.2f m", robot->position.x, robot->position.y, robot->position.z);
+      if (track.distanceToPlanMeters && ImGui::IsItemHovered())
+        ImGui::SetTooltip("%.2f m from plan", *track.distanceToPlanMeters);
+    }
   } else if (const auto* plan = std::get_if<robotics::TwinPlannedPath>(&track.event.payload)) {
     ImGui::Text("%zu waypoints", plan->points.size());
   } else if (const auto* health = std::get_if<robotics::TwinRobotHealth>(&track.event.payload)) {
@@ -595,6 +610,21 @@ void RendererFrontend::drawBimTwinReplay() {
       --remainingAlarms;
     }
   }
+  size_t remainingContacts = maxContactMarkers;
+  for (const auto& track : state.sample.tracks) {
+    if (remainingContacts == 0)
+      break;
+    const auto* robot = std::get_if<robotics::TwinRobotPose>(&track.event.payload);
+    if (!robot || !robot->contact || track.stale)
+      continue;
+    if (const auto center = project(robot->contact->position)) {
+      overlay->AddCircle(*center, 10.0f, markerBorder, 20, 6.0f);
+      overlay->AddCircle(*center, 10.0f, contactColor, 20, 3.0f);
+      overlay->AddCircleFilled(*center, 3.0f, markerBorder, 12);
+      overlay->AddCircleFilled(*center, 2.0f, contactColor, 12);
+      --remainingContacts;
+    }
+  }
 }
 
 nlohmann::json RendererFrontend::bimTwinCaptureTelemetry() const {
@@ -618,6 +648,14 @@ nlohmann::json RendererFrontend::bimTwinCaptureTelemetry() const {
         row["yaw"] = robot->yaw;
         row["observedPointCount"] = track.observedPath.size();
         row["distanceToPlanMeters"] = track.distanceToPlanMeters ? Json(*track.distanceToPlanMeters) : Json(nullptr);
+        if (robot->contact) {
+          const auto& contact = *robot->contact;
+          row["contact"] = {{"otherEntityId", contact.otherEntityId},
+                            {"positionMeters", xyz(contact.position)},
+                            {"rendererPosition", xyz(bimTwinRendererPosition(contact.position))}};
+          if (contact.normal)
+            row["contact"]["normal"] = xyz(contact.normal);
+        }
       } else if (const auto* asset = std::get_if<robotics::TwinAssetState>(&track.event.payload)) {
         const auto position = bimTwinAssetPosition(track.event.entityId);
         row["state"] = asset->state;

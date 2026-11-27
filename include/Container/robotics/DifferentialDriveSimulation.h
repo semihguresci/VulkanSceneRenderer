@@ -33,6 +33,12 @@ struct DifferentialDriveSimulationOptions {
   DriveWheels wheelTravelVariancePerMeter;
 };
 
+struct DifferentialDriveContact {
+  glm::dvec3 position{0.0};
+  std::optional<glm::dvec3> normal;
+  bool operator==(const DifferentialDriveContact&) const = default;
+};
+
 struct DifferentialDriveState {
   uint64_t tick{};
   double seconds{};
@@ -51,6 +57,9 @@ struct DifferentialDriveState {
   // shafts, groundWheelRates describes the effective rolling motion.
   DriveWheels groundWheelRates;
   PlanarOdometryCovariance odometryCovariance{};
+  // Collider-side contact in REP-103 metres for this tick's blockingEntityId.
+  // Predictive peer stops and support failures leave this empty.
+  std::optional<DifferentialDriveContact> contact;
 };
 
 struct DifferentialDriveFrames {

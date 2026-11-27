@@ -2,8 +2,8 @@
 
 Record a simulated run or import a timeline from an external producer.
 The BIM viewport shows the sampled robot pose, the observed trail, the active
-plan, sensor states and asset annotations. Scrubbing the timeline changes
-the annotations while preserving the imported building. [Inspect live operator overlays](bim-twin-operator-overlays.md) · [Replay a simulated fleet mission](bim-fleet-missions.md)
+plan, sensor states, asset annotations and reported collision contacts.
+Scrubbing the timeline updates the annotations. [Inspect live operator overlays](bim-twin-operator-overlays.md) · [Replay a simulated fleet mission](bim-fleet-missions.md)
 
 ## Record and replay a doorway run
 
@@ -46,7 +46,9 @@ and scene-linear captures continue to show the rendered scene.
 time range. `BimRoboticsTwin sample LOG.json TIMESTAMP_NS` emits a sampled
 state as JSON for inspection. Simulation ticks convert to integer nanoseconds
 by rounding down. The recorder retains committed base poses. IMU and LiDAR
-events report when the simulator produced each observation.
+events report when the simulator produced each observation. A physically
+blocked motion can carry the measured contact on its base pose. Fleet mission
+journals use the same contact field.
 
 ## Add planned paths and BIM asset state
 
@@ -100,7 +102,7 @@ before importing. The recorder has no middleware dependency.
 
 | Event kind | Stable identity and payload |
 | --- | --- |
-| `robot-pose` | Robot ID with `position: [x, y, z]` in REP-103 metres and `yaw` in radians about +Z. |
+| `robot-pose` | Robot ID with `position: [x, y, z]` in REP-103 metres and `yaw` in radians about +Z. A populated `contact` requires version 4. [Contact fields](bim-twin-operator-overlays.md#review-the-doorway-fixture) |
 | `planned-path` | Same robot ID with `points: [[x, y, z], …]` in the same frame. An empty plan clears the path. |
 | `sensor-status` | Sensor ID with text `state`. |
 | `bim-asset-state` | BIM semantic entity ID with text `state`. Use the entity's ID from the semantic scene export. |
@@ -113,8 +115,9 @@ same track and timestamp. Each robot's task and each entity's alarm have their o
 the latest eligible state. It interpolates position and shortest-arc yaw only between robot
 samples whose spacing is within the freshness timeout. State becomes stale
 once its age exceeds that timeout. Before a track's first event it has no
-state. A recording accepts up to 65,536 events and 32 MiB of JSON. The
-viewport trail uses up to 2,048 measured poses per robot.
+state. A pose contact stays at its measured point until the next pose replaces
+it, and goes out of view when stale. A recording accepts up to 65,536 events and
+32 MiB of JSON. The viewport trail uses up to 2,048 measured poses per robot.
 
 The viewer matches the recording against the actual BIM source bytes and
 metric scale. Its coordinate conversion accounts for the renderer's

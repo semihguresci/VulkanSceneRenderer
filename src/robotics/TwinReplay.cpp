@@ -138,6 +138,16 @@ EventGeometrySize validateEvent(const TwinEvent& event) {
     if constexpr (std::is_same_v<Payload, TwinRobotPose>) {
       validatePoint(payload.position, "robot position");
       validateYaw(payload.yaw, "robot yaw");
+      if (payload.contact) {
+        validateText(payload.contact->otherEntityId, maxIdentityBytes, "robot contact otherEntityId");
+        validatePoint(payload.contact->position, "robot contact positionMeters");
+        if (payload.contact->normal) {
+          constexpr double unitLengthTolerance = 1e-6;
+          const auto norm = length(*payload.contact->normal);
+          if (!std::isfinite(norm) || std::abs(norm - 1.0) > unitLengthTolerance)
+            invalid("robot contact normal", "must be a finite unit vector");
+        }
+      }
     } else if constexpr (std::is_same_v<Payload, TwinPlannedPath>) {
       if (payload.points.size() > maxPlanPoints)
         invalid("planned path", "exceeds the per-path point limit");

@@ -23,7 +23,8 @@ namespace {
 using Json = nlohmann::json;
 namespace limits = twin_telemetry_limits;
 constexpr std::string_view schema = "container.bim-twin-telemetry";
-constexpr uint32_t currentVersion = 3;
+constexpr uint32_t contactVersion = 4;
+constexpr uint32_t currentVersion = contactVersion;
 constexpr size_t maxRecordingBytes = 32 * 1024 * 1024;
 constexpr size_t maxJsonNodes = 2 * 1024 * 1024;
 
@@ -124,9 +125,15 @@ std::optional<double> optionalNumber(const Json& value, std::string_view key, st
 
 TwinPayload readPayload(std::string_view kind, const Json& value, std::string_view context, uint32_t version) {
   if (kind == "robot-pose") {
-    requireKeys(value, context, {"position", "yaw"});
-    return TwinRobotPose{readPoint(value.at("position"), field(context, "position")),
-                         number(value.at("yaw"), field(context, "yaw"))};
+    requireKeys(value, context, {"position", "yaw"}, {"contact"});
+    TwinRobotPose pose{readPoint(value.at("position"), field(context, "position")),
+                       number(value.at("yaw"), field(context, "yaw"))};
+    if (const auto contact = value.find("contact"); contact != value.end()) {
+      const auto contactContext = field(context, "contact");
+      if (version < contactVersion) invalid(contactContext, "requires recording version 4");
+      pose.contact = twin_json::parseRobotContact(*contact, contactContext);
+    }
+    return pose;
   }
   if (kind == "sensor-status" || kind == "bim-asset-state") {
     requireKeys(value, context, {"state"});
@@ -231,6 +238,16 @@ Json point(const glm::dvec3& value) {
   return Json::array({value.x, value.y, value.z});
 }
 
+TwinRobotContact parseRobotContact(const Json& contact, std::string_view context) {
+  requireKeys(contact, context, {"otherEntityId", "positionMeters"}, {"normal"});
+  TwinRobotContact result{
+      .otherEntityId = text(contact.at("otherEntityId"), field(context, "otherEntityId")),
+      .position = readPoint(contact.at("positionMeters"), field(context, "positionMeters"))};
+  if (const auto normal = contact.find("normal"); normal != contact.end())
+    result.normal = readPoint(*normal, field(context, "normal"));
+  return result;
+}
+
 Json event(const TwinEvent& value) {
   std::string_view kind;
   Json payload;
@@ -239,6 +256,11 @@ Json event(const TwinEvent& value) {
     if constexpr (std::is_same_v<T, TwinRobotPose>) {
       kind = "robot-pose";
       payload = {{"position", point(data.position)}, {"yaw", data.yaw}};
+      if (data.contact) {
+        auto& contact = payload["contact"];
+        contact = {{"otherEntityId", data.contact->otherEntityId}, {"positionMeters", point(data.contact->position)}};
+        if (data.contact->normal) contact["normal"] = point(*data.contact->normal);
+      }
     } else if constexpr (std::is_same_v<T, TwinSensorStatus>) {
       kind = "sensor-status";
       payload = {{"state", data.state}};
@@ -285,12 +307,15 @@ Json event(const TwinEvent& value) {
 uint32_t recordingVersion(const TwinRecording& value) {
   uint32_t version = 1;
   for (const auto& entry : value.events) {
+    if (const auto* pose = std::get_if<TwinRobotPose>(&entry.payload); pose && pose->contact)
+      return contactVersion;
     if (std::holds_alternative<TwinOperatorAlarm>(entry.payload) ||
         std::holds_alternative<TwinSensorFrustum>(entry.payload) ||
         std::holds_alternative<TwinOccupancyGrid>(entry.payload))
-      return 3;
-    if (std::holds_alternative<TwinRobotHealth>(entry.payload) ||
-        std::holds_alternative<TwinTaskStatus>(entry.payload))
+      version = 3;
+    else if (version < 2 &&
+             (std::holds_alternative<TwinRobotHealth>(entry.payload) ||
+              std::holds_alternative<TwinTaskStatus>(entry.payload)))
       version = 2;
   }
   return version;
@@ -327,7 +352,7 @@ TwinRecording parseTwinRecording(std::string_view input) {
                              "staleAfterNanoseconds", "events"});
   const auto version = integer(json.at("version"), "version");
   if (text(json.at("schema"), "schema") != schema || version < 1 || version > currentVersion)
-    invalid("schema", "expected container.bim-twin-telemetry version 1, 2, or 3");
+    invalid("schema", "expected container.bim-twin-telemetry version 1 through 4");
   TwinRecording result{
       .sourceNamespace = text(json.at("sourceNamespace"), "sourceNamespace"),
       .sceneSource = twin_json::parseSceneSource(json.at("sceneSource")),
