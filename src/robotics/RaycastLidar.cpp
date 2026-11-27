@@ -1,8 +1,8 @@
 #include "Container/robotics/RaycastLidar.h"
+#include "SensorNoise.h"
 
 #include <algorithm>
 #include <cmath>
-#include <limits>
 #include <stdexcept>
 #include <utility>
 
@@ -35,68 +35,7 @@ LidarPose compose(const LidarPose& base, const LidarPose& mounting) {
                          parent.rotation * mounting.rotation});
 }
 
-uint64_t denominator(uint32_t ticksPerSecond) {
-  return uint64_t(ticksPerSecond) * 1000;
-}
-
-uint64_t periodsThrough(uint64_t elapsed, uint64_t numerator, uint64_t divisor) {
-  // numerator <= divisor <= 1e9. The quotient term and sum are <= elapsed,
-  // and the remainder product is < 1e18, including at UINT64_MAX ticks.
-  return (elapsed / divisor) * numerator + ((elapsed % divisor) * numerator) / divisor;
-}
-
-uint64_t mix(uint64_t value) {
-  // SplitMix64's fixed unsigned operations do not depend on STL distributions.
-  value += 0x9e3779b97f4a7c15ULL;
-  value = (value ^ (value >> 30)) * 0xbf58476d1ce4e5b9ULL;
-  value = (value ^ (value >> 27)) * 0x94d049bb133111ebULL;
-  return value ^ (value >> 31);
-}
-
-double uniform(uint64_t key, uint64_t channel) {
-  return static_cast<double>(mix(key + channel * 0x9e3779b97f4a7c15ULL) >> 11) * 0x1.0p-53;
-}
-
-double normal(uint64_t key) {
-  // Explicit Box-Muller mapping; 1-U is in (0,1], so log never sees zero.
-  return std::sqrt(-2 * std::log(1 - uniform(key, 1))) *
-         std::cos(revolution * uniform(key, 2));
-}
-
 } // namespace
-
-LidarSchedule::LidarSchedule(uint32_t ticksPerSecond, uint32_t scansPerSecondMilliHz,
-                             uint64_t firstTick)
-    : ticksPerSecond_(ticksPerSecond), scanMilliHz_(scansPerSecondMilliHz), firstTick_(firstTick) {
-  if (ticksPerSecond == 0 || ticksPerSecond > 1'000'000 || scansPerSecondMilliHz == 0 ||
-      scansPerSecondMilliHz > denominator(ticksPerSecond))
-    throw std::invalid_argument("LiDAR schedule requires 1..1000000 tick Hz and at most one scan per tick");
-}
-
-bool LidarSchedule::due(uint64_t tick) const noexcept {
-  if (tick < firstTick_)
-    return false;
-  const auto elapsed = tick - firstTick_;
-  if (elapsed == 0)
-    return true;
-  const auto divisor = denominator(ticksPerSecond_);
-  // floor(t*n/d) advances precisely at ceil(k*d/n). Work with the remainder
-  // instead of multiplying the potentially enormous absolute tick by n.
-  return ((elapsed % divisor) * scanMilliHz_) % divisor < scanMilliHz_;
-}
-
-uint64_t LidarSchedule::scansThrough(uint64_t tick) const {
-  if (tick < firstTick_)
-    return 0;
-  const auto count = periodsThrough(tick - firstTick_, scanMilliHz_, denominator(ticksPerSecond_));
-  if (count == std::numeric_limits<uint64_t>::max())
-    throw std::overflow_error("LiDAR inclusive scan count exceeds the integer range");
-  return count + 1;
-}
-
-double LidarSchedule::seconds(uint64_t tick) const noexcept {
-  return static_cast<double>(tick) / ticksPerSecond_;
-}
 
 RaycastLidar::RaycastLidar(RaycastLidarSettings settings) : settings_(std::move(settings)) {
   const auto& value = settings_;
@@ -134,16 +73,13 @@ RaycastLidar::RaycastLidar(RaycastLidarSettings settings) : settings_(std::move(
 
 LidarScan RaycastLidar::scan(const LidarPose& worldFromBase, const LidarSchedule& schedule,
                              uint64_t tick, const LidarCast& cast) const {
-  if (!schedule.due(tick))
-    throw std::invalid_argument("LiDAR scan requested outside its fixed-tick schedule");
+  const auto ordinal = schedule.timing_.sampleIndex(tick);
   if (!cast)
     throw std::invalid_argument("LiDAR scan requires a raycast callback");
   LidarScan result{.tick = tick, .seconds = schedule.seconds(tick),
                    .worldFromSensor = compose(worldFromBase, settings_.baseFromSensor)};
   result.returns.reserve(directions_.size());
-  const auto ordinal = periodsThrough(tick - schedule.firstTick(), schedule.scansPerSecondMilliHz(),
-                                      denominator(schedule.ticksPerSecond()));
-  const auto scanKey = mix(mix(settings_.seed) ^ ordinal);
+  const auto scanKey = sensor_noise::mix(sensor_noise::mix(settings_.seed) ^ ordinal);
   for (size_t beam = 0; beam < directions_.size(); ++beam) {
     const auto direction = glm::normalize(result.worldFromSensor.rotation * directions_[beam]);
     const auto displacement = direction * settings_.maxRangeMeters;
@@ -161,12 +97,12 @@ LidarScan RaycastLidar::scan(const LidarPose& worldFromBase, const LidarSchedule
     if (distance < settings_.minRangeMeters) {
       measurement.status = LidarReturnStatus::BelowMinimum;
     } else {
-      const auto key = mix(scanKey ^ uint64_t(beam));
-      if (settings_.dropoutProbability > 0 && uniform(key, 0) < settings_.dropoutProbability) {
+      const auto key = sensor_noise::mix(scanKey ^ uint64_t(beam));
+      if (settings_.dropoutProbability > 0 && sensor_noise::uniform(key, 0) < settings_.dropoutProbability) {
         measurement.status = LidarReturnStatus::Dropped;
       } else {
         const auto range = distance + (settings_.noiseStdDevMeters == 0 ? 0 :
-                                       settings_.noiseStdDevMeters * normal(key));
+                                       settings_.noiseStdDevMeters * sensor_noise::normal(key));
         if (!std::isfinite(range) || range < settings_.minRangeMeters || range > settings_.maxRangeMeters) {
           measurement.status = LidarReturnStatus::NoiseOutOfRange;
         } else {

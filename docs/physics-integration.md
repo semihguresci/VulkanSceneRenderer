@@ -309,6 +309,41 @@ and treats colliders as opaque. The C++ scan generator accepts a caller-provided
 segment query and builds without Jolt. The BIM runner requires
 `ENABLE_PHYSICS=ON`.
 
+### Record IMU, encoder and wheel odometry observations
+
+Add `driveSensors` to a `BimRoboticsSim` scenario. Set
+`samplesPerSecondMilliHz` to the common publication rate and use `firstTick`
+to delay publication from its default at tick zero. The sensor processes
+every fixed simulation tick. Each published sample groups IMU, encoder and
+wheel odometry readings under the same tick and time in seconds.
+
+```powershell
+& '.\out\build\windows-release\BimRoboticsSim.exe' `
+    tests/fixtures/robotics/lidar-corner.ifc motion-sensors.json lidar-corner `
+    tests/fixtures/robotics/drive-sensor-motion.json
+```
+
+The sample starts at rest, drives straight, turns left and stops. A stationary
+base reads +9.81 m/s² on its upward accelerometer axis. After the straight-line
+startup, the horizontal accelerometer components settle near zero. The left
+turn gives positive leftward specific force and a +1 rad/s yaw rate. The
+base-aligned IMU estimates acceleration from consecutive positions and uses
+the accepted angular motion for its right-handed gyroscope. [ROS IMU convention](https://github.com/ros-infrastructure/rep/blob/master/rep-0145.rst#data-sources)
+
+`accelerometer` and `gyroscope` accept per-axis `bias`, `noiseStdDev` and
+`driftPerSecond`. Bias and Gaussian noise use each signal's reported units.
+Drift is the signed linear change in bias per simulation second. `encoders`
+accepts `countsPerRevolution` and per-wheel `biasRadians`, `noiseStdDevRadians`
+and `driftRadiansPerSecond` as `{ "left": value, "right": value }` objects.
+Error settings default to zero. The optional sensor `seed` controls repeatable
+noise. Encoder counts are signed and rounded to the nearest count.
+
+The sensor applies these encoder settings to the simulator's cumulative
+encoder angles and converts the resulting counts back to radians for the
+report. Planar wheel odometry starts at the origin and integrates the measured
+count increments on every tick. The report includes the sensor settings,
+units and synchronized samples. The C++ sensor model is usable without Jolt.
+
 ### Import and pose an articulated URDF robot
 
 Build `BimRoboticsUrdf` with `ENABLE_ROBOTICS_URDF=ON`. The tool uses

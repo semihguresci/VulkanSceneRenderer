@@ -123,6 +123,17 @@ DriveWheels differentialWheelRates(const DifferentialDriveSettings& settings, Dr
   return {(left / maximum) * magnitude, (right / maximum) * magnitude};
 }
 
+double differentialYawRate(const DifferentialDriveSettings& settings, DriveWheels rates) {
+  validateDifferentialDrive(settings);
+  requireFinite(rates.left, "left wheel rate");
+  requireFinite(rates.right, "right wheel rate");
+  const auto difference = sum(rates.right, -rates.left);
+  const auto radius = normalize(settings.wheelRadius);
+  const auto linear = normalize(difference.mantissa * radius.mantissa,
+                                difference.exponent + radius.exponent);
+  return materialize(quotient(linear, settings.trackWidth), "yaw rate");
+}
+
 DrivePose integrateWheelTravel(DrivePose initial, double trackWidth, DriveWheels metres) {
   requirePositive(trackWidth, "track width");
   requireFinite(initial.position.x, "pose X");

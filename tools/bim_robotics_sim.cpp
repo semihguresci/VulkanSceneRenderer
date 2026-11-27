@@ -1,5 +1,6 @@
 #include "Container/robotics/BimAssetCache.h"
 #include "Container/robotics/DifferentialDriveSimulation.h"
+#include "Container/robotics/DriveSensors.h"
 #include "Container/robotics/RaycastLidar.h"
 #include "Container/utility/AtomicFile.h"
 #include "Container/utility/Platform.h"
@@ -57,6 +58,7 @@ struct Scenario {
   std::optional<double> metersPerRendererUnit;
   std::filesystem::path cacheDirectory;
   std::optional<ScenarioLidar> lidar;
+  std::optional<robotics::DriveSensorModel> driveSensors;
 };
 
 void checkKeys(const Json& object, std::initializer_list<std::string_view> keys) {
@@ -145,7 +147,7 @@ void readTiming(const Json& value, Scenario& scenario) {
   options.maxHistorySamples = static_cast<size_t>(scenario.ticks + 1);
 }
 
-glm::dvec3 mountVector(const Json& value, std::string_view field) {
+glm::dvec3 xyzVector(const Json& value, std::string_view field) {
   if (!value.is_array() || value.size() != 3)
     throw std::invalid_argument(std::string(field) + " must contain three numbers");
   return {real(value[0], field), real(value[1], field), real(value[2], field)};
@@ -154,9 +156,9 @@ glm::dvec3 mountVector(const Json& value, std::string_view field) {
 robotics::LidarPose readMount(const Json& value) {
   checkKeys(value, {"xyz", "rpy"});
   robotics::LidarPose mount;
-  if (value.contains("xyz")) mount.position = mountVector(value.at("xyz"), "lidar.mount.xyz");
+  if (value.contains("xyz")) mount.position = xyzVector(value.at("xyz"), "lidar.mount.xyz");
   if (value.contains("rpy")) {
-    const auto rpy = mountVector(value.at("rpy"), "lidar.mount.rpy");
+    const auto rpy = xyzVector(value.at("rpy"), "lidar.mount.rpy");
     const auto roll = glm::angleAxis(rpy.x, glm::dvec3(1.0, 0.0, 0.0));
     const auto pitch = glm::angleAxis(rpy.y, glm::dvec3(0.0, 1.0, 0.0));
     const auto yaw = glm::angleAxis(rpy.z, glm::dvec3(0.0, 0.0, 1.0));
@@ -201,6 +203,54 @@ ScenarioLidar readLidar(const Json& value, uint32_t ticksPerSecond, uint64_t las
   return {std::move(schedule), robotics::RaycastLidar(std::move(settings))};
 }
 
+robotics::ImuAxisError readImuError(const Json& value) {
+  checkKeys(value, {"bias", "noiseStdDev", "driftPerSecond"});
+  robotics::ImuAxisError error;
+  if (value.contains("bias")) error.bias = xyzVector(value.at("bias"), "IMU bias");
+  if (value.contains("noiseStdDev")) error.noiseStdDev = xyzVector(value.at("noiseStdDev"), "IMU noiseStdDev");
+  if (value.contains("driftPerSecond")) error.driftPerSecond = xyzVector(value.at("driftPerSecond"), "IMU driftPerSecond");
+  return error;
+}
+
+robotics::DriveWheels readWheelError(const Json& value) {
+  checkKeys(value, {"left", "right"});
+  robotics::DriveWheels error;
+  readReal(value, "left", error.left);
+  readReal(value, "right", error.right);
+  return error;
+}
+
+robotics::EncoderObservationSettings readEncoderSettings(const Json& value) {
+  checkKeys(value, {"countsPerRevolution", "biasRadians", "noiseStdDevRadians", "driftRadiansPerSecond"});
+  robotics::EncoderObservationSettings settings;
+  if (value.contains("countsPerRevolution"))
+    settings.countsPerRevolution = static_cast<uint32_t>(natural(value.at("countsPerRevolution"),
+        "countsPerRevolution", std::numeric_limits<uint32_t>::max()));
+  if (value.contains("biasRadians")) settings.biasRadians = readWheelError(value.at("biasRadians"));
+  if (value.contains("noiseStdDevRadians")) settings.noiseStdDevRadians = readWheelError(value.at("noiseStdDevRadians"));
+  if (value.contains("driftRadiansPerSecond")) settings.driftRadiansPerSecond = readWheelError(value.at("driftRadiansPerSecond"));
+  return settings;
+}
+
+robotics::DriveSensorModel readDriveSensors(const Json& value, const Scenario& scenario) {
+  checkKeys(value, {"samplesPerSecondMilliHz", "firstTick", "accelerometer", "gyroscope", "encoders", "seed"});
+  if (!value.contains("samplesPerSecondMilliHz"))
+    throw std::invalid_argument("driveSensors requires samplesPerSecondMilliHz");
+  const auto ticksPerSecond = scenario.options.ticksPerSecond;
+  const auto rate = static_cast<uint32_t>(natural(value.at("samplesPerSecondMilliHz"), "samplesPerSecondMilliHz",
+                                                  uint64_t(ticksPerSecond) * 1000));
+  const auto firstTick = value.contains("firstTick")
+      ? natural(value.at("firstTick"), "firstTick", std::numeric_limits<uint64_t>::max()) : 0u;
+  robotics::SensorSchedule schedule(ticksPerSecond, rate, firstTick);
+  robotics::DriveSensorSettings settings;
+  if (value.contains("accelerometer")) settings.accelerometer = readImuError(value.at("accelerometer"));
+  if (value.contains("gyroscope")) settings.gyroscope = readImuError(value.at("gyroscope"));
+  if (value.contains("encoders")) settings.encoders = readEncoderSettings(value.at("encoders"));
+  if (value.contains("seed"))
+    settings.seed = natural(value.at("seed"), "driveSensors.seed", std::numeric_limits<uint64_t>::max());
+  return robotics::DriveSensorModel(schedule, scenario.options.drive, settings);
+}
+
 Scenario readScenario(const std::filesystem::path& path) {
   std::ifstream input(path, std::ios::binary | std::ios::ate);
   if (!input) throw std::runtime_error("Could not open the BIM simulation scenario");
@@ -214,7 +264,8 @@ Scenario readScenario(const std::filesystem::path& path) {
   const auto value = Json::parse(contents);
   checkKeys(value, {"version", "initialFeet", "initialYaw", "ticks", "durationNanoseconds", "frameNanoseconds",
                     "ticksPerSecond", "maxTicksPerAdvance", "commands", "openDoorIds", "assetCacheDirectory",
-                    "metersPerRendererUnit", "seed", "encoderNoiseRadians", "robotId", "drive", "capsule", "lidar"});
+                    "metersPerRendererUnit", "seed", "encoderNoiseRadians", "robotId", "drive", "capsule", "lidar",
+                    "driveSensors"});
   if (natural(value.at("version"), "version", 1) != 1)
     throw std::invalid_argument("Unsupported simulation scenario version");
 
@@ -225,6 +276,7 @@ Scenario readScenario(const std::filesystem::path& path) {
   if (value.contains("lidar"))
     scenario.lidar = readLidar(value.at("lidar"), scenario.options.ticksPerSecond, scenario.ticks);
   if (value.contains("drive")) readDrive(value.at("drive"), scenario.options.drive);
+  if (value.contains("driveSensors")) scenario.driveSensors = readDriveSensors(value.at("driveSensors"), scenario);
   if (value.contains("capsule")) readCapsule(value.at("capsule"), scenario.options.capsule);
   if (value.contains("seed"))
     scenario.options.seed = natural(value.at("seed"), "seed", std::numeric_limits<uint64_t>::max());
@@ -330,6 +382,38 @@ Json lidarReport(const ScenarioLidar& lidar, Json scans) {
           {"raysPerScan", lidar.sensor.directions().size()}, {"scans", std::move(scans)}};
 }
 
+Json xyz(glm::dvec3 value) {
+  return Json::array({value.x, value.y, value.z});
+}
+
+Json imuError(const robotics::ImuAxisError& error) {
+  return {{"bias", xyz(error.bias)}, {"noiseStdDev", xyz(error.noiseStdDev)},
+          {"driftPerSecond", xyz(error.driftPerSecond)}};
+}
+
+Json driveSensorSample(const robotics::DriveSensorSample& sample) {
+  return {{"tick", sample.tick}, {"seconds", sample.seconds}, {"specificForce", xyz(sample.specificForce)},
+          {"angularVelocity", xyz(sample.angularVelocity)},
+          {"encoderCounts", {{"left", sample.encoderCounts.left}, {"right", sample.encoderCounts.right}}},
+          {"encoderRadians", wheels(sample.encoderRadians)}, {"odometry", pose(sample.odometry)}};
+}
+
+Json driveSensorReport(const robotics::DriveSensorModel& sensors, Json samples) {
+  const auto& schedule = sensors.schedule();
+  const auto& settings = sensors.settings();
+  const auto& encoders = settings.encoders;
+  return {{"samplesPerSecondMilliHz", schedule.samplesPerSecondMilliHz()}, {"firstTick", schedule.firstTick()},
+          {"seed", settings.seed}, {"imuFrame", "base"},
+          {"accelerometer", imuError(settings.accelerometer)}, {"gyroscope", imuError(settings.gyroscope)},
+          {"encoders", {{"countsPerRevolution", encoders.countsPerRevolution},
+                         {"biasRadians", wheels(encoders.biasRadians)},
+                         {"noiseStdDevRadians", wheels(encoders.noiseStdDevRadians)},
+                         {"driftRadiansPerSecond", wheels(encoders.driftRadiansPerSecond)}}},
+          {"units", {{"time", "s"}, {"specificForce", "m/s^2"}, {"angularVelocity", "rad/s"},
+                     {"encoderCounts", "counts"}, {"encoderRadians", "rad"}, {"odometryPosition", "m"},
+                     {"odometryYaw", "rad"}}}, {"samples", std::move(samples)}};
+}
+
 void play(robotics::DifferentialDriveSimulation& simulation, const Scenario& scenario,
           const robotics::DifferentialDriveSimulation::TickObserver& observe) {
   for (const auto& command : scenario.commands) simulation.queueCommand(command.tick, command.twist);
@@ -372,7 +456,7 @@ int run(int count, Char** args) {
     if (sameFile(output, scenarioPath) || sameFile(output, input))
       throw std::invalid_argument("Output must be separate from the scene and scenario inputs");
     const auto sourceNamespace = container::util::pathToUtf8(std::filesystem::path(args[3]));
-    const auto scenario = readScenario(scenarioPath);
+    auto scenario = readScenario(scenarioPath);
     Json assetCache;
     auto collision = [&] {
       auto assets = robotics::loadBimPreprocessedAssets(input, scenario.cacheDirectory,
@@ -389,20 +473,34 @@ int run(int count, Char** args) {
     robotics::BimCollisionWorld world(std::move(collision), scenario.openDoorIds, 1);
     robotics::DifferentialDriveSimulation simulation(world, scenario.spawn, scenario.options);
     Json scans = Json::array();
+    Json driveSamples = Json::array();
     robotics::DifferentialDriveSimulation::TickObserver observe;
-    if (scenario.lidar) {
-      const auto& lidar = *scenario.lidar;
-      scans.get_ref<Json::array_t&>().reserve(static_cast<size_t>(lidar.schedule.scansThrough(scenario.ticks)));
-      observe = [&lidar, &scans, cast = world.lidarRaycasts()](const robotics::DifferentialDriveState& state) {
-        if (!lidar.schedule.due(state.tick)) return;
-        const robotics::LidarPose worldFromBase{
-            state.base.position, glm::angleAxis(state.base.yaw, glm::dvec3(0.0, 0.0, 1.0))};
-        scans.push_back(lidarScan(lidar.sensor.scan(worldFromBase, lidar.schedule, state.tick, cast)));
+    if (scenario.lidar)
+      scans.get_ref<Json::array_t&>().reserve(static_cast<size_t>(scenario.lidar->schedule.scansThrough(scenario.ticks)));
+    if (scenario.driveSensors)
+      driveSamples.get_ref<Json::array_t&>().reserve(static_cast<size_t>(
+          scenario.driveSensors->schedule().samplesThrough(scenario.ticks)));
+    if (scenario.lidar || scenario.driveSensors) {
+      auto cast = scenario.lidar ? world.lidarRaycasts() : robotics::LidarCast{};
+      observe = [&scenario, &scans, &driveSamples, cast = std::move(cast)](const robotics::DifferentialDriveState& state) {
+        if (const auto& lidar = scenario.lidar; lidar && lidar->schedule.due(state.tick)) {
+          const robotics::LidarPose worldFromBase{
+              state.base.position, glm::angleAxis(state.base.yaw, glm::dvec3(0.0, 0.0, 1.0))};
+          scans.push_back(lidarScan(lidar->sensor.scan(worldFromBase, lidar->schedule, state.tick, cast)));
+        }
+        if (auto& sensors = scenario.driveSensors) {
+          const auto reading = sensors->observe({.tick = state.tick, .base = state.base,
+              .encoderRadians = state.encoderAngles,
+              .yawRateRadiansPerSecond = robotics::differentialYawRate(scenario.options.drive, state.wheelRates)});
+          if (reading) driveSamples.push_back(driveSensorSample(*reading));
+        }
       };
     }
     play(simulation, scenario, observe);
     if (scenario.lidar && scans.size() != scenario.lidar->schedule.scansThrough(scenario.ticks))
       throw std::logic_error("Simulation did not produce every scheduled LiDAR scan");
+    if (scenario.driveSensors && driveSamples.size() != scenario.driveSensors->schedule().samplesThrough(scenario.ticks))
+      throw std::logic_error("Simulation did not produce every scheduled drive sensor sample");
 
     Json history = Json::array();
     for (const auto& entry : simulation.history()) history.push_back(sample(entry));
@@ -420,6 +518,7 @@ int run(int count, Char** args) {
                                 {"baseFromRightWheel", matrix(transforms.baseFromRightWheel)}}}};
     if (!assetCache.is_null()) report["assetCache"] = std::move(assetCache);
     if (scenario.lidar) report["lidar"] = lidarReport(*scenario.lidar, std::move(scans));
+    if (scenario.driveSensors) report["driveSensors"] = driveSensorReport(*scenario.driveSensors, std::move(driveSamples));
     container::util::writeFileAtomically(output, report.dump(2) + '\n');
     std::cout << "Simulated " << simulation.clock().tick() << " fixed ticks\n";
     return 0;

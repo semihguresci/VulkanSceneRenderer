@@ -29,6 +29,9 @@ struct DrivePose {
 void validateDifferentialDrive(const DifferentialDriveSettings& settings);
 [[nodiscard]] DriveWheels differentialWheelRates(
     const DifferentialDriveSettings& settings, DriveTwist command);
+// Angular velocity about the base +Z axis from accepted wheel rates in rad/s.
+[[nodiscard]] double differentialYawRate(
+    const DifferentialDriveSettings& settings, DriveWheels rates);
 [[nodiscard]] DrivePose integrateWheelTravel(
     DrivePose initial, double trackWidth, DriveWheels metres);
 
