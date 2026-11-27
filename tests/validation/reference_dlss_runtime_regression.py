@@ -156,9 +156,12 @@ def display_quality(raw, reconstructed, converged):
     return rows
 
 
+def red_signal_mask(rgb, minimum):
+    return (rgb[:, :, 0] > minimum) & (rgb[:, :, 0] > 1.7 * np.maximum(rgb[:, :, 1], rgb[:, :, 2]))
+
+
 def red_mask(pixels):
-    rgb = pixels.astype(np.float32) / 255
-    return (rgb[:, :, 0] > .3) & (rgb[:, :, 0] > 1.7 * np.maximum(rgb[:, :, 1], rgb[:, :, 2]))
+    return red_signal_mask(pixels.astype(np.float32) / 255, .3)
 
 
 def motion_quality(raw, reconstructed):
@@ -220,6 +223,33 @@ def check_handoff_events(capture, raw, controls, spatial_backend):
             assert comparison["encodedFileExact"], (sample.image, raw[frame].image)
             evidence[frame]["rawExr"] = comparison
     return evidence
+
+
+def handoff_cut_quality(resumed, continuous, previous_raw, current_raw):
+    # The raw frames locate the marker independently of either NGX history.
+    # The two RR runs have different evaluation schedules before the cut.
+    earlier = red_signal_mask(previous_raw.pixels, .5)
+    current = red_signal_mask(current_raw.pixels, .5)
+    assert min(np.count_nonzero(earlier), np.count_nonzero(current)) > 512
+    assert not np.any(earlier & current), "The cut fixture does not separate old and new marker pixels"
+    old_center = float(np.nonzero(earlier)[1].mean())
+    new_center = float(np.nonzero(current)[1].mean())
+    assert abs(new_center - old_center) > 100, (old_center, new_center)
+
+    metrics = {}
+    for label, sample in (("resumedRr", resumed), ("continuousRr", continuous)):
+        assert sample.dlss["active"] and sample.dlss["historyFrames"] == 1, sample.dlss
+        marker = red_mask(sample.pixels)
+        assert np.count_nonzero(marker) > 512, sample.image
+        center = float(np.nonzero(marker)[1].mean())
+        iou = float(np.count_nonzero(marker & current) / np.count_nonzero(marker | current))
+        stale_pixels = int(np.count_nonzero(marker & earlier))
+        metrics[label] = {"centerX": center, "iouWithCurrentRaw": iou, "pixelsInOldMarker": stale_pixels}
+        assert abs(center - new_center) < 2 and iou > .9 and stale_pixels == 0, metrics[label]
+    difference = np.abs(resumed.pixels.astype(np.int16) - continuous.pixels)
+    return {"source": "rr", "rawMarkerCenterXBeforeCut": old_center, "rawMarkerCenterXAfterCut": new_center,
+            "changedFromContinuousRrPixels": int(np.count_nonzero(np.any(difference, axis=-1))),
+            "maxRgbCodeDifferenceFromContinuousRr": int(difference.max()), **metrics}
 
 
 def handoff_regression(capture, output, report, spatial_backend, rr_available, spatial_available):
@@ -320,7 +350,9 @@ def handoff_regression(capture, output, report, spatial_backend, rr_available, s
         for frame, entry in details["frames"].items():
             weight = entry["spatialWeight"]
             image = combined[frame]
-            if weight == 0:
+            if frame == HANDOFF_CUT_FRAME and before_cut["spatialWeight"] == 1:
+                comparisons[frame] = handoff_cut_quality(image, rr_only[frame], raw[frame - 1], raw[frame])
+            elif weight == 0:
                 comparisons[frame] = {"source": "rr", **pixel_exact(image, rr_only[frame])}
             elif weight == 1:
                 comparisons[frame] = {"source": spatial_backend, **pixel_exact(image, spatial_only[frame])}
