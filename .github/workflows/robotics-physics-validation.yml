@@ -24,7 +24,8 @@ jobs:
           persist-credentials: false
 
       - name: Restore vcpkg binaries
-        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        id: vcpkg-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/robotics-vcpkg-cache
           key: windows-2025-vs2026-x64-robotics-vcpkg-${{ env.VULKAN_SDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/vcpkg-overlay-ports/**') }}
@@ -82,6 +83,8 @@ jobs:
 
           $options = @(
             '-DVCPKG_TARGET_TRIPLET=x64-windows'
+            "-DVulkan_INCLUDE_DIR=$env:VULKAN_SDK/Include"
+            "-DVulkan_LIBRARY=$env:VULKAN_SDK/Lib/vulkan-1.lib"
             '-DENABLE_TESTS=ON'
             '-DENABLE_PHYSICS=ON'
             '-DENABLE_WINDOWED_TESTS=OFF'
@@ -108,6 +111,13 @@ jobs:
             'bim_lidar_tests'
           )
           cmake --build out/build/windows-release --parallel 2 --target @targets
+
+      - name: Save vcpkg binaries
+        if: ${{ !cancelled() && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+        with:
+          path: ${{ runner.temp }}/robotics-vcpkg-cache
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
 
       - name: Run physics tests and fixed-step BIM replay
         shell: pwsh

@@ -31,4 +31,6 @@ endif()
 file(READ "${SOURCE_PATH}/LICENSE" _license)
 file(READ "${SOURCE_PATH}/source/MaterialXFormat/External/PugiXML/pugixml.hpp" _pugi_notice OFFSET 51078)
 file(MAKE_DIRECTORY "${CURRENT_PACKAGES_DIR}/share/materialx")
-file(WRITE "${CURRENT_PACKAGES_DIR}/share/materialx/copyright" "${_license}\n\n${_pugi_notice}")
+# Match the byte-pinned combined upstream notice on every platform.
+file(CONFIGURE OUTPUT "${CURRENT_PACKAGES_DIR}/share/materialx/copyright"
+    CONTENT "${_license}\n\n${_pugi_notice}" @ONLY NEWLINE_STYLE UNIX)
