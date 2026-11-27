@@ -23,6 +23,7 @@ Use the following targets. The robotics suffixes are under the
 | `assets` | IFC/IFCX preprocessing and derived cache, source digests, semantic and collision data, and CPU render payload with optional GLB preview. | `scene`, `collision_geometry` and Vulkan headers for the public CPU render model. The implementation links geometry import, fingerprints, TinyGLTF and miniz. |
 | `drive` | Differential-drive kinematics, shaft/ground actuation and planar odometry covariance. | GLM. |
 | `sensors` | Rational sensor schedules, organized LiDAR scans, simulated IMU/encoders and seeded noise. | `drive`. The LiDAR query contract accepts a caller-supplied raycast. |
+| `twin` | Versioned robot and BIM telemetry, canonical event ordering, and sampled replay. | `scene` for source identity serialization, GLM for metric pose values, and private nlohmann/json. |
 | `VulkanSceneRenderer_physics_world` | Jolt bodies, shapes, constraints, motors, queries and opt-in contact snapshots. | GLM and the private Jolt backend. Requires `ENABLE_PHYSICS`. |
 | `collision` | Live BIM collision bodies, door state, Jolt query adapters and room-portal analysis. | `scene`, `collision_geometry`, `VulkanSceneRenderer_physics_world` and private CPU import model headers. Requires `ENABLE_PHYSICS`. |
 | `simulation` | Fixed-step differential-drive state and history, articulated motor commands and grasp operations. | `collision`, `drive` and `clock`. Requires `ENABLE_PHYSICS`. |

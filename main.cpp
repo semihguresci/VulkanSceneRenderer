@@ -8,6 +8,7 @@
 #include "Container/renderer/lighting/SkyPreset.h"
 #include "Container/renderer/pathtracing/ReferenceFireflyClamp.h"
 #include "Container/robotics/SensorCamera.h"
+#include "Container/robotics/TwinTelemetry.h"
 #include "Container/utility/Platform.h"
 
 #include <algorithm>
@@ -461,6 +462,8 @@ void printCommandLineHelp() {
   --sensor-namespace NAME       Semantic source namespace for dataset IDs (defaults to model stem)
   --sensor-meters-per-renderer-unit SCALE
                                 Supply metric scale for models without declared length units
+  --bim-twin-replay FILE         Inspect a digital-twin recording on its BIM source
+  --bim-twin-time-ns N           Open paused at a recording timestamp in nanoseconds
   --gpu-hardware-telemetry      Add optional NVML readings to capture telemetry
   --save-scene PATH              Save primary editable scene as .glb or .gltf
   --save-linked-scene PATH       Save a companion .gltf with retained URI links
@@ -509,6 +512,7 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
   bool explicitPathSampleLimit = false;
   std::filesystem::path sensorCameraSpec;
   std::optional<std::filesystem::path> sensorTrajectory;
+  std::filesystem::path bimTwinReplayPath;
   container::geometry::vdb::ImportOptions vdbModelOptions;
   bool vdbModelOptionsRequested=false;
   VdbPreviewFlags previewFlags;
@@ -961,6 +965,16 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     }
     if (arg == "--capture-data") {
       config.screenshotSceneData = true;
+      continue;
+    }
+    if (arg == "--bim-twin-replay") {
+      bimTwinReplayPath = container::util::pathFromUtf8(requireValue(argc, argv, i, arg));
+      if (bimTwinReplayPath.empty())
+        throw std::invalid_argument("--bim-twin-replay requires a recording path");
+      continue;
+    }
+    if (arg == "--bim-twin-time-ns") {
+      config.bimTwinStartNanoseconds = parseUint64(requireValue(argc, argv, i, arg), arg);
       continue;
     }
     if (arg == "--sensor-camera") {
@@ -1541,6 +1555,19 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
     config.ddgi = std::move(preset.settings);
   }
 
+  if (bimTwinReplayPath.empty()) {
+    if (config.bimTwinStartNanoseconds)
+      throw std::invalid_argument("--bim-twin-time-ns requires --bim-twin-replay");
+  } else {
+    const auto model = container::util::pathFromUtf8(config.bimModelPath);
+    const auto ext = lowerAscii(container::util::pathToUtf8(model.extension()));
+    if (ext != ".ifc" && ext != ".ifcx" && ext != ".bim")
+      throw std::invalid_argument("--bim-twin-replay requires a matching IFC, IFCX or BIM model");
+    if (!sensorCameraSpec.empty())
+      throw std::invalid_argument("--bim-twin-replay cannot be combined with --sensor-camera");
+    config.bimTwinReplay = std::make_shared<const container::robotics::TwinReplay>(
+        container::robotics::loadTwinRecording(bimTwinReplayPath));
+  }
   if (sensorCameraSpec.empty()) {
     if (sensorTrajectory || !config.sensorDatasetPath.empty() || !config.sensorBenchmarkPath.empty() ||
         !config.sensorSourceNamespace.empty() || config.sensorMetersPerRendererUnit)

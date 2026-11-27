@@ -1562,6 +1562,9 @@ void RendererFrontend::initialize() {
       subs_.bimManager->enableSensorLabels(svc_.config.sensorSourceNamespace,
                                           svc_.config.sensorMetersPerRendererUnit,
                                           svc_.config.sensorCameraPlayback->settings.appearance);
+    else if (svc_.config.bimTwinReplay)
+      subs_.bimManager->enableSensorLabels(svc_.config.bimTwinReplay->recording().sourceNamespace,
+                                          std::nullopt);
     subs_.bimManager->resizeObjectFrames(static_cast<uint32_t>(svc_.swapChainManager.imageCount()));
     subs_.bimManager->createMeshletResidencyResources(
         container::util::executableDirectory());
@@ -1573,6 +1576,7 @@ void RendererFrontend::initialize() {
     activeAuxiliaryModelPath_ = svc_.config.bimModelPath;
     activeAuxiliaryImportScale_ = svc_.config.bimImportScale;
   }
+  initializeBimTwinReplay();
   initialSceneMs_ = elapsedMilliseconds(initialSceneBegin);
 
   subs_.sceneController = std::make_unique<SceneController>(
@@ -2163,6 +2167,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   // Commit outside the ImGui frame and before acquiring a swapchain image:
   // cooperative loading frames must own their acquire/submit/present cycle.
   processPendingGuiModelLoadRequest();
+  refreshBimTwinBinding();
   processShaderReload(subs_.guiManager && subs_.guiManager->consumeShaderReloadRequest());
   if (subs_.guiManager && subs_.environmentManager) {
     const auto path = subs_.guiManager->consumeEnvironmentRequest();
@@ -4304,6 +4309,8 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
                              {"frustumPassedCount", cull.frustumPassedCount},
                              {"occlusionPassedCount", cull.occlusionPassedCount}};
   }
+  if (bimTwin_)
+    json["bimTwinReplay"] = bimTwinCaptureTelemetry();
   const auto& camera = buffers_.cameraData;
   json["camera"] = {{"position", {camera.cameraWorldPosition.x, camera.cameraWorldPosition.y, camera.cameraWorldPosition.z}},
                      {"jitterUv", {camera.jitterUv.x, camera.jitterUv.y, camera.jitterUv.z, camera.jitterUv.w}}};
@@ -4630,6 +4637,7 @@ void RendererFrontend::processInput(float deltaTime, bool useViewportInput) {
     pendingPhysicsDeltaSeconds_ = deltaTime;
   if (aslPoseReplay_)
     aslPoseReplay_->tick(deltaTime, svc_.nativeWindow);
+  advanceBimTwinReplay(deltaTime);
   if (!subs_.cameraController) {
     svc_.inputManager.endFrame();
     return;
@@ -5829,7 +5837,8 @@ bool RendererFrontend::reloadSceneModel(const std::string &path,
             vdbOptionsForReload(path,requestedOptions,previousAuxiliaryPath,
                                 previousOpenVdbOptions,svc_.config.vdbModelOptions),
             {}, {}, {}, svc_.config.geometryLodErrorPixels > 0.0f,
-            svc_.config.assetCacheDirectory, bool(svc_.config.sensorCameraPlayback));
+            svc_.config.assetCacheDirectory,
+            bool(svc_.config.sensorCameraPlayback || svc_.config.bimTwinReplay));
         prepared = &*localPrepared;
       }
       auto* stagedGeometry = !localPrepared && modelLoad_->uploadedGeometry
@@ -6025,7 +6034,8 @@ void RendererFrontend::processPendingGuiModelLoadRequest() {
                                linked = svc_.config.experimentalGltfLinkedAssets && !remote,
                                generateGeometryLods = svc_.config.geometryLodErrorPixels > 0.0f,
                                derivedCacheDirectory = svc_.config.assetCacheDirectory,
-                               recordSourceFingerprints = bool(svc_.config.sensorCameraPlayback),
+                               recordSourceFingerprints =
+                                   bool(svc_.config.sensorCameraPlayback || svc_.config.bimTwinReplay),
                                streamGeometry = svc_.config.geometryUploadChunkKiB != 0,
                                micromaps = svc_.ctx.deviceWrapper->opacityMicromapsEnabled() && !remote,
                                experimental = svc_.config.experimentalGltfMaterials,
@@ -9594,6 +9604,7 @@ void RendererFrontend::presentSceneControls() {
             sceneState_.selectedMeshNode);
         refreshCameraData();
       });
+  drawBimTwinReplay();
 
   // Sync freeze-culling: pull GUI state back into debug state (checkbox may
   // have toggled it).
