@@ -1,6 +1,6 @@
 add_library(VulkanSceneRenderer_robotics
     RoboticsScene.cpp RoboticsSceneManifest.cpp BimCollisionGeometry.cpp BimWalkability.cpp
-    BimAssetCache.cpp BimCachedCollision.cpp BimCachedRender.cpp)
+    BimAssetCache.cpp BimCachedCollision.cpp BimCachedRender.cpp SimClock.cpp DifferentialDrive.cpp)
 target_compile_features(VulkanSceneRenderer_robotics PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_robotics PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(VulkanSceneRenderer_robotics PRIVATE
@@ -29,7 +29,8 @@ container_stage_runtime_dlls(BimRoboticsAssets)
 
 if(ENABLE_PHYSICS)
     add_library(VulkanSceneRenderer_robotics_physics
-        BimCollisionWorld.cpp BimCollisionOverlay.cpp BimRoomGraph.cpp BimRoomGeometry.cpp)
+        BimCollisionWorld.cpp BimCollisionOverlay.cpp BimRoomGraph.cpp BimRoomGeometry.cpp
+        DifferentialDriveSimulation.cpp)
     target_link_libraries(VulkanSceneRenderer_robotics_physics PUBLIC
         VulkanSceneRenderer_robotics VulkanSceneRenderer_physics PRIVATE VulkanSceneRenderer_geometry)
 
@@ -38,4 +39,10 @@ if(ENABLE_PHYSICS)
         VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry)
     set_target_properties(BimRoboticsCollision PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     container_stage_runtime_dlls(BimRoboticsCollision)
+
+    add_executable(BimRoboticsSim ${CMAKE_SOURCE_DIR}/tools/bim_robotics_sim.cpp)
+    target_link_libraries(BimRoboticsSim PRIVATE
+        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry)
+    set_target_properties(BimRoboticsSim PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    container_stage_runtime_dlls(BimRoboticsSim)
 endif()

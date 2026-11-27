@@ -228,6 +228,44 @@ retain their render geometry and semantics. Supply a verified
 `--metres-per-renderer-unit` value to produce metric collision assets and a
 metre-scale preview.
 
+### Run a fixed-step differential-drive robot
+
+Build `BimRoboticsSim` with `ENABLE_PHYSICS=ON`. It drives a kinematic capsule
+in the BIM collision world's Jolt instance and records every fixed tick.
+
+```powershell
+cmake --build out/build/windows-release --config Release --target BimRoboticsSim
+& '.\out\build\windows-release\BimRoboticsSim.exe' `
+    tests/fixtures/robotics/doorway.ifc drive.json doorway `
+    tests/fixtures/robotics/doorway-drive.json
+```
+
+The sample starts at `[-1.5, 0, 1.2]` metres and reaches `[1.5, 0, 1.2]`
+after three seconds through the open door. Omit `openDoorIds` to run the same
+command against the closed door. Each command takes effect at its zero-based
+tick and lasts until the next command. `ticks` runs explicit steps. For a
+frame-cadence replay, supply `durationNanoseconds` and `frameNanoseconds`.
+Elapsed fractions and pending whole ticks carry across frames. The headless
+runner drains pending ticks at the end of the scenario.
+
+The controller derives wheel motion from a planar velocity command in the
+base frame. It preserves curvature when limiting wheel speed and checks the
+wheel arc, floor support, capsule clearance and the actual Jolt transition
+before moving. Wheel angles record accepted motion. The wheel model assumes
+ideal rolling, with optional seeded encoder noise applied only to odometry.
+Robot pose at the floor and wheel odometry are separate outputs. The fixed
+map-to-odometry origin is the resolved spawn pose. Wheel translations use
+the configured track width and radius. Frame matrices are column-major and
+coordinates follow REP-103 in metres and radians.
+
+Pause retains queued work. The C++ API can execute a manual tick while
+paused. Reset restores the authored colliders and door states, spawn pose,
+encoder seed and clock, then pauses with the commands retained for replay.
+Closing a door checks the attached capsule and rejects an occupied opening.
+The trajectory tests compare every tick at 30, 60 and 144 Hz and after a
+stalled frame with one Jolt worker. The reproducibility contract covers the
+same build, seed, scene and tick-addressed inputs.
+
 ## Current scope
 
 The scene panel attaches oriented box colliders derived from each selected

@@ -4,6 +4,7 @@
 #include <glm/gtc/quaternion.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -12,10 +13,11 @@
 namespace container::robotics {
 namespace {
 
-physics::PhysicsWorldSettings worldSettings(size_t colliderCount) {
-  if (colliderCount > std::numeric_limits<uint32_t>::max())
+physics::PhysicsWorldSettings worldSettings(size_t colliderCount, uint32_t workerThreads) {
+  if (colliderCount >= std::numeric_limits<uint32_t>::max())
     throw std::invalid_argument("BIM collision scene exceeds the physics body capacity");
-  return {.gravity = {0, 0, -9.81f}, .maxBodies = static_cast<uint32_t>(std::max(size_t{1}, colliderCount))};
+  return {.gravity = {0, 0, -9.81f}, .maxBodies = static_cast<uint32_t>(colliderCount + 1),
+          .workerThreads = workerThreads};
 }
 
 float finiteFloat(double x) {
@@ -43,8 +45,9 @@ Capsule capsuleAt(glm::dvec3 feet, double radius, double height) {
 
 }  // namespace
 
-BimCollisionWorld::BimCollisionWorld(CookedBimCollision geometry, std::span<const std::string> openDoorIds)
-    : geometry_(std::move(geometry)), world_(worldSettings(geometry_.colliders.size())),
+BimCollisionWorld::BimCollisionWorld(CookedBimCollision geometry, std::span<const std::string> openDoorIds,
+                                     uint32_t workerThreads)
+    : geometry_(std::move(geometry)), world_(worldSettings(geometry_.colliders.size(), workerThreads)),
       rowBodies_(geometry_.colliders.size(), physics::kInvalidPhysicsBodyId) {
   for (size_t index = 0; index < geometry_.colliders.size(); ++index) {
     const auto& row = geometry_.colliders[index];
@@ -57,9 +60,23 @@ BimCollisionWorld::BimCollisionWorld(CookedBimCollision geometry, std::span<cons
     const auto found = doors_.find(id);
     if (found == doors_.end())
       throw std::invalid_argument("No authored door collider for entity " + id);
-    found->second.open = true;
+    found->second.open = found->second.initiallyOpen = true;
   }
   bodyRows_.reserve(geometry_.colliders.size());
+  for (size_t index = 0; index < geometry_.colliders.size(); ++index) {
+    const auto& row = geometry_.colliders[index];
+    if (row.kind != BimColliderKind::DoorMesh || !isDoorOpen(row.entityId))
+      install(index);
+  }
+}
+
+void BimCollisionWorld::resetAuthoredBodies() {
+  world_.clear();
+  robotBody_ = physics::kInvalidPhysicsBodyId;
+  bodyRows_.clear();
+  std::ranges::fill(rowBodies_, physics::kInvalidPhysicsBodyId);
+  for (auto& [id, door] : doors_)
+    door.open = door.initiallyOpen;
   for (size_t index = 0; index < geometry_.colliders.size(); ++index) {
     const auto& row = geometry_.colliders[index];
     if (row.kind != BimColliderKind::DoorMesh || !isDoorOpen(row.entityId))
@@ -90,6 +107,17 @@ void BimCollisionWorld::setDoorOpen(std::string_view entityId, bool open) {
       for (const auto row : door.rows) {
         install(row);
         ++installed;
+      }
+      if (const auto robotPose = world_.pose(robotBody_)) {
+        const std::array ignored{robotBody_};
+        const auto contacts = world_.overlapCapsule(robotHalfHeight_, robotRadius_, *robotPose, ignored);
+        const auto occupiesOpening = [&](const physics::PhysicsQueryHit& hit) {
+          return hit.penetrationDepth > 1e-6f && std::ranges::any_of(door.rows, [&](size_t row) {
+            return rowBodies_[row] == hit.body;
+          });
+        };
+        if (std::ranges::any_of(contacts, occupiesOpening))
+          throw std::invalid_argument("Cannot close a BIM door occupied by the robot: " + std::string(entityId));
       }
     } catch (...) {
       for (size_t i = 0; i < installed; ++i)
@@ -135,25 +163,31 @@ void BimCollisionWorld::uninstall(size_t index) noexcept {
 }
 
 BimWalkabilityQueries BimCollisionWorld::walkabilityQueries() const {
+  return walkabilityQueries(physics::kInvalidPhysicsBodyId);
+}
+
+BimWalkabilityQueries BimCollisionWorld::walkabilityQueries(physics::PhysicsBodyId ignored) const {
   const auto describe = [this](const physics::PhysicsQueryHit& hit) {
-    const auto& row = geometry_.colliders[bodyRows_.at(hit.body)];
+    const auto* row = hit.body == robotBody_ ? nullptr : &geometry_.colliders[bodyRows_.at(hit.body)];
     return BimWalkabilityHit{.fraction = std::clamp<double>(hit.fraction, 0.0, 1.0),
                              .position = hit.position, .normal = glm::dvec3(hit.normal),
-                             .entityId = row.entityId, .walkableSupport = row.supportCandidate};
+                             .entityId = row ? row->entityId : robotEntityId_,
+                             .walkableSupport = row && row->supportCandidate};
   };
   // An idle capsule can touch a support without penetrating it. Ignore only
   // harmless initial contacts, retaining any farther obstacle in the sweep.
   constexpr double tolerance = 1e-6;
+  const std::array ignore{ignored};
   return {
-      .castSegment = [this, describe](glm::dvec3 from, glm::dvec3 displacement) -> std::optional<BimWalkabilityHit> {
-        const auto hit = world_.rayCast(from, narrowDisplacement(displacement));
+      .castSegment = [this, describe, ignore](glm::dvec3 from, glm::dvec3 displacement) -> std::optional<BimWalkabilityHit> {
+        const auto hit = world_.rayCast(from, narrowDisplacement(displacement), ignore);
         return hit ? std::optional(describe(*hit)) : std::nullopt;
       },
-      .sweepCapsule = [this, describe](glm::dvec3 bottom, glm::dvec3 displacement, double radius,
+      .sweepCapsule = [this, describe, ignore](glm::dvec3 bottom, glm::dvec3 displacement, double radius,
                                       double height) -> std::optional<BimWalkabilityHit> {
         const auto capsule = capsuleAt(bottom, radius, height);
         const auto hits = world_.sweepCapsule(capsule.halfHeight, capsule.radius, capsule.pose,
-                                             narrowDisplacement(displacement));
+                                             narrowDisplacement(displacement), ignore);
         for (const auto& hit : hits) {
           if (hit.fraction > tolerance || hit.penetrationDepth > tolerance ||
               glm::dot(glm::dvec3(hit.normal), displacement) < -tolerance)
@@ -161,10 +195,10 @@ BimWalkabilityQueries BimCollisionWorld::walkabilityQueries() const {
         }
         return std::nullopt;
       },
-      .overlapCapsule = [this, describe](glm::dvec3 bottom, double radius,
+      .overlapCapsule = [this, describe, ignore](glm::dvec3 bottom, double radius,
                                         double height) -> std::optional<BimWalkabilityHit> {
         const auto capsule = capsuleAt(bottom, radius, height);
-        const auto hits = world_.overlapCapsule(capsule.halfHeight, capsule.radius, capsule.pose);
+        const auto hits = world_.overlapCapsule(capsule.halfHeight, capsule.radius, capsule.pose, ignore);
         for (const auto& hit : hits)
           if (hit.penetrationDepth > tolerance)
             return describe(hit);
