@@ -108,14 +108,14 @@ Json parse(std::string_view bytes, std::string_view name) {
   std::vector<std::set<std::string>> objectKeys;
   try {
     return Json::parse(bytes, [&](int depth, Json::parse_event_t event, Json& value) {
-      require(depth <= 64, "JSON nesting exceeds its limit in " + std::string(name));
+      if (depth > 64) invalid("JSON nesting exceeds its limit in " + std::string(name));
       if (event == Json::parse_event_t::object_start) objectKeys.emplace_back();
-      if (event == Json::parse_event_t::key)
-        require(!objectKeys.empty() && objectKeys.back().insert(value.get<std::string>()).second,
-                "duplicate JSON key in " + std::string(name));
+      if (event == Json::parse_event_t::key &&
+          (objectKeys.empty() || !objectKeys.back().insert(value.get<std::string>()).second))
+        invalid("duplicate JSON key in " + std::string(name));
       if (event == Json::parse_event_t::object_end) objectKeys.pop_back();
-      if (event == Json::parse_event_t::value && value.is_number())
-        require(std::isfinite(value.get<double>()), "nonfinite JSON number in " + std::string(name));
+      if (event == Json::parse_event_t::value && value.is_number() && !std::isfinite(value.get<double>()))
+        invalid("nonfinite JSON number in " + std::string(name));
       return true;
     });
   } catch (const Json::exception& error) {
@@ -412,16 +412,23 @@ std::pair<uint32_t, uint32_t> cameraDimensions(const Json& frame) {
 
 bool readLine(std::ifstream& input, std::string& line) {
   line.clear();
+  std::array<char, 64 * 1024> block;
   for (;;) {
-    const auto value = input.get();
-    if (value == EOF) {
-      require(input.eof() && !input.bad(), "cannot read tick chunk");
-      require(line.empty(), "truncated tick chunk (missing final newline)");
+    input.getline(block.data(), static_cast<std::streamsize>(block.size()));
+    const auto readCount = input.gcount();
+    require(!input.bad(), "cannot read tick chunk");
+    if (input.eof()) {
+      require(line.empty() && readCount == 0, "truncated tick chunk (missing final newline)");
       return false;
     }
-    if (value == '\n') return true;
-    require(line.size() < maxLineBytes, "tick row exceeds its byte limit");
-    line.push_back(static_cast<char>(value));
+    const bool complete = !input.fail();
+    require(readCount > 0, "cannot read tick chunk");
+    // getline counts a consumed newline without copying it to the buffer.
+    const auto size = static_cast<size_t>(readCount - (complete ? 1 : 0));
+    require(size <= maxLineBytes - line.size(), "tick row exceeds its byte limit");
+    line.append(block.data(), size);
+    if (complete) return true;
+    input.clear();
   }
 }
 

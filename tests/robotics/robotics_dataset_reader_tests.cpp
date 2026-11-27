@@ -264,6 +264,19 @@ TEST_F(RoboticsDatasetReader, AcceptsEquivalentUnscaledMetricEvidenceWithoutRewr
   expectInvalid("provenance");
 }
 
+TEST_F(RoboticsDatasetReader, ReplaysRowsThatSpanSeveralInputBlocks) {
+  rows_[0]["extensions"] = Json::array({std::string(48 * 1024, 'a'), std::string(48 * 1024, 'b'),
+                                      std::string(48 * 1024, 'c')});
+  save();
+
+  size_t index = 0;
+  const auto summary = readRoboticsDataset(directory_, [&](const Json& row) {
+    EXPECT_EQ(row, rows_.at(index++));
+  });
+  EXPECT_EQ(index, rows_.size());
+  EXPECT_EQ(summary.manifest, manifest_);
+}
+
 TEST_F(RoboticsDatasetReader, WriterRoundTripPreservesCameraLabelsAndEveryCommittedBasePose) {
   const auto [camera, report] = sourceCaptureAndReport();
   const auto output = root_ / "joined";
