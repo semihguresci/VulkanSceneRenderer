@@ -166,6 +166,15 @@ BimWalkabilityQueries BimCollisionWorld::walkabilityQueries() const {
   return walkabilityQueries(physics::kInvalidPhysicsBodyId);
 }
 
+LidarCast BimCollisionWorld::lidarRaycasts() const {
+  return [this](glm::dvec3 origin, glm::dvec3 displacement) -> std::optional<LidarHit> {
+    const std::array ignore{robotBody_};
+    const auto hit = world_.rayCast(origin, narrowDisplacement(displacement), ignore);
+    if (!hit) return std::nullopt;
+    return LidarHit{hit->fraction, geometry_.colliders[bodyRows_.at(hit->body)].entityId};
+  };
+}
+
 BimWalkabilityQueries BimCollisionWorld::walkabilityQueries(physics::PhysicsBodyId ignored) const {
   const auto describe = [this](const physics::PhysicsQueryHit& hit) {
     const auto* row = hit.body == robotBody_ ? nullptr : &geometry_.colliders[bodyRows_.at(hit.body)];

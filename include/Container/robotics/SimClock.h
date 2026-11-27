@@ -21,14 +21,16 @@ public:
   [[nodiscard]] bool paused() const noexcept { return paused_; }
   void setPaused(bool paused) noexcept { paused_ = paused; }
 
-  // Each callback receives the next tick's index and the fixed step duration. Whole-tick
-  // debt remains available to advance(0) when a batch reaches its budget.
-  uint32_t advance(std::chrono::nanoseconds elapsed, const Tick& execute);
-  void step(const Tick& execute);
+  // execute receives the next command tick index and the fixed step duration.
+  // afterTick receives the committed tick index and the same duration. If it
+  // throws, the committed tick stays consumed and advance(0) can drain the debt.
+  uint32_t advance(std::chrono::nanoseconds elapsed, const Tick& execute, const Tick& afterTick = {});
+  void step(const Tick& execute, const Tick& afterTick = {});
+  [[nodiscard]] bool inTickCallback() const noexcept { return executing_; }
   void reset();
 
 private:
-  void executeTick(const Tick& execute);
+  void invoke(const Tick& callback);
   uint32_t frequency_;
   uint32_t maxTicksPerAdvance_;
   uint64_t tick_{};

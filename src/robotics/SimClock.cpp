@@ -25,7 +25,7 @@ double SimClock::tickSeconds() const noexcept {
   return 1.0 / frequency_;
 }
 
-uint32_t SimClock::advance(std::chrono::nanoseconds elapsed, const Tick& execute) {
+uint32_t SimClock::advance(std::chrono::nanoseconds elapsed, const Tick& execute, const Tick& afterTick) {
   if (executing_) throw std::logic_error("A clock callback cannot advance the clock recursively");
   if (elapsed.count() < 0) throw std::invalid_argument("Simulation elapsed time cannot be negative");
   if (paused_) return 0;
@@ -45,38 +45,41 @@ uint32_t SimClock::advance(std::chrono::nanoseconds elapsed, const Tick& execute
   const auto pending = pendingTicks_ + wholeTicks + fractionTicks;
   if (pending != 0 && !execute) throw std::invalid_argument("Simulation clock requires a tick callback");
 
-  // Accept elapsed time once. If a callback fails, the unexecuted ticks can
-  // be retried with advance(0), including the tick whose callback threw.
+  // Accept elapsed time once. advance(0) can retry a failed execution and
+  // process the remaining debt.
   pendingTicks_ = pending;
   fractional_ = static_cast<uint32_t>(fractional % nanosPerSecond);
   uint32_t completed = 0;
   while (pendingTicks_ != 0 && completed < maxTicksPerAdvance_ && !paused_) {
-    executeTick(execute);
+    invoke(execute);
+    ++tick_;
     --pendingTicks_;
     ++completed;
+    if (afterTick) invoke(afterTick);
   }
   return completed;
 }
 
-void SimClock::step(const Tick& execute) {
+void SimClock::step(const Tick& execute, const Tick& afterTick) {
   if (executing_) throw std::logic_error("A clock callback cannot step the clock recursively");
   if (maxTick - tick_ == pendingTicks_)
     throw std::overflow_error("Simulation tick schedule would overflow");
   if (!execute) throw std::invalid_argument("Simulation clock requires a tick callback");
   // Manual stepping advances one tick independently of paused state or debt.
-  executeTick(execute);
+  invoke(execute);
+  ++tick_;
+  if (afterTick) invoke(afterTick);
 }
 
-void SimClock::executeTick(const Tick& execute) {
+void SimClock::invoke(const Tick& callback) {
   executing_ = true;
   try {
-    execute(tick_, tickSeconds());
+    callback(tick_, tickSeconds());
   } catch (...) {
     executing_ = false;
     throw;
   }
   executing_ = false;
-  ++tick_;
 }
 
 void SimClock::reset() {

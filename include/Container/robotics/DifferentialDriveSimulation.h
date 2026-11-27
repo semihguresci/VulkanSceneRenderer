@@ -7,6 +7,7 @@
 #include <glm/mat4x4.hpp>
 
 #include <deque>
+#include <functional>
 #include <memory>
 #include <string>
 
@@ -49,6 +50,8 @@ struct DifferentialDriveFrames {
 // outlive the simulation. Renderer callers can consume snapshots separately.
 class DifferentialDriveSimulation {
 public:
+  using TickObserver = std::function<void(const DifferentialDriveState&)>;
+
   DifferentialDriveSimulation(BimCollisionWorld& world, DrivePose spawn,
                               DifferentialDriveSimulationOptions options = {});
   ~DifferentialDriveSimulation();
@@ -57,8 +60,10 @@ public:
 
   void queueCommand(uint64_t tick, DriveTwist command);
   void clearCommands() noexcept;
-  uint32_t advance(std::chrono::nanoseconds elapsed);
-  void step();
+  // Observe each committed state while its collision world is live. A failing
+  // observer leaves the physics step and clock committed.
+  uint32_t advance(std::chrono::nanoseconds elapsed, const TickObserver& observe = {});
+  void step(const TickObserver& observe = {});
   // Restore spawn, authored world state, clock and encoder seed. Retain the
   // scheduled velocity commands for repeatable playback.
   void reset();

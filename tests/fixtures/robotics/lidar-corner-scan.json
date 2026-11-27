@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "initialFeet": [0, 0, 0],
+  "ticks": 60,
+  "commands": [{ "tick": 0, "linear": 0.2, "angular": 0 }],
+  "lidar": {
+    "scansPerSecondMilliHz": 7000,
+    "mount": { "xyz": [0, 0, 1.25] },
+    "azimuthSamples": 4,
+    "azimuthStart": 0,
+    "azimuthSpan": 6.283185307179586,
+    "elevationAngles": [-0.5235987755982988, 0, 0.2617993877991494],
+    "minRangeMeters": 0.05,
+    "maxRangeMeters": 10
+  }
+}

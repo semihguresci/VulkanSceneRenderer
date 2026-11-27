@@ -266,6 +266,49 @@ The trajectory tests compare every tick at 30, 60 and 144 Hz and after a
 stalled frame with one Jolt worker. The reproducibility contract covers the
 same build, seed, scene and tick-addressed inputs.
 
+### Scan BIM colliders with planar or multi-ring LiDAR
+
+Add a `lidar` object to a `BimRoboticsSim` scenario to sample the live Jolt
+collision world. Use `scansPerSecondMilliHz` for the scan rate and `firstTick`
+to delay the first scan from its default at tick zero. Each subsequent scan
+uses the first fixed tick at or after its scheduled time. A scan reports that
+tick and its simulation time in seconds. Every beam in a scan uses the same
+committed world state, regardless of wall-clock frame cadence or tick batches.
+
+```powershell
+& '.\out\build\windows-release\BimRoboticsSim.exe' `
+    tests/fixtures/robotics/lidar-corner.ifc scans.json lidar-corner `
+    tests/fixtures/robotics/lidar-corner-scan.json
+```
+
+The fixture uses millimetre IFC geometry with walls 4 m forward and 3 m left
+of spawn. At tick zero, the horizontal ring reports those distances and two
+misses. The downward ring hits the floor at 2.5 m. Forward motion brings the
+first wall closer as the simulation progresses.
+
+The sensor's calibrated `mount` uses base-relative `xyz` in metres and
+`rpy` in radians. The scan uses the simulated base pose and excludes its own
+capsule. Sensor +X points forward, +Y left and +Z up. `azimuthSamples`,
+`azimuthStart` and `azimuthSpan` define the horizontal sweep. A full turn uses
+a half-open interval so the first and last bearings differ. A partial sweep
+with multiple samples includes both endpoints. `elevationAngles` selects one
+channel for a planar scan or multiple channels for a 3D scan. Returns are
+ordered by elevation channel, then azimuth. [ROS REP-103](https://www.ros.org/reps/rep-0103.html)
+
+The nearest collider supplies its scene entity ID, including native IFC GUIDs.
+A hit inside `minRangeMeters` occludes farther geometry. A clear segment
+through `maxRangeMeters`, near-range hits, seeded dropouts and noise outside
+the range window each produce a null distance and a distinct status. Set
+`noiseStdDevMeters` for Gaussian range error, `dropoutProbability` for the
+chance of a lost hit and `seed` for repeatability. The JSON report includes
+the calibrated pose, scan poses and named statuses. The headless report
+allows up to 65,536 rays per scan and 1,000,000 returns per scenario.
+
+The sensor models one collision return per beam from an instantaneous snapshot
+and treats colliders as opaque. The C++ scan generator accepts a caller-provided
+segment query and builds without Jolt. The BIM runner requires
+`ENABLE_PHYSICS=ON`.
+
 ### Import and pose an articulated URDF robot
 
 Build `BimRoboticsUrdf` with `ENABLE_ROBOTICS_URDF=ON`. The tool uses
