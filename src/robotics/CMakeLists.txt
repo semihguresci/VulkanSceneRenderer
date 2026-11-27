@@ -164,6 +164,20 @@ if(ENABLE_PHYSICS)
     set_target_properties(BimRoboticsSim PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     container_stage_runtime_dlls(BimRoboticsSim)
 
+    add_executable(BimRoboticsNavigation
+        "${CMAKE_SOURCE_DIR}/tools/bim_robotics_navigation.cpp"
+        NavigationTrainingLayout.cpp)
+    target_link_libraries(BimRoboticsNavigation PRIVATE
+        VulkanSceneRenderer_robotics_assets VulkanSceneRenderer_robotics_simulation
+        VulkanSceneRenderer_robotics_sensors VulkanSceneRenderer_fingerprint nlohmann_json::nlohmann_json)
+    target_compile_definitions(BimRoboticsNavigation PRIVATE
+        CONTAINER_NAVIGATION_REVISION="${CONTAINER_GIT_REVISION}")
+    if(WIN32)
+        target_compile_definitions(BimRoboticsNavigation PRIVATE NOMINMAX)
+    endif()
+    set_target_properties(BimRoboticsNavigation PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    container_stage_runtime_dlls(BimRoboticsNavigation)
+
     add_executable(BimRoboticsFleet ${CMAKE_SOURCE_DIR}/tools/bim_robotics_fleet.cpp)
     target_link_libraries(BimRoboticsFleet PRIVATE
         VulkanSceneRenderer_robotics_assets VulkanSceneRenderer_robotics_fleet nlohmann_json::nlohmann_json)

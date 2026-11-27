@@ -118,6 +118,7 @@ def check(build, config, physics, urdf):
         "BimRoboticsCollision": physics,
         "BimRoboticsSim": physics,
         "BimRoboticsFleet": physics,
+        "BimRoboticsNavigation": physics,
         PREFIX + "robotics_diagnostics": physics,
         **{PREFIX + suffix: physics for suffix in PHYSICS},
         "BimRoboticsUrdf": urdf,
@@ -149,6 +150,7 @@ def check(build, config, physics, urdf):
         executables["BimRoboticsCollision"] = {"robotics_assets", "robotics_collision", "robotics_diagnostics"}
         executables["BimRoboticsSim"] = {"robotics_assets", "robotics_sensors", "robotics_simulation"}
         executables["BimRoboticsFleet"] = {"robotics_assets", "robotics_fleet", "robotics_simulation", "robotics_twin"}
+        executables["BimRoboticsNavigation"] = {"robotics_assets", "robotics_sensors", "robotics_simulation"}
     if urdf:
         executables["BimRoboticsUrdf"] = {"urdf", "urdf_assets"}
     for name, modules in executables.items():

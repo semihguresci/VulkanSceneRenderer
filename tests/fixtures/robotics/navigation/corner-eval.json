@@ -1,0 +1,16 @@
+{
+  "schema": "container.navigation-training-scene",
+  "version": 1,
+  "id": "corner-eval",
+  "family": "lidar-corner",
+  "split": "held-out",
+  "source": "../lidar-corner.ifc",
+  "sourceNamespace": "lidar-corner",
+  "start": { "position": [0.0, 0.0, 0.0], "jitterMeters": 0.25 },
+  "goal": { "position": [2.4, 1.1, 0.0], "jitterMeters": 0.25 },
+  "initialYaw": 0.4,
+  "yawJitterRadians": 0.20,
+  "ambientLight": [0.15, 0.48],
+  "directionalLight": [0.45, 0.92],
+  "rangeNoiseMeters": [0.0, 0.035]
+}

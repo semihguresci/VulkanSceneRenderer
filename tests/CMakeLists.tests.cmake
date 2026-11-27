@@ -3458,6 +3458,19 @@ if(ENABLE_PHYSICS)
                 --twin "$<TARGET_FILE:BimRoboticsTwin>"
                 --fixtures "${TESTS_DIR}/fixtures/robotics")
         set_tests_properties(bim_fleet_missions PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 120)
+
+        add_test(NAME bim_navigation_protocol
+            COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_navigation_protocol.py"
+                --executable "$<TARGET_FILE:BimRoboticsNavigation>"
+                --fixtures "${TESTS_DIR}/fixtures/robotics/navigation")
+        set_tests_properties(bim_navigation_protocol PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 180)
+
+        add_test(NAME bim_navigation_gym
+            COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_navigation_gym.py"
+                --executable "$<TARGET_FILE:BimRoboticsNavigation>"
+                --fixtures "${TESTS_DIR}/fixtures/robotics/navigation")
+        set_tests_properties(bim_navigation_gym PROPERTIES LABELS "cpu;physics;robotics;gymnasium"
+            SKIP_RETURN_CODE 77 TIMEOUT 180)
     endif()
 endif()
 
