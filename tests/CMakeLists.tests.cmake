@@ -3209,6 +3209,15 @@ target_sources(bim_robotics_scene_tests PRIVATE
     ${TESTS_DIR}/robotics/bim_robotics_units_tests.cpp
 )
 
+add_custom_test(bim_robotics_usd_tests
+    ${TESTS_DIR}/robotics/bim_robotics_usd_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics_usd VulkanSceneRenderer_geometry
+)
+target_compile_definitions(bim_robotics_usd_tests PRIVATE
+    CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+set_tests_properties(bim_robotics_usd_tests PROPERTIES
+    LABELS "robotics;cpu" TIMEOUT 30)
+
 add_custom_test(bim_sensor_label_tests
     ${TESTS_DIR}/robotics/bim_sensor_label_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_robotics_scene Vulkan::Headers nlohmann_json::nlohmann_json
@@ -3242,6 +3251,13 @@ set_tests_properties(dataset_simulation_report_tests robotics_dataset_reader_tes
     PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
 
 if(Python3_Interpreter_FOUND)
+    add_test(NAME robotics_usd_roundtrip
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TEST_VALIDATION_DIR}/robotics_usd_roundtrip.py"
+            --exporter "$<TARGET_FILE:BimRoboticsUsd>")
+    set_tests_properties(robotics_usd_roundtrip PROPERTIES
+        LABELS "robotics;cpu;requires-openusd" SKIP_RETURN_CODE 77 TIMEOUT 120)
+
     add_test(NAME robotics_gpu_smoke_runner_tests
         COMMAND "${Python3_EXECUTABLE}" -B
             "${TEST_VALIDATION_DIR}/robotics_gpu_smoke_runner_tests.py")

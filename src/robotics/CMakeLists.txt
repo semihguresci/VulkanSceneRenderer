@@ -8,6 +8,11 @@ add_library(VulkanSceneRenderer_robotics_collision_geometry BimCollisionGeometry
 target_link_libraries(VulkanSceneRenderer_robotics_collision_geometry PUBLIC VulkanSceneRenderer_robotics_scene
     PRIVATE Vulkan::Headers)
 
+add_library(VulkanSceneRenderer_robotics_usd
+    RoboticsOpenUsd.cpp RoboticsOpenUsdGeometry.cpp RoboticsOpenUsdWriter.cpp)
+target_link_libraries(VulkanSceneRenderer_robotics_usd PUBLIC VulkanSceneRenderer_robotics_scene
+    PRIVATE VulkanSceneRenderer_robotics_collision_geometry VulkanSceneRenderer_fingerprint Vulkan::Headers)
+
 add_library(VulkanSceneRenderer_robotics_assets BimAssetCache.cpp BimCachedCollision.cpp BimCachedRender.cpp)
 target_compile_definitions(VulkanSceneRenderer_robotics_assets PRIVATE
     CONTAINER_BIM_PREPROCESSOR_REVISION="${CONTAINER_GIT_REVISION}")
@@ -39,6 +44,7 @@ foreach(target IN ITEMS
         VulkanSceneRenderer_robotics_clock
         VulkanSceneRenderer_robotics_scene
         VulkanSceneRenderer_robotics_collision_geometry
+        VulkanSceneRenderer_robotics_usd
         VulkanSceneRenderer_robotics_assets
         VulkanSceneRenderer_robotics_drive
         VulkanSceneRenderer_robotics_sensors
@@ -52,6 +58,12 @@ target_link_libraries(BimRoboticsScene PRIVATE
     VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_geometry)
 set_target_properties(BimRoboticsScene PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 container_stage_runtime_dlls(BimRoboticsScene)
+
+add_executable(BimRoboticsUsd ${CMAKE_SOURCE_DIR}/tools/bim_robotics_usd.cpp)
+target_link_libraries(BimRoboticsUsd PRIVATE
+    VulkanSceneRenderer_robotics_usd VulkanSceneRenderer_geometry)
+set_target_properties(BimRoboticsUsd PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+container_stage_runtime_dlls(BimRoboticsUsd)
 
 add_executable(BimRoboticsAssets ${CMAKE_SOURCE_DIR}/tools/bim_robotics_assets.cpp)
 target_link_libraries(BimRoboticsAssets PRIVATE

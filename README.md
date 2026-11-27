@@ -53,6 +53,9 @@ importer: builds without it retain a limited ASCII USD/USDA and stored text-root
 USDZ fallback. See [build options](docs/build-and-test.md) and
 [IFC coverage](docs/ifc-import.md) for limits.
 
+The headless `BimRoboticsUsd` tool exports BIM geometry, semantic IDs and
+collision proxies as a metre-based OpenUSD stage. [Robotics OpenUSD export](docs/robotics-openusd.md)
+
 Use **Scene Controls → Go to**, **Selection**, or **Material** to find a tool.
 The [current editor controls guide](docs/current-editor-controls.md) describes
 the available workflows. Rendering uses dynamic rendering and synchronization2,

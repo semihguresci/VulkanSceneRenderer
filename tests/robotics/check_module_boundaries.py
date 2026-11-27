@@ -19,6 +19,7 @@ CORE = {
     "robotics_dataset": {"robotics_sensors", "robotics_drive", "fingerprint"},
     "robotics_scene": set(),
     "robotics_collision_geometry": {"robotics_scene"},
+    "robotics_usd": {"robotics_scene", "robotics_collision_geometry", "fingerprint"},
 }
 PHYSICS = {
     "physics_world": set(),
@@ -130,6 +131,7 @@ def check(build, config, physics, urdf):
         standalone_tests["physics_world_tests"] = "physics_world"
     executables = {"BimRoboticsAssets": {"robotics_assets"},
                    "BimRoboticsScene": {"robotics_scene"},
+                   "BimRoboticsUsd": {"robotics_usd"},
                    "BimRoboticsDataset": {"robotics_dataset"},
                    **{name: {module} for name, module in standalone_tests.items()}}
     if physics:
