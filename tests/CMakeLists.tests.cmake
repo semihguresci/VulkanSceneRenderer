@@ -3291,6 +3291,22 @@ if(ENABLE_PHYSICS)
     )
     target_compile_definitions(bim_drive_actuation_tests PRIVATE
         CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+
+    add_custom_test(bim_physics_determinism_tests
+        ${TESTS_DIR}/robotics/bim_physics_determinism_tests.cpp "" ${TEST_RESULTS_DIR}
+        VulkanSceneRenderer_robotics_physics VulkanSceneRenderer_geometry
+    )
+    target_compile_definitions(bim_physics_determinism_tests PRIVATE
+        CONTAINER_ROBOTICS_FIXTURES="${TESTS_DIR}/fixtures/robotics")
+
+    if(Python3_Interpreter_FOUND)
+        add_test(NAME bim_fixed_step_replay
+            COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_fixed_step_replay.py"
+                --sim "$<TARGET_FILE:BimRoboticsSim>"
+                --fixtures "${TESTS_DIR}/fixtures/robotics"
+                --output "${TEST_RESULTS_DIR}/bim-fixed-step-replay")
+        set_tests_properties(bim_fixed_step_replay PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 180)
+    endif()
 endif()
 
 if(WIN32 AND Python3_Interpreter_FOUND)

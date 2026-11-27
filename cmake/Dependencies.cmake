@@ -80,7 +80,6 @@ endif()
 # ── Find all required packages ───────────────────────────────────────────────
 set(REQUIRED_PACKAGES
     MaterialX
-    earcut_hpp
     manifold
     fmt
     glfw3
@@ -93,6 +92,15 @@ set(REQUIRED_PACKAGES
 foreach(pkg IN LISTS REQUIRED_PACKAGES)
     find_package(${pkg} CONFIG REQUIRED)
 endforeach()
+
+# The vcpkg header-only port supplies mapbox/earcut.hpp without a config file.
+find_package(earcut_hpp CONFIG QUIET)
+if(NOT TARGET earcut_hpp::earcut_hpp)
+    find_path(CONTAINER_EARCUT_INCLUDE_DIR NAMES mapbox/earcut.hpp REQUIRED)
+    add_library(earcut_hpp::earcut_hpp INTERFACE IMPORTED)
+    set_target_properties(earcut_hpp::earcut_hpp PROPERTIES
+        INTERFACE_INCLUDE_DIRECTORIES "${CONTAINER_EARCUT_INCLUDE_DIR}")
+endif()
 
 # Stage known shared-library dependencies even when packages come from separate
 # prefixes (vcpkg's app-local hook only searches its active installation).

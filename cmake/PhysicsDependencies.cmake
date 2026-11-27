@@ -21,6 +21,12 @@ function(container_fetch_jolt)
     set(JPH_BUILD_SHARED_LIBS OFF)
     set(USE_STATIC_MSVC_RUNTIME_LIBRARY OFF)
     set(OVERRIDE_CXX_FLAGS OFF)
+    # MSVC Build Tools 14.52 folds signed-zero masks used by Jolt 5.6.0
+    # under /fp:fast. Select Jolt's precise mode for this toolset and newer.
+    # See https://github.com/jrouwe/JoltPhysics/pull/2222
+    if(CMAKE_CXX_COMPILER_ID STREQUAL "MSVC" AND MSVC_VERSION GREATER_EQUAL 1952)
+        set(CROSS_PLATFORM_DETERMINISTIC ON)
+    endif()
     set(INTERPROCEDURAL_OPTIMIZATION OFF)
     set(ENABLE_ALL_WARNINGS OFF)
     set(FLOATING_POINT_EXCEPTIONS_ENABLED OFF)
