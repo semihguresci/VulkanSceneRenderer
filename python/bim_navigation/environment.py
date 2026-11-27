@@ -88,9 +88,11 @@ class BimNavigationEnv(gym.Env):
             raise NavigationProtocolError("Unsupported native navigation protocol or LiDAR sampling")
         scene = description.get("scene")
         fields = ("id", "family", "split", "sourceSha256", "geometryFingerprint")
-        if not isinstance(scene, dict) or any(
-            not isinstance(scene.get(field), str) or not scene[field].strip() for field in fields
-        ):
+        if not isinstance(scene, dict):
+            raise NavigationProtocolError("Native scene identity is incomplete")
+        if "sceneRecipeSha256" in scene:
+            fields += ("sceneRecipeSha256",)
+        if any(not isinstance(scene.get(field), str) or not scene[field].strip() for field in fields):
             raise NavigationProtocolError("Native scene identity is incomplete")
         if scene["split"] not in ("train", "held-out"):
             raise NavigationProtocolError("Native scene split must be train or held-out")
@@ -186,6 +188,8 @@ class BimNavigationEnv(gym.Env):
         manifest = response.get("manifest")
         if not isinstance(manifest, dict):
             raise NavigationProtocolError("Simulator reset omitted the randomization manifest")
+        if any(manifest.get(field) != value for field, value in self._scene.items()):
+            raise NavigationProtocolError("Simulator reset changed the validated scene identity")
         observation, distance = self._observation(state)
         self._state = state
         self._distance = distance

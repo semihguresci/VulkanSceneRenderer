@@ -95,6 +95,38 @@ finally:
     env.close()
 ```
 
+## Randomized doors
+
+To train or evaluate with doors that vary between episodes, use
+`--train "$scenes/doorway-randomized.json"` in the evaluator command above. This
+optional fixture belongs to the same doorway training family. The baseline
+results above use `doorway-train.json`.
+
+A recipe can list doors in `randomizedDoors` using the canonical collider ID
+and an open probability between 0 and 1. For example, the doorway fixture can
+use `[{"id":"bim/7:doorway/guid/9:door-guid","openProbability":0.5}]`.
+`alternateWitnessRoutes` is an ordered array of routes, each an array of
+`[x, y, z]` points in REP-103 metres. The sampler checks the primary
+`witnessWaypoints` route and then the alternates in order.
+
+Nominal resets (`"randomize":false` in the native protocol or `--no-randomize`
+in the evaluator) use the door defaults from `openDoorIds`. Randomized resets
+draw the door states from the episode seed independently of the other sampled
+settings. Those states stay fixed across the bounded layout attempts. Collision
+queries and sensors use the resulting door geometry. Every accepted layout has
+a reachable route from the sampled start to the goal. Reset returns an error if
+the attempts yield no reachable route.
+
+The episode manifest records the effective `openDoorIds`, the configured
+randomized doors as `doorStates` records with an `id` and a boolean `open`, and
+the accepted route's `witnessWaypoints`. It identifies the recipe with
+`sceneRecipeSha256` and the original BIM source and geometry with `sourceSha256`
+and `geometryFingerprint`.
+
+The observation-only baseline has no route planner and can time out when a
+closed door blocks the direct approach. The native regression drives the robot
+around the partition to verify the alternate route reaches the same goal.
+
 ## Native protocol
 
 `BimRoboticsNavigation <scene.json>` reads one UTF-8 JSON request per line.

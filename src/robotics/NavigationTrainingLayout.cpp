@@ -35,7 +35,10 @@ constexpr auto sceneSchema = "container.navigation-training-scene";
 constexpr auto layoutSchema = "container.navigation-training-layout";
 constexpr size_t maxRecipeBytes = 1024 * 1024;
 constexpr size_t maxWitnessWaypoints = 256;
+constexpr size_t maxAlternateWitnessRoutes = 16;
+constexpr size_t maxRandomizedDoors = 256;
 constexpr uint32_t maxSampleAttempts = 32;
+constexpr uint64_t doorSeedDomain = 0x89552ff1540aa2d9ULL;
 constexpr double minimumGoalDistance = 0.3;
 constexpr double furnitureContactTolerance = 0.0001;
 constexpr double furnitureSupportTolerance = 0.015;
@@ -56,7 +59,12 @@ struct FurnitureRecipe {
   size_t index{};
 };
 
-Json readRecipe(const fs::path& path) {
+struct DoorRecipe {
+  std::string id;
+  double openProbability;
+};
+
+std::pair<Json, std::string> readRecipe(const fs::path& path) {
   std::ifstream input(path, std::ios::binary | std::ios::ate);
   if (!input)
     throw std::runtime_error("Could not open navigation training recipe " + util::pathToUtf8(path));
@@ -69,7 +77,7 @@ Json readRecipe(const fs::path& path) {
       input.peek() != std::char_traits<char>::eof() || bytes.find('\0') != std::string::npos)
     throw std::invalid_argument("Could not read complete navigation training recipe JSON");
   std::vector<std::set<std::string>> keys;
-  return Json::parse(bytes, [&](int depth, Json::parse_event_t event, Json& parsed) {
+  Json value = Json::parse(bytes, [&](int depth, Json::parse_event_t event, Json& parsed) {
     if (depth > 12) throw std::invalid_argument("Navigation training recipe nesting exceeds its limit");
     using enum Json::parse_event_t;
     if (event == object_start) keys.emplace_back();
@@ -78,6 +86,8 @@ Json readRecipe(const fs::path& path) {
       throw std::invalid_argument("Navigation training recipe contains a duplicate JSON field");
     return true;
   });
+  const auto* data = reinterpret_cast<const unsigned char*>(bytes.data());
+  return {std::move(value), util::FingerprintContent({data, bytes.size()}).digest};
 }
 
 void checkKeys(const Json& object, std::initializer_list<std::string_view> keys) {
@@ -104,6 +114,15 @@ glm::dvec3 parsePoint(const Json& value, std::string_view name) {
   if (!value.is_array() || value.size() != 3)
     throw std::invalid_argument(std::string(name) + " must contain three REP-103 coordinates in metres");
   return {finiteNumber(value[0], name), finiteNumber(value[1], name), finiteNumber(value[2], name)};
+}
+
+std::vector<glm::dvec3> parseWitnessRoute(const Json& points) {
+  if (!points.is_array() || points.size() > maxWitnessWaypoints)
+    throw std::invalid_argument("A navigation witness route must be an array of at most 256 points");
+  std::vector<glm::dvec3> route;
+  route.reserve(points.size());
+  for (const auto& waypoint : points) route.push_back(parsePoint(waypoint, "witnessWaypoint"));
+  return route;
 }
 
 PoseRecipe parsePose(const Json& value, std::string_view name) {
@@ -261,11 +280,10 @@ std::optional<std::string> invalidFurniture(const CookedBimCollision& geometry,
 }
 
 std::optional<std::string> invalidRoute(const NavigationTrainingLayout& layout,
-                                       std::span<const glm::dvec3> waypoints) {
+                                       std::span<const glm::dvec3> waypoints,
+                                       const BimWalkabilityQueries& queries) {
   if (glm::length(layout.goal - layout.spawn.position) < minimumGoalDistance)
     return "Start and goal are too close to define a navigation episode";
-  BimCollisionWorld world(layout.geometry, layout.openDoorIds, 1);
-  const auto queries = world.walkabilityQueries();
   auto from = layout.spawn.position;
   if (!traceWalkablePath(from, from, queries).reachable)
     return "Start has no capsule clearance on its configured floor";
@@ -303,8 +321,9 @@ struct NavigationTrainingScene::Impl {
   PoseRecipe goal;
   double initialYaw{};
   double yawJitter{};
-  std::vector<glm::dvec3> waypoints;
+  std::vector<std::vector<glm::dvec3>> witnessRoutes{{}};
   std::vector<std::string> openDoorIds;
+  std::vector<DoorRecipe> randomizedDoors;
   std::vector<FurnitureRecipe> furniture;
   Range ambient{0.25, 0.6};
   Range directional{0.35, 0.85};
@@ -314,11 +333,11 @@ struct NavigationTrainingScene::Impl {
 };
 
 NavigationTrainingScene::NavigationTrainingScene(const fs::path& recipe) {
-  const auto value = readRecipe(recipe);
+  auto [value, recipeSha256] = readRecipe(recipe);
   checkKeys(value, {"schema", "version", "id", "family", "split", "source", "sourceNamespace",
                     "start", "goal", "initialYaw", "yawJitterRadians", "witnessWaypoints",
-                    "openDoorIds", "furniture", "ambientLight", "directionalLight", "lightYaw",
-                    "rangeNoiseMeters", "encoderNoiseRadians"});
+                    "alternateWitnessRoutes", "openDoorIds", "randomizedDoors", "furniture",
+                    "ambientLight", "directionalLight", "lightYaw", "rangeNoiseMeters", "encoderNoiseRadians"});
   const auto& version = value.at("version");
   if (value.at("schema") != sceneSchema || !version.is_number_integer() || version != 1)
     throw std::invalid_argument("Unsupported navigation training scene schema or version");
@@ -327,7 +346,8 @@ NavigationTrainingScene::NavigationTrainingScene(const fs::path& recipe) {
   if (split != "train" && split != "held-out")
     throw std::invalid_argument("Navigation training split must be train or held-out");
   result->identity = {{"id", nonemptyString(value.at("id"), "id")},
-                      {"family", nonemptyString(value.at("family"), "family")}, {"split", split}};
+                      {"family", nonemptyString(value.at("family"), "family")}, {"split", split},
+                      {"sceneRecipeSha256", std::move(recipeSha256)}};
   result->start = parsePose(value.at("start"), "start");
   result->goal = parsePose(value.at("goal"), "goal");
   result->initialYaw = finiteNumber(value.at("initialYaw"), "initialYaw");
@@ -338,11 +358,12 @@ NavigationTrainingScene::NavigationTrainingScene(const fs::path& recipe) {
     if (result->yawJitter < 0.0 || result->yawJitter > std::numbers::pi)
       throw std::invalid_argument("yawJitterRadians must be in [0,pi]");
   }
-  if (const auto points = value.find("witnessWaypoints"); points != value.end()) {
-    if (!points->is_array() || points->size() > maxWitnessWaypoints)
-      throw std::invalid_argument("witnessWaypoints must be an array of at most 256 points");
-    for (const auto& waypoint : *points)
-      result->waypoints.push_back(parsePoint(waypoint, "witnessWaypoint"));
+  if (const auto points = value.find("witnessWaypoints"); points != value.end())
+    result->witnessRoutes.front() = parseWitnessRoute(*points);
+  if (const auto routes = value.find("alternateWitnessRoutes"); routes != value.end()) {
+    if (!routes->is_array() || routes->size() > maxAlternateWitnessRoutes)
+      throw std::invalid_argument("alternateWitnessRoutes must be an array of at most 16 routes");
+    for (const auto& route : *routes) result->witnessRoutes.push_back(parseWitnessRoute(route));
   }
   if (const auto doors = value.find("openDoorIds"); doors != value.end()) {
     if (!doors->is_array()) throw std::invalid_argument("openDoorIds must be an array");
@@ -352,6 +373,21 @@ NavigationTrainingScene::NavigationTrainingScene(const fs::path& recipe) {
       if (!seen.insert(id).second) throw std::invalid_argument("Duplicate open door " + id);
       result->openDoorIds.push_back(std::move(id));
     }
+  }
+  if (const auto doors = value.find("randomizedDoors"); doors != value.end()) {
+    if (!doors->is_array() || doors->size() > maxRandomizedDoors)
+      throw std::invalid_argument("randomizedDoors must be an array of at most 256 doors");
+    std::set<std::string> seen;
+    for (const auto& door : *doors) {
+      checkKeys(door, {"id", "openProbability"});
+      auto id = nonemptyString(door.at("id"), "randomized door ID");
+      if (!seen.insert(id).second) throw std::invalid_argument("Duplicate randomized door " + id);
+      const auto probability = finiteNumber(door.at("openProbability"), "openProbability");
+      if (probability < 0.0 || probability > 1.0)
+        throw std::invalid_argument("Door openProbability must be in [0,1]");
+      result->randomizedDoors.push_back({std::move(id), probability});
+    }
+    std::ranges::sort(result->randomizedDoors, {}, &DoorRecipe::id);
   }
   const auto optionalRange = [&](const char* name, Range& field, double minimum, double maximum) {
     if (const auto range = value.find(name); range != value.end())
@@ -369,6 +405,16 @@ NavigationTrainingScene::NavigationTrainingScene(const fs::path& recipe) {
   BimAssetPreprocessOptions options;
   options.scene.sourceNamespace = sourceNamespace;
   auto assets = loadBimPreprocessedAssets(source, {}, options);
+  std::set<std::string_view> authoredDoors;
+  for (const auto& collider : assets.collision.colliders) {
+    if (collider.kind == BimColliderKind::DoorMesh) authoredDoors.insert(collider.entityId);
+  }
+  const auto requireAuthoredDoor = [&](const std::string& id) {
+    if (!authoredDoors.contains(id))
+      throw std::invalid_argument("No authored door collider for entity " + id);
+  };
+  for (const auto& id : result->openDoorIds) requireAuthoredDoor(id);
+  for (const auto& door : result->randomizedDoors) requireAuthoredDoor(door.id);
   const auto layer = std::ranges::find(assets.sourceLayers, source, &BimAssetSourceLayer::path);
   if (layer == assets.sourceLayers.end()) throw std::invalid_argument("Training scene has no source fingerprint");
   result->identity["sourceSha256"] = layer->fingerprint.digest;
@@ -407,6 +453,19 @@ const nlohmann::json& NavigationTrainingScene::identity() const {
 
 NavigationTrainingLayout NavigationTrainingScene::sample(uint64_t seed, bool randomize) const {
   const auto& scene = *impl_;
+  auto openDoorIds = scene.openDoorIds;
+  auto doorStates = Json::array();
+  if (!scene.randomizedDoors.empty()) {
+    // A rejected route or furniture placement must not change the selected doors.
+    std::mt19937_64 doorRandom(seed ^ doorSeedDomain);
+    for (const auto& door : scene.randomizedDoors) {
+      const bool nominalOpen = std::ranges::contains(openDoorIds, door.id);
+      const bool open = randomize ? draw(doorRandom, {0, 1}) < door.openProbability : nominalOpen;
+      if (open && !nominalOpen) openDoorIds.push_back(door.id);
+      if (!open && nominalOpen) std::erase(openDoorIds, door.id);
+      doorStates.push_back({{"id", door.id}, {"open", open}});
+    }
+  }
   std::unique_ptr<BimCollisionWorld> structure;
   if (std::ranges::any_of(scene.geometry.colliders, [](const auto& collider) {
         return collider.kind == BimColliderKind::DynamicBox;
@@ -415,7 +474,7 @@ NavigationTrainingLayout NavigationTrainingScene::sample(uint64_t seed, bool ran
     std::erase_if(staticGeometry.colliders, [](const auto& collider) {
       return collider.kind == BimColliderKind::DynamicBox;
     });
-    structure = std::make_unique<BimCollisionWorld>(std::move(staticGeometry), scene.openDoorIds, 1);
+    structure = std::make_unique<BimCollisionWorld>(std::move(staticGeometry), openDoorIds, 1);
   }
   std::mt19937_64 random(seed);
   std::optional<std::string> failure;
@@ -429,7 +488,7 @@ NavigationTrainingLayout NavigationTrainingScene::sample(uint64_t seed, bool ran
                   std::remainder(scene.initialYaw + sampleRange({-scene.yawJitter, scene.yawJitter}),
                                  2 * std::numbers::pi)},
         .goal = samplePose(random, scene.goal, randomize),
-        .openDoorIds = scene.openDoorIds,
+        .openDoorIds = openDoorIds,
         .ambientLight = sampleRange(scene.ambient),
         .directionalLight = sampleRange(scene.directional),
         .lightYaw = sampleRange(scene.lightYaw),
@@ -446,13 +505,19 @@ NavigationTrainingLayout NavigationTrainingScene::sample(uint64_t seed, bool ran
                            {"position", point(collider.originMeters)}, {"offsetMeters", point(offset)}});
     }
     if (structure && (failure = invalidFurniture(layout.geometry, *structure))) continue;
-    if ((failure = invalidRoute(layout, scene.waypoints))) continue;
+    BimCollisionWorld world(layout.geometry, layout.openDoorIds, 1);
+    const auto queries = world.walkabilityQueries();
+    const auto route = std::ranges::find_if(scene.witnessRoutes, [&](const auto& waypoints) {
+      failure = invalidRoute(layout, waypoints, queries);
+      return !failure;
+    });
+    if (route == scene.witnessRoutes.end()) continue;
     auto waypoints = Json::array();
-    for (const auto& waypoint : scene.waypoints) waypoints.push_back(point(waypoint));
+    for (const auto& waypoint : *route) waypoints.push_back(point(waypoint));
     layout.manifest.update(Json{{"schema", layoutSchema}, {"version", 1}, {"seed", seed},
         {"randomized", randomize}, {"attempt", attempt}, {"start", point(layout.spawn.position)},
         {"yaw", layout.spawn.yaw}, {"goal", point(layout.goal)}, {"witnessWaypoints", std::move(waypoints)},
-        {"openDoorIds", layout.openDoorIds}, {"furniture", std::move(furniture)},
+        {"openDoorIds", layout.openDoorIds}, {"doorStates", std::move(doorStates)}, {"furniture", std::move(furniture)},
         {"ambientLight", layout.ambientLight}, {"directionalLight", layout.directionalLight},
         {"lightYaw", layout.lightYaw}, {"rangeNoiseMeters", layout.rangeNoiseMeters},
         {"encoderNoiseRadians", layout.encoderNoiseRadians}});

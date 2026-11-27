@@ -1,6 +1,7 @@
 """Exercise the persistent native BIM navigation protocol without Python SDKs."""
 
 import argparse
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -184,6 +185,165 @@ def verify_unit_variant_identity(executable, doorway):
                 "Equivalent BIM geometry got different digests after a unit conversion")
 
 
+def doorway_recipe(scene):
+    recipe = json.loads(scene.read_text(encoding="utf-8"))
+    recipe["source"] = str((scene.parent / recipe["source"]).resolve(strict=True))
+    return recipe
+
+
+def make_fixture(directory, name, recipe):
+    fixture = directory / f"{name}.json"
+    fixture.write_text(json.dumps(recipe), encoding="utf-8")
+    return fixture
+
+
+def verify_door_manifest(reply, fixture, recipe_hash, *, expected_open=None):
+    require(reply["ok"], reply)
+    manifest = reply["manifest"]
+    door_id = fixture["randomizedDoors"][0]["id"]
+    states = manifest["doorStates"]
+    require(len(states) == 1 and states[0]["id"] == door_id
+            and type(states[0]["open"]) is bool, states)
+    door_open = states[0]["open"]
+    if expected_open is not None:
+        require(door_open == expected_open, manifest)
+    require(manifest["openDoorIds"] == ([door_id] if door_open else []), manifest)
+    witness = fixture.get("witnessWaypoints", []) if door_open else fixture["alternateWitnessRoutes"][0]
+    require(manifest["witnessWaypoints"] == witness, manifest)
+    require(manifest["sceneRecipeSha256"] == recipe_hash, manifest)
+    return door_open
+
+
+def sampled_door_states(executable, fixture):
+    recipe = doorway_recipe(fixture)
+    recipe_hash = hashlib.sha256(fixture.read_bytes()).hexdigest()
+    seeds = range(32)
+    description, nominal, *sampled, _ = exchange(
+        executable, fixture,
+        [{"op": "describe"}, {"op": "reset", "seed": 0, "randomize": False}]
+        + [{"op": "reset", "seed": seed} for seed in seeds] + [{"op": "close"}],
+    )
+    require(description["ok"], description)
+    require(description["scene"]["sceneRecipeSha256"] == recipe_hash, description)
+    verify_door_manifest(nominal, recipe, recipe_hash, expected_open=True)
+    states = {}
+    for seed, reply in zip(seeds, sampled, strict=True):
+        door_open = verify_door_manifest(reply, recipe, recipe_hash)
+        states.setdefault(door_open, (seed, reply))
+    require(states.keys() == {False, True}, f"Did not sample both door states in {fixture.name}")
+    return description["scene"], states
+
+
+def verify_sampled_doors(executable, randomized, training_identity):
+    description, sampled = sampled_door_states(executable, randomized)
+    require(description["sourceSha256"] == training_identity["sourceSha256"], description)
+    require(description["geometryFingerprint"] == training_identity["geometryFingerprint"], description)
+    require(description["family"] == training_identity["family"], description)
+
+    opened, open_reset = sampled[True]
+    closed, closed_reset = sampled[False]
+    action = {"op": "step", "action": [0.6, 0]}
+    replies = exchange(executable, randomized, [
+        {"op": "reset", "seed": opened}, action,
+        {"op": "reset", "seed": closed}, action,
+        {"op": "reset", "seed": opened}, action,
+        {"op": "reset", "seed": closed}, action, {"op": "close"},
+    ])
+    require(all(reply["ok"] for reply in replies), replies)
+    require(replies[0] == replies[4] == open_reset and replies[1] == replies[5],
+            "The open episode changed after resetting a closed episode")
+    require(replies[2] == replies[6] == closed_reset and replies[3] == replies[7],
+            "The closed episode changed after resetting an open episode")
+
+
+def verify_door_geometry(executable, randomized):
+    recipe = doorway_recipe(randomized)
+    for endpoint in ("start", "goal"):
+        recipe[endpoint]["jitterMeters"] = 0
+    recipe["yawJitterRadians"] = 0
+    recipe["rangeNoiseMeters"] = [0, 0]
+    recipe["encoderNoiseRadians"] = [0, 0]
+    recipe["furniture"] = []
+
+    with tempfile.TemporaryDirectory(prefix="bim-navigation-door-geometry-") as temporary:
+        fixture = make_fixture(Path(temporary), "door-states", recipe)
+        _, sampled = sampled_door_states(executable, fixture)
+        opened, open_reset = sampled[True]
+        closed, closed_reset = sampled[False]
+        # Fix the observer and exclude sensor noise so ray zero witnesses
+        # insertion and removal of the actual door leaf at the same aperture.
+        open_state, closed_state = open_reset["state"], closed_reset["state"]
+        require(open_state["pose"] == closed_state["pose"], (open_state, closed_state))
+        require(open_state["ranges"][0] > 3.0 and 1.2 < closed_state["ranges"][0] < 1.6,
+                (open_state["ranges"][0], closed_state["ranges"][0]))
+
+        def drive(seed, actions):
+            reset, *movement, _ = exchange(
+                executable, fixture, [{"op": "reset", "seed": seed}]
+                + [{"op": "step", "action": action} for action in actions] + [{"op": "close"}],
+            )
+            require(reset["ok"] and all(reply["ok"] for reply in movement), (reset, movement))
+            return [reply["state"] for reply in movement]
+
+        straight = [[1, 0]] * 38
+        open_move = drive(opened, straight)
+        require(open_move[-1]["pose"][0] > 1.3 and not any(state["collision"] for state in open_move),
+                "The robot could not drive through the sampled open door")
+        closed_move = drive(closed, straight)
+        hits = [state for state in closed_move if state["collision"]]
+        door = recipe["randomizedDoors"][0]["id"]
+        require(closed_move[-1]["pose"][0] < -0.20 and hits
+                and all(hit["obstruction"] == "blocked" and hit["blockingEntityId"] == door for hit in hits),
+                "The sampled closed door did not physically block direct travel at its authored identity")
+
+        # At 10 actions/s the following quarter turns and straight drives
+        # take the capsule around the partition at y=2.48 m.
+        left = [[0, math.pi / 4]] * 10
+        right = [[0, -math.pi / 4]] * 10
+        detour = drive(closed, left + straight[:31] + right + straight + right + straight[:31])
+        require(not any(state["collision"] or state["obstruction"] != "none" for state in detour)
+                and math.dist(detour[-1]["pose"][:3], closed_state["goal"]) < 0.1,
+                "The wall-end detour could not reach the original goal with the door closed")
+
+
+def verify_failed_door_reset(executable, randomized):
+    recipe = doorway_recipe(randomized)
+    recipe["randomizedDoors"][0]["openProbability"] = 0
+    del recipe["alternateWitnessRoutes"]
+    nominal = {"op": "reset", "seed": 0, "randomize": False}
+    action = {"op": "step", "action": [0.65, 0.1]}
+    with tempfile.TemporaryDirectory(prefix="bim-navigation-door-retry-") as temporary:
+        fixture = make_fixture(Path(temporary), "closed-unreachable", recipe)
+        replies = exchange(executable, fixture, [
+            nominal, action, action, nominal, action,
+            {"op": "reset", "seed": 0}, action, {"op": "close"},
+        ])
+        failure = replies[5]
+        require(not failure["ok"] and "No collision-valid layout" in failure["error"], failure)
+        require(replies[0]["ok"] and replies[1]["ok"] and replies[2]["ok"]
+                and replies[:3] == [replies[3], replies[4], replies[6]],
+                "Rejecting an unreachable closed layout changed the running episode")
+
+
+def verify_invalid_door_recipes(executable, randomized):
+    recipe = doorway_recipe(randomized)
+    door = recipe["randomizedDoors"][0]
+    cases = (
+        ("unknown", [{**door, "id": "unknown-door", "openProbability": 0}], "unknown-door"),
+        ("duplicate", [door, door], "door-guid"),
+        ("probability", [{**door, "openProbability": 1.2}], "openProbability"),
+    )
+    with tempfile.TemporaryDirectory(prefix="bim-navigation-door-recipe-") as temporary:
+        for name, doors, diagnostic in cases:
+            fixture = make_fixture(Path(temporary), name, {**recipe, "randomizedDoors": doors})
+            result = subprocess.run(
+                [str(executable), str(fixture)], input='{"op":"close"}\n',
+                capture_output=True, encoding="utf-8", timeout=45, check=False,
+            )
+            require(result.returncode == 1 and not result.stdout and diagnostic in result.stderr,
+                    f"{name}: invalid door recipe accepted or not diagnosed: {result.stdout} {result.stderr}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True, type=Path)
@@ -210,6 +370,12 @@ def main():
     verify_encoder_noise_limit(executable, doorway)
     verify_unit_variant_identity(executable, doorway)
     print("Wall contact, optical lighting, and unit-independent scene identity passed")
+    randomized = args.fixtures / "doorway-randomized.json"
+    verify_sampled_doors(executable, randomized, training)
+    verify_door_geometry(executable, randomized)
+    verify_failed_door_reset(executable, randomized)
+    verify_invalid_door_recipes(executable, randomized)
+    print("Seeded door variation, actual door collisions, detour and reset preservation passed")
     return 0
 
 
