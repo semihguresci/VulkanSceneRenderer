@@ -13,9 +13,11 @@ import sys
 
 
 def file_identity(path):
+    digest = hashlib.sha256()
     with path.open("rb") as stream:
-        digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    return {"path": str(path), "bytes": path.stat().st_size, "sha256": digest}
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return {"path": str(path), "bytes": path.stat().st_size, "sha256": digest.hexdigest()}
 
 
 def positive_int(value):

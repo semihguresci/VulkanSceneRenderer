@@ -1,9 +1,12 @@
 """Check the real Gymnasium adapter with the headless renderer-independent simulator."""
 
 import argparse
+import math
 from pathlib import Path
 import sys
 import tempfile
+from threading import Barrier, Lock
+from unittest.mock import patch
 
 from bim_navigation_protocol import doorway_recipe, doorway_wall_actions, make_fixture, unit_variant_recipes
 
@@ -58,6 +61,158 @@ def verify_recipe_change(executable, fixtures):
             assert "Scene identity changed after validating splits" in str(error), error
         else:
             raise AssertionError("Changing a door probability after split validation went undetected")
+
+
+def verify_parallel_results(evaluate, executable, train, held_out):
+    settings = {"episodes": 5, "seed": 497, "max_episode_steps": 8}
+    serial = evaluate(executable, [train], [held_out], **settings)
+    assert serial["workers"] == 1, serial["workers"]
+    timing_keys = {"wallSeconds", "episodesPerSecond", "stepsPerSecond", "simulatedSecondsPerSecond"}
+
+    def stable_metrics(metrics):
+        return {name: value for name, value in metrics.items() if name not in timing_keys}
+
+    for width in (2, 4):
+        parallel = evaluate(executable, [train], [held_out], workers=width, **settings)
+        assert parallel["workers"] == width, parallel["workers"]
+        assert len(parallel["scenes"]) == len(serial["scenes"])
+        for actual, expected in zip(parallel["scenes"], serial["scenes"], strict=True):
+            assert (actual["path"], actual["scene"]) == (expected["path"], expected["scene"])
+            assert actual["episodes"] == expected["episodes"], (width, actual["scene"]["id"])
+            assert stable_metrics(actual["metrics"]) == stable_metrics(expected["metrics"])
+            assert "profile" not in actual, "Default evaluation unexpectedly profiled a worker"
+        for split, metrics in parallel["splits"].items():
+            assert stable_metrics(metrics) == stable_metrics(serial["splits"][split])
+            assert metrics["episodesPerSecond"] > 0, metrics
+
+    for invalid in (0, -1, True, 1.5, "2"):
+        try:
+            evaluate(executable, [train], [held_out], workers=invalid, **settings)
+        except ValueError as error:
+            assert "workers" in str(error), error
+        else:
+            raise AssertionError(f"Invalid worker width accepted: {invalid!r}")
+
+
+def verify_worker_lifecycle(executable, train, held_out, *, episodes, width, inject_failure=False):
+    import bim_navigation.evaluate as evaluation
+
+    environment_type = evaluation.BimNavigationEnv
+    requested_paths = (train.resolve(), held_out.resolve())
+    active = min(episodes, width)
+    lock = Lock()
+    launched = []
+    overlapped = set()
+    leaders = {}
+    failure_message = "test worker failure after overlapping native steps"
+
+    def check_overlap(path):
+        with lock:
+            ready = [entry for entry in launched if entry["path"] == path and entry["steps"] == 1]
+            assert len({entry["child"].pid for entry in ready}) == active, ready
+            assert all(entry["child"].poll() is None for entry in ready), ready
+            overlapped.add(path)
+
+    barriers = {path: Barrier(active, action=lambda path=path: check_overlap(path), timeout=15)
+                for path in requested_paths}
+
+    class TracedEnvironment(environment_type):
+        def __init__(self, executable, scene, **settings):
+            super().__init__(executable, scene, **settings)
+            self.trace = {"path": Path(scene).resolve(), "child": self._native._process,
+                          "seeds": [], "steps": 0, "memory": None}
+            assert self.trace["child"].pid == self.simulator_pid
+            with lock:
+                launched.append(self.trace)
+
+        def reset(self, *, seed=None, options=None):
+            observation = super().reset(seed=seed, options=options)
+            self.trace["seeds"].append(seed)
+            return observation
+
+        def step(self, action):
+            result = super().step(action)
+            with lock:
+                self.trace["steps"] += 1
+                first_step = self.trace["steps"] == 1
+                path = self.trace["path"]
+                pid = self.trace["child"].pid
+                leader = leaders.setdefault(path, pid)
+            if first_step:
+                barriers[path].wait()
+                if inject_failure and path == requested_paths[0] and pid == leader:
+                    raise RuntimeError(failure_message)
+            return result
+
+    class TracedMemory:
+        def __init__(self, pid):
+            self.pid = pid
+            self.samples = 0
+            self.closed = False
+            with lock:
+                owner = next(entry for entry in reversed(launched) if entry["child"].pid == pid)
+                assert owner["memory"] is None and owner["child"].poll() is None, pid
+                owner["memory"] = self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            self.closed = True
+
+        def sample(self):
+            self.samples += 1
+
+        def metrics(self):
+            return {"source": "test monitor", "peakResidentBytes": 1_000_000 + self.pid, "peakCommitBytes": None}
+
+    report = None
+    try:
+        with patch.object(evaluation, "BimNavigationEnv", TracedEnvironment):
+            try:
+                report = evaluation.evaluate(executable, [train], [held_out], episodes=episodes, seed=91,
+                                             workers=width, max_episode_steps=6, profile=True,
+                                             _worker_memory=TracedMemory)
+            except RuntimeError as error:
+                assert inject_failure and failure_message in str(error), error
+            else:
+                assert not inject_failure, "Injected worker failure was suppressed"
+    finally:
+        assert all(entry["child"].poll() is not None for entry in launched), "A native worker was left running"
+        memories = [entry["memory"] for entry in launched if entry["memory"] is not None]
+        assert all(memory.closed for memory in memories), "A native memory monitor was left open"
+
+    if inject_failure:
+        assert requested_paths[0] in overlapped, overlapped
+        train_workers = [entry for entry in launched if entry["path"] == requested_paths[0] and entry["steps"]]
+        assert len(train_workers) == active, train_workers
+        return
+
+    assert report["workers"] == width and overlapped == set(requested_paths)
+    for row in report["scenes"]:
+        path = Path(row["path"])
+        workers = [entry for entry in launched if entry["path"] == path and entry["seeds"]]
+        profile = row["profile"]
+        assert len(workers) == len(profile["workers"]) == profile["workerCount"] == active, profile
+        assert profile["wallSeconds"] >= row["metrics"]["wallSeconds"] > 0, profile
+        assert math.isclose(row["metrics"]["episodesPerSecond"], episodes / row["metrics"]["wallSeconds"])
+        expected_seeds = sorted(episode["seed"] for episode in row["episodes"])
+        assert sorted(seed for worker in workers for seed in worker["seeds"]) == expected_seeds
+        expected_counts = {}
+        for worker in workers:
+            memory = worker["memory"]
+            assert memory is not None and memory.samples > 0, worker
+            expected_counts[memory.metrics()["peakResidentBytes"]] = (len(worker["seeds"]), worker["steps"])
+        reported_counts = {}
+        for worker in profile["workers"]:
+            memory = worker["memory"]
+            assert memory["source"] == "test monitor", worker
+            reported_counts[memory["peakResidentBytes"]] = (worker["episodes"], worker["steps"])
+            for key in ("startupSeconds", "resetSeconds", "policySeconds", "stepSeconds", "recordSeconds"):
+                assert math.isfinite(worker[key]) and worker[key] >= 0, worker
+        assert reported_counts == expected_counts, profile
+        assert sum(count for count, _ in reported_counts.values()) == episodes
+        assert sum(steps for _, steps in reported_counts.values()) == row["metrics"]["steps"]
 
 
 def main():
@@ -125,7 +280,12 @@ def main():
 
     evaluate_against_splits(evaluate, executable, args.fixtures, scene)
     verify_recipe_change(executable, args.fixtures)
-    print("Gymnasium check, episode outcomes, recipe identity, held-out leakage, and reproducible evaluation passed")
+    held_out = args.fixtures / "corner-eval.json"
+    verify_parallel_results(evaluate, executable, scene, held_out)
+    verify_worker_lifecycle(executable, scene, held_out, episodes=6, width=2)
+    verify_worker_lifecycle(executable, scene, held_out, episodes=2, width=64)
+    verify_worker_lifecycle(executable, scene, held_out, episodes=2, width=64, inject_failure=True)
+    print("Gymnasium check, held-out leakage, deterministic parallel evaluation, and worker cleanup passed")
     return 0
 
 
