@@ -5,10 +5,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <memory>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
-#include <memory>
 
 #include "Container/app/GfxCapture.h"
 #include "Container/common/CommonVulkan.h"
@@ -31,6 +32,7 @@
 #include "Container/utility/TextureMemoryBudget.h"
 
 namespace container::geometry::vdb { struct ImportOptions; }
+namespace container::robotics { struct SensorCameraPlayback; }
 
 namespace container::app {
 
@@ -143,6 +145,10 @@ struct AppConfig {
   std::string screenshotCapturePath{};
   bool screenshotViewportOnly{false};
   bool screenshotSceneData{false};
+  std::shared_ptr<const container::robotics::SensorCameraPlayback> sensorCameraPlayback;
+  std::filesystem::path sensorDatasetPath;
+  std::string sensorSourceNamespace;
+  std::optional<double> sensorMetersPerRendererUnit;
   bool gpuHardwareTelemetry{false};
   // Export the initialized scene (or final capture-sequence scene) on exit.
   std::string sceneExportPath{};

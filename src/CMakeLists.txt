@@ -1,6 +1,7 @@
 add_library(VulkanSceneRenderer_Core
     ContainerCore.cpp
     app/Application.cpp
+    app/ApplicationSensorCamera.cpp
 )
 
 add_library(VulkanSceneRenderer_fingerprint
@@ -121,6 +122,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RenderTechnique.cpp
     renderer/core/ScreenshotCaptureRecorder.cpp
     renderer/core/SceneDataCapture.cpp
+    renderer/core/SensorCameraDataset.cpp
     renderer/core/RendererFrontendSceneData.cpp
 
     renderer/resources/CommandBufferManager.cpp
@@ -329,6 +331,8 @@ target_link_libraries(VulkanSceneRenderer_texture_codecs PUBLIC Dep_VulkanCore
 
 add_subdirectory(geometry)
 add_subdirectory(robotics)
+target_link_libraries(VulkanSceneRenderer_renderer PRIVATE
+    VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_robotics_sensors)
 add_subdirectory(utility)
 add_subdirectory(ecs)
 

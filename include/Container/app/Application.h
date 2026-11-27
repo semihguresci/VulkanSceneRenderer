@@ -66,6 +66,7 @@ class Application {
   void initVulkan();
   void mainLoop();
   void screenshotCaptureLoop();
+  void sensorCameraCaptureLoop();
   void cleanup();
 
   std::unique_ptr<container::window::WindowManager> windowManager_;

@@ -16,6 +16,7 @@
 #include "Container/renderer/bim/BimMetadataIndex.h"
 #include "Container/renderer/bim/BimStatisticsCache.h"
 #include "Container/renderer/scene/SceneController.h"
+#include "Container/robotics/BimSensorLabels.h"
 #include "Container/utility/AllocationManager.h"
 #include "Container/utility/FileLoader.h"
 #include "Container/utility/GltfMaterialConversion.h"
@@ -1731,6 +1732,22 @@ BimManager::~BimManager() {
   destroyMeshletResidencyComputeResources();
 }
 
+void BimManager::enableSensorLabels(std::string sourceNamespace,
+                                    std::optional<double> metersPerRendererUnit) {
+  if (sourceNamespace.empty()) {
+    throw std::invalid_argument("BIM sensor labels require a source namespace");
+  }
+  if (metersPerRendererUnit &&
+      (!std::isfinite(*metersPerRendererUnit) || *metersPerRendererUnit <= 0.0)) {
+    throw std::invalid_argument("BIM sensor metres per renderer unit must be finite and positive");
+  }
+  if (hasScene()) {
+    throw std::logic_error("Enable BIM sensor labels before loading the scene");
+  }
+  sensorLabelNamespace_ = std::move(sourceNamespace);
+  sensorLabelMetersPerRendererUnit_ = metersPerRendererUnit;
+}
+
 void BimManager::setLoadProgressCallback(
     std::function<void(std::string_view)> callback) {
   loadProgressCallback_ = std::move(callback);
@@ -1746,6 +1763,7 @@ void BimManager::clear() {
   // Clear before callbacks can render a progress frame. Geometry revisions are
   // advanced during upload, which is earlier than final draw metadata install.
   statisticsCache_->clear();
+  sensorLabels_.reset();
   ++statisticsRevision_;
   ++visibilityFilterRevision_;
   notifyLoadProgress("Releasing BIM GPU resources");
@@ -3424,7 +3442,8 @@ void BimManager::loadModel(const std::string &path, float importScale,
       "Loading BIM model: {}", container::util::pathToUtf8(resolvedPath));
   const std::string extension = lowerAscii(resolvedPath.extension().string());
   const auto limits = allocationManager_.sceneAssetBudget().limits;
-  if ((limits.residentBytes || limits.uploadBytes || generateGeometryLods || !derivedCacheDirectory.empty()) &&
+  if ((limits.residentBytes || limits.uploadBytes || generateGeometryLods ||
+       !derivedCacheDirectory.empty() || !sensorLabelNamespace_.empty()) &&
       extension != ".gltf" && extension != ".glb") {
     auto prepared = prepareScene(path, importScale, std::move(openVdbOptions),
                                  {}, {}, {}, generateGeometryLods, derivedCacheDirectory);
@@ -3556,6 +3575,14 @@ void BimManager::loadPreparedModel(
     throw std::runtime_error(message);
   }
 
+  std::unique_ptr<robotics::BimSensorLabelMap> labels;
+  if (!sensorLabelNamespace_.empty()) {
+    const auto scene = robotics::buildRoboticsScene(model, {
+        .sourceNamespace = sensorLabelNamespace_,
+        .metersPerRendererUnit = sensorLabelMetersPerRendererUnit_,
+    });
+    labels = std::make_unique<robotics::BimSensorLabelMap>(robotics::buildBimSensorLabels(model, scene));
+  }
   notifyLoadProgress("Preparing BIM upload metadata");
   meshletClusters_ = prepared ? std::move(prepared->meshletClusters)
                              : buildMeshletClusterMetadataForModel(model);
@@ -3607,6 +3634,7 @@ void BimManager::loadPreparedModel(
   }
   rebuildSceneStatisticsCache();
   loadedSourcePath_ = sourceIdentityPath(path);
+  sensorLabels_ = std::move(labels);
 }
 
 std::unique_ptr<BimManager::PreparedDrawData> BimManager::prepareDrawData(

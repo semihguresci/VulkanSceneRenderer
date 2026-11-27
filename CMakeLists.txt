@@ -36,6 +36,7 @@ add_executable(${PROJECT_NAME} main.cpp)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     VulkanSceneRenderer_Core
+    VulkanSceneRenderer_robotics_sensors
 )
 container_stage_runtime_dlls(${PROJECT_NAME})
 container_stage_fsr_runtime(${PROJECT_NAME})
