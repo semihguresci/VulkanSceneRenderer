@@ -1,11 +1,15 @@
+add_library(VulkanSceneRenderer_robotics_clock SimClock.cpp)
+target_compile_features(VulkanSceneRenderer_robotics_clock PUBLIC cxx_std_23)
+target_include_directories(VulkanSceneRenderer_robotics_clock PUBLIC ${CMAKE_SOURCE_DIR}/include)
+
 add_library(VulkanSceneRenderer_robotics
     RoboticsScene.cpp RoboticsSceneManifest.cpp BimCollisionGeometry.cpp BimWalkability.cpp
-    BimAssetCache.cpp BimCachedCollision.cpp BimCachedRender.cpp SimClock.cpp DifferentialDrive.cpp)
+    BimAssetCache.cpp BimCachedCollision.cpp BimCachedRender.cpp DifferentialDrive.cpp)
 target_compile_features(VulkanSceneRenderer_robotics PUBLIC cxx_std_23)
 target_include_directories(VulkanSceneRenderer_robotics PUBLIC ${CMAKE_SOURCE_DIR}/include)
 target_compile_definitions(VulkanSceneRenderer_robotics PRIVATE
     CONTAINER_BIM_PREPROCESSOR_REVISION="${CONTAINER_GIT_REVISION}")
-target_link_libraries(VulkanSceneRenderer_robotics PUBLIC Dep_Math
+target_link_libraries(VulkanSceneRenderer_robotics PUBLIC Dep_Math VulkanSceneRenderer_robotics_clock
     PRIVATE VulkanSceneRenderer_geometry VulkanSceneRenderer_fingerprint nlohmann_json::nlohmann_json)
 if(TARGET miniz::miniz)
     target_link_libraries(VulkanSceneRenderer_robotics PRIVATE miniz::miniz)
@@ -26,6 +30,26 @@ target_link_libraries(BimRoboticsAssets PRIVATE
     VulkanSceneRenderer_robotics VulkanSceneRenderer_geometry nlohmann_json::nlohmann_json)
 set_target_properties(BimRoboticsAssets PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 container_stage_runtime_dlls(BimRoboticsAssets)
+
+if(ENABLE_ROBOTICS_URDF)
+    find_package(tinyxml2 CONFIG REQUIRED)
+    add_library(VulkanSceneRenderer_urdf UrdfModel.cpp UrdfRuntime.cpp)
+    target_compile_features(VulkanSceneRenderer_urdf PUBLIC cxx_std_23)
+    target_include_directories(VulkanSceneRenderer_urdf PUBLIC ${CMAKE_SOURCE_DIR}/include)
+    target_link_libraries(VulkanSceneRenderer_urdf PUBLIC Dep_Math VulkanSceneRenderer_robotics_clock
+        PRIVATE tinyxml2::tinyxml2)
+
+    add_executable(BimRoboticsUrdf ${CMAKE_SOURCE_DIR}/tools/bim_robotics_urdf.cpp)
+    target_link_libraries(BimRoboticsUrdf PRIVATE VulkanSceneRenderer_urdf nlohmann_json::nlohmann_json)
+    set_target_properties(BimRoboticsUrdf PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    container_stage_runtime_dlls(BimRoboticsUrdf)
+
+    if(ENABLE_PHYSICS)
+        add_library(VulkanSceneRenderer_urdf_physics UrdfCollisionBindings.cpp)
+        target_link_libraries(VulkanSceneRenderer_urdf_physics PUBLIC
+            VulkanSceneRenderer_urdf VulkanSceneRenderer_physics)
+    endif()
+endif()
 
 if(ENABLE_PHYSICS)
     add_library(VulkanSceneRenderer_robotics_physics

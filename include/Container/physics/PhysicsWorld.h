@@ -142,6 +142,10 @@ public:
   [[nodiscard]] PhysicsBodyId
   createCapsule(float halfHeight, float radius,
                 const PhysicsBodySettings &settings = {});
+  // Cylinder axis is local +Y. halfHeight is half of the full axial length.
+  [[nodiscard]] PhysicsBodyId
+  createCylinder(float halfHeight, float radius,
+                 const PhysicsBodySettings &settings = {});
   [[nodiscard]] PhysicsBodyId
   createStaticMesh(std::span<const glm::vec3> vertices,
                    std::span<const uint32_t> indices,

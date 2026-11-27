@@ -11,6 +11,7 @@ option(ENABLE_NANOVDB_IO "Enable portable NanoVDB file tools independently of Op
 option(ENABLE_NANOVDB_ZIP "Use an available zlib provider for NanoVDB file tools" ON)
 option(ENABLE_NANOVDB_BLOSC "Use an available Blosc provider for NanoVDB file tools" ON)
 option(ENABLE_PHYSICS "Build Jolt CPU rigid-body simulation and scene controls" ON)
+option(ENABLE_ROBOTICS_URDF "Build the CPU URDF importer and articulated robot tools" ON)
 option(ENABLE_GLTF_DRACO "Decode Draco glTF geometry in a bounded worker" OFF)
 option(ENABLE_GLTF_MESHOPT "Decode KHR/EXT meshopt glTF buffer views" OFF)
 option(CONTAINER_FETCH_GLTF_COMPRESSION "Fetch pinned missing glTF decoder dependencies" OFF)
