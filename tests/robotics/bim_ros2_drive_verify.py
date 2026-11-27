@@ -10,6 +10,14 @@ import subprocess
 import tempfile
 
 from bim_nav2_map import CASES, load_map, read_json, sha256, verify_sweeps, write_json
+from bim_nav2_planner import Waypoint
+
+
+GOAL_TOLERANCE = .14
+
+
+def doorway_itinerary(goal):
+    return Waypoint(.65, goal.y, 0.0), goal
 
 
 def load_trace(path, scenario):
@@ -52,12 +60,38 @@ def replay_commands(executable, source, scenario_path, camera_path, manifest, ro
     return frames
 
 
+def verify_waypoint_visits(manifest, navigation, route):
+    goal = next(entry for entry in manifest["waypoints"] if entry["id"] == "goal")
+    itinerary = doorway_itinerary(Waypoint(*goal["positionMeters"], goal["yawRadians"]))
+    recorded = navigation["goals"]
+    assert len(recorded) == len(itinerary), "The Nav2 trace has the wrong number of waypoint results"
+    errors, ticks = [], []
+    next_tick = 0
+    for waypoint, result in zip(itinerary, recorded, strict=True):
+        requested = [waypoint.x, waypoint.y]
+        assert result["requestedMeters"] == requested, ("Unexpected Nav2 waypoint", result, requested)
+        actual = result["actualMeters"]
+        assert len(actual) == 3 and abs(actual[2] - manifest["floorMeters"]) <= manifest["floorToleranceMeters"], result
+        actual_xy = actual[:2]
+        error = math.dist(requested, actual_xy)
+        assert error <= GOAL_TOLERANCE and math.isclose(error, result["positionErrorMeters"],
+                                                        rel_tol=0, abs_tol=1e-9), result
+        candidates = (tick for tick in range(next_tick, len(route))
+                      if math.dist(route[tick], requested) <= GOAL_TOLERANCE)
+        tick = min(candidates, key=lambda index: math.dist(route[index], actual_xy), default=None)
+        assert tick is not None and math.dist(route[tick], actual_xy) < .025, (
+            "No matching committed sample for Nav2 waypoint in itinerary order", result)
+        errors.append(error)
+        ticks.append(tick)
+        next_tick = tick + 1
+    assert math.dist(route[-1], goal["positionMeters"]) <= GOAL_TOLERANCE, "Final pose left the goal tolerance"
+    return errors, ticks
+
+
 def verify_motion(collision, fixtures, case, manifest, grid, navigation, route):
     assert navigation["imageSha256"] == manifest["imageSha256"] and navigation["sceneSource"] == manifest["sceneSource"]
-    assert len(navigation["goals"]) == 2 and math.dist(route[0], navigation["startMeters"][:2]) < .02
-    assert math.dist(route[-1], navigation["goals"][-1]["requestedMeters"]) <= .15
-    for goal in navigation["goals"]:
-        assert min(math.dist(p, goal["actualMeters"][:2]) for p in route) < .025
+    assert math.dist(route[0], navigation["startMeters"][:2]) < .02
+    goal_errors, goal_ticks = verify_waypoint_visits(manifest, navigation, route)
     assert all(grid.covers_segment(a, b) for a, b in zip(route, route[1:])), "Driven robot left mapped free cells"
     crossings = [a[1] - a[0] * (b[1] - a[1]) / (b[0] - a[0])
                  for a, b in zip(route, route[1:]) if a[0] <= 0 < b[0]]
@@ -66,7 +100,7 @@ def verify_motion(collision, fixtures, case, manifest, grid, navigation, route):
         swept = verify_sweeps(collision, fixtures, Path(scratch), case, manifest, route)
     assert swept > 0, "The robot did not move"
     return {"sweptDriveSegments": swept, "drivenDistanceMeters": sum(math.dist(a, b) for a, b in zip(route, route[1:])),
-            "doorwayCrossingsMeters": crossings, "goalErrorsMeters": [g["positionErrorMeters"] for g in navigation["goals"]]}
+            "doorwayCrossingsMeters": crossings, "goalErrorsMeters": goal_errors, "goalTraceTicks": goal_ticks}
 
 
 def main():

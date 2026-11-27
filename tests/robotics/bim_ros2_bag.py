@@ -25,10 +25,12 @@ _TYPES = {
     "/camera/image_raw": "sensor_msgs/msg/Image",
     "/camera/camera_info": "sensor_msgs/msg/CameraInfo",
     "/camera/depth/image_raw": "sensor_msgs/msg/Image",
+    "/camera/depth/camera_info": "sensor_msgs/msg/CameraInfo",
 }
 BAG_TOPICS = tuple(_TYPES)
 _STATIC_TOPICS = {"/map", "/tf_static"}
 _RGB, _INFO, _DEPTH = "/camera/image_raw", "/camera/camera_info", "/camera/depth/image_raw"
+_DEPTH_INFO = "/camera/depth/camera_info"
 _OPTICAL = "camera_optical_frame"
 _SECOND = 1_000_000_000
 _NATIVE_TICK_NS = (_SECOND + 59) // 60
@@ -67,7 +69,7 @@ class _RecordedObservations:
         self.pose = {}
         self.tf = {}
         self.statics = set()
-        self.frames = {_RGB: {}, _INFO: {}, _DEPTH: {}}
+        self.frames = {_RGB: {}, _INFO: {}, _DEPTH: {}, _DEPTH_INFO: {}}
         self.intrinsics = None
         self.finite_depth = 0
         self.nan_depth = 0
@@ -82,7 +84,7 @@ class _RecordedObservations:
         _check(message.header.frame_id == _OPTICAL and min(size) > 0, f"Incorrect optical frame or size on {topic}")
         _check(stamp > 0 and stamp not in self.frames[topic], f"Duplicate or invalid image stamp on {topic}: {stamp}")
         self.frames[topic][stamp] = size
-        if topic == _INFO:
+        if topic in (_INFO, _DEPTH_INFO):
             fx, fy, cx, cy = message.k[0], message.k[4], message.k[2], message.k[5]
             _check(all(map(math.isfinite, (fx, fy, cx, cy))) and fx > 0 and fy > 0 and
                    tuple(message.k) == (fx, 0, cx, 0, fy, cy, 0, 0, 1) and
@@ -155,8 +157,9 @@ class _RecordedObservations:
                f"Incorrect static TF frames: {sorted(self.statics)}")
         _check(len(self.clock) > 1 and len(self.pose) > 1 and self.nonzero_commands > 0,
                "Bag lacks advancing simulated time, odometry, or real controller commands")
-        _check(self.frames[_RGB] == self.frames[_DEPTH] == self.frames[_INFO] and len(self.frames[_RGB]) > 1,
-               "Colour, depth and camera_info samples do not share the same stamps and dimensions")
+        rgb_frames = self.frames[_RGB]
+        _check(len(rgb_frames) > 1 and all(frames == rgb_frames for frames in self.frames.values()),
+               "RGB-D images and both CameraInfo streams do not share the same stamps and dimensions")
         _check(self.rgb_nonzero and self.finite_depth > 0 and self.nan_depth > 0,
                "RGB-D observations lack colour, positive depth hits, or NaN misses")
         stamps = self.pose.keys() & self.tf.keys()
@@ -202,6 +205,7 @@ def _read(bag):
             digests[name][_digest(message)] += 1
         counts = {topic: sum(counter.values()) for topic, counter in digests.items()}
         _check(all(counts.values()), f"Bag has empty required topics: {counts}")
+        _check(digests[_INFO] == digests[_DEPTH_INFO], "Recorded RGB and depth CameraInfo payloads differ")
         _check(first is not None and first > 0 and last > first, "Bag has no positive simulation recording range")
         return types, digests, counts, observations.summary(), (last - first) / _SECOND
     finally:

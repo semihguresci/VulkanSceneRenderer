@@ -88,6 +88,32 @@ TEST(CollisionSensorCamera, ClipsToAxialPlanesAndLeavesMissesBlackAndNaN) {
   EXPECT_EQ(image.rgb8, (std::vector<uint8_t>{0, 0, 0, 180, 180, 180, 180, 180, 180, 0, 0, 0}));
 }
 
+TEST(CollisionSensorCamera, RejectsRayLengthsOutsideThePhysicsRangeAtCalibration) {
+  auto settings = testCamera();
+  settings.width = settings.height = 1;
+  settings.cx = settings.cy = 0.5;
+  settings.farMeters = 1e20;
+  ASSERT_NO_THROW(validateSensorCameraSettings(settings));
+  EXPECT_THROW(validateCollisionSensorCameraSettings(settings), std::invalid_argument);
+
+  settings = testCamera();
+  settings.fx = 1e-20;
+  ASSERT_NO_THROW(validateSensorCameraSettings(settings));
+  EXPECT_THROW(validateCollisionSensorCameraSettings(settings), std::invalid_argument);
+
+  settings = testCamera();
+  settings.nearMeters = 1e-25;
+  settings.farMeters = 2e-25;
+  ASSERT_NO_THROW(validateSensorCameraSettings(settings));
+  EXPECT_THROW(validateCollisionSensorCameraSettings(settings), std::invalid_argument);
+
+  settings = testCamera();
+  settings.fx = 0.25;
+  settings.fy = 0.4;
+  settings.farMeters = 1000;
+  EXPECT_NO_THROW(validateCollisionSensorCameraSettings(settings));
+}
+
 TEST(CollisionSensorCamera, RejectsUnsupportedCalibrationAndMalformedHitFractions) {
   auto settings = testCamera();
   settings.width = 0;

@@ -151,7 +151,10 @@ class Bridge:
         self.node = node
         self.stream = stream
         self.trace = trace
-        self.max_steps = max_steps
+        tick_limit = description.get("tickLimit")
+        if type(tick_limit) is not int or tick_limit < 0:
+            raise ValueError("Invalid native tickLimit")
+        self.max_steps = tick_limit if max_steps is None else min(max_steps, tick_limit)
         self.floor = floor
         self.tick = 0
         self.camera_index = 0
@@ -176,6 +179,8 @@ class Bridge:
             self.camera_info_topic = node.create_publisher(CameraInfo, "/camera/camera_info", qos_profile_sensor_data)
             self.rgb = node.create_publisher(Image, "/camera/image_raw", qos_profile_sensor_data)
             self.depth = node.create_publisher(Image, "/camera/depth/image_raw", qos_profile_sensor_data)
+            self.depth_info_topic = node.create_publisher(CameraInfo, "/camera/depth/camera_info",
+                                                         qos_profile_sensor_data)
             camera = _columns(calibration["baseFromCamera"])
             optical = (camera[0], tuple(-value for value in camera[1]), tuple(-value for value in camera[2]), camera[3])
             static.append(_transform(_BASE, _OPTICAL, optical, Time(sec=1)))
@@ -187,7 +192,7 @@ class Bridge:
 
     @property
     def finished(self):
-        return self.max_steps is not None and self.tick >= self.max_steps
+        return self.tick >= self.max_steps
 
     def _command(self, message):
         linear, angular = message.linear, message.angular
@@ -271,6 +276,7 @@ class Bridge:
             rgb, depth, camera_evidence = messages
             self.camera_info.header.stamp = stamp
             self.camera_info_topic.publish(self.camera_info)
+            self.depth_info_topic.publish(self.camera_info)
             self.rgb.publish(rgb)
             self.depth.publish(depth)
             self.camera_index += 1
@@ -293,7 +299,7 @@ def main(argv=None):
     parser.add_argument("--camera", type=Path, help="Optional native RGB-D sensor specification")
     parser.add_argument("--map-manifest", type=Path, help="Validate against the exported waypoints.json")
     parser.add_argument("--trace", type=Path, help="Fresh output path for committed tick evidence")
-    parser.add_argument("--max-steps", type=int, help="Stop after this many committed steps")
+    parser.add_argument("--max-steps", type=int, help="Stop at this limit or the native tick limit, whichever comes first")
     ros_args = [sys.argv[0], *(sys.argv[1:] if argv is None else argv)]
     args = parser.parse_args(remove_ros_args(ros_args)[1:])
     if args.max_steps is not None and args.max_steps < 0:

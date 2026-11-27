@@ -923,7 +923,8 @@ void runDriveStream(const std::filesystem::path& input, const std::string& sourc
     return std::move(assets.collision);
   }();
   const auto& capsule = scenario.options.capsule;
-  const Json description{{"ticksPerSecond", scenario.options.ticksPerSecond}, {"robotId", scenario.options.robotId},
+  const Json description{{"ticksPerSecond", scenario.options.ticksPerSecond}, {"tickLimit", scenario.ticks},
+                         {"robotId", scenario.options.robotId},
                          {"sourceNamespace", sourceNamespace}, {"sceneSource", robotics::bimSceneSourceJson(sceneSource)},
                          {"capsule", {{"radiusMeters", capsule.radius}, {"heightMeters", capsule.height}}},
                          {"openDoorIds", scenario.openDoorIds},

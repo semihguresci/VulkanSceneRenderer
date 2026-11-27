@@ -25,17 +25,11 @@ def step(tick, speed=1.0, yaw_rate=0.0):
     return {"op": "step", "tick": tick, "linearMetersPerSecond": speed, "angularRadiansPerSecond": yaw_rate}
 
 
-def run_stream(executable, model, scenario, camera):
-    requests = [{"op": "describe"}, {"op": "observe"}, step(2), {"op": "observe"},
-                step(1, speed=0), step(1), {"op": "observe"}]
-    for tick in range(2, LAST_TICK + 1):
-        requests.append(step(tick))
-        if tick == CAMERA_INTERVAL:
-            requests.extend([{"op": "observe"}, {"op": "observe"}])
-    requests.extend([step(LAST_TICK + 1), {"op": "observe"}, {"op": "close"}])
-
+def exchange(executable, model, scenario, requests, camera=None):
     request_lines = "".join(json.dumps(request, allow_nan=False) + "\n" for request in requests)
-    command = [executable, "--stream", model, "doorway", scenario, "--camera", camera]
+    command = [executable, "--stream", model, "doorway", scenario]
+    if camera is not None:
+        command.extend(("--camera", camera))
     result = subprocess.run(command, input=request_lines, capture_output=True, encoding="utf-8", timeout=40,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     assert result.returncode == 0, (scenario.name, result.returncode, result.stderr)
@@ -47,9 +41,22 @@ def run_stream(executable, model, scenario, camera):
     return replies
 
 
+def run_stream(executable, model, scenario, camera):
+    requests = [{"op": "describe"}, {"op": "observe"}, step(2), {"op": "observe"},
+                step(1, speed=0), step(1), {"op": "observe"}]
+    for tick in range(2, LAST_TICK + 1):
+        requests.append(step(tick))
+        if tick == CAMERA_INTERVAL:
+            requests.extend([{"op": "observe"}, {"op": "observe"}])
+    requests.extend([step(LAST_TICK + 1), {"op": "observe"}, {"op": "close"}])
+
+    return exchange(executable, model, scenario, requests, camera)
+
+
 def check_description(description, model, door_open):
     source_data = model.read_bytes()
     assert description["ok"] and description["ticksPerSecond"] == FREQUENCY, description
+    assert type(description["tickLimit"]) is int and description["tickLimit"] == LAST_TICK, description
     assert description["sourceNamespace"] == "doorway" and description["robotId"] == "robot/base", description
     assert description["openDoorIds"] == ([DOOR] if door_open else []), description
     assert description["sceneSource"]["layers"] == [
@@ -159,6 +166,20 @@ def check_run(replies, model, door_open):
     return initial_depth[len(initial_depth) // 2]
 
 
+def check_clean_tick_limit(executable, model, scenario, limit):
+    scenario.write_text(json.dumps({"version": 1, "ticks": limit, "initialFeet": FEET,
+                                    "openDoorIds": [DOOR]}), encoding="utf-8")
+    requests = [{"op": "describe"}, {"op": "observe"}]
+    requests.extend(step(tick, speed=0) for tick in range(1, limit + 1))
+    requests.append({"op": "close"})
+    description, *samples, close = exchange(executable, model, scenario, requests)
+    assert description["ok"] and type(description["tickLimit"]) is int and description["tickLimit"] == limit
+    assert description["camera"] is None and close["ok"]
+    for tick, sample in enumerate(samples):
+        check_sample(sample, tick)
+        assert sample["camera"] is None, sample
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--executable", required=True, type=Path)
@@ -169,6 +190,8 @@ def main():
 
     with tempfile.TemporaryDirectory(prefix="bim-drive-stream-") as temporary:
         directory = Path(temporary)
+        for limit in (0, 2):
+            check_clean_tick_limit(executable, model, directory / f"limit-{limit}.json", limit)
         camera = directory / "camera.json"
         camera.write_text(json.dumps({"schema": "container.sensor-camera", "version": 1, "intrinsics": INTRINSICS,
             "baseFromCamera": {"xyz": [0, 0, 0.7]}, "timing": {"ticksPerSecond": FREQUENCY,

@@ -6,7 +6,7 @@ from launch_ros.actions import Node
 
 def start_bridge(context):
     arguments = []
-    for name in ("sim_executable", "scene", "namespace", "scenario", "camera", "map_manifest", "trace"):
+    for name in ("sim_executable", "scene", "namespace", "scenario", "camera", "map_manifest", "trace", "max_steps"):
         value = LaunchConfiguration(name).perform(context)
         if value:
             arguments.extend(("--" + name.replace("_", "-"), value))
@@ -22,5 +22,6 @@ def generate_launch_description():
         DeclareLaunchArgument("camera", default_value="", description="Optional calibrated camera JSON"),
         DeclareLaunchArgument("map_manifest", default_value="", description="Optional exported waypoints.json"),
         DeclareLaunchArgument("trace", default_value="", description="Optional new native trace output path"),
+        DeclareLaunchArgument("max_steps", default_value="", description="Optional cap below the native tick limit"),
         OpaqueFunction(function=start_bridge),
     ])

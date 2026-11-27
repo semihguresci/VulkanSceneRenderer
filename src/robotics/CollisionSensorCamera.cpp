@@ -31,6 +31,20 @@ void validateCollisionSensorCameraSettings(const SensorCameraSettings& settings)
   if (settings.appearance)
     throw std::invalid_argument("Collision camera does not support appearance effects");
   validateSensorCameraSettings(settings);
+
+  // Jolt computes the squared length of the displacement in float. Bound
+  // the widest pixel ray, with headroom for rotation and conversion to float.
+  const double right = std::max(std::abs(0.5 - settings.cx),
+                                std::abs(double(settings.width) - 0.5 - settings.cx)) / settings.fx;
+  const double up = std::max(std::abs(0.5 - settings.cy),
+                             std::abs(double(settings.height) - 0.5 - settings.cy)) / settings.fy;
+  const double depthSpan = settings.farMeters - settings.nearMeters;
+  const double cornerRayLength = depthSpan * std::hypot(right, up, 1.0);
+  constexpr double floatMargin = 1e-5;
+  const double maxRayLength = std::sqrt(double(std::numeric_limits<float>::max())) * (1.0 - floatMargin);
+  const double minRayLength = std::sqrt(double(std::numeric_limits<float>::min())) * (1.0 + floatMargin);
+  if (!std::isfinite(cornerRayLength) || cornerRayLength > maxRayLength || depthSpan < minRayLength)
+    throw std::invalid_argument("Collision camera ray squared length exceeds the physics query range");
 }
 
 CollisionSensorImage captureCollisionSensorCamera(

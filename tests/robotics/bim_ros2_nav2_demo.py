@@ -20,12 +20,12 @@ from bim_nav2_planner import (
     verify_occupancy,
 )
 from bim_ros2_bag import BAG_TOPICS, verify_and_replay_bag
+from bim_ros2_drive_verify import GOAL_TOLERANCE, doorway_itinerary
 
 
 CONTROLLER = "DoorwayFollowPath"
 GOAL_CHECKER = "waypoint_goal_checker"
 PROGRESS_CHECKER = "waypoint_progress_checker"
-GOAL_TOLERANCE = .14
 
 
 def nav_parameters(fixture):
@@ -201,9 +201,8 @@ def run_demo(args, fixture, manifest, grid, scenario, camera):
             spin_until(executor, deadline, processes, "NavFn planning guard",
                        lambda: "costmap" in topics and cost_classes(topics["costmap"].data) == guarded)
 
-            itinerary = (Waypoint(.65, fixture.goal.y, 0.0), fixture.goal)
             legs = []
-            for waypoint in itinerary:
+            for waypoint in doorway_itinerary(fixture.goal):
                 legs.append(drive_leg(node, executor, deadline, processes, buffer, waypoint, grid, manifest["floorMeters"]))
                 print(f"Reached BIM waypoint ({waypoint.x:.2f}, {waypoint.y:.2f}) m, "
                       f"position error {legs[-1]['positionErrorMeters']:.3f} m", flush=True)
