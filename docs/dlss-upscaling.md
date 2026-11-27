@@ -99,6 +99,13 @@ appear in **Reference display denoising** in the editor. Use `--path-dlss off`
 to disable reconstruction. A capture sequence can select the mode with a
 `referenceDlss` event.
 
+Use `--path-denoiser-handoff N` with an active `--path-dlss` preset and either
+`--path-optix` or `--path-oidn` to start the display with Ray Reconstruction
+and blend in the spatial filter as the full-resolution mean converges.
+For capture sequences, use a positive `referenceDenoiserHandoffSamples` in
+the same event as `referenceDlss` and the spatial backend. Zero restores
+exclusive display selection. [Reference denoiser handoff](reference-path-tracing.md#reference-denoiser-handoff)
+
 Two dispatches use independent image grids and sample streams. The reference
 path tracer accumulates its running mean and variance at the display extent.
 A second dispatch traces one noisy scene-linear HDR sample per pixel at the
@@ -107,9 +114,11 @@ sample and its guides. Scene-linear EXR captures continue to read the raw
 full-resolution mean, including when Ray Reconstruction drives the viewport.
 Both dispatches contribute to frame time. The composition preserves the raw
 renderer’s diagnostic colors.
-The viewport falls back to raw accumulation if the SDK or runtime is
+Ray Reconstruction falls back to raw accumulation if the SDK or runtime is
 unavailable, the renderer flags the whole scene as unsupported, a thin-lens
-aperture is active, or the shadow matte is active.
+aperture is active, or the shadow matte is active. In handoff mode, a valid
+spatial filter result can still supply the display when Ray Reconstruction
+is unavailable.
 
 The guide dispatch sends RGBA32F HDR color, R32F positive linear camera
 depth, RG32F motion, RGBA16F diffuse and specular albedo, RGBA16F signed world
@@ -172,3 +181,10 @@ The accepted renderer SHA-256 is
 Run `tests/validation/reference_dlss_runtime_regression.py` against the
 SDK-enabled renderer to reproduce the viewport and raw EXR comparisons.
 Use `--expect-unavailable` with the SDK-disabled build.
+
+### Optional DLSS Neural Rendering
+
+Beta DLSS Neural Rendering is a follow-up that depends on compatible SDK
+headers and supported hardware. It would run in a separate pass after tone
+mapping and expose a per-material inclusion mask where available.
+[Issue #116](https://github.com/semihguresci/VulkanSceneRenderer/issues/116)

@@ -55,6 +55,12 @@ struct FrameData
 #if REFERENCE_DENOISE_GUIDES
 [[vk::binding(0, 3)]] [[vk::image_format("rgba32f")]] RWTexture2D<float4> guideAlbedo;
 [[vk::binding(1, 3)]] [[vk::image_format("rgba32f")]] RWTexture2D<float4> guideNormal;
+struct SpatialGuideReplay
+{
+    uint firstSample;
+    uint sampleCount;
+};
+[[vk::push_constant]] ConstantBuffer<SpatialGuideReplay> spatialGuideReplay;
 #endif
 #if REFERENCE_DLSS_RR
 struct ReferenceRrFrameData
@@ -82,10 +88,19 @@ struct ReferenceRrFrameData
 static const uint PT_DIAGNOSTIC_RETRO_VOLUME_FALLBACK = 1u << 26;
 static const uint PT_DIAGNOSTIC_SCATTER_VOLUME_FALLBACK = 1u << 27;
 
+bool PtReplayingSpatialGuides()
+{
+#if REFERENCE_DENOISE_GUIDES
+    return spatialGuideReplay.sampleCount != 0u;
+#else
+    return false;
+#endif
+}
+
 void PtMarkPathDiagnostic(uint bit)
 {
 #if !REFERENCE_DLSS_RR
-    InterlockedOr(diagnostics[0].w, bit);
+    if (!PtReplayingSpatialGuides()) InterlockedOr(diagnostics[0].w, bit);
 #endif
 }
 
@@ -250,12 +265,15 @@ PtHit PtClosest(RayDesc ray, uint coverageSeed, bool volumeOnly = false,
 #if !REFERENCE_DLSS_RR
         // First failed reconstruction witness in this submission. The second
         // readback row already reserves yzw; autofocus owns only its x lane.
-        uint previousWitness;
-        InterlockedCompareExchange(diagnostics[1].w, 0u, triangle + 1u, previousWitness);
-        if (previousWitness == 0u)
+        if (!PtReplayingSpatialGuides())
         {
-            diagnostics[1].y = asuint(bary.x);
-            diagnostics[1].z = asuint(bary.y);
+            uint previousWitness;
+            InterlockedCompareExchange(diagnostics[1].w, 0u, triangle + 1u, previousWitness);
+            if (previousWitness == 0u)
+            {
+                diagnostics[1].y = asuint(bary.x);
+                diagnostics[1].z = asuint(bary.y);
+            }
         }
 #endif
     }
@@ -1738,23 +1756,41 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     rrSpecularHitDistance[tid.xy] = guide.specularDistance;
 #else
     if (any(tid.xy >= frame.extentSamples.xy)) return;
-    if (frame.controls.y != 0.0 && all(tid.xy == uint2(0u, 0u)))
+    const bool replay = PtReplayingSpatialGuides();
+    uint firstSample = frame.extentSamples.z;
+    uint sampleCount = frame.extentSamples.w;
+#if REFERENCE_DENOISE_GUIDES
+    if (replay)
+    {
+        // Faulty raw pixels keep their diagnostic color and provide neutral guides.
+        if (moments[tid.xy].w != 0.0)
+        {
+            guideAlbedo[tid.xy] = float4(0.0.xxx, 1.0);
+            guideNormal[tid.xy] = float4(0.0.xxx, 1.0);
+            return;
+        }
+        firstSample = spatialGuideReplay.firstSample;
+        sampleCount = spatialGuideReplay.sampleCount;
+    }
+#endif
+    if (!replay && frame.controls.y != 0.0 && all(tid.xy == uint2(0u, 0u)))
         diagnostics[1].x = asuint(PtAutofocusDistance());
     float3 mean = 0.0.xxx, moment = 0.0.xxx;
     uint count = 0u, flags = 0u;
-#if REFERENCE_DENOISE_GUIDES
-    float3 meanAlbedo = 0.0.xxx, meanNormal = 0.0.xxx;
-#endif
-    if (frame.extentSamples.z != 0u)
+    if (!replay && firstSample != 0u)
     {
         float4 old = means[tid.xy], oldMoment = moments[tid.xy];
         mean = old.rgb; count = uint(old.w); moment = oldMoment.rgb; flags = uint(oldMoment.w);
+    }
 #if REFERENCE_DENOISE_GUIDES
+    float3 meanAlbedo = 0.0.xxx, meanNormal = 0.0.xxx;
+    if (firstSample != 0u)
+    {
         meanAlbedo = guideAlbedo[tid.xy].rgb;
         meanNormal = guideNormal[tid.xy].rgb;
-#endif
     }
-    for (uint i = 0u; i < frame.extentSamples.w; ++i)
+#endif
+    for (uint i = 0u; i < sampleCount; ++i)
     {
         uint fault;
         float3 radiance;
@@ -1762,40 +1798,46 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
         float3 albedo = 0.0.xxx, normal = 0.0.xxx;
 #endif
         if ((frame.limits.w & 8u) != 0u) { fault = 1u; radiance = 0.0.xxx; }
-        else radiance = PtTracePath(tid.xy, frame.extentSamples.z + i, fault
+        else radiance = PtTracePath(tid.xy, firstSample + i, fault
 #if REFERENCE_DENOISE_GUIDES
             , albedo, normal
 #endif
         );
-        if ((fault & 2u) != 0u) InterlockedOr(diagnostics[0].w, 2u);
-        if (fault == 0u && frame.controls.x > 0.0)
+        if (!replay)
         {
-            float peak = max(radiance.x, max(radiance.y, radiance.z));
-            if (peak > frame.controls.x) radiance = (radiance / peak) * frame.controls.x;
+            if ((fault & 2u) != 0u) InterlockedOr(diagnostics[0].w, 2u);
+            if (fault == 0u && frame.controls.x > 0.0)
+            {
+                float peak = max(radiance.x, max(radiance.y, radiance.z));
+                if (peak > frame.controls.x) radiance = (radiance / peak) * frame.controls.x;
+            }
+            if (fault == 0u && !PtAccumulate(mean, moment, count, radiance))
+            { fault = 2u; InterlockedOr(diagnostics[0].w, 1u); }
+            if (fault != 0u)
+            {
+                flags |= fault;
+                if ((fault & 1u) != 0u) InterlockedAdd(diagnostics[0].x, 1u);
+                if ((fault & 2u) != 0u) InterlockedAdd(diagnostics[0].y, 1u);
+            }
+            else InterlockedAdd(diagnostics[0].z, 1u);
         }
-        if (fault == 0u && !PtAccumulate(mean, moment, count, radiance))
-        { fault = 2u; InterlockedOr(diagnostics[0].w, 1u); }
-        if (fault != 0u)
-        {
-            flags |= fault;
-            if ((fault & 1u) != 0u) InterlockedAdd(diagnostics[0].x, 1u);
-            if ((fault & 2u) != 0u) InterlockedAdd(diagnostics[0].y, 1u);
-        }
-        else
-        {
-            InterlockedAdd(diagnostics[0].z, 1u);
 #if REFERENCE_DENOISE_GUIDES
-            meanAlbedo += (albedo - meanAlbedo) / float(count);
-            meanNormal += (normal - meanNormal) / float(count);
-#endif
+        if (fault == 0u)
+        {
+            // A replayable non-diagnostic pixel accepted every raw attempt in order.
+            const float guideCount = float(replay ? firstSample + i + 1u : count);
+            meanAlbedo += (albedo - meanAlbedo) / guideCount;
+            meanNormal += (normal - meanNormal) / guideCount;
         }
+#endif
     }
-    means[tid.xy] = float4(mean, float(count));
-    moments[tid.xy] = float4(moment, float(flags));
 #if REFERENCE_DENOISE_GUIDES
     guideAlbedo[tid.xy] = float4(meanAlbedo, 1.0);
     guideNormal[tid.xy] = float4(meanNormal, 1.0);
+    if (replay) return;
 #endif
+    means[tid.xy] = float4(mean, float(count));
+    moments[tid.xy] = float4(moment, float(flags));
     float3 shown = mean;
     if (frame.ground.x == PT_GROUND_MATTE)
         shown = (mean.y > 0.0 ? saturate(mean.x / mean.y) * saturate(mean.z) : 0.0).xxx;

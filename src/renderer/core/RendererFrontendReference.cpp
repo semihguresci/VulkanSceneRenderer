@@ -56,29 +56,26 @@ ReferencePathDisplayMode RendererFrontend::referencePathDisplay() const {
                           : referencePathDisplayOverride_.value_or(svc_.config.pathDisplay);
 }
 
+ReferenceOidnSettings RendererFrontend::referenceDenoising() const {
+  return subs_.guiManager ? subs_.guiManager->referenceOidn()
+                          : referenceDenoisingOverride_.value_or(svc_.config.pathOidn);
+}
+
 void RendererFrontend::ensureReferencePathResources() {
   referenceRecorded_ = false;
   if (!referencePathActive()) return;
-  auto oidn = subs_.guiManager ? subs_.guiManager->referenceOidn() : svc_.config.pathOidn;
-  if (!subs_.guiManager && referenceOidnQualityOverride_)
-    oidn.quality = *referenceOidnQualityOverride_;
-  if (!subs_.guiManager && referenceOptixOverride_)
-    oidn.optix = *referenceOptixOverride_;
-  if (!subs_.guiManager && referenceDlssOverride_)
-    oidn.dlss = *referenceDlssOverride_;
+  const auto denoising = referenceDenoising();
   const auto shaderRoot = activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory();
   if (auto& current = subs_.referencePathTracePass) {
-    if (current->optixSelected() == oidn.optix && (oidn.optix || current->oidnQuality() == oidn.quality)) {
-      if (current->dlssQuality() != oidn.dlss) {
-        subs_.frameSyncManager->waitForAllFrames();
-        current->setDlssQuality(shaderRoot, oidn.dlss);
-      }
-      current->setOidnSampleInterval(oidn.sampleInterval);
-      return;
+    if (current->optixSelected() != denoising.optix ||
+        (!denoising.optix && current->oidnQuality() != denoising.quality) ||
+        current->dlssQuality() != denoising.dlss ||
+        current->denoiserHandoffSamples() != denoising.handoffSamples) {
+      subs_.frameSyncManager->waitForAllFrames();
+      current->setDenoising(shaderRoot, denoising);
     }
-    subs_.frameSyncManager->waitForAllFrames();
-    current.reset();
-    referenceStatus_.clear();
+    current->setOidnSampleInterval(denoising.sampleInterval);
+    return;
   }
   if (!referenceStatus_.empty()) return;
   try {
@@ -87,7 +84,7 @@ void RendererFrontend::ensureReferencePathResources() {
     pass->createResources(shaderRoot,
         uint32_t(svc_.swapChainManager.imageCount()), svc_.swapChainManager.extent(),
         subs_.sceneManager->descriptorSetLayout(), subs_.lightingManager->lightDescriptorSetLayout(),
-        kDefaultReferenceImageBudgetBytes, oidn);
+        kDefaultReferenceImageBudgetBytes, denoising);
     subs_.referencePathTracePass = std::move(pass);
     ++referenceTimingGeneration_;
     referenceDiagnosticSeen_.assign(svc_.swapChainManager.imageCount(), 0);

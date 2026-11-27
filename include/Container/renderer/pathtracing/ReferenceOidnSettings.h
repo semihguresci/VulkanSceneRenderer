@@ -44,7 +44,9 @@ struct ReferenceOidnSettings {
   uint32_t sampleInterval{8};
   bool optix{};
   UpscaleMode dlss{UpscaleMode::Native};
+  uint32_t handoffSamples{};
   static constexpr uint32_t maxSampleInterval = 1024;
+  static constexpr uint32_t maxHandoffSamples = 16'777'216;
 };
 
 [[nodiscard]] constexpr std::string_view referenceDlssQualityName(UpscaleMode mode) noexcept {

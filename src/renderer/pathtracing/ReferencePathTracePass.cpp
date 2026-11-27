@@ -26,6 +26,17 @@ struct alignas(16) ReferencePathReadback {
 };
 static_assert(sizeof(ReferencePathReadback) == 32);
 
+#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
+using GuideReplay = std::array<uint32_t, 2>;
+constexpr uint32_t kMaxGuideReplaySamples = 64;
+#endif
+#if CONTAINER_HAS_VK_OIDN
+constexpr uint32_t kOidnIntermediateMemoryMiB = 256;
+// vk_oidn's tiling cap covers intermediates. The pinned SDK embeds FP16 weights;
+// reserve another 32 MiB as an estimate when admitting both display backends.
+constexpr uint64_t kOidnJointAdmissionBytes = uint64_t{kOidnIntermediateMemoryMiB + 32} * 1024 * 1024;
+#endif
+
 [[noreturn]] void fail(const char* text) { throw std::invalid_argument(std::string("Reference path tracing: ")+text); }
 void barrier(VkCommandBuffer cmd,VkPipelineStageFlags2 stage,VkAccessFlags2 access) {
   VkMemoryBarrier2 b{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
@@ -77,9 +88,14 @@ struct ReferencePathTracePass::Impl {
     VkPipeline boundPipeline{};
     std::shared_ptr<const void> boundContent;
     uint64_t epoch{},submission{};
+    float handoffWeight{};
+#if CONTAINER_HAS_DLSS_RR
+    bool dlssEvaluated{}, dlssYielded{};
+#endif
 #if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
-    uint32_t denoisedSamples{};
-    bool denoiseRecorded{}, denoiseTimingPending{};
+    uint32_t guideSamples{}, denoisedSamples{};
+    bool guideReset{}, denoiseRecorded{}, denoiseTimingPending{};
+    std::shared_ptr<const void> guideContent;
 #endif
 #if CONTAINER_HAS_REFERENCE_OPTIX
     uint32_t optixCapturedSamples{};
@@ -96,8 +112,9 @@ struct ReferencePathTracePass::Impl {
     VkDescriptorPool pool{};
     VkDescriptorSet set{};
     gpu::ComputePipeline guided, emptyGuided, compose;
-    bool failed{};
-    uint32_t filteredSamples{};
+    bool initialized{}, failed{};
+    uint32_t guideSamples{}, filteredSamples{};
+    std::shared_ptr<const void> guideContent;
     std::optional<double> lastGpuMs;
 #if CONTAINER_HAS_VK_OIDN
     VkQueryPool queries{};
@@ -142,7 +159,8 @@ struct ReferencePathTracePass::Impl {
       for (uint32_t binding = 0; binding < 3; ++binding)
         bindings.push_back({binding, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr});
       setLayout = pipelines.createDescriptorSetLayout(bindings, {});
-      pipelineLayout = pipelines.createPipelineLayout({materials, lights, local, setLayout}, {});
+      pipelineLayout = pipelines.createPipelineLayout({materials, lights, local, setLayout},
+          {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(GuideReplay)}});
       const auto shaders = root / "spv_shaders";
       guided = pipelines.createComputePipeline(shaders / "reference_guided_pathtrace.comp.spv", pipelineLayout,
           "reference_guided_pathtrace");
@@ -284,13 +302,18 @@ struct ReferencePathTracePass::Impl {
     }
 #endif
 
-    [[nodiscard]] uint64_t allocatedBytes() const {
+    [[nodiscard]] uint64_t guideImageBytes() const {
       uint64_t bytes{};
       for (const auto* image : {&albedo, &normal, &filtered}) {
         VmaAllocationInfo info{};
         vmaGetAllocationInfo(memory.allocator(), image->allocation, &info);
         bytes += info.size;
       }
+      return bytes;
+    }
+
+    [[nodiscard]] uint64_t allocatedBytes() const {
+      uint64_t bytes = guideImageBytes();
 #if CONTAINER_HAS_VK_OIDN
       if (network) bytes += network->getMemoryUsage();
 #endif
@@ -334,9 +357,11 @@ struct ReferencePathTracePass::Impl {
   ReferenceOidnSettings oidnSettings{};
   std::string oidnMessage{"off"};
   std::string dlssMessage{"off"};
+  uint64_t imageBudget{};
+  float handoffWeight{};
 #if CONTAINER_HAS_DLSS_RR
   std::unique_ptr<ReferenceDlssPass> dlss;
-  uint64_t dlssBudget{};
+  bool dlssYielded{};
 #endif
 #if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
   std::unique_ptr<Denoiser> denoiser;
@@ -360,6 +385,7 @@ struct ReferencePathTracePass::Impl {
   void clear() {
 #if CONTAINER_HAS_DLSS_RR
     dlss.reset();
+    dlssYielded = false;
 #endif
 #if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
     denoiser.reset();
@@ -372,6 +398,10 @@ struct ReferencePathTracePass::Impl {
     }
     frames.clear();mean.reset();moment.reset();display.reset();submittedContent.reset();
     initialized=false;historyValid=false;samples=0;lastSubmittedSamples=0;pendingImage=UINT32_MAX;
+    oidnSettings = {};
+    oidnMessage = "off";
+    dlssMessage = "off";
+    handoffWeight = 0.0f;
     autofocusImage.reset();
   }
   void write(const gpu::AllocatedBuffer& buffer,const void* data,size_t bytes) {
@@ -383,6 +413,79 @@ struct ReferencePathTracePass::Impl {
     VkDescriptorBufferInfo info{buffer,0,bytes};VkWriteDescriptorSet w{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
     w.dstSet=set;w.dstBinding=binding;w.descriptorCount=1;w.descriptorType=type;w.pBufferInfo=&info;
     vkUpdateDescriptorSets(device->device(),1,&w,0,nullptr);
+  }
+
+  void configureSpatialDenoiser(const std::filesystem::path& root, uint64_t budget) {
+    oidnMessage = "off";
+    const auto& settings = oidnSettings;
+    if (!settings.optix && settings.quality == ReferenceOidnQuality::Off) return;
+#if !CONTAINER_HAS_REFERENCE_OPTIX
+    if (settings.optix) {
+      oidnMessage = "OptiX 9.1.0 SDK was not enabled at build time";
+      return;
+    }
+#endif
+#if !CONTAINER_HAS_VK_OIDN
+    if (!settings.optix) {
+      oidnMessage = "vk_oidn 0.2.0 SDK was not enabled at build time";
+      return;
+    }
+#endif
+#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
+    if (!settings.optix && !device->referenceOidnEnabled()) {
+      oidnMessage = "vk_oidn storage-image features unavailable on this device";
+      return;
+    }
+    VkFormatProperties format{};
+    vkGetPhysicalDeviceFormatProperties(device->physicalDevice(), VK_FORMAT_R32G32B32A32_SFLOAT, &format);
+    const auto& limits = properties.limits;
+    const uint64_t pixels = uint64_t{extent.width} * extent.height;
+    if (limits.maxBoundDescriptorSets < 4 || limits.maxPerStageDescriptorStorageImages < 6 ||
+        limits.maxDescriptorSetStorageImages < 6 || pixels > budget / (settings.optix ? 224u : 96u) ||
+        (format.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) == 0) {
+      oidnMessage = "Denoiser guide images exceed device limits or the reference image budget";
+      return;
+    }
+    try {
+      auto backend = std::make_unique<Denoiser>(device, memory, pipelines, extent);
+      backend->initialize(root, materialLayout, lightLayout, localLayout);
+#if CONTAINER_HAS_REFERENCE_OPTIX
+      if (settings.optix) backend->initializeOptix(extent, budget);
+#endif
+#if CONTAINER_HAS_VK_OIDN
+      if (!settings.optix) {
+        if (!referenceOptixImageBudgetFits(backend->guideImageBytes(), pixels * 16, budget))
+          throw std::runtime_error("Guide allocation exceeds the reference image budget");
+        backend->initializeOidn(static_cast<uint32_t>(frames.size()));
+      }
+#endif
+      denoiser = std::move(backend);
+      oidnMessage = "ready";
+    } catch (const std::exception& error) {
+      oidnMessage = std::string(settings.optix ? "OptiX setup failed: " : "vk_oidn setup failed: ") + error.what();
+    }
+#else
+    (void)root;
+    (void)budget;
+#endif
+  }
+
+  void configureDlss(const std::filesystem::path& root, uint64_t budget) {
+    dlssMessage = "off";
+    const auto mode = oidnSettings.dlss;
+    if (mode == UpscaleMode::Native) return;
+#if CONTAINER_HAS_DLSS_RR
+    try {
+      dlss = std::make_unique<ReferenceDlssPass>(device, memory, pipelines, root, mode, extent,
+          static_cast<uint32_t>(frames.size()), materialLayout, lightLayout, localLayout, budget);
+    } catch (const std::exception& error) {
+      dlssMessage = error.what();
+    }
+#else
+    (void)root;
+    (void)budget;
+    dlssMessage = "DLSS Ray Reconstruction SDK was not enabled at build time";
+#endif
   }
 };
 ReferencePathTracePass::ReferencePathTracePass(std::shared_ptr<gpu::VulkanDevice> device,gpu::VulkanMemoryManager& memory,gpu::PipelineManager& pipelines)
@@ -422,13 +525,10 @@ void ReferencePathTracePass::createResources(const std::filesystem::path& root,u
     }
     s.materialLayout=materials;s.lightLayout=lights;
   }
-  s.clear();s.extent=extent;
+  s.clear();s.extent=extent;s.imageBudget=budget;
   try {
     s.mean=std::make_unique<Impl::Image>(s.device,s.memory,extent);
     s.moment=std::make_unique<Impl::Image>(s.device,s.memory,extent);
-#if CONTAINER_HAS_DLSS_RR
-    s.dlssBudget = budget - uint64_t(extent.width) * extent.height * 48;
-#endif
     s.display=std::make_unique<Impl::Image>(s.device,s.memory,extent);
     s.pool=s.pipelines.createDescriptorPool({{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,count},{VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,count},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,6*count},{VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,3*count},
@@ -446,48 +546,7 @@ void ReferencePathTracePass::createResources(const std::filesystem::path& root,u
           VMA_ALLOCATION_CREATE_MAPPED_BIT|VMA_ALLOCATION_CREATE_HOST_ACCESS_RANDOM_BIT);
     }
   } catch(...) {s.clear();throw;}
-  s.oidnSettings = oidn;
-  s.oidnMessage = "off";
-  setDlssQuality(root, oidn.dlss);
-  if (oidn.dlss != UpscaleMode::Native) return;
-  if (!oidn.optix && oidn.quality == ReferenceOidnQuality::Off) return;
-#if !CONTAINER_HAS_REFERENCE_OPTIX
-  if (oidn.optix) {
-    s.oidnMessage = "OptiX 9.1.0 SDK was not enabled at build time";
-    return;
-  }
-#endif
-#if !CONTAINER_HAS_VK_OIDN
-  if (!oidn.optix) {
-    s.oidnMessage = "vk_oidn 0.2.0 SDK was not enabled at build time";
-    return;
-  }
-#endif
-#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
-  if (!oidn.optix && !s.device->referenceOidnEnabled()) {
-    s.oidnMessage = "vk_oidn storage-image features unavailable on this device";
-  } else if (limits.maxBoundDescriptorSets < 4 || limits.maxPerStageDescriptorStorageImages < 6 ||
-             limits.maxDescriptorSetStorageImages < 6 ||
-             uint64_t(extent.width) * extent.height > budget / (oidn.optix ? 224u : 96u) ||
-             (format.optimalTilingFeatures & VK_FORMAT_FEATURE_TRANSFER_DST_BIT) == 0) {
-    s.oidnMessage = "Denoiser guide images exceed device limits or the reference image budget";
-  } else {
-    try {
-      auto backend = std::make_unique<Impl::Denoiser>(s.device, s.memory, s.pipelines, extent);
-      backend->initialize(root, materials, lights, s.localLayout);
-#if CONTAINER_HAS_REFERENCE_OPTIX
-      if (oidn.optix) backend->initializeOptix(extent, budget);
-#endif
-#if CONTAINER_HAS_VK_OIDN
-      if (!oidn.optix) backend->initializeOidn(count);
-#endif
-      s.denoiser = std::move(backend);
-      s.oidnMessage = "ready";
-    } catch (const std::exception& error) {
-      s.oidnMessage = std::string(oidn.optix ? "OptiX setup failed: " : "vk_oidn setup failed: ") + error.what();
-    }
-  }
-#endif
+  setDenoising(root, oidn);
 }
 void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTraceInput& input,
     std::span<const gpu::GpuMaterial> materialData, std::span<const RayInstanceData> instanceData) {
@@ -558,21 +617,24 @@ void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTra
   }
   f.boundPipeline=input.emptyScene?static_cast<VkPipeline>(s.emptyPipeline):static_cast<VkPipeline>(s.pipeline);
   f.boundContent=input.emptyScene?s.emptyPipeline.contentIdentity():s.pipeline.contentIdentity();
-#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
-  if (s.denoiser) {
-    const auto& guided = input.emptyScene ? s.denoiser->emptyGuided : s.denoiser->guided;
-    f.boundPipeline = static_cast<VkPipeline>(guided);
-    f.boundContent = guided.contentIdentity();
-  }
-#endif
   f.reset=!s.historyValid || settings.sampleLimit<s.samples || std::memcmp(&f.key,&s.submittedKey,sizeof(f.key))!=0 ||
       sceneKey(source)!=sceneKey(s.submittedScene) || input.contentRevision!=s.submittedRevision ||
       input.environment!=s.submittedEnvironment || input.environmentSampler!=s.submittedSampler ||
       f.boundPipeline!=s.submittedPipeline || f.boundContent!=s.submittedContent;
+#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
+  if (const auto* denoiser = s.denoiser.get()) {
+    const auto& guided = input.emptyScene ? denoiser->emptyGuided : denoiser->guided;
+    f.guideContent = guided.contentIdentity();
+    f.guideReset = f.reset || f.guideContent != denoiser->guideContent;
+  } else {
+    f.guideContent.reset();
+    f.guideReset = false;
+  }
+#endif
 #if CONTAINER_HAS_REFERENCE_OPTIX
   // The serialized graphics frame policy retires the producing command before
   // prepareFrame. Match the same camera/scene epoch before accessing its guides.
-  if (auto* denoiser = s.denoiser.get(); denoiser && denoiser->optix && !f.reset &&
+  if (auto* denoiser = s.denoiser.get(); denoiser && denoiser->optix && !f.guideReset &&
       !matte && !standardError && (input.data.limits.w & 8u) == 0) {
     try {
       denoiser->runOptix(f.key.inverseView);
@@ -637,46 +699,65 @@ void ReferencePathTracePass::record(VkCommandBuffer cmd,uint32_t image) {
       b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.image=images[i];b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
     }
     VkDependencyInfo d{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};d.imageMemoryBarrierCount=3;d.pImageMemoryBarriers=barriers.data();vkCmdPipelineBarrier2(cmd,&d);
-#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
-    if (s.denoiser) s.denoiser->initializeImages(cmd);
-#endif
   }
+#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
+  auto* denoiser = s.denoiser.get();
+  if (denoiser && !denoiser->initialized) denoiser->initializeImages(cmd);
+#endif
   barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_READ_BIT|VK_ACCESS_2_SHADER_WRITE_BIT|VK_ACCESS_2_UNIFORM_READ_BIT);
-  VkPipelineLayout layout = s.layout;
-  uint32_t setCount = 3;
   std::array sets{f.input.materials, f.input.lights, f.set, VkDescriptorSet{}};
+  const auto dispatch = [&](VkPipeline pipeline, VkPipelineLayout layout, uint32_t setCount) {
+    vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, setCount, sets.data(), 0, nullptr);
+    vkCmdDispatch(cmd, (s.extent.width + 7) / 8, (s.extent.height + 7) / 8, 1);
+  };
+  f.handoffWeight = 0.0f;
+  float targetWeight = 0.0f;
 #if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
-  if (s.denoiser) {
-    layout = s.denoiser->pipelineLayout;
-    sets[setCount++] = s.denoiser->set;
+  const uint32_t firstSample = f.data.extentSamples.z;
+  const uint32_t samples = firstSample + f.data.extentSamples.w;
+  const uint32_t handoffTarget = std::min(s.oidnSettings.handoffSamples, f.input.settings.sampleLimit);
+  f.guideSamples = denoiser && !f.guideReset ? denoiser->guideSamples : 0;
+  const bool canGuide = denoiser && !denoiser->failed &&
+      f.input.settings.ground.mode != ReferenceGroundMode::ShadowMatte && (f.input.data.limits.w & 8u) == 0;
+  const auto dispatchGuided = [&](GuideReplay replay) {
+    const auto& pipeline = f.input.emptyScene ? denoiser->emptyGuided : denoiser->guided;
+    sets[3] = denoiser->set;
+    vkCmdPushConstants(cmd, denoiser->pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(replay), replay.data());
+    dispatch(static_cast<VkPipeline>(pipeline), denoiser->pipelineLayout, 4);
+  };
+  if (canGuide && f.guideSamples == firstSample) {
+    dispatchGuided({});
+    f.guideSamples = samples;
+  } else {
+    dispatch(f.boundPipeline, s.layout, 3);
+    if (canGuide) {
+      // Replay missed guide addresses without changing any core sample or diagnostic.
+      const auto work = std::min({samples - f.guideSamples,
+          2u * f.input.settings.samplesPerFrame, kMaxGuideReplaySamples});
+      barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_READ_BIT|VK_ACCESS_2_SHADER_WRITE_BIT);
+      dispatchGuided({f.guideSamples, work});
+      f.guideSamples += work;
+    }
   }
-#endif
-  vkCmdBindPipeline(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,f.boundPipeline);
-  vkCmdBindDescriptorSets(cmd,VK_PIPELINE_BIND_POINT_COMPUTE,layout,0,setCount,sets.data(),0,nullptr);
-  vkCmdDispatch(cmd,(s.extent.width+7)/8,(s.extent.height+7)/8,1);
-#if CONTAINER_HAS_DLSS_RR
-  if (s.dlss) {
-    if (f.data.controls.z == 0.0f) s.dlss->record(cmd, image, f.input, f.data, f.set);
-    else s.dlss->invalidateHistory();
-  }
+#else
+  dispatch(f.boundPipeline, s.layout, 3);
 #endif
 #if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
-  if (auto* denoiser = s.denoiser.get()) {
+  if (denoiser) {
     f.denoiseRecorded = false;
-    const uint32_t samples = f.data.extentSamples.z + f.data.extentSamples.w;
-    const bool eligible = f.data.controls.z == 0.0f &&
-        f.input.settings.ground.mode != ReferenceGroundMode::ShadowMatte &&
-        (f.input.data.limits.w & 8u) == 0 && !denoiser->failed;
-    f.denoisedSamples = f.reset || !eligible ? 0u : denoiser->filteredSamples;
+    const bool eligible = canGuide && f.data.controls.z == 0.0f && f.guideSamples == samples;
+    f.denoisedSamples = f.guideReset || !eligible ? 0u : denoiser->filteredSamples;
     const auto interval = std::clamp(s.oidnSettings.sampleInterval, 1u, ReferenceOidnSettings::maxSampleInterval);
     const auto due = [&](uint32_t previous) {
       return eligible && samples > previous &&
-          (samples - previous >= interval || samples == f.input.settings.sampleLimit);
+          (samples - previous >= interval || samples == f.input.settings.sampleLimit ||
+              (previous < handoffTarget && samples >= handoffTarget));
     };
 #if CONTAINER_HAS_REFERENCE_OPTIX
     f.optixCapturedSamples = 0;
     if (s.oidnSettings.optix) {
-      const bool publish = eligible && !f.reset && denoiser->readySamples > f.denoisedSamples;
+      const bool publish = eligible && !f.guideReset && denoiser->readySamples > f.denoisedSamples;
       if (publish) f.denoisedSamples = denoiser->readySamples;
       if (due(f.denoisedSamples)) f.optixCapturedSamples = samples;
       denoiser->recordOptixCopies(cmd, s.extent, s.mean->image, f.optixCapturedSamples != 0, publish);
@@ -691,11 +772,12 @@ void ReferencePathTracePass::record(VkCommandBuffer cmd,uint32_t image) {
         const auto quality = s.oidnSettings.quality == ReferenceOidnQuality::Fast ? vkoidn::Quality::eFast :
             s.oidnSettings.quality == ReferenceOidnQuality::Balanced ? vkoidn::Quality::eBalanced : vkoidn::Quality::eHigh;
         const vkoidn::DenoiserCreateInfo info{.width = s.extent.width, .height = s.extent.height,
-            .albedo = true, .normal = true, .quality = quality, .maxMemoryMB = 256};
+            .albedo = true, .normal = true, .quality = quality, .maxMemoryMB = kOidnIntermediateMemoryMiB};
         const auto result = vkoidn::Denoiser::create(*oidn->context, cmd, info, oidn->network);
         if (result != vkoidn::Result::eSuccess) {
           s.oidnMessage = std::string("vk_oidn network creation failed: ") + vkoidn::getResultString(result);
           oidn->failed = true;
+          f.denoisedSamples = 0;
         }
       }
       if (!oidn->failed) {
@@ -720,13 +802,29 @@ void ReferencePathTracePass::record(VkCommandBuffer cmd,uint32_t image) {
       }
     }
 #endif
-    if (f.denoisedSamples) {
-      barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
-      vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, denoiser->compose);
-      vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, setCount, sets.data(), 0, nullptr);
-      vkCmdDispatch(cmd, (s.extent.width + 7) / 8, (s.extent.height + 7) / 8, 1);
+    if (f.denoisedSamples && handoffTarget) {
+      targetWeight = static_cast<float>(std::min(f.denoisedSamples, handoffTarget)) / static_cast<float>(handoffTarget);
     }
   }
+#endif
+  bool freshDlss = false;
+#if CONTAINER_HAS_DLSS_RR
+  f.dlssEvaluated = s.dlss && f.data.controls.z == 0.0f && targetWeight < 1.0f;
+  f.dlssYielded = s.dlss && targetWeight == 1.0f && (s.dlssYielded || s.dlss->status().active);
+  if (f.dlssEvaluated) freshDlss = s.dlss->record(cmd, image, f.input, f.data, f.set);
+#endif
+#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
+  if (denoiser && f.denoisedSamples) {
+    const float weight = freshDlss ? targetWeight : 1.0f;
+    if (s.oidnSettings.handoffSamples) f.handoffWeight = weight;
+    barrier(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
+    sets[3] = denoiser->set;
+    vkCmdPushConstants(cmd, denoiser->pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(weight), &weight);
+    dispatch(static_cast<VkPipeline>(denoiser->compose), denoiser->pipelineLayout, 4);
+  }
+#else
+  (void)freshDlss;
+  (void)targetWeight;
 #endif
   barrier(cmd,VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT|VK_PIPELINE_STAGE_2_HOST_BIT,
       VK_ACCESS_2_MEMORY_READ_BIT|VK_ACCESS_2_MEMORY_WRITE_BIT|VK_ACCESS_2_HOST_READ_BIT);
@@ -746,10 +844,18 @@ void ReferencePathTracePass::commitFrame(uint32_t image) noexcept {
   f.epoch=s.resets;f.submission=++s.submissionSerial;
   if (f.input.autofocusKey) s.autofocusImage = image;
 #if CONTAINER_HAS_DLSS_RR
-  if (s.dlss && f.data.controls.z == 0.0f) s.dlss->commit(image);
+  s.dlssYielded = f.dlssYielded;
+  if (s.dlss) {
+    if (f.dlssEvaluated) s.dlss->commit(image);
+    else s.dlss->invalidateHistory();
+  }
 #endif
+  s.handoffWeight = f.handoffWeight;
 #if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
   if (auto* denoiser = s.denoiser.get()) {
+    denoiser->initialized = true;
+    denoiser->guideSamples = f.guideSamples;
+    denoiser->guideContent = std::move(f.guideContent);
     denoiser->filteredSamples = f.denoisedSamples;
 #if CONTAINER_HAS_VK_OIDN
     denoiser->weightsSubmitted = denoiser->network != nullptr;
@@ -757,7 +863,7 @@ void ReferencePathTracePass::commitFrame(uint32_t image) noexcept {
 #endif
 #if CONTAINER_HAS_REFERENCE_OPTIX
     if (denoiser->optix) {
-      if (f.reset || f.data.controls.z != 0.0f) denoiser->readySamples = 0;
+      if (f.guideReset || f.data.controls.z != 0.0f) denoiser->readySamples = 0;
       denoiser->stagedSamples = f.optixCapturedSamples;
     }
 #endif
@@ -766,7 +872,9 @@ void ReferencePathTracePass::commitFrame(uint32_t image) noexcept {
 }
 void ReferencePathTracePass::invalidateHistory() noexcept {
   impl_->historyValid=false;impl_->pendingImage=UINT32_MAX;
+  impl_->handoffWeight = 0.0f;
 #if CONTAINER_HAS_DLSS_RR
+  impl_->dlssYielded = false;
   if (impl_->dlss) impl_->dlss->invalidateHistory();
 #endif
 }
@@ -803,6 +911,7 @@ ReferenceOidnStatus ReferencePathTracePass::oidnStatus() const {
 #if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
   if (const auto* denoiser = s.denoiser.get()) {
     status.displayedSamples = s.historyValid ? denoiser->filteredSamples : 0;
+    status.guideSamples = s.historyValid ? denoiser->guideSamples : 0;
     status.lastGpuMs = denoiser->lastGpuMs;
     status.allocatedBytes = denoiser->allocatedBytes();
   }
@@ -825,29 +934,95 @@ UpscaleMode ReferencePathTracePass::dlssQuality() const {
 ReferenceDlssStatus ReferencePathTracePass::dlssStatus() const {
   const auto& s = *impl_;
 #if CONTAINER_HAS_DLSS_RR
-  if (s.dlss) return s.dlss->status();
+  if (s.dlss) {
+    auto status = s.dlss->status();
+    if (s.dlssYielded) status.message = "handoff complete";
+    return status;
+  }
 #endif
   return {.message = s.dlssMessage, .outputExtent = s.extent};
 }
 
-void ReferencePathTracePass::setDlssQuality(const std::filesystem::path& root, UpscaleMode mode) {
+uint32_t ReferencePathTracePass::denoiserHandoffSamples() const noexcept {
+  return impl_->oidnSettings.handoffSamples;
+}
+
+float ReferencePathTracePass::denoiserHandoffWeight() const noexcept {
+  return impl_->handoffWeight;
+}
+
+void ReferencePathTracePass::setDenoising(const std::filesystem::path& root, ReferenceOidnSettings settings) {
   auto& s = *impl_;
-  s.oidnSettings.dlss = mode;
-  s.dlssMessage = "off";
-#if CONTAINER_HAS_DLSS_RR
-  s.dlss.reset();
-  if (mode == UpscaleMode::Native) return;
-  try {
-    s.dlss = std::make_unique<ReferenceDlssPass>(s.device, s.memory, s.pipelines, root, mode, s.extent,
-        static_cast<uint32_t>(s.frames.size()), s.materialLayout, s.lightLayout, s.localLayout, s.dlssBudget);
-  } catch (const std::exception& error) {
-    s.dlssMessage = error.what();
+  if (!s.mean) fail("reference images are not allocated");
+  if (settings.handoffSamples > ReferenceOidnSettings::maxHandoffSamples) fail("invalid denoiser handoff sample count");
+  if (settings.optix) settings.quality = ReferenceOidnQuality::Off;
+  if (settings.dlss == UpscaleMode::Native || (!settings.optix && settings.quality == ReferenceOidnQuality::Off))
+    settings.handoffSamples = 0;
+  if (settings.dlss != UpscaleMode::Native && settings.handoffSamples == 0) {
+    settings.optix = false;
+    settings.quality = ReferenceOidnQuality::Off;
   }
-#else
-  (void)root;
-  if (mode != UpscaleMode::Native)
-    s.dlssMessage = "DLSS Ray Reconstruction SDK was not enabled at build time";
+  const auto previous = s.oidnSettings;
+  s.oidnSettings = settings;
+  const bool spatialChanged = previous.optix != settings.optix || previous.quality != settings.quality;
+  const bool dlssChanged = previous.dlss != settings.dlss;
+  const bool jointChanged = (previous.handoffSamples != 0) != (settings.handoffSamples != 0);
+  if (!spatialChanged && !dlssChanged && !jointChanged) return;
+#if CONTAINER_HAS_DLSS_RR
+  if (dlssChanged) {
+    s.dlss.reset();
+    s.dlssYielded = false;
+  }
 #endif
+#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
+  if (spatialChanged) {
+    for (auto& frame : s.frames) frame.denoiseTimingPending = false;
+#if CONTAINER_HAS_VK_OIDN
+    if (s.denoiser && !previous.optix && !settings.optix && settings.quality != ReferenceOidnQuality::Off) {
+      // A different network quality uses the same aligned albedo/normal history.
+      auto& denoiser = *s.denoiser;
+      denoiser.network.reset();
+      denoiser.weightsSubmitted = false;
+      denoiser.filteredSamples = 0;
+      denoiser.lastGpuMs.reset();
+      denoiser.lastTimedSubmission = 0;
+      denoiser.failed = false;
+      s.oidnMessage = "ready";
+    } else
+#endif
+      s.denoiser.reset();
+  }
+#endif
+
+  uint64_t spatialBudget = s.imageBudget;
+#if CONTAINER_HAS_DLSS_RR
+  if (s.dlss) {
+    spatialBudget -= std::min(spatialBudget, s.dlss->status().allocatedBytes);
+#if CONTAINER_HAS_VK_OIDN
+    if (!settings.optix) spatialBudget -= std::min(spatialBudget, kOidnJointAdmissionBytes);
+#endif
+  }
+#endif
+#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
+  if (!s.denoiser)
+#endif
+    s.configureSpatialDenoiser(root, spatialBudget);
+
+  uint64_t dlssBudget = s.imageBudget - uint64_t{s.extent.width} * s.extent.height * 48;
+#if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
+  if (s.denoiser) {
+    auto spatialBytes = s.denoiser->allocatedBytes();
+#if CONTAINER_HAS_VK_OIDN
+    if (!settings.optix)
+      spatialBytes = std::max(spatialBytes, s.denoiser->guideImageBytes() + kOidnJointAdmissionBytes);
+#endif
+    dlssBudget -= std::min(dlssBudget, spatialBytes);
+  }
+#endif
+#if CONTAINER_HAS_DLSS_RR
+  if (!s.dlss)
+#endif
+    s.configureDlss(root, dlssBudget);
 }
 
 void ReferencePathTracePass::setOidnSampleInterval(uint32_t interval) {
