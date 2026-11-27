@@ -9,6 +9,9 @@ on:
 permissions:
   contents: read
 
+env:
+  VULKAN_SDK_VERSION: '1.4.363.1'
+
 jobs:
   windows-robotics:
     name: Windows CPU physics and replay
@@ -24,13 +27,13 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
         with:
           path: ${{ runner.temp }}/robotics-vcpkg-cache
-          key: windows-2025-vs2026-x64-robotics-vcpkg-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/vcpkg-overlay-ports/**') }}
+          key: windows-2025-vs2026-x64-robotics-vcpkg-${{ env.VULKAN_SDK_VERSION }}-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/vcpkg-overlay-ports/**') }}
 
       - name: Provision Vulkan SDK for CMake configure
         shell: pwsh
         run: |
           # The shared configure finds Vulkan and slangc even for these CPU-only targets.
-          $sdkVersion = '1.4.363.1'
+          $sdkVersion = $env:VULKAN_SDK_VERSION
           $sdkSha256 = 'C02932BD9A968B22D404536108ADAACAC908C081CD6B0113F5BFEFC523DD0A6A'
           $installerName = "vulkansdk-windows-X64-$sdkVersion.exe"
           $installer = Join-Path $env:RUNNER_TEMP $installerName
@@ -62,6 +65,7 @@ jobs:
         shell: pwsh
         env:
           VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/robotics-vcpkg-cache,readwrite"
+          VCPKG_KEEP_ENV_VARS: VULKAN_SDK
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
