@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 #include <glm/geometric.hpp>
+#include <glm/gtc/constants.hpp>
 
 #include <algorithm>
 #include <array>
@@ -13,6 +14,7 @@
 #include <deque>
 #include <filesystem>
 #include <stdexcept>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -282,6 +284,151 @@ TEST(DifferentialDrive, ClosingAnOccupiedDoorRollsBackTheColliderChange) {
   EXPECT_NO_THROW(world.setDoorOpen(fixture.doorId, false));
   EXPECT_FALSE(world.isDoorOpen(fixture.doorId));
   EXPECT_EQ(world.activeColliderCount(), openColliderCount + 1);
+}
+
+FleetRobotSpawn fleetRobot(std::string id, DrivePose pose, uint32_t rate = ticksPerSecond) {
+  return {.spawn = pose, .options = {.ticksPerSecond = rate, .robotId = std::move(id)}};
+}
+
+TEST(DifferentialDriveFleet, SweptCrossingStopsBothRobotsEvenWhenEndpointsAreClear) {
+  const auto fixture = doorwayFixture();
+  const auto a = fleetRobot("a", {{-2.4, -1.0, floorElevation}, 0}, 1);
+  const auto b = fleetRobot("b", {{-1.7, -1.7, floorElevation}, glm::half_pi<double>()}, 1);
+  const auto run = [&](std::vector<FleetRobotSpawn> spawns) {
+    BimCollisionWorld world(fixture.collision, {}, 1, 2);
+    DifferentialDriveFleetSimulation fleet(world, std::move(spawns));
+    fleet.queueCommand("a", 0, {.linear = 1.4});
+    fleet.queueCommand("b", 0, {.linear = 1.4});
+    fleet.step();
+    EXPECT_EQ(fleet.clock().tick(), 1u);
+    for (const auto& [spawn, blocker] : {std::pair{&a, "b"}, std::pair{&b, "a"}}) {
+      const auto& state = fleet.state(spawn->options.robotId);
+      EXPECT_EQ(state.tick, 1u);
+      expectPoseNear(state.base, spawn->spawn, 1e-5);
+      EXPECT_EQ(state.obstruction, BimWalkabilityFailure::Blocked);
+      EXPECT_EQ(state.blockingEntityId, blocker);
+      expectWheelsNear(state.encoderAngles, {}, 1e-12);
+      EXPECT_TRUE(state.commanded.has_value());
+      if (state.commanded)
+        EXPECT_NEAR(glm::length(state.commanded->position - state.base.position), 1.4, 1e-5);
+    }
+    return std::pair{fleet.history("a"), fleet.history("b")};
+  };
+  const auto forward = run({a, b});
+  const auto reversed = run({b, a});
+  expectSameHistory(forward.first, reversed.first);
+  expectSameHistory(forward.second, reversed.second);
+}
+
+TEST(DifferentialDriveFleet, RechecksRoutesAfterStoppingAFollowingPeer) {
+  const auto fixture = doorwayFixture();
+  BimCollisionWorld world(fixture.collision, {}, 1, 3);
+  DifferentialDriveFleetSimulation fleet(world, {
+      fleetRobot("a", {{-2.0, -1, floorElevation}, 0}, 1),
+      fleetRobot("b", {{-1.35, -1, floorElevation}, 0}, 1),
+      fleetRobot("c", {{-.70, -1, floorElevation}, 0}, 1),
+  });
+  const auto parked = fleet.state("c").base.position;
+  fleet.queueCommand("a", 0, {.linear = .6});
+  fleet.queueCommand("b", 0, {.linear = .6});
+  fleet.step();
+  EXPECT_EQ(fleet.state("a").blockingEntityId, "b");
+  EXPECT_EQ(fleet.state("b").blockingEntityId, "c");
+  EXPECT_EQ(fleet.state("c").obstruction, BimWalkabilityFailure::None);
+  EXPECT_DOUBLE_EQ(fleet.state("a").base.position.x, -2.0);
+  EXPECT_DOUBLE_EQ(fleet.state("b").base.position.x, -1.35);
+  EXPECT_EQ(fleet.state("c").base.position, parked);
+}
+
+TEST(DifferentialDriveFleet, StackedFloorsShareXYPositionsAndResetDeterministically) {
+  const auto fixture = doorwayFixture();
+  BimCollisionWorld world(fixture.collision, {}, 1, 2);
+  DifferentialDriveFleetSimulation fleet(world, {
+      fleetRobot("upper", {{-2, -1, 3.7}, 0}),
+      fleetRobot("lower", {{-2, -1, floorElevation}, 0}),
+  });
+  fleet.queueCommand("lower", 0, {.linear = .6});
+  fleet.queueCommand("upper", 0, {.linear = .6});
+  for (uint32_t tick = 0; tick < 30; ++tick)
+    fleet.step();
+  for (const auto id : {"lower", "upper"}) {
+    const auto& state = fleet.state(id);
+    EXPECT_EQ(state.obstruction, BimWalkabilityFailure::None);
+    EXPECT_NEAR(state.base.position.x, -1.7, 1e-5);
+    const auto body = world.robotPose(id);
+    ASSERT_TRUE(body);
+    EXPECT_NEAR(body->position.x, state.base.position.x, 1e-5);
+    EXPECT_NEAR(body->position.y, state.base.position.y, 1e-5);
+  }
+  EXPECT_NEAR(fleet.state("lower").base.position.z, floorElevation, 1e-5);
+  EXPECT_NEAR(fleet.state("upper").base.position.z, 3.7, 1e-5);
+  const auto lower = fleet.history("lower"), upper = fleet.history("upper");
+  fleet.reset();
+  EXPECT_EQ(world.robotCount(), 2u);
+  EXPECT_TRUE(fleet.clock().paused());
+  fleet.setPaused(false);
+  EXPECT_EQ(fleet.advance(500ms), 30u);
+  expectSameHistory(lower, fleet.history("lower"));
+  expectSameHistory(upper, fleet.history("upper"));
+}
+
+TEST(DifferentialDriveFleet, SharesOnePhysicsStepPerCommittedTick) {
+  auto fixture = doorwayFixture();
+  const auto prop = std::ranges::find(fixture.collision.colliders, BimColliderKind::DynamicBox, &BimCollider::kind);
+  ASSERT_NE(prop, fixture.collision.colliders.end());
+  prop->originMeters.z = 6.0;
+  const auto rayOrigin = prop->originMeters + glm::dvec3(0, 0, 2);
+  const auto probe = [&](const BimCollisionWorld& world) {
+    const auto hit = world.walkabilityQueries().castSegment(rayOrigin, {0, 0, -3});
+    EXPECT_TRUE(hit);
+    return hit ? hit->position.z : 0.0;
+  };
+  BimCollisionWorld singleWorld(fixture.collision, {}, 1);
+  BimCollisionWorld fleetWorld(fixture.collision, {}, 1, 2);
+  const auto a = fleetRobot("a", {{-2, -.8, floorElevation}, 0});
+  const auto b = fleetRobot("b", {{-1, .8, floorElevation}, 0});
+  DifferentialDriveSimulation single(singleWorld, a.spawn, a.options);
+  DifferentialDriveFleetSimulation fleet(fleetWorld, {a, b});
+  const auto start = probe(singleWorld);
+  EXPECT_NEAR(start, probe(fleetWorld), 1e-5);
+  single.step();
+  fleet.step();
+  const auto next = probe(singleWorld);
+  EXPECT_LT(next, start - .001);
+  EXPECT_NEAR(next, probe(fleetWorld), 1e-5);
+  EXPECT_EQ(fleet.state("a").tick, 1u);
+  EXPECT_EQ(fleet.state("b").tick, 1u);
+}
+
+TEST(DifferentialDriveFleet, CleansUpPartialAttachmentsAndResolvesPeersAndDoorOccupancy) {
+  const auto fixture = doorwayFixture();
+  const std::array open{fixture.doorId};
+  BimCollisionWorld world(fixture.collision, open, 1, 2);
+  const auto a = fleetRobot("a", {{-1.5, 0, floorElevation}, 0});
+  const auto b = fleetRobot("b", {{0, 0, floorElevation}, 0});
+  const auto overlap = fleetRobot("b", a.spawn);
+  EXPECT_THROW(DifferentialDriveFleetSimulation(world, {a, overlap}), std::invalid_argument);
+  auto invalid = b;
+  invalid.options.robotId = fixture.wallId;
+  EXPECT_THROW(DifferentialDriveFleetSimulation(world, {a, invalid}), std::invalid_argument);
+  EXPECT_EQ(world.robotCount(), 0u);
+  {
+    DifferentialDriveFleetSimulation fleet(world, {b, a});
+    EXPECT_EQ(world.robotCount(), 2u);
+    EXPECT_THROW(DifferentialDriveSimulation(world, a.spawn, a.options), std::invalid_argument);
+    EXPECT_THROW((void)fleet.state("missing"), std::invalid_argument);
+    const auto ray = world.walkabilityQueries("a").castSegment({-1.5, 0, 2}, {2, 0, 0});
+    ASSERT_TRUE(ray);
+    EXPECT_EQ(ray->entityId, "b");
+    EXPECT_FALSE(ray->walkableSupport);
+    const auto scan = world.lidarRaycasts("a")({-1.5, 0, 2}, {2, 0, 0});
+    ASSERT_TRUE(scan);
+    EXPECT_EQ(scan->entityId, "b");
+    EXPECT_THROW(world.setDoorOpen(fixture.doorId, false), std::invalid_argument);
+    EXPECT_TRUE(world.isDoorOpen(fixture.doorId));
+  }
+  EXPECT_EQ(world.robotCount(), 0u);
+  EXPECT_NO_THROW(world.setDoorOpen(fixture.doorId, false));
 }
 
 TEST(DifferentialDriveClock, BoundedAdvanceKeepsDebtWhilePausedAndManualStepCanRun) {

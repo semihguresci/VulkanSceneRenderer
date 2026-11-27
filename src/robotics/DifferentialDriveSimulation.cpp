@@ -1,8 +1,10 @@
 #include "Container/robotics/DifferentialDriveSimulation.h"
 
+#include <glm/geometric.hpp>
 #include <glm/gtc/constants.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/quaternion.hpp>
+#include <glm/vec2.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -119,14 +121,34 @@ Motion checkMotion(DrivePose start, double initialNormalZ, DriveWheels travel,
   return motion;
 }
 
-} // namespace
+struct DriveProposal {
+  DriveWheels target;
+  DifferentialDriveRates rates;
+  Motion motion;
+};
 
-struct DifferentialDriveSimulation::Impl {
-  BimCollisionWorld& world;
+struct DriveCommit {
+  DifferentialDriveState state;
+  std::mt19937_64 random;
+  DriveWheels held;
+  DifferentialDriveRates actuation;
+  double groundNormalZ;
+  physics::PhysicsBodyPose pose;
+};
+
+struct DriveCapsule {
+  float halfHeight;
+  float radius;
+  physics::PhysicsBodyPose pose;
+};
+
+// Shared one-drive arithmetic. Proposal and commit preparation are local
+// reads until the owner submits all targets and advances the physics world.
+struct DriveKernel {
   DrivePose authoredSpawn;
   DrivePose groundedSpawn;
   DifferentialDriveSimulationOptions options;
-  SimClock time;
+  physics::PhysicsBodyId body{physics::kInvalidPhysicsBodyId};
   std::map<uint64_t, DriveWheels> commands;
   DriveWheels held;
   DifferentialDriveRates actuation;
@@ -134,27 +156,20 @@ struct DifferentialDriveSimulation::Impl {
   DifferentialDriveState current;
   std::deque<DifferentialDriveState> samples;
   double groundNormalZ{1.0};
-  bool needsReset{};
 
-  Impl(BimCollisionWorld& collision, DrivePose spawn, DifferentialDriveSimulationOptions settings)
-      : world(collision), authoredSpawn(spawn), options(std::move(settings)),
-        time(options.ticksPerSecond, options.maxTicksPerAdvance), random(options.seed) {
+  DriveKernel(DrivePose spawn, DifferentialDriveSimulationOptions settings)
+      : authoredSpawn(spawn), options(std::move(settings)), random(options.seed) {
     validateDifferentialDrive(options.drive);
     validateDriveActuators(options.actuators, options.wheelTravelVariancePerMeter);
     if (!options.maxHistorySamples || !std::isfinite(options.encoderNoiseRadians) ||
         options.encoderNoiseRadians < 0 || options.encoderNoiseRadians > 1 || options.robotId.empty())
       throw std::invalid_argument("Invalid drive history, encoder noise or robot identity");
-    if (world.robotBody_ != physics::kInvalidPhysicsBodyId)
-      throw std::invalid_argument("A differential drive is already attached to this BIM world");
-    if (std::ranges::any_of(world.geometry_.colliders, [&](const auto& row) { return row.entityId == options.robotId; }))
-      throw std::invalid_argument("Robot identity collides with a BIM entity ID");
-    initialize();
   }
 
-  void initialize() {
+  DriveCapsule initialize(const BimWalkabilityQueries& queries) {
     groundedSpawn = integrateWheelTravel(authoredSpawn, options.drive.trackWidth, {});
     const auto support = traceWalkablePath(groundedSpawn.position, groundedSpawn.position,
-                                           world.walkabilityQueries(), options.capsule);
+                                           queries, options.capsule);
     if (!support.reachable)
       throw std::invalid_argument("Robot spawn needs clear capsule space on supported ground");
     groundedSpawn.position = support.reachedFeet;
@@ -170,33 +185,29 @@ struct DifferentialDriveSimulation::Impl {
     const auto halfHeight = shapeLength(options.capsule.height * .5 - options.capsule.radius);
     if (radius == 0)
       throw std::invalid_argument("Robot radius is too small for the physics world");
-    const auto pose = capsulePose(groundedSpawn, options.capsule, groundNormalZ);
-    world.robotEntityId_ = options.robotId;
-    world.robotHalfHeight_ = halfHeight;
-    world.robotRadius_ = radius;
-    world.robotBody_ = world.world_.createCapsule(halfHeight, radius,
-        {.motionType = physics::PhysicsMotionType::Kinematic, .position = pose.position,
-         .rotation = pose.rotation});
+    return {halfHeight, radius, capsulePose(groundedSpawn, options.capsule, groundNormalZ)};
   }
 
-  void queueRates(uint64_t tick, DriveWheels rates) {
-    if (tick < time.tick() || tick == std::numeric_limits<uint64_t>::max())
+  void queueRates(uint64_t currentTick, uint64_t tick, DriveWheels rates) {
+    if (tick < currentTick || tick == std::numeric_limits<uint64_t>::max())
       throw std::invalid_argument("Drive command tick is outside the remaining simulation");
     if (!commands.emplace(tick, rates).second)
       throw std::invalid_argument("A drive command is already scheduled at this tick");
   }
 
-  void execute(uint64_t tick, double seconds) {
-    if (needsReset || !world.world_.contains(world.robotBody_))
-      throw std::runtime_error("Reset the drive simulation before advancing");
+  DriveProposal propose(uint64_t tick, double seconds, const BimWalkabilityQueries& queries) const {
     auto target = held;
     if (const auto at = commands.find(tick); at != commands.end())
       target = at->second;
     const auto& drive = options.drive;
     const auto rates = applyDriveActuators(drive, options.actuators, actuation, target, seconds);
     const auto requested = distanceForRates(rates.ground, seconds, drive.wheelRadius);
-    const auto queries = world.walkabilityQueries(world.robotBody_);
-    auto movement = checkMotion(current.base, groundNormalZ, requested, options, queries);
+    return {target, rates, checkMotion(current.base, groundNormalZ, requested, options, queries)};
+  }
+
+  DriveCommit prepareCommit(uint64_t tick, double seconds, DriveProposal proposal) const {
+    const auto& drive = options.drive;
+    auto& [target, rates, movement] = proposal;
     DifferentialDriveState next = current;
     next.tick = tick + 1;
     next.seconds = double(next.tick) / options.ticksPerSecond;
@@ -240,25 +251,156 @@ struct DifferentialDriveSimulation::Impl {
     }
     // Wheel odometry has planar coordinates and no direct elevation sensor.
     const auto pose = capsulePose(next.base, options.capsule, movement.normalZ);
-    samples.push_back(next);
+    // Contact is an emergency stop. The achieved travel is recorded for
+    // this tick, and the actuator starts the next tick at rest.
+    return {std::move(next), std::move(engine), target,
+            movement.obstruction == BimWalkabilityFailure::None ? rates : DifferentialDriveRates{},
+            movement.normalZ, pose};
+  }
+
+  void commit(DriveCommit prepared) noexcept {
+    if (samples.size() > options.maxHistorySamples)
+      samples.pop_front();
+    random = std::move(prepared.random);
+    held = prepared.held;
+    actuation = prepared.actuation;
+    groundNormalZ = prepared.groundNormalZ;
+    current = std::move(prepared.state);
+  }
+};
+
+struct CapsuleSweep {
+  glm::dvec3 begin;
+  glm::dvec3 end;
+  double radius;
+  double height;
+};
+
+CapsuleSweep sweptCapsule(const DriveKernel& robot, const Motion& motion) {
+  const auto& settings = robot.options.capsule;
+  // Include float dimensions actually passed to Jolt in the conservative
+  // envelope, while retaining the double-precision ground alignment.
+  const double radius = shapeLength(settings.radius);
+  const double height = std::max(settings.height,
+      2.0 * (radius + shapeLength(settings.height * .5 - settings.radius)));
+  const auto margin = up * ((height - settings.height) * .5);
+  return {walkabilityCapsuleBottom(robot.current.base.position, robot.groundNormalZ, settings) - margin,
+          walkabilityCapsuleBottom(motion.pose.position, motion.normalZ, settings) - margin,
+          std::max(radius, settings.radius), height};
+}
+
+// A conservative upright cylinder bounds the capsule at each instant. First
+// intersect the intervals in which their vertical ranges overlap, then find
+// the least horizontal separation *within the same part of the tick*. This
+// catches crossings between endpoints without treating stacked floors as peers.
+bool sweptPeersOverlap(const CapsuleSweep& a, const CapsuleSweep& b) {
+  const auto begin = a.begin - b.begin;
+  const auto delta = (a.end - b.end) - begin;
+  double first = 0.0, last = 1.0;
+  if (delta.z == 0.0) {
+    if (begin.z <= -a.height || begin.z >= b.height)
+      return false;
+  } else {
+    const auto enter = (-a.height - begin.z) / delta.z;
+    const auto leave = (b.height - begin.z) / delta.z;
+    first = std::max(0.0, std::min(enter, leave));
+    last = std::min(1.0, std::max(enter, leave));
+    if (first >= last)
+      return false;
+  }
+  const glm::dvec2 position(begin), velocity(delta);
+  const auto lengthSquared = glm::dot(velocity, velocity);
+  const auto closest = lengthSquared == 0.0 ? first :
+      std::clamp(-glm::dot(position, velocity) / lengthSquared, first, last);
+  const auto separation = position + closest * velocity;
+  const auto clearance = a.radius + b.radius;
+  return glm::dot(separation, separation) < clearance * clearance;
+}
+
+bool capsuleMoves(const CapsuleSweep& sweep) {
+  const auto delta = sweep.end - sweep.begin;
+  // A stationary capsule may re-sample its support a fraction of a
+  // micrometre higher or lower through Jolt's float query fractions.
+  return delta.x != 0.0 || delta.y != 0.0 || std::abs(delta.z) > 1e-6;
+}
+
+std::vector<std::optional<size_t>> arbitratePeerMotion(const std::vector<DriveKernel>& robots,
+                                                       const std::vector<DriveProposal>& proposals) {
+  std::vector<CapsuleSweep> sweeps;
+  sweeps.reserve(robots.size());
+  for (size_t i = 0; i < robots.size(); ++i)
+    sweeps.push_back(sweptCapsule(robots[i], proposals[i].motion));
+  std::vector<std::optional<size_t>> blocked(robots.size());
+  std::vector<std::optional<size_t>> stopped(robots.size());
+  bool changed = false;
+  do {
+    changed = false;
+    std::ranges::fill(blocked, std::nullopt);
+    for (size_t i = 0; i < robots.size(); ++i) {
+      const bool movingA = capsuleMoves(sweeps[i]);
+      for (size_t j = i + 1; j < robots.size(); ++j) {
+        const bool movingB = capsuleMoves(sweeps[j]);
+        if ((!movingA && !movingB) || !sweptPeersOverlap(sweeps[i], sweeps[j]))
+          continue;
+        if (movingA && !blocked[i]) blocked[i] = j;
+        if (movingB && !blocked[j]) blocked[j] = i;
+      }
+    }
+    // Apply all stops together. A halted robot can obstruct another
+    // trajectory which was safe while both moved, so recheck until stable.
+    for (size_t i = 0; i < robots.size(); ++i) {
+      if (!blocked[i])
+        continue;
+      stopped[i] = blocked[i];
+      sweeps[i].end = sweeps[i].begin;
+      changed = true;
+    }
+  } while (changed);
+  return stopped;
+}
+
+} // namespace
+
+struct DifferentialDriveSimulation::Impl {
+  BimCollisionWorld& world;
+  DriveKernel robot;
+  SimClock time;
+  bool needsReset{};
+
+  Impl(BimCollisionWorld& collision, DrivePose spawn, DifferentialDriveSimulationOptions options)
+      : world(collision), robot(spawn, std::move(options)),
+        time(robot.options.ticksPerSecond, robot.options.maxTicksPerAdvance) {
+    world.acquireDriveOwner();
     try {
-      if (!world.world_.moveKinematic(world.robotBody_, pose, static_cast<float>(seconds)))
+      initialize();
+    } catch (...) {
+      world.releaseDriveOwner();
+      throw;
+    }
+  }
+
+  ~Impl() { world.releaseDriveOwner(); }
+
+  void initialize() {
+    const auto capsule = robot.initialize(world.walkabilityQueries());
+    robot.body = world.attachRobot(robot.options.robotId, capsule.halfHeight, capsule.radius, capsule.pose);
+  }
+
+  void execute(uint64_t tick, double seconds) {
+    if (needsReset || !world.world_.contains(robot.body))
+      throw std::runtime_error("Reset the drive simulation before advancing");
+    auto prepared = robot.prepareCommit(tick, seconds, robot.propose(tick, seconds, world.walkabilityQueries(robot.body)));
+    robot.samples.push_back(prepared.state);
+    try {
+      if (!world.world_.moveKinematic(robot.body, prepared.pose, static_cast<float>(seconds)))
         throw std::runtime_error("Kinematic robot is no longer attached");
       world.world_.step(static_cast<float>(seconds));
     } catch (...) {
-      samples.pop_back();
+      robot.samples.pop_back();
       needsReset = true;
       throw;
     }
-    if (samples.size() > options.maxHistorySamples)
-      samples.pop_front();
-    random = engine;
-    held = target;
-    // Contact is an emergency stop. The achieved travel is reported for
-    // this tick, and the actuator starts the next tick at rest.
-    actuation = movement.obstruction == BimWalkabilityFailure::None ? rates : DifferentialDriveRates{};
-    groundNormalZ = movement.normalZ;
-    current = std::move(next);
+    robot.commit(std::move(prepared));
   }
 };
 
@@ -266,36 +408,33 @@ DifferentialDriveSimulation::DifferentialDriveSimulation(BimCollisionWorld& worl
                                                          DifferentialDriveSimulationOptions options)
     : impl_(std::make_unique<Impl>(world, spawn, std::move(options))) {}
 
-DifferentialDriveSimulation::~DifferentialDriveSimulation() {
-  auto& world = impl_->world;
-  (void)world.world_.destroyBody(world.robotBody_);
-  world.robotBody_ = physics::kInvalidPhysicsBodyId;
-  world.robotEntityId_.clear();
-}
+DifferentialDriveSimulation::~DifferentialDriveSimulation() = default;
 
 void DifferentialDriveSimulation::queueCommand(uint64_t tick, DriveTwist command) {
-  impl_->queueRates(tick, differentialWheelRates(impl_->options.drive, command));
+  auto& robot = impl_->robot;
+  robot.queueRates(impl_->time.tick(), tick, differentialWheelRates(robot.options.drive, command));
 }
 
 void DifferentialDriveSimulation::queueWheelCommand(uint64_t tick, DriveWheels rates) {
-  impl_->queueRates(tick, limitDifferentialWheelRates(impl_->options.drive, rates));
+  auto& robot = impl_->robot;
+  robot.queueRates(impl_->time.tick(), tick, limitDifferentialWheelRates(robot.options.drive, rates));
 }
 
 void DifferentialDriveSimulation::clearCommands() noexcept {
-  impl_->commands.clear();
-  impl_->held = {};
+  impl_->robot.commands.clear();
+  impl_->robot.held = {};
 }
 
 uint32_t DifferentialDriveSimulation::advance(std::chrono::nanoseconds elapsed, const TickObserver& observe) {
   SimClock::Tick afterTick;
-  if (observe) afterTick = [this, &observe](uint64_t, double) { observe(impl_->current); };
+  if (observe) afterTick = [this, &observe](uint64_t, double) { observe(impl_->robot.current); };
   return impl_->time.advance(elapsed,
       [this](uint64_t tick, double seconds) { impl_->execute(tick, seconds); }, afterTick);
 }
 
 void DifferentialDriveSimulation::step(const TickObserver& observe) {
   SimClock::Tick afterTick;
-  if (observe) afterTick = [this, &observe](uint64_t, double) { observe(impl_->current); };
+  if (observe) afterTick = [this, &observe](uint64_t, double) { observe(impl_->robot.current); };
   impl_->time.step([this](uint64_t tick, double seconds) { impl_->execute(tick, seconds); }, afterTick);
 }
 
@@ -311,17 +450,184 @@ void DifferentialDriveSimulation::reset() {
 
 void DifferentialDriveSimulation::setPaused(bool paused) noexcept { impl_->time.setPaused(paused); }
 const SimClock& DifferentialDriveSimulation::clock() const noexcept { return impl_->time; }
-const DifferentialDriveState& DifferentialDriveSimulation::state() const noexcept { return impl_->current; }
-const std::deque<DifferentialDriveState>& DifferentialDriveSimulation::history() const noexcept { return impl_->samples; }
+const DifferentialDriveState& DifferentialDriveSimulation::state() const noexcept { return impl_->robot.current; }
+const std::deque<DifferentialDriveState>& DifferentialDriveSimulation::history() const noexcept { return impl_->robot.samples; }
 
 DifferentialDriveFrames DifferentialDriveSimulation::frames() const {
-  const auto& state = impl_->current;
-  const auto radius = impl_->options.drive.wheelRadius;
-  const auto halfTrack = impl_->options.drive.trackWidth * .5;
-  return {.mapFromOdometry = transform(impl_->groundedSpawn.position, impl_->groundedSpawn.yaw, up),
+  const auto& robot = impl_->robot;
+  const auto& state = robot.current;
+  const auto radius = robot.options.drive.wheelRadius;
+  const auto halfTrack = robot.options.drive.trackWidth * .5;
+  return {.mapFromOdometry = transform(robot.groundedSpawn.position, robot.groundedSpawn.yaw, up),
           .odometryFromBase = transform(state.odometry.position, state.odometry.yaw, up),
           .baseFromLeftWheel = transform({0, halfTrack, radius}, state.wheelAngles.left, wheelAxis),
           .baseFromRightWheel = transform({0, -halfTrack, radius}, state.wheelAngles.right, wheelAxis)};
+}
+
+struct DifferentialDriveFleetSimulation::Impl {
+  BimCollisionWorld& world;
+  std::vector<DriveKernel> robots;
+  SimClock time;
+  bool needsReset{};
+
+  Impl(BimCollisionWorld& collision, std::vector<FleetRobotSpawn> spawns)
+      : world(collision),
+        time(spawns.empty() ? 60u : spawns.front().options.ticksPerSecond,
+             spawns.empty() ? 120u : spawns.front().options.maxTicksPerAdvance) {
+    if (spawns.empty() || spawns.size() > world.robotCapacity())
+      throw std::invalid_argument("Fleet size must be positive and within the BIM world's robot capacity");
+    const auto ticksPerSecond = spawns.front().options.ticksPerSecond;
+    const auto maxTicksPerAdvance = spawns.front().options.maxTicksPerAdvance;
+    const auto id = [](const FleetRobotSpawn& spawn) -> const std::string& { return spawn.options.robotId; };
+    std::ranges::sort(spawns, {}, id);
+    if (std::ranges::adjacent_find(spawns, {}, id) != spawns.end())
+      throw std::invalid_argument("Fleet robot IDs must be unique");
+    robots.reserve(spawns.size());
+    for (auto& spawn : spawns) {
+      if (spawn.options.ticksPerSecond != ticksPerSecond || spawn.options.maxTicksPerAdvance != maxTicksPerAdvance)
+        throw std::invalid_argument("Fleet robots must use the same fixed clock configuration");
+      robots.emplace_back(spawn.spawn, std::move(spawn.options));
+    }
+    world.acquireDriveOwner();
+    try {
+      initialize();
+    } catch (...) {
+      world.releaseDriveOwner();
+      throw;
+    }
+  }
+
+  ~Impl() { world.releaseDriveOwner(); }
+
+  void initialize() {
+    const auto queries = world.fleetWalkabilityQueries();
+    std::vector<DriveCapsule> capsules;
+    std::vector<CapsuleSweep> standing;
+    capsules.reserve(robots.size());
+    standing.reserve(robots.size());
+    for (auto& robot : robots) {
+      capsules.push_back(robot.initialize(queries));
+      const auto sweep = sweptCapsule(robot, {.pose = robot.current.base, .normalZ = robot.groundNormalZ});
+      for (size_t i = 0; i < standing.size(); ++i)
+        if (sweptPeersOverlap(standing[i], sweep))
+          throw std::invalid_argument("Fleet robot spawn envelopes overlap: " + robots[i].options.robotId +
+                                      " and " + robot.options.robotId);
+      standing.push_back(sweep);
+    }
+    for (size_t i = 0; i < robots.size(); ++i) {
+      const auto& capsule = capsules[i];
+      robots[i].body = world.attachRobot(robots[i].options.robotId, capsule.halfHeight, capsule.radius, capsule.pose);
+    }
+  }
+
+  size_t indexOf(std::string_view robotId) const {
+    const auto found = std::ranges::lower_bound(robots, robotId, {}, [](const auto& robot) -> std::string_view {
+      return robot.options.robotId;
+    });
+    if (found == robots.end() || found->options.robotId != robotId)
+      throw std::invalid_argument("No fleet robot with ID " + std::string(robotId));
+    return static_cast<size_t>(found - robots.begin());
+  }
+
+  void execute(uint64_t tick, double seconds) {
+    if (needsReset || std::ranges::any_of(robots, [this](const auto& robot) {
+          return !world.world_.contains(robot.body);
+        }))
+      throw std::runtime_error("Reset the drive fleet before advancing");
+    const auto queries = world.fleetWalkabilityQueries();
+    std::vector<DriveProposal> proposals;
+    proposals.reserve(robots.size());
+    for (const auto& robot : robots) {
+      auto proposal = robot.propose(tick, seconds, queries);
+      const auto delta = proposal.motion.pose.position - robot.current.base.position;
+      if (proposal.rates.ground.left == 0.0 && proposal.rates.ground.right == 0.0 &&
+          delta.x == 0.0 && delta.y == 0.0 && std::abs(delta.z) <= 1e-6) {
+        // Repeated harmless support rounding must not make a parked robot
+        // drift, or publish a different final mission pose at every tick.
+        proposal.motion.pose = robot.current.base;
+        proposal.motion.normalZ = robot.groundNormalZ;
+      }
+      proposals.push_back(std::move(proposal));
+    }
+    const auto blocked = arbitratePeerMotion(robots, proposals);
+    std::vector<DriveCommit> prepared;
+    prepared.reserve(robots.size());
+    for (size_t i = 0; i < robots.size(); ++i) {
+      auto proposal = std::move(proposals[i]);
+      if (blocked[i])
+        proposal.motion = {.pose = robots[i].current.base, .normalZ = robots[i].groundNormalZ,
+            .obstruction = BimWalkabilityFailure::Blocked, .blocker = robots[*blocked[i]].options.robotId};
+      prepared.push_back(robots[i].prepareCommit(tick, seconds, std::move(proposal)));
+    }
+
+    size_t staged = 0;
+    try {
+      for (; staged < robots.size(); ++staged)
+        robots[staged].samples.push_back(prepared[staged].state);
+    } catch (...) {
+      while (staged > 0)
+        robots[--staged].samples.pop_back();
+      throw;
+    }
+    try {
+      for (size_t i = 0; i < robots.size(); ++i)
+        if (!world.world_.moveKinematic(robots[i].body, prepared[i].pose, static_cast<float>(seconds)))
+          throw std::runtime_error("Kinematic fleet robot is no longer attached: " + robots[i].options.robotId);
+      world.world_.step(static_cast<float>(seconds));
+    } catch (...) {
+      for (auto& robot : robots)
+        robot.samples.pop_back();
+      needsReset = true;
+      throw;
+    }
+    for (size_t i = 0; i < robots.size(); ++i)
+      robots[i].commit(std::move(prepared[i]));
+  }
+};
+
+DifferentialDriveFleetSimulation::DifferentialDriveFleetSimulation(BimCollisionWorld& world,
+                                                                   std::vector<FleetRobotSpawn> robots)
+    : impl_(std::make_unique<Impl>(world, std::move(robots))) {}
+
+DifferentialDriveFleetSimulation::~DifferentialDriveFleetSimulation() = default;
+
+void DifferentialDriveFleetSimulation::queueCommand(std::string_view id, uint64_t tick, DriveTwist command) {
+  auto& robot = impl_->robots[impl_->indexOf(id)];
+  robot.queueRates(impl_->time.tick(), tick, differentialWheelRates(robot.options.drive, command));
+}
+
+void DifferentialDriveFleetSimulation::queueWheelCommand(std::string_view id, uint64_t tick, DriveWheels rates) {
+  auto& robot = impl_->robots[impl_->indexOf(id)];
+  robot.queueRates(impl_->time.tick(), tick, limitDifferentialWheelRates(robot.options.drive, rates));
+}
+
+uint32_t DifferentialDriveFleetSimulation::advance(std::chrono::nanoseconds elapsed) {
+  return impl_->time.advance(elapsed, [this](uint64_t tick, double seconds) { impl_->execute(tick, seconds); });
+}
+
+void DifferentialDriveFleetSimulation::step() {
+  impl_->time.step([this](uint64_t tick, double seconds) { impl_->execute(tick, seconds); });
+}
+
+void DifferentialDriveFleetSimulation::reset() {
+  if (impl_->time.inTickCallback()) throw std::logic_error("A tick callback cannot reset the fleet");
+  impl_->needsReset = true;
+  impl_->world.resetAuthoredBodies();
+  impl_->initialize();
+  impl_->time.reset();
+  impl_->time.setPaused(true);
+  impl_->needsReset = false;
+}
+
+void DifferentialDriveFleetSimulation::setPaused(bool paused) noexcept { impl_->time.setPaused(paused); }
+const SimClock& DifferentialDriveFleetSimulation::clock() const noexcept { return impl_->time; }
+
+const DifferentialDriveState& DifferentialDriveFleetSimulation::state(std::string_view id) const {
+  return impl_->robots[impl_->indexOf(id)].current;
+}
+
+const std::deque<DifferentialDriveState>& DifferentialDriveFleetSimulation::history(std::string_view id) const {
+  return impl_->robots[impl_->indexOf(id)].samples;
 }
 
 } // namespace container::robotics

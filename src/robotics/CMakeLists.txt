@@ -132,6 +132,11 @@ if(ENABLE_PHYSICS)
         VulkanSceneRenderer_robotics_collision VulkanSceneRenderer_robotics_drive
         VulkanSceneRenderer_robotics_clock)
 
+    add_library(VulkanSceneRenderer_robotics_fleet BimFleetMission.cpp)
+    target_link_libraries(VulkanSceneRenderer_robotics_fleet
+        PUBLIC VulkanSceneRenderer_robotics_twin
+        PRIVATE VulkanSceneRenderer_robotics_simulation)
+
     add_library(VulkanSceneRenderer_robotics_diagnostics BimCollisionOverlay.cpp)
     target_link_libraries(VulkanSceneRenderer_robotics_diagnostics PRIVATE
         VulkanSceneRenderer_robotics_collision VulkanSceneRenderer_geometry)
@@ -139,6 +144,7 @@ if(ENABLE_PHYSICS)
     foreach(target IN ITEMS
             VulkanSceneRenderer_robotics_collision
             VulkanSceneRenderer_robotics_simulation
+            VulkanSceneRenderer_robotics_fleet
             VulkanSceneRenderer_robotics_diagnostics)
         target_compile_features(${target} PUBLIC cxx_std_23)
         target_include_directories(${target} PUBLIC ${CMAKE_SOURCE_DIR}/include)
@@ -157,4 +163,10 @@ if(ENABLE_PHYSICS)
         VulkanSceneRenderer_robotics_sensors nlohmann_json::nlohmann_json)
     set_target_properties(BimRoboticsSim PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
     container_stage_runtime_dlls(BimRoboticsSim)
+
+    add_executable(BimRoboticsFleet ${CMAKE_SOURCE_DIR}/tools/bim_robotics_fleet.cpp)
+    target_link_libraries(BimRoboticsFleet PRIVATE
+        VulkanSceneRenderer_robotics_assets VulkanSceneRenderer_robotics_fleet nlohmann_json::nlohmann_json)
+    set_target_properties(BimRoboticsFleet PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
+    container_stage_runtime_dlls(BimRoboticsFleet)
 endif()

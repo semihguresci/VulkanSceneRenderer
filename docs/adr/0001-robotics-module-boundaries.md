@@ -27,6 +27,7 @@ Use the following targets. The robotics suffixes are under the
 | `VulkanSceneRenderer_physics_world` | Jolt bodies, shapes, constraints, motors, queries and opt-in contact snapshots. | GLM and the private Jolt backend. Requires `ENABLE_PHYSICS`. |
 | `collision` | Live BIM collision bodies, door state, Jolt query adapters and room-portal analysis. | `scene`, `collision_geometry`, `VulkanSceneRenderer_physics_world` and private CPU import model headers. Requires `ENABLE_PHYSICS`. |
 | `simulation` | Fixed-step differential-drive state and history, articulated motor commands and grasp operations. | `collision`, `drive` and `clock`. Requires `ENABLE_PHYSICS`. |
+| `fleet` | Waypoint supervision and mission audit records for robots in one simulated collision world. | `simulation` for a shared fixed clock and `twin` for recording and replay. Requires `ENABLE_PHYSICS`. |
 | `diagnostics` | GLB collision overlays in renderer coordinates. | Private `collision` and geometry dependencies. Requires `ENABLE_PHYSICS`. |
 | `VulkanSceneRenderer_urdf` | URDF import, authored geometry and inertial data, and kinematic joint state and poses. | GLM, `clock` and private TinyXML2. Requires `ENABLE_ROBOTICS_URDF`. |
 | `VulkanSceneRenderer_urdf_physics` | Kinematic primitive bindings from URDF poses into a caller-owned world. | `VulkanSceneRenderer_urdf` and `VulkanSceneRenderer_physics_world`. Requires both options. |

@@ -29,6 +29,11 @@ PHYSICS = {
         "robotics_clock", "robotics_drive", "robotics_collision",
         "robotics_collision_geometry", "robotics_scene", "physics_world",
     },
+    "robotics_fleet": {
+        "robotics_simulation", "robotics_twin", "robotics_clock", "robotics_drive",
+        "robotics_collision", "robotics_collision_geometry", "robotics_scene",
+        "robotics_sensors", "fingerprint", "physics_world",
+    },
 }
 EDITOR = {
     "VulkanSceneRenderer", PREFIX + "Core", PREFIX + "renderer",
@@ -112,6 +117,7 @@ def check(build, config, physics, urdf):
     optional = {
         "BimRoboticsCollision": physics,
         "BimRoboticsSim": physics,
+        "BimRoboticsFleet": physics,
         PREFIX + "robotics_diagnostics": physics,
         **{PREFIX + suffix: physics for suffix in PHYSICS},
         "BimRoboticsUrdf": urdf,
@@ -142,6 +148,7 @@ def check(build, config, physics, urdf):
     if physics:
         executables["BimRoboticsCollision"] = {"robotics_assets", "robotics_collision", "robotics_diagnostics"}
         executables["BimRoboticsSim"] = {"robotics_assets", "robotics_sensors", "robotics_simulation"}
+        executables["BimRoboticsFleet"] = {"robotics_assets", "robotics_fleet", "robotics_simulation", "robotics_twin"}
     if urdf:
         executables["BimRoboticsUrdf"] = {"urdf", "urdf_assets"}
     for name, modules in executables.items():

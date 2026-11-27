@@ -69,10 +69,11 @@ if ($physics) {
         'bim_drive_actuation_tests',
         'bim_drive_sensor_tests',
         'bim_lidar_tests',
-        'bim_fixed_step_replay'
+        'bim_fixed_step_replay',
+        'bim_fleet_missions'
     )
-    $scriptTests += 'bim_fixed_step_replay'
-    $tools += @('BimRoboticsCollision', 'BimRoboticsSim')
+    $scriptTests += @('bim_fixed_step_replay', 'bim_fleet_missions')
+    $tools += @('BimRoboticsCollision', 'BimRoboticsSim', 'BimRoboticsFleet')
 }
 if ($urdf) {
     $tests += @('urdf_runtime_tests', 'urdf_asset_roundtrip')
