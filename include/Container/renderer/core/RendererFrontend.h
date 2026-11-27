@@ -750,10 +750,26 @@ private:
   uint32_t selectedBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
   BimInspectionCache bimInspectionCache_{};
   struct BimTwinReplayState {
+    struct FileVersion {
+      std::filesystem::file_time_type modified;
+      uintmax_t bytes{};
+      bool operator==(const FileVersion&) const = default;
+    };
+    struct FollowUpdate {
+      std::optional<FileVersion> version;
+      std::shared_ptr<const robotics::TwinReplay> snapshot;
+      std::string error;
+    };
     const BimManager* checkedModel{};
     uint64_t checkedRevision{};
     bool playing{};
+    bool followLatest{};
     std::string sourceError;
+    std::string followError;
+    std::shared_ptr<const robotics::TwinReplay> replay;
+    std::optional<FileVersion> watchedVersion;
+    std::chrono::steady_clock::time_point nextFollowPoll;
+    std::future<std::optional<FollowUpdate>> followJob;
     std::map<std::string, std::vector<uint32_t>, std::less<>> assetObjects;
     robotics::TwinReplaySample sample;
   };
@@ -1151,6 +1167,7 @@ private:
   void processBimClashUi();
   void initializeBimTwinReplay();
   void refreshBimTwinBinding();
+  void updateBimTwinFollow();
   void advanceBimTwinReplay(float seconds);
   void drawBimTwinReplay();
   [[nodiscard]] std::optional<glm::dvec3> bimTwinRendererPosition(glm::dvec3 meters) const;

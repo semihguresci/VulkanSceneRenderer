@@ -81,6 +81,7 @@ private:
   std::optional<uint64_t> receiptWatermark_;
   std::size_t eventCount_{};
   std::size_t planPoints_{};
+  std::size_t occupancyCells_{};
 };
 
 } // namespace container::robotics

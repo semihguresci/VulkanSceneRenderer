@@ -2,8 +2,10 @@
 
 #include "Container/robotics/BimSceneSource.h"
 
+#include <glm/mat4x4.hpp>
 #include <glm/vec3.hpp>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -45,8 +47,33 @@ struct TwinTaskStatus {
   std::optional<double> progress;
   bool operator==(const TwinTaskStatus&) const = default;
 };
+struct TwinOperatorAlarm {
+  std::string alarmId, severity, message;
+  bool active{};
+  glm::dvec3 position{0.0};
+  bool operator==(const TwinOperatorAlarm&) const = default;
+};
+struct TwinSensorFrustum {
+  uint32_t width{}, height{};
+  double fx{}, fy{}, cx{}, cy{}, nearMeters{}, farMeters{};
+  // Rigid building-local metric transform from camera axes +X right, +Y up,
+  // and -Z forward. Intrinsics are pixel coordinates from the top-left edge.
+  glm::dmat4 worldFromCamera{1.0};
+  bool operator==(const TwinSensorFrustum&) const = default;
+};
+struct TwinOccupancyGrid {
+  glm::dvec3 origin{0.0};
+  double yaw{}, resolutionMeters{};
+  uint32_t width{}, height{};
+  // In the grid's local XY plane, +X advances columns and +Y advances rows.
+  // The origin is the corner of the first cell. '.' is free, '#' occupied,
+  // and '?' unknown.
+  std::string cells;
+  bool operator==(const TwinOccupancyGrid&) const = default;
+};
 using TwinPayload = std::variant<TwinRobotPose, TwinSensorStatus, TwinAssetState, TwinPlannedPath,
-                                 TwinRobotHealth, TwinTaskStatus>;
+                                 TwinRobotHealth, TwinTaskStatus, TwinOperatorAlarm,
+                                 TwinSensorFrustum, TwinOccupancyGrid>;
 
 struct TwinEvent {
   uint64_t timestampNanoseconds{};
@@ -81,8 +108,12 @@ struct TwinReplaySample {
 };
 
 // Validate payloads and sort in canonical order. Reject duplicate timestamps
-// on an entity and payload track, with each task ID on its own track.
+// on an entity and payload track, with each task or alarm ID on its own track.
 void canonicalizeTwinRecording(TwinRecording& recording);
+
+// Validate calibration and return metric REP-103 corners for the full image
+// edges, ordered TL, TR, BR, BL on the near plane followed by the far plane.
+[[nodiscard]] std::array<glm::dvec3, 8> twinFrustumCorners(const TwinSensorFrustum& frustum);
 
 class TwinReplay {
 public:

@@ -82,8 +82,12 @@ void appendSupplement(robotics::TwinRecording& recording, robotics::TwinRecordin
     throw std::invalid_argument("Supplement clockId or staleAfterNanoseconds does not match the simulation");
   for (auto& event : supplement.events) {
     if (!std::holds_alternative<robotics::TwinPlannedPath>(event.payload) &&
-        !std::holds_alternative<robotics::TwinAssetState>(event.payload))
-      throw std::invalid_argument("Supplement accepts only planned-path and bim-asset-state events");
+        !std::holds_alternative<robotics::TwinAssetState>(event.payload) &&
+        !std::holds_alternative<robotics::TwinOperatorAlarm>(event.payload) &&
+        !std::holds_alternative<robotics::TwinSensorFrustum>(event.payload) &&
+        !std::holds_alternative<robotics::TwinOccupancyGrid>(event.payload))
+      throw std::invalid_argument(
+          "Supplement accepts only planned-path, bim-asset-state, operator-alarm, sensor-frustum, and occupancy-grid events");
     recording.events.push_back(std::move(event));
   }
 }
@@ -120,8 +124,8 @@ Json verify(const robotics::TwinReplay& replay) {
   auto result = identity(replay.recording());
   result["schema"] = "container.bim-twin-verification";
   result["eventCount"] = replay.recording().events.size();
-  if (robotics::twin_json::recordingVersion(replay.recording()) == 2)
-    result["recordingVersion"] = 2;
+  const auto version = robotics::twin_json::recordingVersion(replay.recording());
+  if (version > 1) result["recordingVersion"] = version;
   result["firstTimestampNanoseconds"] = replay.firstTimestamp();
   result["lastTimestampNanoseconds"] = replay.lastTimestamp();
   return result;

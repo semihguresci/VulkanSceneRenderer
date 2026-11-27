@@ -121,6 +121,18 @@ def verify_recording(tool, work):
     run(tool, "record", bad_report, rejected, diagnostic="tick")
     assert not rejected.exists()
 
+    alarm = event("operator-alarm", "rover", 0, "operator:alarm",
+                  {"alarmId": "door-clearance", "severity": "warning", "message": "Door clearance",
+                   "active": True, "position": [0, 0, .5]})
+    spatial_supplement = write_json(work / "operator-supplement.json", {**log([alarm]), "version": 3})
+    spatial_output = work / "operator-recording.json"
+    run(tool, "record", report, spatial_output, "--supplement", spatial_supplement)
+    spatial = json.loads(spatial_output.read_bytes())
+    assert spatial["version"] == 3
+    assert [entry for entry in spatial["events"] if entry["kind"] == "operator-alarm"] == [alarm]
+    assert [entry for entry in spatial["events"] if entry["source"].startswith("simulation:")] == [
+        entry for entry in data["events"] if entry["source"].startswith("simulation:")]
+
 
 def verify_external_import(tool, work):
     last = (1 << 64) - 1

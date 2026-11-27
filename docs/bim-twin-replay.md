@@ -3,7 +3,7 @@
 Record a simulated run or import a timeline from an external producer.
 The BIM viewport shows the sampled robot pose, the observed trail, the active
 plan, sensor states and asset annotations. Scrubbing the timeline changes
-the annotations while preserving the imported building.
+the annotations while preserving the imported building. [Inspect live operator overlays](bim-twin-operator-overlays.md)
 
 ## Record and replay a doorway run
 
@@ -106,9 +106,10 @@ before importing. The recorder has no middleware dependency.
 | `bim-asset-state` | BIM semantic entity ID with text `state`. Use the entity's ID from the semantic scene export. |
 | `robot-health` | Robot ID with text `state` and optional `batteryPercent`. Available in version 2. |
 | `task-status` | Robot ID with `taskId`, text `state` and optional `progress` from zero to one. Available in version 2. |
+| `operator-alarm`, `sensor-frustum`, `occupancy-grid` | Spatial operator events available in version 3. [Payload fields and fixture](bim-twin-operator-overlays.md#review-the-doorway-fixture) |
 
 The importer sorts out-of-order observations and rejects two events with the
-same track and timestamp. Each robot's task has its own track. Replay holds
+same track and timestamp. Each robot's task and each entity's alarm have their own tracks. Replay holds
 the latest eligible state. It interpolates position and shortest-arc yaw only between robot
 samples whose spacing is within the freshness timeout. State becomes stale
 once its age exceeds that timeout. Before a track's first event it has no

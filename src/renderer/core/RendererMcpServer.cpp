@@ -336,7 +336,7 @@ const Json& tools() {
       tool("renderer_get_settings", "Read the current renderer and live lighting settings."),
       tool("renderer_set_lighting", "Set any of these live lighting controls.",
            lightingProperties()),
-      tool("renderer_get_status", "Read model, environment, capture and shader reload status."),
+      tool("renderer_get_status", "Read model, BIM twin, environment, capture and shader reload status."),
       tool("renderer_recent_logs", "Read a bounded set of redacted renderer and Vulkan events.",
            {{"limit", integer(1, 32)}}),
       tool("renderer_load_model", "Queue a glTF or GLB model from the configured local file root.",

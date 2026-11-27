@@ -183,4 +183,47 @@ TEST(TwinIngest, EnforcesSharedRecordingLimitsWithoutLosingAcceptedHistory) {
   EXPECT_EQ(observations.latest(65'536).tracks.at(0).event.timestampNanoseconds, 65'535u);
 }
 
+TEST(TwinIngest, RetainsIndependentAlarmTracksThroughClearAndConflict) {
+  TwinIngest ingest(scene(), fingerprints(), "sim-clock", 5);
+  const TwinOperatorAlarm doorAlarm{"door", "warning", "Obstructed", true, {1, 2, 3}};
+  const TwinOperatorAlarm motor{"motor", "critical", "Stalled", true, {4, 5, 6}};
+  auto doorClear = doorAlarm;
+  doorClear.active = false;
+  EXPECT_EQ(ingest.ingest(message(10, 10, motor)).code, Accepted);
+  EXPECT_EQ(ingest.ingest(message(10, 10, doorAlarm)).code, Accepted);
+  const auto clear = message(13, 13, doorClear);
+  EXPECT_EQ(ingest.ingest(clear).code, Accepted);
+  EXPECT_EQ(ingest.ingest(clear).code, Duplicate);
+  EXPECT_EQ(ingest.ingest(message(13, 13, doorAlarm)).code, Conflict);
+  const auto latest = ingest.latest(16);
+  ASSERT_EQ(latest.tracks.size(), 2u);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(latest.tracks[0].event.payload), doorClear);
+  EXPECT_FALSE(latest.tracks[0].stale);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(latest.tracks[1].event.payload), motor);
+  EXPECT_TRUE(latest.tracks[1].stale);
+  const auto recorded = ingest.recording();
+  ASSERT_EQ(recorded.events.size(), 3u);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(recorded.events[0].payload), doorAlarm);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(recorded.events[1].payload), motor);
+  EXPECT_EQ(std::get<TwinOperatorAlarm>(recorded.events[2].payload), doorClear);
+}
+
+TEST(TwinIngest, CountsOnlyAcceptedOccupancyCellsAgainstItsOwnBudget) {
+  TwinIngest ingest(scene(), fingerprints(), "sim-clock");
+  const TwinOccupancyGrid grid{.resolutionMeters = 1, .width = 128, .height = 128,
+                               .cells = std::string(128 * 128, '.')};
+  auto malformed = grid;
+  malformed.cells[0] = 'x';
+  EXPECT_EQ(ingest.ingest(message(0, 0, malformed, "floor/map")).code, InvalidEvent);
+  for (uint64_t time = 0; time < 64; ++time)
+    ASSERT_EQ(ingest.ingest(message(time, time, grid, "floor/map")).code, Accepted);
+  EXPECT_EQ(ingest.ingest(message(64, 64, grid, "floor/map")).code, LimitExceeded);
+  EXPECT_EQ(ingest.ingest(message(63, 64, grid, "floor/map")).code, Duplicate);
+  EXPECT_EQ(ingest.ingest(message(64, 64, TwinPlannedPath{{glm::dvec3(0)}})).code, Accepted);
+  EXPECT_EQ(ingest.recording().events.size(), 65u);
+  const auto latest = ingest.latest(64);
+  EXPECT_EQ(latest.tracks[0].event.timestampNanoseconds, 63u);
+  EXPECT_EQ(std::get<TwinOccupancyGrid>(latest.tracks[0].event.payload), grid);
+}
+
 } // namespace
