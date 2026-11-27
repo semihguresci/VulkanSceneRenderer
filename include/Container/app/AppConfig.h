@@ -32,7 +32,7 @@
 #include "Container/utility/TextureMemoryBudget.h"
 
 namespace container::geometry::vdb { struct ImportOptions; }
-namespace container::robotics { struct SensorCameraPlayback; }
+namespace container::robotics { struct SensorCameraPlayback; class TwinReplay; }
 
 namespace container::app {
 
@@ -150,6 +150,8 @@ struct AppConfig {
   std::filesystem::path sensorBenchmarkPath;
   std::string sensorSourceNamespace;
   std::optional<double> sensorMetersPerRendererUnit;
+  std::shared_ptr<const container::robotics::TwinReplay> bimTwinReplay;
+  std::optional<uint64_t> bimTwinStartNanoseconds;
   bool gpuHardwareTelemetry{false};
   // Export the initialized scene (or final capture-sequence scene) on exit.
   std::string sceneExportPath{};

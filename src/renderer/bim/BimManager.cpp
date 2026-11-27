@@ -3613,8 +3613,9 @@ void BimManager::loadPreparedModel(
     if (scene.frame.metersPerRendererUnit) {
       if (!prepared)
         throw std::logic_error("BIM sensor labels require prepared source evidence");
-      labels->sceneSource = robotics::makeBimSceneSource(
-          std::move(prepared->sourceLayerFingerprints), scene.frame);
+      if (!prepared->sourceLayerFingerprints.empty())
+        labels->sceneSource = robotics::makeBimSceneSource(
+            std::move(prepared->sourceLayerFingerprints), scene.frame);
     }
   }
   notifyLoadProgress("Preparing BIM upload metadata");

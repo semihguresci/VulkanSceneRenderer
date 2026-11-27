@@ -17,6 +17,7 @@ CORE = {
     "robotics_drive": set(),
     "robotics_sensors": {"robotics_drive", "fingerprint"},
     "robotics_dataset": {"robotics_sensors", "robotics_drive", "fingerprint"},
+    "robotics_twin": {"robotics_scene"},
     "robotics_scene": set(),
     "robotics_collision_geometry": {"robotics_scene"},
     "robotics_usd": {"robotics_scene", "robotics_collision_geometry", "fingerprint"},
@@ -127,13 +128,15 @@ def check(build, config, physics, urdf):
                         "drive_sensor_tests": "robotics_sensors",
                         "raycast_lidar_tests": "robotics_sensors",
                         "dataset_simulation_report_tests": "robotics_dataset",
-                        "robotics_dataset_reader_tests": "robotics_dataset"}
+                        "robotics_dataset_reader_tests": "robotics_dataset",
+                        "twin_replay_tests": "robotics_twin"}
     if physics:
         standalone_tests["physics_world_tests"] = "physics_world"
     executables = {"BimRoboticsAssets": {"robotics_assets"},
                    "BimRoboticsScene": {"robotics_scene"},
                    "BimRoboticsUsd": {"robotics_usd"},
                    "BimRoboticsDataset": {"robotics_dataset"},
+                   "BimRoboticsTwin": {"robotics_twin", "robotics_sensors"},
                    **{name: {module} for name, module in standalone_tests.items()}}
     if physics:
         executables["BimRoboticsCollision"] = {"robotics_assets", "robotics_collision", "robotics_diagnostics"}

@@ -33,6 +33,8 @@ $tests = @(
     'robotics_module_boundaries',
     'robotics_gpu_smoke_runner_tests',
     'bim_robotics_benchmark_runner_tests',
+    'bim_twin_cli',
+    'twin_replay_tests',
     'drive_actuation_tests',
     'drive_sensor_tests',
     'raycast_lidar_tests',
@@ -51,8 +53,8 @@ $tests = @(
     'bim_schedule_extractor_tests',
     'bim_model_compare_tests'
 )
-$scriptTests = @('robotics_module_boundaries', 'robotics_gpu_smoke_runner_tests', 'bim_robotics_benchmark_runner_tests')
-$tools = @('BimRoboticsScene', 'BimRoboticsUsd', 'BimRoboticsAssets', 'BimRoboticsDataset')
+$scriptTests = @('robotics_module_boundaries', 'robotics_gpu_smoke_runner_tests', 'bim_robotics_benchmark_runner_tests', 'bim_twin_cli')
+$tools = @('BimRoboticsScene', 'BimRoboticsUsd', 'BimRoboticsAssets', 'BimRoboticsDataset', 'BimRoboticsTwin')
 
 if ($physics) {
     $tests += @(

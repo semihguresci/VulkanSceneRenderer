@@ -3250,6 +3250,12 @@ add_custom_test(robotics_dataset_reader_tests
 set_tests_properties(dataset_simulation_report_tests robotics_dataset_reader_tests
     PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
 
+add_custom_test(twin_replay_tests
+    ${TESTS_DIR}/robotics/twin_replay_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics_twin
+)
+set_tests_properties(twin_replay_tests PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
+
 if(Python3_Interpreter_FOUND)
     add_test(NAME robotics_usd_roundtrip
         COMMAND "${Python3_EXECUTABLE}" -B
@@ -3270,6 +3276,12 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(bim_robotics_benchmark_runner_tests PROPERTIES
         LABELS "robotics;cpu" TIMEOUT 30)
 
+    add_test(NAME bim_twin_cli
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TESTS_DIR}/robotics/bim_twin_cli.py"
+            --tool "$<TARGET_FILE:BimRoboticsTwin>")
+    set_tests_properties(bim_twin_cli PROPERTIES LABELS "robotics;cpu" TIMEOUT 90)
+
     add_test(NAME bim_sensor_camera_gpu_regression
         COMMAND "${Python3_EXECUTABLE}" -B
             "${TEST_VALIDATION_DIR}/bim_sensor_camera_runtime_regression.py"
@@ -3288,6 +3300,17 @@ if(Python3_Interpreter_FOUND)
                 --fixtures "${TESTS_DIR}/fixtures/robotics"
                 --output "${TEST_RESULTS_DIR}/bim-robotics-dataset" --managed-output)
         set_tests_properties(bim_robotics_dataset_pipeline_gpu_regression PROPERTIES
+            LABELS "robotics;requires-vulkan;requires-display"
+            RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 600)
+        add_test(NAME bim_twin_replay_gpu_regression
+            COMMAND "${Python3_EXECUTABLE}" -B
+                "${TEST_VALIDATION_DIR}/bim_twin_replay_runtime_regression.py"
+                --tool "$<TARGET_FILE:BimRoboticsTwin>" --simulator "$<TARGET_FILE:BimRoboticsSim>"
+                --scene-exporter "$<TARGET_FILE:BimRoboticsScene>"
+                --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+                --fixtures "${TESTS_DIR}/fixtures/robotics"
+                --output "${TEST_RESULTS_DIR}/bim-twin-replay")
+        set_tests_properties(bim_twin_replay_gpu_regression PROPERTIES
             LABELS "robotics;requires-vulkan;requires-display"
             RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 600)
     endif()

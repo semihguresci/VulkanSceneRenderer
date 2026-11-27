@@ -104,6 +104,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/core/RendererFrontendCameraPoses.cpp
     renderer/core/RendererFrontendCameraMotion.cpp
     renderer/core/RendererFrontendBimClash.cpp
+    renderer/core/RendererFrontendBimTwin.cpp
     renderer/core/RendererFrontendBimSunHours.cpp
     renderer/core/RendererFrontendDdgiBimRooms.cpp
     renderer/core/RendererFrontendRenderSetup.cpp
@@ -332,7 +333,8 @@ target_link_libraries(VulkanSceneRenderer_texture_codecs PUBLIC Dep_VulkanCore
 add_subdirectory(geometry)
 add_subdirectory(robotics)
 target_link_libraries(VulkanSceneRenderer_renderer PRIVATE
-    VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_robotics_sensors)
+    VulkanSceneRenderer_robotics_scene VulkanSceneRenderer_robotics_sensors
+    VulkanSceneRenderer_robotics_twin)
 add_subdirectory(utility)
 add_subdirectory(ecs)
 

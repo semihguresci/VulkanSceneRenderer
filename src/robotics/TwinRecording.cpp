@@ -1,0 +1,232 @@
+#include "Container/robotics/TwinTelemetry.h"
+
+#include "Container/robotics/BimSceneSourceManifest.h"
+#include "Container/utility/Platform.h"
+#include "TwinRecordingJson.h"
+#include "TwinTelemetryLimits.h"
+
+#include <nlohmann/json.hpp>
+
+#include <algorithm>
+#include <cmath>
+#include <fstream>
+#include <initializer_list>
+#include <set>
+#include <stdexcept>
+#include <type_traits>
+#include <utility>
+
+namespace container::robotics {
+namespace {
+
+using Json = nlohmann::json;
+namespace limits = twin_telemetry_limits;
+constexpr std::string_view schema = "container.bim-twin-telemetry";
+constexpr size_t maxRecordingBytes = 32 * 1024 * 1024;
+constexpr size_t maxJsonNodes = 2 * 1024 * 1024;
+
+[[noreturn]] void invalid(std::string_view field, std::string_view problem) {
+  throw std::invalid_argument("BIM twin recording " + std::string(field) + ": " + std::string(problem));
+}
+
+std::string field(std::string_view context, std::string_view name) {
+  return std::string(context) + "." + std::string(name);
+}
+
+void requireKeys(const Json& object, std::string_view context, std::initializer_list<std::string_view> keys) {
+  if (!object.is_object()) invalid(context, "must be an object");
+  for (const auto& [key, value] : object.items()) {
+    if (std::ranges::find(keys, key) == keys.end())
+      invalid(field(context, key), "unknown field");
+  }
+  for (const auto key : keys) {
+    if (!object.contains(key)) invalid(field(context, key), "is required");
+  }
+}
+
+std::string text(const Json& value, std::string_view context) {
+  if (!value.is_string()) invalid(context, "must be a string");
+  return value.get<std::string>();
+}
+
+uint64_t integer(const Json& value, std::string_view context) {
+  if (!value.is_number_integer() || (!value.is_number_unsigned() && value.get<int64_t>() < 0))
+    invalid(context, "must be a nonnegative 64-bit integer");
+  return value.get<uint64_t>();
+}
+
+double number(const Json& value, std::string_view context) {
+  if (!value.is_number() || !std::isfinite(value.get<double>()))
+    invalid(context, "must be a finite number");
+  return value.get<double>();
+}
+
+glm::dvec3 readPoint(const Json& value, std::string_view context) {
+  if (!value.is_array() || value.size() != 3)
+    invalid(context, "must be an XYZ array with three components");
+  return {number(value[0], context), number(value[1], context), number(value[2], context)};
+}
+
+Json parseJson(std::string_view input) {
+  if (input.empty() || input.size() > maxRecordingBytes)
+    invalid("JSON", "must contain at most 32 MiB of data");
+  std::vector<std::set<std::string>> objectKeys;
+  size_t nodeCount = 0;
+  const Json::parser_callback_t guard = [&](int depth, Json::parse_event_t event, Json& parsed) {
+    if (depth > 16) invalid("JSON", "nesting exceeds the schema limit");
+    using enum Json::parse_event_t;
+    if (event == object_start) objectKeys.emplace_back();
+    if (event == object_end) objectKeys.pop_back();
+    if (event == key) {
+      const auto& name = parsed.get_ref<const std::string&>();
+      auto& keys = objectKeys.back();
+      if (name.size() > 128 || keys.size() >= 16) invalid("JSON", "object key limit exceeded");
+      if (!keys.insert(name).second) invalid("JSON", "duplicate key " + name);
+    }
+    if ((event == value || event == object_start || event == array_start) && ++nodeCount > maxJsonNodes)
+      invalid("JSON", "value count exceeds the schema limit");
+    return true;
+  };
+  try {
+    return Json::parse(input, guard);
+  } catch (const Json::exception& error) {
+    invalid("JSON", error.what());
+  }
+}
+
+TwinPayload readPayload(std::string_view kind, const Json& value, std::string_view context) {
+  if (kind == "robot-pose") {
+    requireKeys(value, context, {"position", "yaw"});
+    return TwinRobotPose{readPoint(value.at("position"), field(context, "position")),
+                         number(value.at("yaw"), field(context, "yaw"))};
+  }
+  if (kind == "sensor-status" || kind == "bim-asset-state") {
+    requireKeys(value, context, {"state"});
+    auto state = text(value.at("state"), field(context, "state"));
+    if (kind == "sensor-status") return TwinSensorStatus{std::move(state)};
+    return TwinAssetState{std::move(state)};
+  }
+  if (kind == "planned-path") {
+    requireKeys(value, context, {"points"});
+    const auto& points = value.at("points");
+    if (!points.is_array() || points.size() > limits::maxPlanPoints)
+      invalid(field(context, "points"), "must be an array within the plan size limit");
+    TwinPlannedPath result;
+    result.points.reserve(points.size());
+    const auto pointContext = field(context, "points");
+    for (const auto& point : points) result.points.push_back(readPoint(point, pointContext));
+    return result;
+  }
+  invalid(context, "unknown event kind");
+}
+
+} // namespace
+
+namespace twin_json {
+
+BimSceneSource parseSceneSource(const Json& source) {
+  requireKeys(source, "sceneSource", {"layers", "metersPerUnscaledRendererUnit"});
+  const auto& layers = source.at("layers");
+  if (!layers.is_array() || layers.empty() || layers.size() > limits::maxSceneLayers)
+    invalid("sceneSource.layers", "must be a nonempty array within the source layer limit");
+  BimSceneSource result;
+  result.metersPerUnscaledRendererUnit =
+      number(source.at("metersPerUnscaledRendererUnit"), "sceneSource.metersPerUnscaledRendererUnit");
+  result.layers.reserve(layers.size());
+  for (const auto& layer : layers) {
+    requireKeys(layer, "sceneSource.layers[]", {"sha256", "byteSize"});
+    result.layers.push_back({text(layer.at("sha256"), "sceneSource.layers[].sha256"),
+                             integer(layer.at("byteSize"), "sceneSource.layers[].byteSize")});
+  }
+  return result;
+}
+
+Json point(const glm::dvec3& value) {
+  return Json::array({value.x, value.y, value.z});
+}
+
+Json event(const TwinEvent& value) {
+  std::string_view kind;
+  Json payload;
+  std::visit([&](const auto& data) {
+    using T = std::decay_t<decltype(data)>;
+    if constexpr (std::is_same_v<T, TwinRobotPose>) {
+      kind = "robot-pose";
+      payload = {{"position", point(data.position)}, {"yaw", data.yaw}};
+    } else if constexpr (std::is_same_v<T, TwinSensorStatus>) {
+      kind = "sensor-status";
+      payload = {{"state", data.state}};
+    } else if constexpr (std::is_same_v<T, TwinAssetState>) {
+      kind = "bim-asset-state";
+      payload = {{"state", data.state}};
+    } else if constexpr (std::is_same_v<T, TwinPlannedPath>) {
+      kind = "planned-path";
+      auto points = Json::array();
+      for (const auto& entry : data.points) points.push_back(point(entry));
+      payload = {{"points", std::move(points)}};
+    }
+  }, value.payload);
+  return {{"timestampNanoseconds", value.timestampNanoseconds}, {"entityId", value.entityId},
+          {"source", value.source}, {"kind", kind}, {"payload", std::move(payload)}};
+}
+
+} // namespace twin_json
+
+TwinRecording parseTwinRecording(std::string_view input) {
+  const auto json = parseJson(input);
+  requireKeys(json, "root", {"schema", "version", "sourceNamespace", "sceneSource", "clockId",
+                             "staleAfterNanoseconds", "events"});
+  if (text(json.at("schema"), "schema") != schema || integer(json.at("version"), "version") != 1)
+    invalid("schema", "expected container.bim-twin-telemetry version 1");
+  TwinRecording result{
+      .sourceNamespace = text(json.at("sourceNamespace"), "sourceNamespace"),
+      .sceneSource = twin_json::parseSceneSource(json.at("sceneSource")),
+      .clockId = text(json.at("clockId"), "clockId"),
+      .staleAfterNanoseconds = integer(json.at("staleAfterNanoseconds"), "staleAfterNanoseconds")};
+  const auto& events = json.at("events");
+  if (!events.is_array() || events.empty() || events.size() > limits::maxEvents)
+    invalid("events", "must be a nonempty array within the event count limit");
+  result.events.reserve(events.size());
+  for (const auto& entry : events) {
+    const auto context = "events[" + std::to_string(result.events.size()) + "]";
+    requireKeys(entry, context, {"timestampNanoseconds", "entityId", "source", "kind", "payload"});
+    const auto kind = text(entry.at("kind"), field(context, "kind"));
+    result.events.push_back({
+        integer(entry.at("timestampNanoseconds"), field(context, "timestampNanoseconds")),
+        text(entry.at("entityId"), field(context, "entityId")),
+        text(entry.at("source"), field(context, "source")),
+        readPayload(kind, entry.at("payload"), field(context, "payload"))});
+  }
+  canonicalizeTwinRecording(result);
+  return result;
+}
+
+TwinRecording loadTwinRecording(const std::filesystem::path& path) {
+  std::ifstream file(path, std::ios::binary | std::ios::ate);
+  const auto filename = util::pathToUtf8(path);
+  if (!file) throw std::runtime_error("Could not open BIM twin recording " + filename);
+  const auto length = file.tellg();
+  if (length <= 0 || length > static_cast<std::streamoff>(maxRecordingBytes))
+    invalid(filename, "must contain at most 32 MiB of data");
+  std::string bytes(static_cast<size_t>(length), '\0');
+  file.seekg(0);
+  if (!file.read(bytes.data(), static_cast<std::streamsize>(bytes.size())) || file.peek() != std::char_traits<char>::eof())
+    throw std::runtime_error("Could not read a complete BIM twin recording " + filename);
+  return parseTwinRecording(bytes);
+}
+
+std::string serializeTwinRecording(const TwinRecording& recording) {
+  auto ordered = recording;
+  canonicalizeTwinRecording(ordered);
+  auto events = Json::array();
+  for (const auto& entry : ordered.events) events.push_back(twin_json::event(entry));
+  const Json json{{"schema", schema}, {"version", 1}, {"sourceNamespace", ordered.sourceNamespace},
+      {"sceneSource", bimSceneSourceJson(ordered.sceneSource)}, {"clockId", ordered.clockId},
+      {"staleAfterNanoseconds", ordered.staleAfterNanoseconds}, {"events", std::move(events)}};
+  auto bytes = json.dump();
+  bytes += '\n';
+  if (bytes.size() > maxRecordingBytes) invalid("JSON", "encoded recording exceeds 32 MiB");
+  return bytes;
+}
+
+} // namespace container::robotics

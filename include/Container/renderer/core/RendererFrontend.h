@@ -2,6 +2,7 @@
 
 #include "Container/robotics/BimSensorLabels.h"
 #include "Container/robotics/SensorCamera.h"
+#include "Container/robotics/TwinTelemetry.h"
 
 #include "Container/renderer/core/AssetStreamingDiagnostics.h"
 
@@ -748,6 +749,15 @@ private:
   uint32_t hoveredBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
   uint32_t selectedBimObjectIndex_{std::numeric_limits<uint32_t>::max()};
   BimInspectionCache bimInspectionCache_{};
+  struct BimTwinReplayState {
+    const BimManager* checkedModel{};
+    uint64_t checkedRevision{};
+    bool playing{};
+    std::string sourceError;
+    std::map<std::string, std::vector<uint32_t>, std::less<>> assetObjects;
+    robotics::TwinReplaySample sample;
+  };
+  std::optional<BimTwinReplayState> bimTwin_;
   struct BimClashState {
     enum class Status { Idle, Running, Complete, Cancelled, Failed };
     const BimManager* model{};
@@ -1139,6 +1149,13 @@ private:
   void cancelBimClash();
   void publishBimClashUi();
   void processBimClashUi();
+  void initializeBimTwinReplay();
+  void refreshBimTwinBinding();
+  void advanceBimTwinReplay(float seconds);
+  void drawBimTwinReplay();
+  [[nodiscard]] std::optional<glm::dvec3> bimTwinRendererPosition(glm::dvec3 meters) const;
+  [[nodiscard]] std::optional<glm::dvec3> bimTwinAssetPosition(std::string_view entity) const;
+  [[nodiscard]] nlohmann::json bimTwinCaptureTelemetry() const;
   void selectBimClash(size_t row);
   void saveBimClashViewpoint(size_t row, const std::filesystem::path& path);
   void applyCaptureBimClash(const container::temporal::CaptureBimClash&);
