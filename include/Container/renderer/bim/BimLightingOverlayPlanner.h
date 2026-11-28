@@ -9,6 +9,9 @@
 namespace container::renderer {
 
 inline constexpr glm::vec3 kSelectionColor{1.0f, 0.46f, 0.0f};
+inline constexpr glm::vec3 kHoverColor{0.0f, 0.72f, 1.0f};
+inline constexpr float kMeshHoverOpacity = 0.7f;
+inline constexpr float kMeshHoverLineWidth = 1.5f;
 
 struct DrawCommand;
 

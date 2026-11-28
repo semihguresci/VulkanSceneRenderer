@@ -8,8 +8,6 @@ namespace container::renderer {
 
 namespace {
 
-constexpr glm::vec3 kHoverColor{0.0f, 0.72f, 1.0f};
-
 [[nodiscard]] bool hasDrawCommands(const std::vector<DrawCommand> *commands) {
   return commands != nullptr && !commands->empty();
 }
@@ -128,8 +126,9 @@ void appendRoute(BimLightingOverlayStylePlan &plan,
   plan.pipeline = BimLightingOverlayPipeline::WireframeDepth;
   plan.commands = commands;
   plan.color = kHoverColor;
-  plan.opacity = 0.7f;
-  plan.drawLineWidth = inputs.wideLinesSupported ? 1.5f : 1.0f;
+  plan.opacity = kMeshHoverOpacity;
+  plan.drawLineWidth = rasterBimLightingOverlayLineWidth(kMeshHoverLineWidth,
+                                                        inputs.wideLinesSupported);
   plan.rasterLineWidth = plan.drawLineWidth;
   plan.rasterLineWidthApplies = true;
   plan.active = geometryReady && commonWireframeReady(inputs) &&

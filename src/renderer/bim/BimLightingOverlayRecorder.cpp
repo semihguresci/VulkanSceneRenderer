@@ -613,6 +613,15 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
   recordSortedOverlay(issueMarkerOit, issueMarkerStyle, markerGeometry,
                       bim.coordinationIssueMarkerDrawCommands, false);
 
+  const auto *bimHoverDraws = bim.draws.hoveredDrawCommands;
+  const BimLightingOverlayFrameStyleState bimHoverStyle{
+      .enabled = true, .color = kHoverColor, .opacity = kMeshHoverOpacity,
+      .lineWidth = rasterBimLightingOverlayLineWidth(kMeshHoverLineWidth,
+                                                     p.debug.wireframeWideLinesSupported)};
+  const auto bimHoverOit = sortedOverlayPipeline(
+      bimHoverStyle, bimGeometry, bimHoverDraws, kBimIssueMarkerOitPipeline);
+  recordSortedOverlay(bimHoverOit, bimHoverStyle, bimGeometry, bimHoverDraws, false);
+
   const auto &points = bim.primitivePasses.pointCloud;
   const auto nativePointDraws = primitiveDrawLists(bim.nativePointDraws);
   // The all-in-one route already gives native draws precedence over placeholders.
@@ -718,7 +727,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                       .curves = overlayDrawLists(bim.curveDraws),
                       .floorPlan = bim.floorPlanDrawCommands,
                       .sceneHover = p.draws.hoveredDrawCommands,
-                      .bimHover = bim.draws.hoveredDrawCommands,
+                      .bimHover = bimHoverOit == VK_NULL_HANDLE ? bimHoverDraws : nullptr,
                       .sceneSelection = p.draws.selectedDrawCommands,
                       .bimSelection = presentsBimMeshSelection(p) ? nullptr : bim.draws.selectedDrawCommands,
                       .nativePointHover = bim.nativePointDraws.hoveredDrawCommands,
