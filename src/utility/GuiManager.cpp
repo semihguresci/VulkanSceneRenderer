@@ -5533,9 +5533,14 @@ void GuiManager::drawSceneControls(
             statusMessage_ = "Rendering engine change pending: " + option.label;
         }
         ImGui::EndDisabled();
-        if (!option.available && !option.unavailableReason.empty()) {
+        if (!option.available) {
           ShowItemTooltip(option.unavailableReason,
                           ImGuiHoveredFlags_AllowWhenDisabled);
+        } else if (option.id == container::renderer::RenderTechniqueId::RayTracing) {
+          ShowItemTooltip("Progressive rendering with the native Vulkan ray-tracing pipeline "
+                          "(VK_KHR_ray_tracing_pipeline). The first driver compile can take a few minutes.");
+        } else if (option.id == container::renderer::RenderTechniqueId::PathTracing) {
+          ShowItemTooltip("Progressive rendering with inline Vulkan ray queries (VK_KHR_ray_query).");
         }
         if (selected) {
           ImGui::SetItemDefaultFocus();
@@ -5546,7 +5551,7 @@ void GuiManager::drawSceneControls(
   }
 
   if (nativeRayPipelineCompiling_) {
-    ImGui::TextUnformatted("Compiling ray tracing pipeline");
+    ImGui::TextUnformatted("Compiling Vulkan ray tracing pipeline");
     if (ImGui::SmallButton("Cancel switch"))
       pendingRenderEngineChange_ = activeRenderEngine_;
   }

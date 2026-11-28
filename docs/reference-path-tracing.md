@@ -23,7 +23,7 @@ are 1, 65,536, 8 and seed 1. Capture sequences can switch to `path-tracing`.
 
 ### Native Vulkan ray-tracing pipeline
 
-Choose **Ray tracing** in **Rendering Engine** or start the app with
+Choose **Vulkan ray tracing** in **Rendering Engine** or start the app with
 `--render-technique ray-tracing` to use the native Vulkan pipeline. The mode
 requires `VK_KHR_ray_tracing_pipeline`, acceleration structures, buffer device
 addresses, and bindless material descriptors. The ray-generation, any-hit,

@@ -4,13 +4,14 @@ This guide covers the controls present in the current editor. Use it to work wit
 
 ## Find a tool
 
-**Rendering Engine → Path tracing** selects the progressive Vulkan reference
-renderer on supported hardware. Its status line shows attempted samples and
-unsupported/numerical diagnostics. Camera, scene, material and light edits restart
-accumulation. Exposure remains a display control. This renderer currently supports
-a surface subset; see [reference path tracing](reference-path-tracing.md) for limits
-and command-line sample/bounce settings. Forward and deferred raster remain available
-in the same chooser.
+In **Rendering Engine**, select **Vulkan ray tracing** for the native Vulkan
+pipeline or **Path tracing** for inline Vulkan ray queries. Both progressively
+accumulate samples on supported hardware. Hover over either entry for backend
+details. Unavailable engines show the reason. The status line shows attempted
+samples and unsupported/numerical diagnostics. Camera, scene, material and light
+edits restart accumulation. Exposure remains a display control. See the guide
+for supported surfaces and command-line sample and bounce settings.
+[Reference path tracing](reference-path-tracing.md)
 
 Alpha-blend opacity and double-sided alpha masks are supported in path tracing,
 including shadow rays. Thin-walled optical transmission supports tint, roughness,
@@ -191,9 +192,10 @@ shadow. Use the heatmap legend and click a cell to read its hours, toggle the
 grid in the viewport, or export cell centers, hours, and study settings to CSV.
 Loading another model or changing its placement clears the current study.
 
-For models with plan linework, **Floor plan overlay** shows it in Deferred
-raster, Forward raster, and Path tracing. Choose the projection, depth test, color, opacity,
-and line width in the BIM panel. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
+For models with plan linework, **Floor plan overlay** shows it in Deferred raster,
+Forward rendering, Vulkan ray tracing, and Path tracing. Choose the projection,
+depth test, color, opacity, and line width in the BIM panel.
+[BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
 
 Turn off **Floor plan depth test** to draw the plan over the model in **Lit**
 or in Overview's **Lit** tile. In these views the lines use the selected color
@@ -226,7 +228,7 @@ preview before editing node visibility, authored cameras, or color grading.
 
 | Go to destination | What to use there |
 | --- | --- |
-| **Rendering / display / overlays** | Choose an available **Rendering Engine** (forward, deferred or path tracing), display visualization, Editor/Render Preview mode, MSAA, vertex/light overlays, normal validation and wireframe settings. Unsupported options explain their availability. |
+| **Rendering / display / overlays** | Choose **Deferred raster**, **Forward rendering**, **Vulkan ray tracing**, or **Path tracing** in **Rendering Engine**. Set display visualization, Editor/Render Preview mode, MSAA, vertex/light overlays, normal validation and wireframe settings. |
 | **Lights** | Add/select directional, point, spot or area lights and edit the selected light. Field and gizmo drags each create one Undo action on release. **Esc** cancels an active drag. **Lighting Settings** includes directional/environment/bounce intensity and area-light integration/quality. |
 | **Shadows** | Choose supported Raster, Ray hard or Ray soft visibility and tune the existing quality/bias/budget settings. The panel reports ray-query support/effective status. |
 | **Global illumination (DDGI)** | Inspect support/activity, enable or pause probe GI, adjust tracing and volume settings, and use the existing volume Apply/Cancel/fit controls. Keep unapplied volume drafts distinct from active settings. |

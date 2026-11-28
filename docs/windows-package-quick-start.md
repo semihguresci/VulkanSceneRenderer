@@ -99,14 +99,14 @@ collections shown in the project gallery are not included in this package.
 The renderer performs startup checks for its required Vulkan 1.4 features;
 the API version alone does not guarantee that a device supports every feature.
 
-For native Vulkan ray tracing, choose **Scene Controls → Rendering Engine → Ray tracing**
+For native Vulkan ray tracing, choose **Scene Controls → Rendering Engine → Vulkan ray tracing**
 or launch:
 
 ```powershell
 .\VulkanSceneRenderer.exe --render-technique ray-tracing
 ```
 
-**Ray tracing** uses `VK_KHR_ray_tracing_pipeline`. **Path tracing** uses
+**Vulkan ray tracing** uses `VK_KHR_ray_tracing_pipeline`. **Path tracing** uses
 `VK_KHR_ray_query`. Both modes progressively accumulate samples and require
 GPU and driver support for their respective extensions. The native pipeline can
 run with `--no-ray-query` and can take a few minutes to compile on first use.

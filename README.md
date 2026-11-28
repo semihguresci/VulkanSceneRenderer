@@ -85,7 +85,7 @@ textures beside `.gltf` inputs. Load an IFC or IFCX model directly:
 .\out\build\windows-release\VulkanSceneRenderer.exe --model "C:\Models\building.ifc"
 ```
 
-In **Scene Controls → Rendering Engine**, choose **Ray tracing** for the native
+In **Scene Controls → Rendering Engine**, choose **Vulkan ray tracing** for the native
 `VK_KHR_ray_tracing_pipeline` backend or **Path tracing** for inline Vulkan ray
 queries. Both modes progressively accumulate samples. The first native pipeline
 compile can take a few minutes. [Ray tracing and path tracing controls](docs/reference-path-tracing.md#native-vulkan-ray-tracing-pipeline)
