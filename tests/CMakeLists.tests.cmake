@@ -1276,7 +1276,7 @@ add_test(NAME bim_hard_clash_gpu_regression
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
             --output "${TEST_RESULTS_DIR}/bim-hard-clashes" --managed-output)
 set_tests_properties(bim_hard_clash_gpu_regression PROPERTIES
-    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 240
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 720
     LABELS "bim;requires-vulkan;requires-display;visual-regression")
 
 add_test(NAME bim_sun_hours_gpu_regression

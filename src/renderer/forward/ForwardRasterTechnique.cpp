@@ -44,7 +44,6 @@
 
 #include <algorithm>
 #include <array>
-#include <cmath>
 #include <cstdint>
 #include <initializer_list>
 #include <span>
@@ -961,24 +960,6 @@ void recordForwardRasterTransformGizmoOverlay(VkCommandBuffer cmd,
   return renderPassReady();
 }
 
-[[nodiscard]] bool recordOverviewLitTileViewport(VkCommandBuffer cmd, VkExtent2D extent) {
-  const float x = kOverviewLitTileLeft * static_cast<float>(extent.width);
-  const float y = kOverviewLitTileTop * static_cast<float>(extent.height);
-  const float width = kOverviewLitTileWidth * static_cast<float>(extent.width);
-  const float height = kOverviewLitTileHeight * static_cast<float>(extent.height);
-  const auto firstPixel = [](float edge) { return static_cast<int32_t>(std::ceil(edge - 0.5f)); };
-  const int32_t left = firstPixel(x), top = firstPixel(y);
-  const int32_t right = firstPixel(x + width), bottom = firstPixel(y + height);
-  if (right <= left || bottom <= top)
-    return false;
-  const VkViewport viewport{x, y + height, width, -height, 0.0f, 1.0f};
-  const VkRect2D scissor{{left, top}, {static_cast<uint32_t>(right - left),
-                                      static_cast<uint32_t>(bottom - top)}};
-  vkCmdSetViewport(cmd, 0, 1, &viewport);
-  vkCmdSetScissor(cmd, 0, 1, &scissor);
-  return true;
-}
-
 void recordPresentationFloorPlan(
     VkCommandBuffer cmd, const FrameRecordParams &p,
     const DeferredRasterFrameGraphContext &sharedContext, VkExtent2D extent) {
@@ -1039,7 +1020,7 @@ void recordPresentationFloorPlan(
                      .depthTest = style.depthTest,
                      .color = style.color,
                      .opacity = style.opacity,
-                     .lineWidth = overview ? bimFloorPlanOverviewLineWidth(style.lineWidth) : style.lineWidth},
+                     .lineWidth = overview ? overviewLitTileLineWidth(style.lineWidth) : style.lineWidth},
        .draws = {.floorPlan = p.bim.floorPlanDrawCommands},
        .pipelines = {.bimFloorPlanDepth = forwardRasterPipelineHandle(
                          p, ForwardRasterPipelineId::BimFloorPlanDisplayDepth),
@@ -1109,6 +1090,7 @@ void recordForwardRasterPostProcessPass(
        .recordAfterFullscreenDraw = [&sharedContext, &p, extent,
                                      postProcessSets](VkCommandBuffer passCmd) {
          recordPresentationFloorPlan(passCmd, p, sharedContext, extent);
+         recordBimXrayClashOverlay(passCmd, p, extent, sharedContext.debugOverlay());
          recordBimSunHoursOverlay(passCmd, p);
          if (p.screenshot.viewportOnly) {
            if (auto* gui = sharedContext.guiManager())

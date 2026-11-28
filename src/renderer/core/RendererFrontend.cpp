@@ -97,6 +97,7 @@
 #include "Container/renderer/scene/SceneProviderSynchronizer.h"
 #include "Container/renderer/scene/MeshSceneProviderBindings.h"
 #include "Container/renderer/scene/SceneReloadPublication.h"
+#include "Container/renderer/scene/SceneViewport.h"
 #include "Container/renderer/shadow/ShadowCullManager.h"
 #include "Container/renderer/shadow/ShadowManager.h"
 #include "Container/renderer/scene/GltfDeformationPass.h"
@@ -3719,7 +3720,7 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
                      {"opacity", sanitizeBimLightingOverlayOpacity(style.opacity)},
                      {"lineWidth", style.lineWidth},
                      {"rasterLineWidth", rasterBimLightingOverlayLineWidth(overviewOverlay
-                          ? bimFloorPlanOverviewLineWidth(style.lineWidth) : style.lineWidth, wideLines)},
+                          ? overviewLitTileLineWidth(style.lineWidth) : style.lineWidth, wideLines)},
                      {"drawCount", drawCount},
                      {"projectedGroundDrawCount", hasScene ? bim->floorPlanGroundDrawCommands(storey).size() : 0u},
                      {"sourceElevationDrawCount", hasScene ? bim->floorPlanSourceElevationDrawCommands(storey).size() : 0u},

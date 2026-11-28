@@ -9,6 +9,7 @@ import subprocess
 import tempfile
 import xml.etree.ElementTree as ET
 
+from bim_floor_plan_runtime_regression import panel, settings
 from display_capture_test_support import validation_log_error
 from physics_auxiliary_regression import cube
 
@@ -22,6 +23,9 @@ FRAMES = {label: frame for frame, label in enumerate((
     "restore_for_saved_sets", "saved_sets"), start=1)}
 PICTURES = ("export", "marker_off", "marker_restored")
 PENETRATION_CENTER = (.5, 1., 0.)
+XRAY_WIDTH, XRAY_HEIGHT = 768, 576
+XRAY_POSITION, XRAY_TARGET = (.5, 1., 8.), (.5, 1., 0.)
+XRAY_FRAMES = {"covered_on": 4, "covered_off": 6, "clear_off": 8, "clear_on": 10}
 TETRAHEDRON_INDICES = [0, 2, 1, 0, 1, 3, 0, 3, 2, 1, 2, 3]
 
 
@@ -237,6 +241,169 @@ def check_viewpoint(path, camera):
             f"Missing clash location in {path}")
 
 
+def xray_inputs(output):
+    scene = DotBimFixture()
+    scene.box("Penetration A", 1, "IfcWall", (0., 1., 0.), 2.)
+    scene.box("Penetration B", 2, "IfcBeam", (1., 1., 0.), 2.)
+    # Both alpha-250 panels belong to one IFC roof. Hiding that element makes
+    # a clear control with the same selection, intersecting solids and camera.
+    bounds = (-.9, -.35, 1.9, 2.35)
+    back, front = (panel(2, bounds, z) for z in (1.55, 1.85))
+    scene.meshes.append({"mesh_id": 2, "coordinates": back["coordinates"] + front["coordinates"],
+                         "indices": back["indices"] + [index + 4 for index in front["indices"]]})
+    scene.elements.append({"mesh_id": 2, "guid": guid(3), "type": "IfcRoof",
+                           "color": {"r": 180, "g": 180, "b": 180, "a": 250}})
+    model = output / "xray-clash.bim"
+    scene.write(model)
+    select = {"action": "select", "result": 0}
+    events = [
+        {"frame": 1, "bimFloorPlan": settings(enabled=False), "bimClash": {
+            "action": "start", "categoryA": "IfcWall", "categoryB": "IfcBeam", "wait": True}},
+        {"frame": 2, "bimClash": select},
+        {"frame": 5, "bimAnnotations": {}},
+        {"frame": 7, "bimHiddenObject": 2},
+        {"frame": 9, "bimClash": select},
+    ]
+    camera = [{"frame": 1, "position": XRAY_POSITION, "target": XRAY_TARGET}]
+    sequences = {}
+    for extension, labels in (("png", tuple(XRAY_FRAMES)), ("exr", ("covered_on", "covered_off"))):
+        path = output / f"xray-clash-{extension}.sequence.json"
+        frames = [XRAY_FRAMES[label] for label in labels]
+        save_json(path, {"schemaVersion": 1, "frames": frames[-1], "sampleFrames": frames, "camera": camera,
+                         "events": [event for event in events if event["frame"] <= frames[-1]]})
+        sequences[extension] = (path, labels)
+    return model, sequences
+
+
+def record_capture(command, renderer, output, log):
+    with log.open("w", encoding="utf-8") as stream:
+        process = subprocess.run(command, cwd=renderer.parent, stdout=stream, stderr=subprocess.STDOUT, timeout=180,
+                                 env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)),
+                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    text = log.read_text(encoding="utf-8", errors="replace")
+    require(process.returncode == 0 and not validation_log_error(text), f"Vulkan capture failed: {log}")
+    if os.environ.get("VK_LOADER_DEBUG") == "layer":
+        require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in text, f"Missing validation layer: {log}")
+
+
+def capture_xray_case(renderer, output, model, sequence, labels, technique, mode, extension):
+    base = output / f"xray-{technique}-{mode}.{extension}"
+    command = [str(renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui",
+               "--validation", "--msaa", "1", "--no-taa", "--no-bloom", "--no-ray-query", "--no-ddgi",
+               "--render-technique", technique, "--display-mode", mode,
+               "--width", str(XRAY_WIDTH), "--height", str(XRAY_HEIGHT),
+               "--camera-position", *map(str, XRAY_POSITION), "--camera-target", *map(str, XRAY_TARGET),
+               "--camera-fov", "45", "--tone-map", "neutral", "--exposure", "1", "--sky", "plain",
+               "--sky-horizon", ".15", ".15", ".15", "--directional-intensity", "4",
+               "--directional-direction", "-.2", "-.25", "-1", "--environment-intensity", ".5",
+               "--bounce-intensity", ".25", "--fixed-dt", ".016666667", "--screenshot-viewport",
+               "--capture-sequence", str(sequence), "--screenshot", str(base)]
+    record_capture(command, renderer, output, base.with_suffix(f".{extension}.log"))
+    paths, projection = {}, None
+    for label in labels:
+        frame = XRAY_FRAMES[label]
+        path = base if label == labels[-1] else output / f"{base.stem}.frame-{frame:04d}.{extension}"
+        state = json.loads(path.with_suffix(".telemetry.json").read_bytes())
+        sidecar = json.loads(Path(f"{path}.capture.json").read_bytes())
+        require(state["validationEnabled"] and state["technique"] == technique and
+                state["resolution"] == [XRAY_WIDTH, XRAY_HEIGHT] and
+                Path(state["scene"]["auxiliary"]).resolve() == model, f"Wrong capture state: {path}")
+        expected_source = "viewport" if extension == "png" else "raster-scene-composite"
+        require(not sidecar["includesUi"] and sidecar["source"] == expected_source,
+                f"Wrong capture route: {path}")
+        if extension == "png":
+            require(sidecar["displayMode"] == (8 if mode == "overview" else 0), f"Wrong display mode: {path}")
+        clash = state["bimClash"]
+        check_results(clash, {frozenset((guid(1), guid(2))): (4., PENETRATION_CENTER)}, checked=1, skipped=0)
+        require(clash["selected"] == 0 and clash["markerDrawCount"] == int(label.endswith("_on")),
+                f"Computed marker toggle missed: {path}: {clash}")
+        if projection is None:
+            projection = state["camera"]["unjitteredViewProjColumns"]
+        require(state["camera"]["unjitteredViewProjColumns"] == projection, f"Camera drift: {path}")
+        paths[label] = path
+    return paths, projection
+
+
+def check_xray_png(paths, technique, mode):
+    import numpy as np
+    from PIL import Image
+
+    def region(left, top, right, bottom):
+        return (slice(round(top * XRAY_HEIGHT), round(bottom * XRAY_HEIGHT)),
+                slice(round(left * XRAY_WIDTH), round(right * XRAY_WIDTH)))
+
+    images = {}
+    for label, path in paths.items():
+        with Image.open(path) as image:
+            require(image.format == "PNG" and image.size == (XRAY_WIDTH, XRAY_HEIGHT), f"Invalid viewport: {path}")
+            images[label] = np.asarray(image.convert("RGB"), dtype=np.int16)
+    lit = region(.026, .046, .334, .264) if mode == "overview" else np.s_[:, :]
+    outside_lit = np.ones(images["covered_on"].shape[:2], dtype=bool)
+    outside_lit[lit] = False
+    counts = {}
+    for cover in ("covered", "clear"):
+        on, off = (images[f"{cover}_{suffix}"] for suffix in ("on", "off"))
+        np.testing.assert_array_equal(on[outside_lit], off[outside_lit],
+                                      err_msg=f"{technique}: marker changed a pixel outside the Overview Lit tile")
+        on = on[lit]
+        delta = np.abs(on - off[lit]).max(axis=2) > 8
+        red = (on[:, :, 0] > on[:, :, 1] + 15) & (on[:, :, 0] > on[:, :, 2] + 15)
+        rows, columns = np.where(delta & red)
+        require(len(rows) >= 10 and abs(float(np.median(rows)) - red.shape[0] / 2) < red.shape[0] / 8
+                and abs(float(np.median(columns)) - red.shape[1] / 2) < red.shape[1] / 8,
+                f"{technique} {mode} {cover}: computed clash missing from its projected position ({len(rows)} red pixels)")
+        counts[cover] = len(rows)
+
+    if mode == "lit" or technique == "forward-raster":
+        delta = np.abs(images["covered_off"][lit] - images["clear_off"][lit]).max(axis=2)
+        require(np.count_nonzero(delta > 8) >= 100, f"{technique} {mode}: roof did not visibly cover the scene")
+    if technique == "forward-raster" and mode == "overview":
+        transparency = region(.026, .506, .334, .724)
+        revealage = region(.346, .506, .654, .724)
+        for tile, threshold, opacity in ((transparency, 32, True), (revealage, 223, False)):
+            covered = images["covered_off"][tile].max(axis=2)
+            clear = images["clear_off"][tile].max(axis=2)
+            covered = covered > threshold if opacity else covered <= threshold
+            clear = clear > threshold if opacity else clear <= threshold
+            require(np.count_nonzero(covered) >= 100 and not clear.any(),
+                    "Forward Overview OIT diagnostics did not distinguish the roof from the clear control")
+    print(f"PASS {technique} {mode} computed clash x-ray pixels {counts}", flush=True)
+
+
+def check_xray_exr(paths):
+    import cv2
+    import numpy as np
+
+    buffers = []
+    for path in paths.values():
+        sidecar = json.loads(Path(f"{path}.capture.json").read_bytes())
+        require(sidecar["colorSpace"] == "linear-sRGB" and not sidecar["exposureApplied"] and not sidecar["toneMappingApplied"],
+                f"Wrong scene-linear output: {path}")
+        pixels = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        require(pixels is not None and pixels.shape == (XRAY_HEIGHT, XRAY_WIDTH, 3) and
+                pixels.dtype == np.float32 and np.isfinite(pixels).all() and pixels.max() > .1,
+                f"Invalid or empty scene-linear witness: {path}")
+        buffers.append(pixels)
+    np.testing.assert_array_equal(*buffers, err_msg="Computed clash marker entered the scene-linear image")
+
+
+def check_xray_markers(renderer, output, inputs):
+    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
+    model, sequences = inputs
+    baseline_projection = None
+    for technique in ("forward-raster", "deferred-raster"):
+        for mode, extension in (("overview", "png"), ("lit", "png"), ("lit", "exr")):
+            sequence, labels = sequences[extension]
+            paths, projection = capture_xray_case(renderer, output, model, sequence, labels, technique, mode, extension)
+            if baseline_projection is None:
+                baseline_projection = projection
+            require(projection == baseline_projection, f"Camera mismatch across {technique} {mode} {extension}")
+            if extension == "png":
+                check_xray_png(paths, technique, mode)
+            else:
+                check_xray_exr(paths)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
@@ -261,6 +428,7 @@ def main():
     base = output / "hard-clash.png"
     fixtures(model, replacement)
     capture_sequence(sequence, model, replacement, viewpoint)
+    xray = xray_inputs(output)
     if args.generate_only:
         return 0
 
@@ -274,21 +442,14 @@ def main():
                "--fixed-dt", ".016666667", "--screenshot-viewport", "--capture-sequence", str(sequence),
                "--screenshot", str(base)]
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
-    log = base.with_suffix(".log")
-    with log.open("w", encoding="utf-8") as stream:
-        process = subprocess.run(command, cwd=renderer.parent, stdout=stream, stderr=subprocess.STDOUT,
-                                 env=dict(os.environ, VK_LAYER_SETTINGS_PATH=str(output)), timeout=180,
-                                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    text = log.read_text(encoding="utf-8", errors="replace")
-    require(process.returncode == 0 and not validation_log_error(text), f"Vulkan capture failed: {log}")
-    if os.environ.get("VK_LOADER_DEBUG") == "layer":
-        require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in text, f"Missing validation layer: {log}")
+    record_capture(command, renderer, output, base.with_suffix(".log"))
     states = read_states(base, model, replacement)
     check_lifecycle(states)
     marker_pixels = check_marker(base, states)
     check_viewpoint(viewpoint, states["export"]["camera"])
     print(f"PASS hard clash volumes, deduplication, skips, cancellation, and reload ({output})", flush=True)
     print(f"PASS focused BCF viewpoint and {marker_pixels} visible clash marker pixels", flush=True)
+    check_xray_markers(renderer, output, xray)
     return 0
 
 
