@@ -11,6 +11,7 @@
 
 namespace container::ui::bcf {
 struct BcfMarkup;
+struct BcfViewpointMarkup;
 }
 
 namespace container::renderer {
@@ -126,5 +127,9 @@ buildBimCoordinationOverlayMarkerWirePrimitives(
 [[nodiscard]] std::vector<BimCoordinationOverlayIssuePin>
 exportBcfPinsAsIssueOverlayMarkers(
     const container::ui::bcf::BcfMarkup &markup);
+
+[[nodiscard]] std::vector<BimCoordinationOverlayIssuePin>
+exportBcfPinsAsIssueOverlayMarkers(
+    const container::ui::bcf::BcfViewpointMarkup &markup);
 
 } // namespace container::renderer

@@ -214,6 +214,130 @@ TEST(BcfViewpoint, SavesAndLoadsVisualizationInfoFile) {
   std::filesystem::remove(path, ec);
 }
 
+TEST(BcfViewpoint, SavesAndLoadsStandaloneVisualizationInfoWithMarkup) {
+  namespace bcf = container::ui::bcf;
+  const auto snapshot = sampleSnapshot();
+  const std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                     "container_bcf_viewpoint_with_markup.bcfv";
+  const bcf::BcfViewpointMarkup markup{
+      .guid = "standalone-viewpoint-guid",
+      .viewpointFile = "review.bcfv",
+      .snapshotFile = "door-review.png",
+      .pins = {{.guid = "located-pin-guid",
+                .label = "Door & frame",
+                .hasLocation = true,
+                .location = {4.0f, -5.0f, 6.25f},
+                .ifcGuid = snapshot.selectedBimGuid,
+                .sourceId = snapshot.selectedBimSourceId},
+               {.guid = "unlocated-pin-guid",
+                .label = "Check hardware",
+                .ifcGuid = "3n1$hardware",
+                .sourceId = "#43"}},
+      .lines = {{
+          .guid = "clearance-line-guid",
+          .start = {1.0f, 2.0f, 3.0f},
+          .end = {4.0f, 5.0f, 6.0f},
+          .color = {0.2f, 0.4f, 0.8f},
+          .label = "Clearance < 3 m",
+      }},
+  };
+
+  ASSERT_TRUE(bcf::SaveVisualizationInfo(snapshot, markup, path));
+  const auto legacySnapshot = bcf::LoadVisualizationInfo(path);
+  const auto loaded = bcf::LoadVisualizationInfoWithMarkup(path);
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+
+  ASSERT_TRUE(legacySnapshot.has_value());
+  EXPECT_EQ(legacySnapshot->selectedBimGuid, snapshot.selectedBimGuid);
+  ASSERT_TRUE(loaded.has_value());
+  EXPECT_EQ(loaded->snapshot.label, snapshot.label);
+  EXPECT_EQ(loaded->snapshot.camera.position, snapshot.camera.position);
+  EXPECT_EQ(loaded->snapshot.selectedBimGuid, snapshot.selectedBimGuid);
+  EXPECT_EQ(loaded->markup.guid, markup.guid);
+  EXPECT_EQ(loaded->markup.viewpointFile, markup.viewpointFile);
+  EXPECT_EQ(loaded->markup.snapshotFile, markup.snapshotFile);
+  ASSERT_EQ(loaded->markup.pins.size(), 2u);
+  const bcf::BcfPin& pin = loaded->markup.pins.front();
+  EXPECT_EQ(pin.guid, markup.pins.front().guid);
+  EXPECT_EQ(pin.label, markup.pins.front().label);
+  EXPECT_TRUE(pin.hasLocation);
+  EXPECT_EQ(pin.location, markup.pins.front().location);
+  EXPECT_EQ(pin.ifcGuid, snapshot.selectedBimGuid);
+  EXPECT_EQ(pin.sourceId, snapshot.selectedBimSourceId);
+  EXPECT_EQ(loaded->markup.pins.back().guid, markup.pins.back().guid);
+  EXPECT_EQ(loaded->markup.pins.back().label, markup.pins.back().label);
+  EXPECT_FALSE(loaded->markup.pins.back().hasLocation);
+  ASSERT_EQ(loaded->markup.lines.size(), 1u);
+  const bcf::BcfMarkupLine& line = loaded->markup.lines.front();
+  EXPECT_EQ(line.guid, markup.lines.front().guid);
+  EXPECT_EQ(line.label, markup.lines.front().label);
+  EXPECT_EQ(line.start, markup.lines.front().start);
+  EXPECT_EQ(line.end, markup.lines.front().end);
+  EXPECT_EQ(line.color, markup.lines.front().color);
+
+  const auto issuePins =
+      container::renderer::exportBcfPinsAsIssueOverlayMarkers(loaded->markup);
+  ASSERT_EQ(issuePins.size(), 1u);
+  EXPECT_EQ(issuePins.front().position, pin.location);
+  EXPECT_EQ(issuePins.front().label, pin.label);
+  EXPECT_EQ(issuePins.front().ifcGuid, pin.ifcGuid);
+  EXPECT_EQ(issuePins.front().sourceId, pin.sourceId);
+}
+
+TEST(BcfViewpoint, RejectsStandaloneMarkupWithoutViewpoint) {
+  namespace bcf = container::ui::bcf;
+  const std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                     "container_bcf_markup_without_viewpoint.bcfv";
+  std::ofstream file(path, std::ios::binary);
+  file << R"xml(<VisualizationInfo><ContainerMarkup Guid="orphaned"/>
+</VisualizationInfo>)xml";
+  file.close();
+  ASSERT_TRUE(file);
+  EXPECT_FALSE(bcf::LoadVisualizationInfoWithMarkup(path).has_value());
+
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+  EXPECT_FALSE(bcf::LoadVisualizationInfoWithMarkup(path).has_value());
+  EXPECT_FALSE(
+      bcf::LoadVisualizationInfoWithMarkup(path.parent_path()).has_value());
+}
+
+TEST(BcfViewpoint, PreservesViewpointWhenMarkupCoordinatesAreOutOfRange) {
+  namespace bcf = container::ui::bcf;
+  const auto snapshot = sampleSnapshot();
+  const std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                     "container_bcf_out_of_range_markup.bcfv";
+  std::string xml = bcf::ExportVisualizationInfo(snapshot);
+  xml.insert(xml.find("</VisualizationInfo>"), R"xml(
+  <ContainerMarkup>
+    <Pin Label="Unplaced" IfcGuid="2n1$example" AuthoringToolId="#42">
+      <Point><X>1e100</X><Y>0</Y><Z>0</Z></Point>
+    </Pin>
+    <MarkupLine Guid="invalid-endpoint">
+      <Start><X>0</X><Y>0</Y><Z>0</Z></Start>
+      <End><X>0</X><Y>1e100</Y><Z>0</Z></End>
+    </MarkupLine>
+  </ContainerMarkup>
+)xml");
+  std::ofstream file(path, std::ios::binary);
+  file << xml;
+  file.close();
+  ASSERT_TRUE(file);
+  const auto loaded = bcf::LoadVisualizationInfoWithMarkup(path);
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+
+  ASSERT_TRUE(loaded.has_value());
+  EXPECT_EQ(loaded->snapshot.camera.position, snapshot.camera.position);
+  ASSERT_EQ(loaded->markup.pins.size(), 1u);
+  const bcf::BcfPin& pin = loaded->markup.pins.front();
+  EXPECT_EQ(pin.guid, bcf::StablePinGuid("2n1$example", "#42"));
+  EXPECT_EQ(pin.label, "Unplaced");
+  EXPECT_FALSE(pin.hasLocation);
+  EXPECT_TRUE(loaded->markup.lines.empty());
+}
+
 TEST(BcfViewpoint, ImportsStandardPerspectiveCameraWithoutContainerSnapshot) {
   constexpr const char* kStandardBcf = R"xml(
 <VisualizationInfo>
@@ -253,6 +377,25 @@ TEST(BcfViewpoint, ImportsStandardPerspectiveCameraWithoutContainerSnapshot) {
   EXPECT_NEAR(imported->camera.rotationDegrees.y, 90.0f, 1.0e-5f);
   EXPECT_EQ(imported->selectedBimGuid, "3abc");
   EXPECT_EQ(imported->selectedBimSourceId, "#123");
+
+  const std::filesystem::path path = std::filesystem::temp_directory_path() /
+                                     "container_bcf_standard_perspective.bcfv";
+  std::ofstream file(path, std::ios::binary);
+  file << kStandardBcf;
+  file.close();
+  ASSERT_TRUE(file);
+  const auto loaded = container::ui::bcf::LoadVisualizationInfoWithMarkup(path);
+  std::error_code ec;
+  std::filesystem::remove(path, ec);
+
+  ASSERT_TRUE(loaded.has_value());
+  EXPECT_EQ(loaded->snapshot.camera.position, imported->camera.position);
+  EXPECT_EQ(loaded->snapshot.selectedBimGuid, imported->selectedBimGuid);
+  EXPECT_TRUE(loaded->markup.guid.empty());
+  EXPECT_TRUE(loaded->markup.viewpointFile.empty());
+  EXPECT_TRUE(loaded->markup.snapshotFile.empty());
+  EXPECT_TRUE(loaded->markup.pins.empty());
+  EXPECT_TRUE(loaded->markup.lines.empty());
 }
 
 TEST(BcfViewpoint, RoundTripsTopicCommentsAndViewpointPins) {

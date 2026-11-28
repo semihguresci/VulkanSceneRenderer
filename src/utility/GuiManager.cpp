@@ -4014,6 +4014,13 @@ GuiManager::bimIssueOverlayPins() const {
       bcfIssueOverlayPins_.data(), bcfIssueOverlayPins_.size());
 }
 
+void GuiManager::clearStandaloneBcfIssuePins() {
+  if (activeStandaloneBcfViewpoint_) {
+    bcfIssueOverlayPins_.clear();
+    activeStandaloneBcfViewpoint_ = nullptr;
+  }
+}
+
 void GuiManager::setSectionPlaneState(const SectionPlaneState &state) {
   sectionPlaneState_ = state;
   const float normalLength = glm::length(sectionPlaneState_.normal);
@@ -4326,6 +4333,7 @@ void GuiManager::resetModelInspectionState() {
   bimSunHoursCancelRequest_ = false;
   setBimSunHoursState({});
   bcfIssueOverlayPins_.clear();
+  activeStandaloneBcfViewpoint_ = nullptr;
   sceneHierarchyParentCandidateCache_ = {};
   sceneHierarchyCache_.clear();
   sceneHierarchySubmittedRows_ = 0u;
@@ -8372,12 +8380,15 @@ void GuiManager::drawSceneControls(
           if (selectionLabel != "None") {
             snapshot.label += " - " + selectionLabel;
           }
-          viewpointSnapshots_.push_back(std::move(snapshot));
+          auto viewpoint = std::make_unique<bcf::BcfVisualizationInfo>();
+          viewpoint->snapshot = std::move(snapshot);
+          storedViewpoints_.push_back(std::move(viewpoint));
+          const size_t index = storedViewpoints_.size() - 1u;
           selectedViewpointSnapshotIndex_ =
-              static_cast<int>(viewpointSnapshots_.size()) - 1;
+              static_cast<int>(index);
           statusMessage_ = "Captured " + ViewpointSnapshotDisplayName(
-                                             viewpointSnapshots_.back(),
-                                             viewpointSnapshots_.size() - 1u);
+                                             storedViewpoints_.back()->snapshot,
+                                             index);
         }
 
         auto normalizedCurrentViewpoint = [&]() {
@@ -8390,7 +8401,8 @@ void GuiManager::drawSceneControls(
           }
           return snapshot;
         };
-        auto saveBcfViewpoint = [&](const ViewpointSnapshotState &snapshot) {
+        auto saveBcfViewpoint = [&](const ViewpointSnapshotState &snapshot,
+                                    const bcf::BcfViewpointMarkup &markup) {
           const std::filesystem::path path{bcfViewpointPath_};
           if (path.has_parent_path()) {
             std::error_code directoryError;
@@ -8403,7 +8415,7 @@ void GuiManager::drawSceneControls(
             }
           }
           statusMessage_ =
-              bcf::SaveVisualizationInfo(snapshot, path)
+              bcf::SaveVisualizationInfo(snapshot, markup, path)
                   ? "Exported BCF viewpoint: " + path.string()
                   : "Failed to export BCF viewpoint: " + path.string();
         };
@@ -8456,6 +8468,10 @@ void GuiManager::drawSceneControls(
           }
           return topic;
         };
+        auto showBcfTopicPins = [&](const BcfTopicArchiveEntryState &entry) {
+          bcfIssueOverlayPins_ = entry.issuePins;
+          activeStandaloneBcfViewpoint_ = nullptr;
+        };
         auto storeBcfTopicArchiveEntry =
             [&](const bcf::BcfTopicFolder &topic,
                 const std::filesystem::path &path) {
@@ -8481,8 +8497,7 @@ void GuiManager::drawSceneControls(
               bcfTopicArchiveEntries_.push_back(std::move(entry));
               selectedBcfTopicArchiveIndex_ =
                   static_cast<int>(bcfTopicArchiveEntries_.size()) - 1;
-              bcfIssueOverlayPins_ =
-                  bcfTopicArchiveEntries_.back().issuePins;
+              showBcfTopicPins(bcfTopicArchiveEntries_.back());
             };
 
         ImGui::InputText("BCF viewpoint file", &bcfViewpointPath_);
@@ -8491,19 +8506,22 @@ void GuiManager::drawSceneControls(
           ImGui::BeginDisabled();
         }
         if (ImGui::SmallButton("Export current BCF")) {
-          saveBcfViewpoint(normalizedCurrentViewpoint());
+          saveBcfViewpoint(normalizedCurrentViewpoint(), {});
         }
         ImGui::SameLine();
         if (ImGui::SmallButton("Import BCF")) {
           const std::filesystem::path path{bcfViewpointPath_};
-          if (auto snapshot = bcf::LoadVisualizationInfo(path)) {
-            if (snapshot->label.empty()) {
-              snapshot->label = "Imported viewpoint " +
-                                std::to_string(nextViewpointSnapshotId_++);
+          if (auto viewpoint = bcf::LoadVisualizationInfoWithMarkup(path)) {
+            if (viewpoint->snapshot.label.empty()) {
+              viewpoint->snapshot.label =
+                  "Imported viewpoint " +
+                  std::to_string(nextViewpointSnapshotId_++);
             }
-            viewpointSnapshots_.push_back(std::move(*snapshot));
+            storedViewpoints_.push_back(
+                std::make_unique<bcf::BcfVisualizationInfo>(
+                    std::move(*viewpoint)));
             selectedViewpointSnapshotIndex_ =
-                static_cast<int>(viewpointSnapshots_.size()) - 1;
+                static_cast<int>(storedViewpoints_.size()) - 1;
             statusMessage_ = "Imported BCF viewpoint: " + path.string();
           } else {
             statusMessage_ = "Failed to import BCF viewpoint: " + path.string();
@@ -8606,7 +8624,6 @@ void GuiManager::drawSceneControls(
 
           if (bcfTopicArchiveEntries_.empty()) {
             selectedBcfTopicArchiveIndex_ = -1;
-            bcfIssueOverlayPins_.clear();
             ImGui::TextDisabled("No archived BCF topics");
           } else {
             selectedBcfTopicArchiveIndex_ = std::clamp(
@@ -8631,7 +8648,7 @@ void GuiManager::drawSceneControls(
                 }
                 if (ImGui::Selectable(label.c_str(), selected)) {
                   selectedBcfTopicArchiveIndex_ = static_cast<int>(i);
-                  bcfIssueOverlayPins_ = entry.issuePins;
+                  showBcfTopicPins(entry);
                 }
                 if (selected) {
                   ImGui::SetItemDefaultFocus();
@@ -8669,6 +8686,10 @@ void GuiManager::drawSceneControls(
               if (!restored) {
                 bimFilterState_ = previousFilter;
                 bimPhaseTimelineUiState_ = previousTimeline;
+              } else if (!modelMismatch) {
+                showBcfTopicPins(entry);
+              } else {
+                clearStandaloneBcfIssuePins();
               }
               statusMessage_ =
                   restored
@@ -8688,23 +8709,24 @@ void GuiManager::drawSceneControls(
           ImGui::TreePop();
         }
 
-        if (viewpointSnapshots_.empty()) {
+        if (storedViewpoints_.empty()) {
           selectedViewpointSnapshotIndex_ = -1;
           ImGui::TextDisabled("No captured viewpoints");
         } else {
           selectedViewpointSnapshotIndex_ =
               std::clamp(selectedViewpointSnapshotIndex_, 0,
-                         static_cast<int>(viewpointSnapshots_.size()) - 1);
+                         static_cast<int>(storedViewpoints_.size()) - 1);
           const std::string preview = ViewpointSnapshotDisplayName(
-              viewpointSnapshots_[static_cast<size_t>(
-                  selectedViewpointSnapshotIndex_)],
+              storedViewpoints_[static_cast<size_t>(
+                  selectedViewpointSnapshotIndex_)]->snapshot,
               static_cast<size_t>(selectedViewpointSnapshotIndex_));
           if (ImGui::BeginCombo("Stored viewpoint", preview.c_str())) {
-            for (size_t i = 0; i < viewpointSnapshots_.size(); ++i) {
+            for (size_t i = 0; i < storedViewpoints_.size(); ++i) {
               const bool selected =
                   static_cast<int>(i) == selectedViewpointSnapshotIndex_;
               const std::string label =
-                  ViewpointSnapshotDisplayName(viewpointSnapshots_[i], i);
+                  ViewpointSnapshotDisplayName(storedViewpoints_[i]->snapshot,
+                                               i);
               if (ImGui::Selectable(label.c_str(), selected)) {
                 selectedViewpointSnapshotIndex_ = static_cast<int>(i);
               }
@@ -8715,9 +8737,10 @@ void GuiManager::drawSceneControls(
             ImGui::EndCombo();
           }
 
-          ViewpointSnapshotState &selectedSnapshot =
-              viewpointSnapshots_[static_cast<size_t>(
+          bcf::BcfVisualizationInfo &selectedViewpoint =
+              *storedViewpoints_[static_cast<size_t>(
                   selectedViewpointSnapshotIndex_)];
+          ViewpointSnapshotState &selectedSnapshot = selectedViewpoint.snapshot;
           const bool modelMismatch =
               ViewpointSnapshotModelMismatch(selectedSnapshot, bimInspection);
           ImGui::InputText("Viewpoint name", &selectedSnapshot.label);
@@ -8759,6 +8782,17 @@ void GuiManager::drawSceneControls(
             if (!restored) {
               bimFilterState_ = previousFilter;
               bimPhaseTimelineUiState_ = previousTimeline;
+            } else {
+              clearStandaloneBcfIssuePins();
+              if (!modelMismatch) {
+                auto pins =
+                    container::renderer::exportBcfPinsAsIssueOverlayMarkers(
+                        selectedViewpoint.markup);
+                if (!pins.empty()) {
+                  bcfIssueOverlayPins_ = std::move(pins);
+                  activeStandaloneBcfViewpoint_ = &selectedViewpoint;
+                }
+              }
             }
             const std::string restoredName = ViewpointSnapshotDisplayName(
                 selectedSnapshot,
@@ -8775,7 +8809,7 @@ void GuiManager::drawSceneControls(
             ImGui::BeginDisabled();
           }
           if (ImGui::SmallButton("Export selected BCF")) {
-            saveBcfViewpoint(selectedSnapshot);
+            saveBcfViewpoint(selectedSnapshot, selectedViewpoint.markup);
           }
           if (!hasBcfPath) {
             ImGui::EndDisabled();
@@ -8785,15 +8819,18 @@ void GuiManager::drawSceneControls(
             const size_t removedIndex =
                 static_cast<size_t>(selectedViewpointSnapshotIndex_);
             const std::string removedName = ViewpointSnapshotDisplayName(
-                viewpointSnapshots_[removedIndex], removedIndex);
-            viewpointSnapshots_.erase(viewpointSnapshots_.begin() +
-                                      selectedViewpointSnapshotIndex_);
-            if (viewpointSnapshots_.empty()) {
+                selectedSnapshot, removedIndex);
+            if (activeStandaloneBcfViewpoint_ == &selectedViewpoint) {
+              clearStandaloneBcfIssuePins();
+            }
+            storedViewpoints_.erase(storedViewpoints_.begin() +
+                                    selectedViewpointSnapshotIndex_);
+            if (storedViewpoints_.empty()) {
               selectedViewpointSnapshotIndex_ = -1;
             } else {
               selectedViewpointSnapshotIndex_ = std::min<int>(
                   selectedViewpointSnapshotIndex_,
-                  static_cast<int>(viewpointSnapshots_.size()) - 1);
+                  static_cast<int>(storedViewpoints_.size()) - 1);
             }
             statusMessage_ = "Deleted " + removedName;
           }
