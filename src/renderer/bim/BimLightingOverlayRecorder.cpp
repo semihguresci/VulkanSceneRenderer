@@ -516,19 +516,40 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
   const auto &markers = bim.coordinationMarkers;
   const auto displayMode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
   const bool lineListWideLinesSupported = p.debug.lineListWideLinesSupported;
-  if (display) {
-    const auto &cap = bim.sectionClipCapGeometry.scene;
-    (void)recordBimSectionClipCapFramePassCommands(
-        cmd, {.style = sectionClipCapStyle(bim, lineListWideLinesSupported),
-              .geometry = {.sceneDescriptorSet = inputs.bimDescriptorSet,
-                           .vertexSlice = cap.vertexSlice,
-                           .indexSlice = cap.indexSlice,
-                           .indexType = cap.indexType},
-              .fillPipeline = inputs.capFill,
-              .hatchPipeline = inputs.capHatch,
-              .wireframeLayout = inputs.wireframeLayout,
-              .pushConstants = inputs.wireframePushConstants,
-              .debugOverlay = inputs.debugOverlay});
+  const VkPipelineLayout oitLayout =
+      inputs.nativeOitSet != VK_NULL_HANDLE
+          ? p.pipelineLayout(RenderTechniqueId::ForwardRaster, kBimNativeOitLayout)
+          : VK_NULL_HANDLE;
+  const bool reflectionDiagnostic = p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster &&
+      screenReflectionDebugView(p.debug.screenReflections) != 0u;
+  const bool sortDisplayOverlays = oitLayout != VK_NULL_HANDLE && !p.screenshot.sceneLinear &&
+      (displayMode == ui::GBufferViewMode::Lit || displayMode == ui::GBufferViewMode::Overview) &&
+      !reflectionDiagnostic && inputs.wireframePushConstants && inputs.debugOverlay;
+
+  const auto capStyle = sectionClipCapStyle(bim, lineListWideLinesSupported);
+  if (capStyle.enabled) {
+    const VkPipeline fillOit = sortDisplayOverlays
+        ? p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimSectionCapFillOitPipeline)
+        : VK_NULL_HANDLE;
+    const VkPipeline hatchOit = sortDisplayOverlays
+        ? p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimSectionCapHatchOitPipeline)
+        : VK_NULL_HANDLE;
+    const bool sortCap = fillOit != VK_NULL_HANDLE && hatchOit != VK_NULL_HANDLE;
+    if (sortCap ? native : display) {
+      const auto &cap = bim.sectionClipCapGeometry.scene;
+      (void)recordBimSectionClipCapFramePassCommands(
+          cmd, {.style = capStyle,
+                .geometry = {.sceneDescriptorSet = inputs.bimDescriptorSet,
+                             .vertexSlice = cap.vertexSlice,
+                             .indexSlice = cap.indexSlice,
+                             .indexType = cap.indexType},
+                .fillPipeline = sortCap ? fillOit : inputs.capFill,
+                .hatchPipeline = sortCap ? hatchOit : inputs.capHatch,
+                .wireframeLayout = sortCap ? oitLayout : inputs.wireframeLayout,
+                .pushConstants = inputs.wireframePushConstants,
+                .debugOverlay = inputs.debugOverlay,
+                .oitDescriptorSet = sortCap ? inputs.nativeOitSet : VK_NULL_HANDLE});
+    }
   }
 
   const BimPrimitivePassGeometryBinding primitiveGeometry{
@@ -536,10 +557,6 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
       .vertexSlice = bim.scene.vertexSlice,
       .indexSlice = bim.scene.indexSlice,
       .indexType = bim.scene.indexType};
-  const VkPipelineLayout oitLayout =
-      inputs.nativeOitSet != VK_NULL_HANDLE
-          ? p.pipelineLayout(RenderTechniqueId::ForwardRaster, kBimNativeOitLayout)
-          : VK_NULL_HANDLE;
   const auto recordPrimitive = [&](BimPrimitiveFramePassRecordInputs primitive,
                                    const char *oitPipelineName) {
     primitive.geometry = primitiveGeometry;
@@ -563,11 +580,6 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
 
   const auto bimGeometry = overlayGeometry(inputs.bimDescriptorSet, bim.scene);
   const auto markerGeometry = overlayGeometry(inputs.bimDescriptorSet, bim.coordinationMarkerScene);
-  const bool reflectionDiagnostic = p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster &&
-      screenReflectionDebugView(p.debug.screenReflections) != 0u;
-  const bool sortDisplayOverlays = oitLayout != VK_NULL_HANDLE && !p.screenshot.sceneLinear &&
-      (displayMode == ui::GBufferViewMode::Lit || displayMode == ui::GBufferViewMode::Overview) &&
-      !reflectionDiagnostic && inputs.wireframePushConstants && inputs.debugOverlay;
   const auto sortedOverlayPipeline = [&](const BimLightingOverlayFrameStyleState &style,
                                          const BimLightingOverlayGeometryBinding &geometry,
                                          const std::vector<DrawCommand> *commands,

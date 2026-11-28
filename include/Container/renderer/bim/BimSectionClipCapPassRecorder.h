@@ -18,6 +18,7 @@ struct BimSectionClipCapPassRecordInputs {
   VkIndexType indexType{VK_INDEX_TYPE_UINT32};
   const WireframePushConstants *pushConstants{nullptr};
   const DebugOverlayRenderer *debugOverlay{nullptr};
+  VkDescriptorSet oitDescriptorSet{VK_NULL_HANDLE};
 };
 
 struct BimSectionClipCapFramePassStyle {
@@ -50,6 +51,7 @@ struct BimSectionClipCapFramePassRecordInputs {
   VkPipelineLayout wireframeLayout{VK_NULL_HANDLE};
   const WireframePushConstants *pushConstants{nullptr};
   const DebugOverlayRenderer *debugOverlay{nullptr};
+  VkDescriptorSet oitDescriptorSet{VK_NULL_HANDLE};
 };
 
 [[nodiscard]] bool hasBimSectionClipCapFramePassGeometry(

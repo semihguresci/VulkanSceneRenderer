@@ -5,8 +5,10 @@ static const uint MAX_OIT_NODES_PER_PIXEL = 64u;
 static const uint OIT_COUNTER_STRIPE_COUNT = 64u;
 static const uint OIT_COUNTER_OVERFLOW_INDEX = OIT_COUNTER_STRIPE_COUNT;
 static const uint OIT_NODE_DISPLAY_OVERLAY = 1u;
-static const uint OIT_NODE_SELECTION_OVERLAY = 2u;
-static const uint OIT_NODE_OVERLAY_PRIORITY = OIT_NODE_DISPLAY_OVERLAY | OIT_NODE_SELECTION_OVERLAY;
+// Bit zero filters display overlays in diagnostic views. The next three bits
+// order cap fill, hatch, ordinary overlays and selection from back to front.
+static const uint OIT_NODE_OVERLAY_PRIORITY_MASK = 0xeu;
+static const uint OIT_NODE_STANDARD_OVERLAY = OIT_NODE_DISPLAY_OVERLAY | (3u << 1u);
 
 struct TransparentNode
 {
@@ -23,10 +25,9 @@ bool OitNodePrecedes(TransparentNode a, TransparentNode b)
     float bDepth = isfinite(b.depth) ? b.depth : 0.0;
     if (aDepth != bDepth)
         return aDepth > bDepth;
-    // At equal reverse-Z depth, keep highlights above the underlying surface
-    // and selection above hover, independent of fragment append order.
-    return (a.flags & OIT_NODE_OVERLAY_PRIORITY) >
-           (b.flags & OIT_NODE_OVERLAY_PRIORITY);
+    // Preserve the overlay layer order at equal reverse-Z depth.
+    return (a.flags & OIT_NODE_OVERLAY_PRIORITY_MASK) >
+           (b.flags & OIT_NODE_OVERLAY_PRIORITY_MASK);
 }
 
 struct OitMetadataBuffer

@@ -272,6 +272,7 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
   }
   for (const auto *pipeline : {kBimNativePointOitPipeline, kBimNativeCurveOitPipeline,
                                kBimNativeCurveStrokeOitPipeline, kBimFloorPlanOitPipeline,
+                               kBimSectionCapFillOitPipeline, kBimSectionCapHatchOitPipeline,
                                kBimPointHighlightOitPipeline, kBimCurveStrokeHighlightOitPipeline,
                                kBimPointSelectionOitPipeline, kBimCurveSelectionOitPipeline,
                                kBimCurveStrokeSelectionOitPipeline}) {
