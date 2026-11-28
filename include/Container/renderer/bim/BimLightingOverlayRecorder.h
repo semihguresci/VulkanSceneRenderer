@@ -15,6 +15,7 @@ inline constexpr char kBimNativeOitLayout[] = "bim-native-oit";
 inline constexpr char kBimNativePointOitPipeline[] = "bim-native-point-oit";
 inline constexpr char kBimNativeCurveOitPipeline[] = "bim-native-curve-oit";
 inline constexpr char kBimNativeCurveStrokeOitPipeline[] = "bim-native-curve-stroke-oit";
+inline constexpr char kBimFloorPlanOitPipeline[] = "bim-floor-plan-oit";
 inline constexpr char kBimSelectionClearSilhouettePipeline[] = "bim-selection-clear-silhouette";
 inline constexpr char kBimSelectionExpandSilhouettePipeline[] = "bim-selection-expand-silhouette";
 inline constexpr char kBimSelectionDisplayPipeline[] = "bim-selection-display";

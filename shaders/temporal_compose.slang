@@ -42,7 +42,7 @@ void computeMain(uint3 id : SV_DispatchThreadID)
 #endif
     if (pc.oitEnabled != 0u)
     {
-        OitResolveResult oit = ResolveOitPixel(pixel, color);
+        OitResolveResult oit = ResolveOitPixel(pixel, color, true);
 #if DLSS_TRANSPARENCY
         layer = float4(clamp(oit.transparentColor, 0.0.xxx, 65000.0.xxx), 1.0 - oit.revealage);
 #else

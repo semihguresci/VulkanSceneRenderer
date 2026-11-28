@@ -29,7 +29,8 @@ struct OitNode {
   alignas(16) glm::vec4 color{0.0f};
   alignas(4)  float     depth{0.0f};
   alignas(4)  uint32_t  next{~0u};
-  alignas(8)  glm::vec2 padding{0.0f};
+  alignas(4)  uint32_t  flags{0u};
+  alignas(4)  uint32_t  padding{0u};
 };
 
 // Uniform uploaded per-frame for the OIT resolve pass.
@@ -45,7 +46,8 @@ static_assert(sizeof(OitNode) == 32,
 static_assert(offsetof(OitNode, color) == 0, "OitNode.color offset");
 static_assert(offsetof(OitNode, depth) == 16, "OitNode.depth offset");
 static_assert(offsetof(OitNode, next) == 20, "OitNode.next offset");
-static_assert(offsetof(OitNode, padding) == 24, "OitNode.padding offset");
+static_assert(offsetof(OitNode, flags) == 24, "OitNode.flags offset");
+static_assert(offsetof(OitNode, padding) == 28, "OitNode.padding offset");
 static_assert(sizeof(OitMetadata) == 16,
               "OitMetadata must match shaders/oit_common.slang OitMetadataBuffer.");
 static_assert(offsetof(OitMetadata, nodeCapacity) == 0,

@@ -264,7 +264,7 @@ void registerDeferredRasterPipelineRecipes(PipelineRegistry &registry) {
         .layoutName = "wireframe"});
   }
   for (const auto *pipeline : {kBimNativePointOitPipeline, kBimNativeCurveOitPipeline,
-                               kBimNativeCurveStrokeOitPipeline}) {
+                               kBimNativeCurveStrokeOitPipeline, kBimFloorPlanOitPipeline}) {
     registry.registerRecipe(PipelineRecipe{
         .key = {kDeferredRasterTechnique, pipeline}, .kind = PipelineRecipeKind::Graphics,
         .shaderStages = {"spv_shaders/wireframe_debug.vert.spv", "spv_shaders/bim_native_oit.frag.spv"},
@@ -1791,7 +1791,9 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
 
   graph.addPass(RenderPassId::BimReflectionDisplayOverlays, {RenderPassId::ScreenReflections},
       [deferred](VkCommandBuffer cmd, const FrameRecordParams& p) {
-        deferred->lightingPassRecorder(p).recordBimDisplayOverlays(cmd, p);
+        const bool oitActive = deferred->isPassActive(RenderPassId::OitClear) &&
+                               deferred->isPassActive(RenderPassId::OitResolve);
+        deferred->lightingPassRecorder(p).recordBimDisplayOverlays(cmd, p, oitActive);
       });
   graph.setPassReadiness(RenderPassId::BimReflectionDisplayOverlays,
       [deferBimDisplayOverlays](const FrameRecordParams& p) {

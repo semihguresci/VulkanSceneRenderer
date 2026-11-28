@@ -38,13 +38,14 @@ uint AllocateOitNode(uint2 pixel)
     return INVALID_NODE_INDEX;
 }
 
-void AppendOitNode(uint2 pixel, uint nodeIndex, float depth, float4 color)
+void AppendOitNode(uint2 pixel, uint nodeIndex, float depth, float4 color,
+                   uint flags = 0u)
 {
     TransparentNode node;
     node.color = float4(color.rgb, saturate(color.a));
     node.depth = saturate(depth);
-    node.padding0 = 0.0;
-    node.padding1 = 0.0;
+    node.flags = flags;
+    node.padding = 0u;
     uint previousHead = INVALID_NODE_INDEX;
     InterlockedExchange(headPointerImage[pixel], nodeIndex, previousHead);
     node.next = previousHead;

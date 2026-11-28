@@ -717,7 +717,7 @@ void DeferredRasterLightingPassRecorder::record(
 }
 
 void DeferredRasterLightingPassRecorder::recordBimDisplayOverlays(
-    VkCommandBuffer cmd, const FrameRecordParams &p) const {
+    VkCommandBuffer cmd, const FrameRecordParams &p, bool oitActive) const {
   if (!hasDeferredRasterBimDisplayOverlays(p))
     return;
 
@@ -766,8 +766,10 @@ void DeferredRasterLightingPassRecorder::recordBimDisplayOverlays(
   vkCmdBeginRendering(cmd, &rendering);
   recordSceneViewportAndScissor(cmd, extent);
   syncOverlaySectionPlanePushConstants(p.pushConstants);
-  recordBimRasterOverlays(cmd, p, bimRasterOverlayInputs(p, services_),
-                          BimRasterOverlayPhase::Display);
+  auto overlays = bimRasterOverlayInputs(p, services_);
+  if (oitActive)
+    overlays.nativeOitSet = deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::Oit);
+  recordBimRasterOverlays(cmd, p, overlays, BimRasterOverlayPhase::Display);
   vkCmdEndRendering(cmd);
   transitionBimDisplayAttachments(cmd, color.image, depth.image, depthLayout, hasStencil, false);
 }
