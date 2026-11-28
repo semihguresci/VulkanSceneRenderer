@@ -1,0 +1,1174 @@
+{
+  "schema": "container.bim-navigation-policy-benchmark-reference",
+  "version": 1,
+  "suiteConfig": "tests/fixtures/robotics/navigation/policy-benchmark-v1.json",
+  "suiteConfigSha256": "441775a311818d2493820908953710a09c451d77f418aff09c0b84e1b2d6845a",
+  "environment": {
+    "distribution": "Ubuntu 24.04 in Docker",
+    "platform": [
+      "6.18.58.1-microsoft-standard-WSL2 x86_64",
+      "400000 100000"
+    ],
+    "packages": {
+      "ros-jazzy-nav2-navfn-planner": "1.3.14-1noble.20261109.090519",
+      "ros-jazzy-nav2-regulated-pure-pursuit-controller": "1.3.14-1noble.20261109.090520",
+      "ros-jazzy-rclpy": "7.1.13-1noble.20261105.084753"
+    },
+    "simulatorSha256": "6f92cdc7e0f55cb7ac30839abd025c6e6e072395a51e8041dfd3e69a322482fe"
+  },
+  "protocol": {
+    "trainSeeds": [
+      287,
+      1637,
+      2081
+    ],
+    "checkpoints": [
+      0,
+      3000,
+      10000,
+      24000
+    ],
+    "nav2Repeats": 3
+  },
+  "caseFingerprints": {
+    "offset-hall-held-out": {
+      "imageSha256": "e7eaa24b848d89df80a9d9e3b0264cbf6f4ac4f4048784d29008466f8c5a8c6b",
+      "source": {
+        "layers": [
+          {
+            "byteSize": 2117,
+            "sha256": "17801fbb030ab3fe2284c8025da7994f279f845037e2287cdc8142090ba9fabd"
+          }
+        ],
+        "metersPerUnscaledRendererUnit": 0.999999952502551
+      },
+      "startMeters": [
+        -2.6,
+        -1.55
+      ],
+      "goalMeters": [
+        2.65,
+        1.55
+      ],
+      "nativeOracleSweeps": 71
+    },
+    "lidar-corner-held-out": {
+      "imageSha256": "981e5d1e0cb477d6acdd26e1cd8fe83273970a539cc9a0c5d087361c82639d8e",
+      "source": {
+        "layers": [
+          {
+            "byteSize": 2444,
+            "sha256": "4cd752cdef28b61ae47fce79d8e6b458d31fa13f22fadc76c73a9a581dc1664c"
+          }
+        ],
+        "metersPerUnscaledRendererUnit": 0.999999952502551
+      },
+      "startMeters": [
+        0.0,
+        0.0
+      ],
+      "goalMeters": [
+        2.4,
+        1.1
+      ],
+      "nativeOracleSweeps": 27
+    },
+    "rooms-open-shifted": {
+      "imageSha256": "10639c51cc6ca651575abd62b7b82cb30788c1cb9a064c432f75b6c5fb538d34",
+      "source": {
+        "layers": [
+          {
+            "byteSize": 4552,
+            "sha256": "b3114270e2e64f2eb282a360068b9653f4f41a1c20ecf1b88ecf1f86714f6f52"
+          }
+        ],
+        "metersPerUnscaledRendererUnit": 0.999999952502551
+      },
+      "startMeters": [
+        -1.55,
+        -1.65
+      ],
+      "goalMeters": [
+        1.55,
+        -1.65
+      ],
+      "nativeOracleSweeps": 38
+    },
+    "rooms-upper": {
+      "imageSha256": "3b76a794fcd05201c8460a8dd5a6f515fb409dceb56fe943c3ff60524d4c8325",
+      "source": {
+        "layers": [
+          {
+            "byteSize": 4552,
+            "sha256": "b3114270e2e64f2eb282a360068b9653f4f41a1c20ecf1b88ecf1f86714f6f52"
+          }
+        ],
+        "metersPerUnscaledRendererUnit": 0.999999952502551
+      },
+      "startMeters": [
+        -1.55,
+        0.05
+      ],
+      "goalMeters": [
+        1.55,
+        0.05
+      ],
+      "nativeOracleSweeps": 33
+    },
+    "rooms-closed-shifted": {
+      "imageSha256": "dd72508dbc5b514e4a665f4b9d0ba2f8fe6a49277237672739acb06fde53a945",
+      "source": {
+        "layers": [
+          {
+            "byteSize": 4552,
+            "sha256": "b3114270e2e64f2eb282a360068b9653f4f41a1c20ecf1b88ecf1f86714f6f52"
+          }
+        ],
+        "metersPerUnscaledRendererUnit": 0.999999952502551
+      },
+      "startMeters": [
+        -1.55,
+        -1.65
+      ],
+      "goalMeters": [
+        1.55,
+        -1.65
+      ],
+      "nativeOracleSweeps": 0
+    }
+  },
+  "checkpointReplay": {
+    "checkpointSha256": "fa2b68380380e1d545789de52823300075bca951ed1687d2abb6fe84a6e4eb63",
+    "replayedSeed": 287,
+    "transitions": 3000
+  },
+  "nativePathSweepCounts": {
+    "plannedNav2Segments": 1050,
+    "drivenNav2Segments": 8376,
+    "heldoutOracleSegments": 169
+  },
+  "comparison": {
+    "schema": "container.bim-navigation-benchmark-probe",
+    "version": 1,
+    "families": {
+      "offset-hall": [
+        "offset-hall-held-out"
+      ],
+      "lidar-corner": [
+        "lidar-corner-held-out"
+      ],
+      "rooms": [
+        "rooms-open-shifted",
+        "rooms-upper"
+      ]
+    },
+    "sampleBudgets": [
+      0,
+      3000,
+      10000,
+      24000
+    ],
+    "metrics": {
+      "oracle": {
+        "success": {
+          "estimate": 1.0,
+          "ci95": [
+            1.0,
+            1.0
+          ]
+        },
+        "collision": {
+          "estimate": 0.0,
+          "ci95": [
+            0.0,
+            0.0
+          ]
+        },
+        "spl": {
+          "estimate": 1.0,
+          "ci95": [
+            1.0,
+            1.0
+          ]
+        },
+        "wallSeconds": {
+          "estimate": 0.0021884376656089444,
+          "ci95": [
+            0.0008121719947666861,
+            0.0045594690018333495
+          ]
+        }
+      },
+      "navfn-rpp": {
+        "success": {
+          "estimate": 1.0,
+          "ci95": [
+            1.0,
+            1.0
+          ]
+        },
+        "collision": {
+          "estimate": 0.0,
+          "ci95": [
+            0.0,
+            0.0
+          ]
+        },
+        "spl": {
+          "estimate": 1.0,
+          "ci95": [
+            1.0,
+            1.0
+          ]
+        },
+        "wallSeconds": {
+          "estimate": 12.222665441277059,
+          "ci95": [
+            6.403702917998696,
+            19.73158925499835
+          ]
+        }
+      },
+      "learned-0": {
+        "success": {
+          "estimate": 0.5,
+          "ci95": [
+            0.0,
+            1.0
+          ]
+        },
+        "collision": {
+          "estimate": 0.5,
+          "ci95": [
+            0.0,
+            1.0
+          ]
+        },
+        "spl": {
+          "estimate": 0.5,
+          "ci95": [
+            0.0,
+            1.0
+          ]
+        },
+        "wallSeconds": {
+          "estimate": 0.09751954222237046,
+          "ci95": [
+            0.07768416700128,
+            0.1209963276705821
+          ]
+        }
+      },
+      "learned-3000": {
+        "success": {
+          "estimate": 0.2222222222222222,
+          "ci95": [
+            0.0,
+            0.611111111111111
+          ]
+        },
+        "collision": {
+          "estimate": 0.1111111111111111,
+          "ci95": [
+            0.0,
+            0.3333333333333333
+          ]
+        },
+        "spl": {
+          "estimate": 0.2222222222222222,
+          "ci95": [
+            0.0,
+            0.611111111111111
+          ]
+        },
+        "wallSeconds": {
+          "estimate": 0.3415247943351763,
+          "ci95": [
+            0.12625083533364684,
+            0.4757372398368413
+          ]
+        }
+      },
+      "learned-10000": {
+        "success": {
+          "estimate": 0.3333333333333333,
+          "ci95": [
+            0.0,
+            0.8333333333333334
+          ]
+        },
+        "collision": {
+          "estimate": 0.05555555555555555,
+          "ci95": [
+            0.0,
+            0.2222222222222222
+          ]
+        },
+        "spl": {
+          "estimate": 0.3333333333333333,
+          "ci95": [
+            0.0,
+            0.8333333333333334
+          ]
+        },
+        "wallSeconds": {
+          "estimate": 0.3225546530552998,
+          "ci95": [
+            0.11033742466517853,
+            0.4736906120015192
+          ]
+        }
+      },
+      "learned-24000": {
+        "success": {
+          "estimate": 0.3333333333333333,
+          "ci95": [
+            0.0,
+            0.8333333333333334
+          ]
+        },
+        "collision": {
+          "estimate": 0.05555555555555555,
+          "ci95": [
+            0.0,
+            0.2222222222222222
+          ]
+        },
+        "spl": {
+          "estimate": 0.3333333333333333,
+          "ci95": [
+            0.0,
+            0.8333333333333334
+          ]
+        },
+        "wallSeconds": {
+          "estimate": 0.32154587861118167,
+          "ci95": [
+            0.1139137714461766,
+            0.4663041106662907
+          ]
+        }
+      }
+    },
+    "pairedDeltaFromNav2": {
+      "learned-0": {
+        "success": {
+          "estimate": -0.5,
+          "ci95": [
+            -1.0,
+            0.0
+          ]
+        },
+        "collision": {
+          "estimate": 0.5,
+          "ci95": [
+            0.0,
+            1.0
+          ]
+        },
+        "spl": {
+          "estimate": -0.5,
+          "ci95": [
+            -1.0,
+            0.0
+          ]
+        },
+        "wallSeconds": {
+          "estimate": -12.125145899054688,
+          "ci95": [
+            -19.60974178833082,
+            -6.310665637664594
+          ]
+        }
+      },
+      "learned-3000": {
+        "success": {
+          "estimate": -0.7777777777777778,
+          "ci95": [
+            -1.0,
+            -0.38888888888888895
+          ]
+        },
+        "collision": {
+          "estimate": 0.1111111111111111,
+          "ci95": [
+            0.0,
+            0.3333333333333333
+          ]
+        },
+        "spl": {
+          "estimate": -0.7777777777777778,
+          "ci95": [
+            -1.0,
+            -0.38888888888888895
+          ]
+        },
+        "wallSeconds": {
+          "estimate": -11.881140646941882,
+          "ci95": [
+            -19.26619050866187,
+            -6.0615320116630755
+          ]
+        }
+      },
+      "learned-10000": {
+        "success": {
+          "estimate": -0.6666666666666667,
+          "ci95": [
+            -1.0,
+            -0.16666666666666663
+          ]
+        },
+        "collision": {
+          "estimate": 0.05555555555555555,
+          "ci95": [
+            0.0,
+            0.2222222222222222
+          ]
+        },
+        "spl": {
+          "estimate": -0.6666666666666667,
+          "ci95": [
+            -1.0,
+            -0.16666666666666663
+          ]
+        },
+        "wallSeconds": {
+          "estimate": -11.90011078822176,
+          "ci95": [
+            -19.260960352995124,
+            -6.18805094366932
+          ]
+        }
+      },
+      "learned-24000": {
+        "success": {
+          "estimate": -0.6666666666666667,
+          "ci95": [
+            -1.0,
+            -0.16666666666666663
+          ]
+        },
+        "collision": {
+          "estimate": 0.05555555555555555,
+          "ci95": [
+            0.0,
+            0.2222222222222222
+          ]
+        },
+        "spl": {
+          "estimate": -0.6666666666666667,
+          "ci95": [
+            -1.0,
+            -0.16666666666666663
+          ]
+        },
+        "wallSeconds": {
+          "estimate": -11.901119562665876,
+          "ci95": [
+            -19.27309575300266,
+            -6.191288544003328
+          ]
+        }
+      }
+    },
+    "replays": {
+      "oracle": {
+        "grid": {
+          "offset-hall-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.0045594690018333495,
+            "setupSeconds": 0.02682415600429522,
+            "travelledMeters": 7.571320343559642,
+            "status": "geometric-reference",
+            "simulatedSeconds": null
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.0008121719947666861,
+            "setupSeconds": 0.021191796004131902,
+            "travelledMeters": 3.0970562748477124,
+            "status": "geometric-reference",
+            "simulatedSeconds": null
+          },
+          "rooms-open-shifted": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.002123913996911142,
+            "setupSeconds": 0.011178373999428004,
+            "travelledMeters": 4.694112549695428,
+            "status": "geometric-reference",
+            "simulatedSeconds": null
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.00026343000354245305,
+            "setupSeconds": 0.011733777995686978,
+            "travelledMeters": 3.100000000000001,
+            "status": "geometric-reference",
+            "simulatedSeconds": null
+          }
+        }
+      },
+      "navfn-rpp": {
+        "1": {
+          "offset-hall-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 19.716178845992545,
+            "setupSeconds": 13.265939278004225,
+            "travelledMeters": 7.143372190447452,
+            "simulatedSeconds": 19.716666666666665,
+            "status": "success"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 6.41208641299454,
+            "setupSeconds": 10.466533341001195,
+            "travelledMeters": 2.3981952478693787,
+            "simulatedSeconds": 6.416666666666667,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 13.551370893001149,
+            "setupSeconds": 10.186659733000852,
+            "travelledMeters": 4.4144947350821315,
+            "simulatedSeconds": 13.55,
+            "status": "success"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 7.734407493997423,
+            "setupSeconds": 10.185956479996094,
+            "travelledMeters": 2.858521568894625,
+            "simulatedSeconds": 7.733333333333333,
+            "status": "success"
+          }
+        },
+        "2": {
+          "offset-hall-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 19.739610672004346,
+            "setupSeconds": 10.452823637999245,
+            "travelledMeters": 7.144055320780903,
+            "simulatedSeconds": 19.733333333333334,
+            "status": "success"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 6.411489274003543,
+            "setupSeconds": 10.45915759899799,
+            "travelledMeters": 2.3981952478693787,
+            "simulatedSeconds": 6.416666666666667,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 13.399731835997954,
+            "setupSeconds": 10.454481006003334,
+            "travelledMeters": 4.4150904081534215,
+            "simulatedSeconds": 13.4,
+            "status": "success"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 7.561148571003287,
+            "setupSeconds": 10.450877980001678,
+            "travelledMeters": 2.8583695497545962,
+            "simulatedSeconds": 7.566666666666666,
+            "status": "success"
+          }
+        },
+        "3": {
+          "offset-hall-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 19.73897824699816,
+            "setupSeconds": 10.451019781001378,
+            "travelledMeters": 7.145635790559283,
+            "simulatedSeconds": 19.733333333333334,
+            "status": "success"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 6.387533066998003,
+            "setupSeconds": 10.457408337999368,
+            "travelledMeters": 2.3987388673391394,
+            "simulatedSeconds": 6.4,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 13.401298205004423,
+            "setupSeconds": 10.455208535997372,
+            "travelledMeters": 4.4150904081534215,
+            "simulatedSeconds": 13.4,
+            "status": "success"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 7.548267906000547,
+            "setupSeconds": 10.955196803995932,
+            "travelledMeters": 2.858521568894625,
+            "simulatedSeconds": 7.55,
+            "status": "success"
+          }
+        }
+      },
+      "learned-0": {
+        "287": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.12205827500292799,
+            "setupSeconds": 0.008331368000654038,
+            "travelledMeters": 3.1466666666666723,
+            "simulatedSeconds": 7.883333333333334,
+            "status": "collision"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.09329535000142641,
+            "setupSeconds": 0.006348684997647069,
+            "travelledMeters": 2.4066666666666685,
+            "simulatedSeconds": 6.016666666666667,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.046075138001469895,
+            "setupSeconds": 0.006520786999317352,
+            "travelledMeters": 1.1999999999999973,
+            "simulatedSeconds": 3.0166666666666666,
+            "status": "collision"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.10818534799909685,
+            "setupSeconds": 0.006875500999740325,
+            "travelledMeters": 2.85333333333333,
+            "simulatedSeconds": 7.133333333333334,
+            "status": "success"
+          }
+        },
+        "1637": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.12219298499985598,
+            "setupSeconds": 0.008292234000691678,
+            "travelledMeters": 3.1466666666666723,
+            "simulatedSeconds": 7.883333333333334,
+            "status": "collision"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.09252114099945175,
+            "setupSeconds": 0.006652973002928775,
+            "travelledMeters": 2.4066666666666685,
+            "simulatedSeconds": 6.016666666666667,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.04634396299661603,
+            "setupSeconds": 0.00683528099762043,
+            "travelledMeters": 1.1999999999999973,
+            "simulatedSeconds": 3.0166666666666666,
+            "status": "collision"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.10926632699556649,
+            "setupSeconds": 0.006810741004301235,
+            "travelledMeters": 2.85333333333333,
+            "simulatedSeconds": 7.133333333333334,
+            "status": "success"
+          }
+        },
+        "2081": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.11887243300589034,
+            "setupSeconds": 0.007799721999617759,
+            "travelledMeters": 3.1466666666666723,
+            "simulatedSeconds": 7.883333333333334,
+            "status": "collision"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.09611614099412691,
+            "setupSeconds": 0.006245797005249187,
+            "travelledMeters": 2.4066666666666685,
+            "simulatedSeconds": 6.016666666666667,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.045882061996962875,
+            "setupSeconds": 0.0067743550025625154,
+            "travelledMeters": 1.1999999999999973,
+            "simulatedSeconds": 3.0166666666666666,
+            "status": "collision"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.10948627200559713,
+            "setupSeconds": 0.0066809819982154295,
+            "travelledMeters": 2.85333333333333,
+            "simulatedSeconds": 7.133333333333334,
+            "status": "success"
+          }
+        }
+      },
+      "learned-3000": {
+        "287": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.4660582290016464,
+            "setupSeconds": 0.008514775996445678,
+            "travelledMeters": 0.0,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.09647744600079022,
+            "setupSeconds": 0.006503846001578495,
+            "travelledMeters": 2.391666608072965,
+            "simulatedSeconds": 6.016666666666667,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.046190022003429476,
+            "setupSeconds": 0.0070114519985509105,
+            "travelledMeters": 1.1999999999999973,
+            "simulatedSeconds": 3.0166666666666666,
+            "status": "collision"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.11017059499863535,
+            "setupSeconds": 0.006674313000985421,
+            "travelledMeters": 2.85333333333333,
+            "simulatedSeconds": 7.133333333333334,
+            "status": "success"
+          }
+        },
+        "1637": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.4691747960023349,
+            "setupSeconds": 0.008848044002661481,
+            "travelledMeters": 0.0,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "lidar-corner-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.4788899390041479,
+            "setupSeconds": 0.006691910995868966,
+            "travelledMeters": 0.8199997656251627,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.47700991500460077,
+            "setupSeconds": 0.007253108000440989,
+            "travelledMeters": 1.3449994726566168,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "rooms-upper": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.4812840540034813,
+            "setupSeconds": 0.006894562997331377,
+            "travelledMeters": 1.4449997070314575,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          }
+        },
+        "2081": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.4578466470047715,
+            "setupSeconds": 0.008377325000765268,
+            "travelledMeters": 0.20000000000000462,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "lidar-corner-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.4653162059985334,
+            "setupSeconds": 0.006396030003088526,
+            "travelledMeters": 2.0799995312503317,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.05365604699909454,
+            "setupSeconds": 0.008408827001403552,
+            "travelledMeters": 1.1999999999999973,
+            "simulatedSeconds": 3.0166666666666666,
+            "status": "collision"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.11160913899948355,
+            "setupSeconds": 0.006900424006744288,
+            "travelledMeters": 2.85333333333333,
+            "simulatedSeconds": 7.133333333333334,
+            "status": "success"
+          }
+        }
+      },
+      "learned-10000": {
+        "287": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.47522146700066514,
+            "setupSeconds": 0.00779516100010369,
+            "travelledMeters": 0.0,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.09252813999773934,
+            "setupSeconds": 0.006659177000983618,
+            "travelledMeters": 2.391666608072965,
+            "simulatedSeconds": 6.016666666666667,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.44602678900264436,
+            "setupSeconds": 0.006695174997730646,
+            "travelledMeters": 1.1199999999999974,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.11609725500602508,
+            "setupSeconds": 0.0076009849944966845,
+            "travelledMeters": 2.85333333333333,
+            "simulatedSeconds": 7.133333333333334,
+            "status": "success"
+          }
+        },
+        "1637": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.47062890200322727,
+            "setupSeconds": 0.008359619998373091,
+            "travelledMeters": 0.0,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "lidar-corner-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.48431174299912527,
+            "setupSeconds": 0.006626377995416988,
+            "travelledMeters": 0.09999976562516477,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.4652005759999156,
+            "setupSeconds": 0.006847012002253905,
+            "travelledMeters": 0.9599995312503263,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "rooms-upper": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.47425942499830853,
+            "setupSeconds": 0.007518087004427798,
+            "travelledMeters": 0.12499970703145573,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          }
+        },
+        "2081": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.4601225899968995,
+            "setupSeconds": 0.008184111000446137,
+            "travelledMeters": 0.1600000000000037,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.09407224699680228,
+            "setupSeconds": 0.006585917006304953,
+            "travelledMeters": 2.3966665494792525,
+            "simulatedSeconds": 6.066666666666666,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.04485938599827932,
+            "setupSeconds": 0.006863057998998556,
+            "travelledMeters": 1.1999999999999973,
+            "simulatedSeconds": 3.0166666666666666,
+            "status": "collision"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.10577014600130497,
+            "setupSeconds": 0.006733717993483879,
+            "travelledMeters": 2.85333333333333,
+            "simulatedSeconds": 7.133333333333334,
+            "status": "success"
+          }
+        }
+      },
+      "learned-24000": {
+        "287": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.47512394600198604,
+            "setupSeconds": 0.010143824998522177,
+            "travelledMeters": 0.0,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.09547457099688472,
+            "setupSeconds": 0.006431363995943684,
+            "travelledMeters": 2.391666608072965,
+            "simulatedSeconds": 6.016666666666667,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.49015051899914397,
+            "setupSeconds": 0.00717094300489407,
+            "travelledMeters": 1.1999999999999973,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.11216269500437193,
+            "setupSeconds": 0.0070658580007147975,
+            "travelledMeters": 2.85333333333333,
+            "simulatedSeconds": 7.133333333333334,
+            "status": "success"
+          }
+        },
+        "1637": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.44861505900189513,
+            "setupSeconds": 0.008289204000902828,
+            "travelledMeters": 0.0,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "lidar-corner-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.47025018699787324,
+            "setupSeconds": 0.0063365000023623,
+            "travelledMeters": 0.09999976562516477,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.48401589300192427,
+            "setupSeconds": 0.007250046000990551,
+            "travelledMeters": 0.5249987695321146,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "rooms-upper": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.47929972400015686,
+            "setupSeconds": 0.006827305995102506,
+            "travelledMeters": 0.12499970703145573,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          }
+        },
+        "2081": {
+          "offset-hall-held-out": {
+            "success": false,
+            "collision": false,
+            "spl": 0.0,
+            "wallSeconds": 0.4486644399949,
+            "setupSeconds": 0.008533660999091808,
+            "travelledMeters": 0.0,
+            "simulatedSeconds": 30.0,
+            "status": "budget"
+          },
+          "lidar-corner-held-out": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.09358880800573388,
+            "setupSeconds": 0.006559764995472506,
+            "travelledMeters": 2.3966665494792525,
+            "simulatedSeconds": 6.066666666666666,
+            "status": "success"
+          },
+          "rooms-open-shifted": {
+            "success": false,
+            "collision": true,
+            "spl": 0.0,
+            "wallSeconds": 0.04719076499895891,
+            "setupSeconds": 0.006762643999536522,
+            "travelledMeters": 1.1999999999999973,
+            "simulatedSeconds": 3.0166666666666666,
+            "status": "collision"
+          },
+          "rooms-upper": {
+            "success": true,
+            "collision": false,
+            "spl": 1.0,
+            "wallSeconds": 0.11157219699816778,
+            "setupSeconds": 0.007222443004138768,
+            "travelledMeters": 2.85333333333333,
+            "simulatedSeconds": 7.133333333333334,
+            "status": "success"
+          }
+        }
+      }
+    },
+    "trainingWallSecondsBySeed": {
+      "287": 37.59701772099652,
+      "1637": 36.89785750400188,
+      "2081": 36.871484948002035
+    },
+    "controlCases": {
+      "rooms-closed-shifted": {
+        "oracleReachable": false,
+        "nav2Status": "unreachable"
+      }
+    },
+    "intervalDefinition": "4000 paired bootstrap draws of held-out BIM families and whole method repeats or training seeds"
+  }
+}
