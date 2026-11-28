@@ -1,7 +1,8 @@
 # VulkanSceneRenderer
 
 A C++23 scene renderer and editor built on Vulkan 1.4, with forward and deferred
-PBR rendering, progressive path tracing, and native glTF/GLB and IFC/IFCX loading.
+PBR rendering, native Vulkan ray tracing, progressive path tracing, and
+glTF/GLB and IFC/IFCX loading.
 Inspect complex scenes, edit materials and transforms, play animation, and save
 portable glTF or GLB assets.
 
@@ -84,10 +85,14 @@ textures beside `.gltf` inputs. Load an IFC or IFCX model directly:
 .\out\build\windows-release\VulkanSceneRenderer.exe --model "C:\Models\building.ifc"
 ```
 
-Try raster TAA with `--taa --msaa 1`, or select **Rendering Engine → Path tracing**
-on supported hardware. Lighting controls expose environment, directional and
-area-light settings. `Bounce Intensity` is an artistic fill approximation; use
-zero when inspecting direct-light occlusion.
+In **Scene Controls → Rendering Engine**, choose **Ray tracing** for the native
+`VK_KHR_ray_tracing_pipeline` backend or **Path tracing** for inline Vulkan ray
+queries. Both modes progressively accumulate samples. The first native pipeline
+compile can take a few minutes. [Ray tracing and path tracing controls](docs/reference-path-tracing.md#native-vulkan-ray-tracing-pipeline)
+
+Try raster TAA with `--taa --msaa 1`. Lighting controls expose environment,
+directional and area-light settings. `Bounce Intensity` is an artistic fill
+approximation. Set it to zero when inspecting direct-light occlusion.
 
 The decoded glTF texture budget defaults to 1024 MiB. For larger assets, set
 `--texture-memory-mb 2048` as needed for your hardware. This bounds decoded image

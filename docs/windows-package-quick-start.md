@@ -7,10 +7,10 @@ GFXReconstruct installation and Python 3; normal rendering needs neither.
 New source-built packages also include optional ray shadows:
 `VulkanSceneRenderer.exe --ray-shadows soft --ray-shadow-samples 8`.
 Use `--ray-shadows hard` for hard visibility, or `--no-ray-query` to force raster
-fallback. Ray support is optional; Vulkan 1.4 alone does not imply it. The Shadows
-panel reports support, memory and build/query/filter timings. Transparent
-receivers retain raster shadows; blended/transmissive blockers do not cast binary
-ray shadows. Height-displaced meshes trigger raster fallback.
+shadows. The Shadows panel reports support, memory and build/query/filter
+timings. Transparent receivers retain raster shadows; blended/transmissive
+blockers do not cast binary ray shadows. Height-displaced meshes trigger raster
+fallback.
 
 Use `VulkanSceneRenderer.exe --screen-reflections high --display-mode lit` for
 screen-space reflections in Deferred Raster. Add `--screen-reflections-ray-query`
@@ -98,6 +98,19 @@ files can be opened with `--model` or `--bim-model`. Large external model
 collections shown in the project gallery are not included in this package.
 The renderer performs startup checks for its required Vulkan 1.4 features;
 the API version alone does not guarantee that a device supports every feature.
+
+For native Vulkan ray tracing, choose **Scene Controls → Rendering Engine → Ray tracing**
+or launch:
+
+```powershell
+.\VulkanSceneRenderer.exe --render-technique ray-tracing
+```
+
+**Ray tracing** uses `VK_KHR_ray_tracing_pipeline`. **Path tracing** uses
+`VK_KHR_ray_query`. Both modes progressively accumulate samples and require
+GPU and driver support for their respective extensions. The native pipeline can
+run with `--no-ray-query` and can take a few minutes to compile on first use.
+[Ray tracing and path tracing controls](reference-path-tracing.md#native-vulkan-ray-tracing-pipeline)
 
 This is a preview for testing. Report bugs with the version and source commit
 from `build-info.json`, your GPU and driver version, launch arguments, and any
