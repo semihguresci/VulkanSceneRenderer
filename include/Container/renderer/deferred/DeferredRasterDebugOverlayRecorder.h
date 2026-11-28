@@ -75,6 +75,7 @@ struct DeferredDebugOverlayRecordInputs {
     VkCommandBuffer cmd, const DeferredDebugOverlayRecordInputs &inputs);
 
 [[nodiscard]] bool recordDeferredDebugOverlayWireframeOverlayCommands(
-    VkCommandBuffer cmd, const DeferredDebugOverlayRecordInputs &inputs);
+    VkCommandBuffer cmd, const DeferredDebugOverlayRecordInputs &inputs,
+    VkDescriptorSet oitSet = VK_NULL_HANDLE);
 
 } // namespace container::renderer

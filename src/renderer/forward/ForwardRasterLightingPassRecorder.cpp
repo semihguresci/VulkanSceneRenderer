@@ -299,7 +299,8 @@ void recordForwardEditorOverlays(
   (void)recordDeferredDebugOverlayGeometryCommands(cmd, inputs);
   (void)recordDeferredDebugOverlayNormalValidationCommands(cmd, inputs);
   (void)recordDeferredDebugOverlaySurfaceNormalCommands(cmd, inputs);
-  if (state.wireframeOverlayMode && !presentsBimTechnicalLines(p))
+  if (state.wireframeOverlayMode && !presentsBimTechnicalLines(p) &&
+      !recordBimTechnicalOitLines(cmd, p, inputs, overlay.nativeOitSet))
     (void)recordDeferredDebugOverlayWireframeOverlayCommands(cmd, inputs);
 }
 

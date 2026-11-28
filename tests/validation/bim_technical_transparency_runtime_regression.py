@@ -1,4 +1,4 @@
-"""Keep no-depth BIM Technical lines visible through real transparent surfaces."""
+"""Check Technical BIM contours against front, rear and opaque geometry."""
 
 import argparse
 import hashlib
@@ -8,20 +8,17 @@ from pathlib import Path
 import subprocess
 import tempfile
 
-from bim_floor_plan_runtime_regression import panel
+from bim_floor_plan_runtime_regression import panel, read_capture as read_scene_capture
 from display_capture_test_support import validation_log_error
 
 
 WIDTH, HEIGHT = 512, 384
+EXR_MAX_LINEAR_DELTA = .002
 TECHNIQUES = ("deferred-raster", "forward-raster")
-MODES = ("lit", "overview")
+MODES = ("lit", "overview", "exr")
 FRAMES = {"off": 4, "no-depth": 8, "depth": 12, "off-again": 16}
-# The roof's own triangle edges lie outside these mirrored wall interiors.
-# Including the roof border gives false evidence of a covered wall contour.
-REGIONS = {
-    "lit": ((29, 106, 166, 278), (346, 106, 483, 278)),
-    "overview": ((23, 43, 64, 76), (120, 43, 162, 76)),
-}
+ZONES = (("clear", -1.2, ()), ("rear", -.4, ((-1.5, 250), (-1.2, 250))),
+         ("front", .4, ((1.2, 250), (1.5, 250))), ("opaque", 1.2, ((1.5, 255),)))
 # Pixel centers inside the Overview Lit tile, matching post_process.slang.
 OVERVIEW_LIT = (13, 18, 171, 101)
 
@@ -36,22 +33,23 @@ def write_json(path, value):
 
 
 def fixture(path):
-    meshes = [panel(1, (-3, 1.1, -.55, 2.25), 0),
-              panel(2, (.55, 1.1, 3, 2.25), 0)]
-    for mesh_id, depth in ((3, 1.2), (4, 1.5)):
-        # DotBIM +Z is renderer +Y and source -Y is renderer +Z.
-        # Oversized triangles cover the left wall without putting their own
-        # Technical contour in the interior measurement regions.
-        meshes.append(dict(mesh_id=mesh_id,
-                           coordinates=[-12, -depth, -9, -.25, -depth, -9, -.25, -depth, 11],
-                           indices=[0, 1, 2]))
-    elements = [dict(mesh_id=index, guid=name, type=kind,
-                     color=dict(r=color, g=color, b=color, a=alpha))
-                for index, name, kind, color, alpha in (
-                    (1, "left-wall", "IfcWall", 145, 255),
-                    (2, "right-wall", "IfcWall", 145, 255),
-                    (3, "left-roof-front-1", "IfcRoof", 180, 250),
-                    (4, "left-roof-front-2", "IfcRoof", 180, 250))]
+    meshes, elements = [], []
+    for zone, x, covers in ZONES:
+        mesh_id = len(meshes) + 1
+        # Keep the target translucent so an opaque target prepass cannot hide
+        # rear glass and accidentally make unconditionally early lines pass.
+        meshes.append(panel(mesh_id, (x - .23, 1.16, x + .23, 2.19), 0))
+        elements.append(dict(mesh_id=mesh_id, guid=f"{zone}-wall", type="IfcWall",
+                             color=dict(r=150, g=150, b=150, a=64)))
+        for layer, (z, alpha) in enumerate(((-1.9, 255), *covers)):
+            mesh_id = len(meshes) + 1
+            # Use a tall triangle whose sloping edge stays outside the contour
+            # measurement region. Match clear and covered background colors.
+            meshes.append(dict(mesh_id=mesh_id,
+                               coordinates=[x - .39, -z, -8, x + .39, -z, -8,
+                                            x + .39, -z, 160], indices=[0, 1, 2]))
+            elements.append(dict(mesh_id=mesh_id, guid=f"{zone}-panel-{layer}", type="IfcRoof",
+                                 color=dict(r=180, g=180, b=180, a=alpha)))
     write_json(path, dict(schema_version="1.1.0", meshes=meshes, elements=elements))
 
 
@@ -64,34 +62,32 @@ def sequence_plan():
     ])
 
 
-def read_capture(image, technique, mode, model):
-    import numpy as np
-    from PIL import Image
-
-    metadata = json.loads(Path(f"{image}.capture.json").read_bytes())
-    state = json.loads(image.with_suffix(".telemetry.json").read_bytes())
-    require((metadata["width"], metadata["height"], metadata["includesUi"], metadata["source"],
-             metadata["displayMode"]) == (WIDTH, HEIGHT, False, "viewport", 8 if mode == "overview" else 0),
-            f"Wrong capture route: {image}")
-    require(state["technique"] == technique and state["validationEnabled"] and state["msaaSamples"] == 1
-            and not state["taa"]["enabled"], f"Wrong renderer settings: {image}")
+def read_capture(image, frame, technique, mode, model):
+    sample = read_scene_capture(image, frame, technique, extent=(WIDTH, HEIGHT))
+    metadata, state = sample["metadata"], sample["state"]
+    require(mode == "exr" or metadata["displayMode"] == (8 if mode == "overview" else 0),
+            f"Wrong display mode: {image}")
+    require(state["msaaSamples"] == 1 and not state["taa"]["enabled"], f"Wrong renderer settings: {image}")
     require(Path(state["scene"]["auxiliary"]).resolve() == model and
-            state["scene"]["auxiliaryObjectCount"] >= 4, f"Incomplete BIM fixture: {image}")
+            state["scene"]["auxiliaryObjectCount"] >= sum(2 + len(covers) for _, _, covers in ZONES),
+            f"Incomplete BIM fixture: {image}")
     require(not state["oit"]["overflowed"], f"OIT overflow invalidates the occlusion control: {image}")
-    with Image.open(image) as decoded:
-        require(decoded.format == "PNG" and decoded.size == (WIDTH, HEIGHT), f"Invalid image: {image}")
-        pixels = np.asarray(decoded.convert("RGB"))
-    return pixels, state
+    if technique == "forward-raster" or mode != "overview":
+        active = {entry["name"] for entry in state["passes"] if entry["active"]}
+        require({"OitClear", "OitResolve"} <= active, f"Missing transparent passes: {image}")
+    return sample
 
 
 def record(renderer, output, model, sequence, technique, mode, report, generate_only):
     folder = output / f"{technique}-{mode}"
     folder.mkdir()
-    screenshot, log = folder / "lines.png", folder / "renderer.log"
+    extension = "exr" if mode == "exr" else "png"
+    screenshot, log = folder / f"lines.{extension}", folder / "renderer.log"
     command = [str(renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui",
                "--validation", "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1", "--no-taa",
                "--no-bloom", "--no-ddgi", "--no-ray-query", "--render-technique", technique,
-               "--display-mode", mode, "--camera-position", "0", "1.675", "8", "--camera-target", "0", "1.675", "0",
+               "--display-mode", "lit" if mode == "exr" else mode,
+               "--camera-position", "0", "1.675", "8", "--camera-target", "0", "1.675", "0",
                "--camera-fov", "45", "--tone-map", "neutral", "--exposure", "1", "--sky", "plain",
                "--sky-horizon", ".15", ".15", ".15", "--directional-intensity", "4",
                "--directional-direction", "-.2", "-.25", "-1", "--environment-intensity", ".5",
@@ -113,58 +109,94 @@ def record(renderer, output, model, sequence, technique, mode, report, generate_
     require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in text, f"Missing validation layer: {log}")
     images, camera = {}, None
     for label, frame in FRAMES.items():
-        image = screenshot if frame == max(FRAMES.values()) else folder / f"lines.frame-{frame:04}.png"
-        pixels, state = read_capture(image, technique, mode, model)
-        current_camera = state["camera"]["unjitteredViewProjColumns"]
+        image = screenshot if frame == max(FRAMES.values()) else folder / f"lines.frame-{frame:04}.{extension}"
+        sample = read_capture(image, frame, technique, mode, model)
+        current_camera = sample["state"]["camera"]["unjitteredViewProjColumns"]
         if camera is None:
             camera = current_camera
-        require(current_camera == camera, f"Technical toggle moved the camera: {image}")
-        images[label] = pixels
-        row["captures"].append(dict(kind=label, frame=frame, image=str(image), revision=state["build"]["revision"],
-                                    decodedSha256=hashlib.sha256(pixels.tobytes()).hexdigest()))
+        require(current_camera == camera and [column[3] for column in camera] == [0, 0, 0, 1]
+                and abs(camera[0][0] - .625) < 1e-5 and abs(camera[1][1] - 5 / 6) < 1e-5,
+                f"Unexpected Technical measurement camera: {image}")
+        images[label] = sample["pixels"]
+        row["captures"].append(dict(kind=label, frame=frame, image=str(image),
+                                    revision=sample["state"]["build"]["revision"],
+                                    decodedSha256=sample["decodedSha256"]))
     return images
 
 
 def inspect(images, technique, mode):
     import numpy as np
 
-    np.testing.assert_array_equal(images["off"], images["off-again"],
-                                  err_msg=f"{technique}/{mode}: disabling Technical left stale pixels")
-    background = images["off"].astype(np.int16)
-    masks = {label: np.max(np.abs(image.astype(np.int16) - background), axis=2) > 8
-             for label, image in images.items()}
-    regions = REGIONS[mode]
+    off = images["off"]
+    errors = []
+    if mode == "exr":
+        require(float(off.max()) > .01, f"{technique}: empty scene-linear control")
+        raw = {}
+        for label in ("no-depth", "depth", "off-again"):
+            delta = np.max(np.abs(images[label] - off), axis=2)
+            raw[label] = dict(changedPixels=int(np.count_nonzero(delta)),
+                              pixelsAboveLimit=int(np.count_nonzero(delta > EXR_MAX_LINEAR_DELTA)),
+                              maxLinearDelta=float(delta.max()))
+            if raw[label]["pixelsAboveLimit"]:
+                errors.append(f"{label} Technical contour changed the scene-linear image")
+        return {"sceneLinearFrames": raw, "maxAllowedLinearDelta": EXR_MAX_LINEAR_DELTA}, errors
 
-    def count(mask, bounds):
-        left, top, right, bottom = bounds
-        return int(np.count_nonzero(mask[top:bottom, left:right]))
+    if not np.array_equal(off, images["off-again"]):
+        errors.append("disabling Technical left stale pixels")
 
-    counts = {label: dict(covered=count(masks[label], regions[0]), clear=count(masks[label], regions[1]))
-              for label in ("no-depth", "depth")}
-    minimum = 8 if mode == "overview" else 32
-    for label in counts:
-        require(counts[label]["clear"] >= minimum,
-                f"{technique}/{mode}: no exposed wall contour for {label}: {counts}")
-    require(counts["no-depth"]["covered"] >= max(minimum, counts["no-depth"]["clear"] * .6),
-            f"{technique}/{mode}: no-depth Technical contour disappeared under the roof: {counts}")
-
-    # The current Deferred Overview deliberately omits transparent node production.
-    # In all other cases the genuine roof remains an OIT occluder of depth-tested lines.
-    oit_occludes = technique == "forward-raster" or mode == "lit"
-    if oit_occludes:
-        require(counts["depth"]["covered"] == 0,
-                f"{technique}/{mode}: depth-tested Technical contour escaped the roof: {counts}")
-    else:
-        require(counts["depth"]["covered"] >= max(minimum, counts["depth"]["clear"] * .6),
-                f"{technique}/{mode}: Deferred Overview lost its depth-tested wall contour: {counts}")
-    if mode == "overview":
+    overview = mode == "overview"
+    if overview:
         left, top, right, bottom = OVERVIEW_LIT
+        viewport = np.s_[top:bottom, left:right]
+    else:
+        viewport = np.s_[:, :]
+    background = off[viewport].astype(np.int16)
+    height, width = background.shape[:2]
+    rows = slice(round(.19 * height), round(.81 * height))
+    margin = round(.0375 * width)
+    counts = {}
+    for label in ("no-depth", "depth"):
+        delta = np.max(np.abs(images[label][viewport].astype(np.int16) - background), axis=2)
+        counts[label] = {}
+        for index, (name, _, _) in enumerate(ZONES):
+            columns = slice(index * width // 4 + margin, (index + 1) * width // 4 - margin)
+            patch = delta[rows, columns]
+            counts[label][name] = dict(visiblePixels=int(np.count_nonzero(patch > 8)),
+                                       changedPixels=int(np.count_nonzero(patch)))
+
+    minimum = 8 if overview else 32
+    no_depth, depth = counts["no-depth"], counts["depth"]
+    for name, pixels in no_depth.items():
+        if pixels["visiblePixels"] < max(minimum, .6 * no_depth["clear"]["visiblePixels"]):
+            errors.append(f"no-depth contour disappeared in the {name} control")
+    if depth["clear"]["visiblePixels"] < minimum:
+        errors.append("clear depth-tested contour disappeared")
+    if depth["rear"]["visiblePixels"] < max(minimum, .65 * depth["clear"]["visiblePixels"]):
+        errors.append("rear transparent geometry attenuated the depth-tested contour")
+    if depth["opaque"]["changedPixels"]:
+        errors.append("depth-tested contour leaked through opaque geometry")
+
+    # Deferred Overview has no transparent node production. Its depth-tested
+    # contour still draws in the Lit tile and respects the opaque control.
+    sorted_depth = technique == "forward-raster" or not overview
+    if sorted_depth and depth["front"]["visiblePixels"]:
+        errors.append("depth-tested contour escaped the nearly opaque front glass")
+    if not sorted_depth and depth["front"]["visiblePixels"] < minimum:
+        errors.append("Deferred Overview lost its depth-tested contour")
+
+    diagnostics = {}
+    if overview:
         outside = np.ones((HEIGHT, WIDTH), dtype=bool)
-        outside[top:bottom, left:right] = False
-        np.testing.assert_array_equal(images["no-depth"][outside], images["off"][outside],
-                                      err_msg=f"{technique}: no-depth Technical changed an Overview diagnostic tile")
-    return dict(interiorPixels=counts, oitOccludesDepthTested=oit_occludes,
-                offRestored=True, overviewDiagnosticsUnchanged=mode == "overview")
+        outside[viewport] = False
+        if not np.array_equal(images["no-depth"][outside], off[outside]):
+            errors.append("no-depth Technical changed pixels outside the Overview Lit tile")
+        for name, left, right in (("transparency", .03, .33), ("revealage", .35, .65)):
+            pane = np.s_[round(.51 * HEIGHT):round(.72 * HEIGHT), round(left * WIDTH):round(right * WIDTH)]
+            changed = int(np.count_nonzero(np.any(images["depth"][pane] != off[pane], axis=2)))
+            diagnostics[name] = changed
+            if changed:
+                errors.append(f"depth-tested Technical changed the Overview {name} tile")
+    return {"interiorPixels": counts, "sortedDepth": sorted_depth, "diagnosticPixelsChanged": diagnostics}, errors
 
 
 def main():
@@ -177,6 +209,7 @@ def main():
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_BIM_FLOOR_PLAN") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1 to run GPU captures")
         return 77
+    os.environ.setdefault("OPENCV_IO_ENABLE_OPENEXR", "1")
     renderer, output = args.renderer.resolve(), args.output.resolve()
     if args.managed_output:
         output.mkdir(parents=True, exist_ok=True)
@@ -187,7 +220,7 @@ def main():
     fixture(model)
     write_json(sequence, sequence_plan())
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
-    report = dict(passed=False, generatedOnly=args.generate_only, runs=[], checks={}, interiorRegions=REGIONS)
+    report = dict(passed=False, generatedOnly=args.generate_only, runs=[], checks={}, failures=[])
     if not args.generate_only:
         report["rendererSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     report["fixtureSha256"] = hashlib.sha256(model.read_bytes()).hexdigest()
@@ -197,11 +230,13 @@ def main():
             for mode in MODES:
                 images = record(renderer, output, model, sequence, technique, mode, report, args.generate_only)
                 if not args.generate_only:
-                    checks = inspect(images, technique, mode)
+                    checks, failures = inspect(images, technique, mode)
                     report["checks"][f"{technique}-{mode}"] = checks
+                    report["failures"].extend(f"{technique}/{mode}: {failure}" for failure in failures)
                     print(technique, mode, checks, flush=True)
         if not args.generate_only:
             require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["rendererSha256"], "Renderer changed")
+            require(not report["failures"], "\n".join(report["failures"]))
             report["passed"] = True
     finally:
         write_json(output / "results.json", report)
