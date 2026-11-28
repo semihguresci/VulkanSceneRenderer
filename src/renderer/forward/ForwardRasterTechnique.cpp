@@ -271,7 +271,10 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
                                ForwardRasterPipelineLayoutId::Wireframe));
   }
   for (const auto *pipeline : {kBimNativePointOitPipeline, kBimNativeCurveOitPipeline,
-                               kBimNativeCurveStrokeOitPipeline, kBimFloorPlanOitPipeline}) {
+                               kBimNativeCurveStrokeOitPipeline, kBimFloorPlanOitPipeline,
+                               kBimPointHighlightOitPipeline, kBimCurveStrokeHighlightOitPipeline,
+                               kBimPointSelectionOitPipeline, kBimCurveSelectionOitPipeline,
+                               kBimCurveStrokeSelectionOitPipeline}) {
     registerGraphicsRecipe(pipeline, {"spv_shaders/wireframe_debug.vert.spv",
                                       "spv_shaders/bim_native_oit.frag.spv"}, kBimNativeOitLayout);
   }

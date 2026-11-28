@@ -26,11 +26,10 @@ VolumeTransparentLayers LoadVolumeTransparentLayers(uint2 pixel) {
     [loop] while (current != INVALID_NODE_INDEX && layers.count < MAX_OIT_NODES_PER_PIXEL) {
         if (current >= volumeOitMetadata.nodeCapacity) break;
         TransparentNode node = volumeOitNodes[current];
-        float depth = VolumeOitFinite(node.depth, 0.0);
         uint insert = layers.count;
         [loop] while (insert > 0u) {
-            float previousDepth = VolumeOitFinite(volumeOitNodes[layers.indices[insert - 1u]].depth, 0.0);
-            if (previousDepth >= depth) break;
+            TransparentNode previous = volumeOitNodes[layers.indices[insert - 1u]];
+            if (!OitNodePrecedes(node, previous)) break;
             layers.indices[insert] = layers.indices[insert - 1u];
             --insert;
         }
