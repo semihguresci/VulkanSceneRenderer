@@ -1,5 +1,6 @@
 #include "Container/robotics/BimAssetCache.h"
 #include "Container/robotics/BimSceneSourceManifest.h"
+#include "Container/robotics/CollisionSensorCamera.h"
 #include "Container/robotics/DifferentialDriveSimulation.h"
 #include "Container/robotics/DriveSensors.h"
 #include "Container/robotics/RaycastLidar.h"
@@ -10,6 +11,8 @@
 #include <nlohmann/json.hpp>
 
 #include <algorithm>
+#include <array>
+#include <bit>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -18,13 +21,23 @@
 #include <initializer_list>
 #include <iostream>
 #include <limits>
+#include <map>
+#include <numeric>
 #include <optional>
+#include <set>
+#include <span>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
+
+#ifdef _WIN32
+#include <cstdio>
+#include <fcntl.h>
+#include <io.h>
+#endif
 
 namespace {
 
@@ -35,7 +48,9 @@ using Nanoseconds = std::chrono::nanoseconds;
 
 constexpr std::string_view usage =
     "Usage: BimRoboticsSim INPUT.ifc|INPUT.ifcx OUTPUT.json SOURCE_NAMESPACE SCENARIO.json"
-    " [--benchmark TIMINGS.json]\n";
+    " [--benchmark TIMINGS.json]\n"
+    "       BimRoboticsSim --stream INPUT.ifc|INPUT.ifcx SOURCE_NAMESPACE SCENARIO.json"
+    " [--camera CAMERA.json]\n";
 constexpr uint64_t nanosPerSecond = 1'000'000'000;
 constexpr uint64_t maxScenarioBytes = 4u * 1024u * 1024u;
 constexpr uint64_t maxTicks = 8191;
@@ -624,11 +639,322 @@ bool sameFile(const std::filesystem::path& first, const std::filesystem::path& s
   return std::filesystem::equivalent(first, second, error);
 }
 
+constexpr size_t maxStreamRequestBytes = 4096;
+constexpr double maxStreamLinear = 10.0;
+constexpr double maxStreamAngular = 50.0;
+
+struct StreamCamera {
+  robotics::SensorCameraSettings settings;
+  robotics::SensorSchedule schedule;
+  uint64_t lastTick;
+};
+
+StreamCamera readStreamCamera(const std::filesystem::path& path, const Scenario& scenario) {
+  constexpr std::streamoff maxSpecBytes = 64 * 1024;
+  std::ifstream input(path, std::ios::binary | std::ios::ate);
+  if (!input) throw std::runtime_error("Could not open the drive stream camera spec");
+  const auto size = input.tellg();
+  if (size < 0 || size > maxSpecBytes)
+    throw std::invalid_argument("Drive stream camera spec exceeds the input size limit");
+  input.seekg(0);
+  std::string contents(static_cast<size_t>(size), '\0');
+  if (!input.read(contents.data(), static_cast<std::streamsize>(contents.size())))
+    throw std::runtime_error("Could not read the drive stream camera spec");
+  if (contents.find('\0') != std::string::npos)
+    throw std::invalid_argument("Drive stream camera spec contains a NUL byte");
+  auto spec = Json::parse(contents);
+  if (!spec.is_object()) throw std::invalid_argument("Drive stream camera spec must be an object");
+  if (spec.contains("worldFromBase"))
+    throw std::invalid_argument("The drive stream camera uses the simulated base pose instead of worldFromBase");
+  if (!spec.contains("timing")) spec["timing"] = Json::object();
+  auto& timing = spec.at("timing");
+  if (!timing.is_object()) throw std::invalid_argument("Drive stream camera timing must be an object");
+  const auto frequency = scenario.options.ticksPerSecond;
+  if (timing.contains("ticksPerSecond") &&
+      natural(timing.at("ticksPerSecond"), "timing.ticksPerSecond", 1'000'000) != frequency)
+    throw std::invalid_argument("Drive stream camera ticksPerSecond must match the simulation");
+  const auto firstTick = timing.contains("firstTick")
+      ? natural(timing.at("firstTick"), "timing.firstTick", scenario.ticks) : 0;
+  const auto lastTick = timing.contains("lastTick")
+      ? natural(timing.at("lastTick"), "timing.lastTick", scenario.ticks) : scenario.ticks;
+  if (lastTick < firstTick) throw std::invalid_argument("Drive stream camera lastTick precedes firstTick");
+  // Reuse the camera parser and its calibration rules. Only a single dummy
+  // frame is needed because stream acquisition uses committed base poses.
+  timing["ticksPerSecond"] = frequency;
+  timing["lastTick"] = firstTick;
+  auto playback = robotics::parseSensorCameraPlayback(spec.dump());
+  robotics::validateCollisionSensorCameraSettings(playback.settings);
+  return {std::move(playback.settings), playback.schedule, lastTick};
+}
+
+Json describeStreamCamera(const robotics::SensorCameraSettings& settings) {
+  const auto& mount = settings.baseFromCamera;
+  auto baseFromCamera = glm::mat4_cast(glm::normalize(mount.rotation));
+  baseFromCamera[3] = glm::dvec4(mount.position, 1.0);
+  return {{"width", settings.width}, {"height", settings.height}, {"fx", settings.fx}, {"fy", settings.fy},
+          {"cx", settings.cx}, {"cy", settings.cy}, {"nearMeters", settings.nearMeters},
+          {"farMeters", settings.farMeters}, {"baseFromCamera", matrix(baseFromCamera)}};
+}
+
+robotics::CollisionSensorColorLookup streamCameraColors(const robotics::BimPreprocessedAssets& assets) {
+  std::map<std::string_view, const robotics::SemanticEntity*, std::less<>> sourceEntities, guidEntities;
+  for (const auto& entity : assets.scene.entities) {
+    if (!entity.sourceId.empty()) sourceEntities.try_emplace(entity.sourceId, &entity);
+    if (!entity.guid.empty()) {
+      const auto [entry, inserted] = guidEntities.try_emplace(entity.guid, &entity);
+      if (!inserted) entry->second = nullptr;
+    }
+  }
+  using Rgb8 = std::array<uint8_t, 3>;
+  std::map<std::string, Rgb8, std::less<>> colors;
+  const auto srgbByte = [](float component) {
+    const auto linear = std::clamp(static_cast<double>(component), 0.0, 1.0);
+    const auto srgb = linear <= 0.0031308 ? linear * 12.92 : 1.055 * std::pow(linear, 1.0 / 2.4) - 0.055;
+    return static_cast<uint8_t>(std::lround(srgb * 255.0));
+  };
+  for (const auto& element : assets.renderModel.elements) {
+    if (element.isRepresentationOnly || element.geometryKind != container::geometry::dotbim::GeometryKind::Mesh)
+      continue;
+    const auto& source = element.semanticSourceId.empty() ? element.sourceId : element.semanticSourceId;
+    const auto& entities = source.empty() ? guidEntities : sourceEntities;
+    const auto owner = entities.find(source.empty() ? element.guid : source);
+    if (owner == entities.end() || !owner->second || colors.contains(owner->second->id)) continue;
+    // As in the cached render preview, use the authored PBR material factor
+    // when available. Several drawables can share one collision entity ID.
+    const auto color = element.materialIndex < assets.renderModel.materials.size()
+        ? assets.renderModel.materials[element.materialIndex].pbr.baseColor : element.color;
+    if (!std::isfinite(color.r) || !std::isfinite(color.g) || !std::isfinite(color.b)) continue;
+    colors.emplace(owner->second->id, Rgb8{srgbByte(color.r), srgbByte(color.g), srgbByte(color.b)});
+  }
+  return [colors = std::move(colors)](std::string_view id) -> std::optional<Rgb8> {
+    const auto entry = colors.find(id);
+    if (entry == colors.end()) return std::nullopt;
+    return entry->second;
+  };
+}
+
+std::string streamBase64(std::span<const uint8_t> bytes) {
+  constexpr std::string_view alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string encoded;
+  encoded.reserve((bytes.size() + 2) / 3 * 4);
+  for (size_t i = 0; i < bytes.size(); i += 3) {
+    const auto a = bytes[i];
+    const auto b = i + 1 < bytes.size() ? bytes[i + 1] : 0;
+    const auto c = i + 2 < bytes.size() ? bytes[i + 2] : 0;
+    encoded.push_back(alphabet[a >> 2]);
+    encoded.push_back(alphabet[((a & 3) << 4) | (b >> 4)]);
+    encoded.push_back(i + 1 < bytes.size() ? alphabet[((b & 15) << 2) | (c >> 6)] : '=');
+    encoded.push_back(i + 2 < bytes.size() ? alphabet[c & 63] : '=');
+  }
+  return encoded;
+}
+
+Json streamImage(const StreamCamera& camera, const robotics::DifferentialDriveState& state,
+                 const robotics::LidarCast& rays, const robotics::CollisionSensorColorLookup& colors) {
+  if (state.tick > camera.lastTick || !camera.schedule.due(state.tick)) return nullptr;
+  const robotics::SensorCameraPose worldFromBase{
+      state.base.position, glm::angleAxis(state.base.yaw, glm::dvec3(0.0, 0.0, 1.0))};
+  const auto frame = robotics::makeSensorCameraFrame(camera.settings, camera.schedule, state.tick, worldFromBase);
+  const auto image = robotics::captureCollisionSensorCamera(camera.settings, frame, rays, colors);
+  static_assert(sizeof(float) == sizeof(uint32_t) && std::numeric_limits<float>::is_iec559);
+  std::vector<uint8_t> depth;
+  depth.reserve(image.depth32fc1.size() * 4);
+  for (const auto value : image.depth32fc1) {
+    const auto bits = std::bit_cast<uint32_t>(value);
+    for (const auto shift : {0, 8, 16, 24}) depth.push_back(static_cast<uint8_t>(bits >> shift));
+  }
+  return {{"sampleIndex", frame.sampleIndex}, {"rgb8Base64", streamBase64(image.rgb8)},
+          {"depth32fc1Base64", streamBase64(depth)}};
+}
+
+void validateStreamScenario(const Scenario& scenario) {
+  if (!scenario.commands.empty() || scenario.frameNanos || !scenario.frameNanosSequence.empty())
+    throw std::invalid_argument("Stream scenarios require ticks and no prerecorded commands or frame cadence");
+  if (scenario.lidar || scenario.driveSensors)
+    throw std::invalid_argument("Stream scenarios do not support batch LiDAR or drive sensor settings");
+}
+
+Json streamEnvelope(std::string_view op, bool ok) {
+  return {{"schema", "container.bim-drive-stream"}, {"version", 1}, {"op", op}, {"ok", ok}};
+}
+
+void writeStreamReply(const Json& reply) {
+  std::cout << reply.dump() << '\n' << std::flush;
+  if (!std::cout) throw std::runtime_error("Could not write a drive stream response");
+}
+
+void writeStreamError(std::string_view op, std::string_view error) {
+  auto reply = streamEnvelope(op, false);
+  reply["error"] = error;
+  writeStreamReply(reply);
+}
+
+Json parseStreamRequest(std::string_view line) {
+  if (line.find('\0') != std::string_view::npos)
+    throw std::invalid_argument("Drive stream request contains a NUL byte");
+  std::set<std::string> keys;
+  bool duplicate = false;
+  const auto request = Json::parse(line, [&](int depth, Json::parse_event_t event, const Json& value) {
+    if (depth == 1 && event == Json::parse_event_t::key && !keys.insert(value.get<std::string>()).second)
+      duplicate = true;
+    return true;
+  }, false);
+  if (request.is_discarded()) throw std::invalid_argument("Drive stream request must be valid JSON");
+  if (duplicate) throw std::invalid_argument("Drive stream request contains a duplicate field");
+  return request;
+}
+
+robotics::DriveTwist readStreamCommand(const Json& request, std::string& op, uint64_t currentTick,
+                                     uint64_t lastTick) {
+  if (!request.is_object() || !request.contains("op") || !request.at("op").is_string())
+    throw std::invalid_argument("Drive stream request must be an object with a string op");
+  op = request.at("op").get<std::string>();
+  if (op == "describe" || op == "observe" || op == "close") {
+    checkKeys(request, {"op"});
+    return {};
+  }
+  if (op != "step") throw std::invalid_argument("Unknown drive stream operation");
+  checkKeys(request, {"op", "tick", "linearMetersPerSecond", "angularRadiansPerSecond"});
+  if (!request.contains("tick") || !request.contains("linearMetersPerSecond") ||
+      !request.contains("angularRadiansPerSecond"))
+    throw std::invalid_argument("Drive stream step requires tick, linearMetersPerSecond and angularRadiansPerSecond");
+  const auto tick = natural(request.at("tick"), "tick", std::numeric_limits<uint64_t>::max());
+  if (currentTick >= lastTick) throw std::invalid_argument("Drive stream has reached the scenario tick limit");
+  if (tick != currentTick + 1) throw std::invalid_argument("Drive stream step must name the next tick");
+  const auto linear = real(request.at("linearMetersPerSecond"), "linearMetersPerSecond");
+  const auto angular = real(request.at("angularRadiansPerSecond"), "angularRadiansPerSecond");
+  if (std::abs(linear) > maxStreamLinear || std::abs(angular) > maxStreamAngular)
+    throw std::invalid_argument("Drive stream step limits are 10 m/s and 50 rad/s in either direction");
+  return {linear, angular};
+}
+
+Json streamSample(const robotics::DifferentialDriveSimulation& simulation, const Scenario& scenario,
+                  robotics::DriveWheels previousEncoder) {
+  const auto& state = simulation.state();
+  auto result = sample(state, true);
+  const auto frequency = scenario.options.ticksPerSecond;
+  result["timestampNanoseconds"] = state.tick * nanosPerSecond / frequency;
+  const auto transforms = simulation.frames();
+  result["transforms"] = {{"mapFromOdometry", matrix(transforms.mapFromOdometry)},
+                          {"odometryFromBase", matrix(transforms.odometryFromBase)}};
+  // Use the wheel deltas that integrate odometry, including encoder noise and
+  // contact clipping, so turns retain their signed rate across heading wraps.
+  const auto& drive = scenario.options.drive;
+  const auto left = (state.encoderAngles.left - previousEncoder.left) * drive.wheelRadius;
+  const auto right = (state.encoderAngles.right - previousEncoder.right) * drive.wheelRadius;
+  const auto linear = std::midpoint(left, right) * frequency;
+  const auto angular = (right - left) / drive.trackWidth * frequency;
+  if (!std::isfinite(linear) || !std::isfinite(angular))
+    throw std::overflow_error("Drive stream odometry twist exceeds its numeric range");
+  result["twist"] = {{"linearMetersPerSecond", linear}, {"angularRadiansPerSecond", angular}};
+  return result;
+}
+
+void serveDriveStream(robotics::DifferentialDriveSimulation& simulation, const Scenario& scenario,
+                      const Json& description, const std::optional<StreamCamera>& camera,
+                      const robotics::LidarCast& rays, const robotics::CollisionSensorColorLookup& colors) {
+  const auto observe = [&](robotics::DriveWheels previousEncoder) {
+    auto sample = streamSample(simulation, scenario, previousEncoder);
+    sample["camera"] = camera ? streamImage(*camera, simulation.state(), rays, colors) : Json(nullptr);
+    return sample;
+  };
+  auto committed = observe(simulation.state().encoderAngles);
+  std::array<char, maxStreamRequestBytes + 1> buffer{};
+  for (;;) {
+    std::cin.getline(buffer.data(), static_cast<std::streamsize>(buffer.size()));
+    if (std::cin.bad()) throw std::runtime_error("Could not read a drive stream request");
+    if (std::cin.fail()) {
+      if (std::cin.eof()) break;
+      std::cin.clear();
+      std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+      writeStreamError("", "Drive stream request exceeds 4096 bytes");
+      continue;
+    }
+    const auto length = static_cast<size_t>(std::cin.gcount() - (std::cin.eof() ? 0 : 1));
+    std::string op;
+    robotics::DriveTwist command;
+    try {
+      command = readStreamCommand(parseStreamRequest({buffer.data(), length}), op,
+                                  simulation.state().tick, scenario.ticks);
+    } catch (const std::invalid_argument& error) {
+      writeStreamError(op, error.what());
+      continue;
+    }
+    auto reply = streamEnvelope(op, true);
+    if (op == "step") {
+      const auto previousEncoder = simulation.state().encoderAngles;
+      simulation.queueCommand(simulation.state().tick, command);
+      simulation.step();
+      simulation.clearCommands();
+      committed = observe(previousEncoder);
+    }
+    if (op == "describe") reply.update(description);
+    if (op == "step" || op == "observe") reply.update(committed);
+    writeStreamReply(reply);
+    if (op == "close") break;
+  }
+}
+
+void runDriveStream(const std::filesystem::path& input, const std::string& sourceNamespace,
+                    const std::filesystem::path& scenarioPath, const std::optional<std::filesystem::path>& cameraPath) {
+#ifdef _WIN32
+  // Keep wire bytes intact, including malformed input that contains Ctrl-Z.
+  if (_setmode(_fileno(stdin), _O_BINARY) == -1 || _setmode(_fileno(stdout), _O_BINARY) == -1)
+    throw std::runtime_error("Could not configure the drive stream pipes");
+#endif
+  auto scenario = readScenario(scenarioPath);
+  validateStreamScenario(scenario);
+  scenario.options.maxHistorySamples = 1;
+  const auto camera = cameraPath ? std::optional{readStreamCamera(*cameraPath, scenario)} : std::nullopt;
+  robotics::CollisionSensorColorLookup colors;
+  robotics::BimSceneSource sceneSource;
+  auto collision = [&] {
+    auto assets = robotics::loadBimPreprocessedAssets(input, scenario.cacheDirectory,
+        {.scene = {.sourceNamespace = sourceNamespace, .metersPerRendererUnit = scenario.metersPerRendererUnit},
+         .maxSlopeDegrees = scenario.options.capsule.maxSlopeDegrees});
+    if (!assets.cacheDiagnostic.empty()) std::cerr << assets.cacheDiagnostic << '\n';
+    if (!assets.scene.frame.metersPerRendererUnit)
+      throw std::invalid_argument("Simulation requires known metric units. Supply metersPerRendererUnit for an unknown source scale");
+    std::vector<container::util::ContentFingerprint> sourceLayers;
+    sourceLayers.reserve(assets.sourceLayers.size());
+    for (auto& layer : assets.sourceLayers) sourceLayers.push_back(std::move(layer.fingerprint));
+    sceneSource = robotics::makeBimSceneSource(std::move(sourceLayers), assets.scene.frame);
+    if (camera) colors = streamCameraColors(assets);
+    return std::move(assets.collision);
+  }();
+  const auto& capsule = scenario.options.capsule;
+  const Json description{{"ticksPerSecond", scenario.options.ticksPerSecond}, {"tickLimit", scenario.ticks},
+                         {"robotId", scenario.options.robotId},
+                         {"sourceNamespace", sourceNamespace}, {"sceneSource", robotics::bimSceneSourceJson(sceneSource)},
+                         {"capsule", {{"radiusMeters", capsule.radius}, {"heightMeters", capsule.height}}},
+                         {"openDoorIds", scenario.openDoorIds},
+                         {"camera", camera ? describeStreamCamera(camera->settings) : Json(nullptr)}};
+  robotics::BimCollisionWorld world(std::move(collision), scenario.openDoorIds, 1);
+  robotics::DifferentialDriveSimulation simulation(world, scenario.spawn, scenario.options);
+  const auto rays = camera ? world.lidarRaycasts(scenario.options.robotId) : robotics::LidarCast{};
+  serveDriveStream(simulation, scenario, description, camera, rays, colors);
+}
+
 template<class Char>
 int run(int count, Char** args) {
   if (count == 2 && std::filesystem::path(args[1]) == "--help") {
     std::cout << usage;
     return 0;
+  }
+  if (count >= 2 && std::filesystem::path(args[1]) == "--stream") {
+    if (count != 5 && (count != 7 || std::filesystem::path(args[5]) != "--camera")) {
+      std::cerr << usage;
+      return 2;
+    }
+    try {
+      runDriveStream(std::filesystem::path(args[2]), container::util::pathToUtf8(std::filesystem::path(args[3])),
+                     std::filesystem::path(args[4]),
+                     count == 7 ? std::optional{std::filesystem::path(args[6])} : std::nullopt);
+      return 0;
+    } catch (const std::exception& error) {
+      std::cerr << "BimRoboticsSim: " << error.what() << '\n';
+      return 1;
+    }
   }
   if ((count != 5 && count != 7) ||
       (count == 7 && std::filesystem::path(args[5]) != "--benchmark")) {

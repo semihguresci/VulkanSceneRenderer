@@ -1,0 +1,16 @@
+{
+  "schema": "container.sensor-camera",
+  "version": 1,
+  "intrinsics": {
+    "width": 48,
+    "height": 32,
+    "fx": 36,
+    "fy": 36,
+    "cx": 24.5,
+    "cy": 16.5,
+    "nearMeters": 0.05,
+    "farMeters": 8
+  },
+  "baseFromCamera": {"xyz": [0, 0, 0.7]},
+  "timing": {"ticksPerSecond": 60, "framesPerSecondMilliHz": 10000, "firstTick": 60}
+}

@@ -3228,13 +3228,18 @@ add_custom_test(sensor_camera_tests
     VulkanSceneRenderer_robotics_sensors nlohmann_json::nlohmann_json
 )
 
+add_custom_test(collision_sensor_camera_tests
+    ${TESTS_DIR}/robotics/collision_sensor_camera_tests.cpp "" ${TEST_RESULTS_DIR}
+    VulkanSceneRenderer_robotics_sensors
+)
+
 add_custom_test(sensor_camera_dataset_tests
     ${TEST_RENDERER_CORE_DIR}/sensor_camera_dataset_tests.cpp "" ${TEST_RESULTS_DIR}
     VulkanSceneRenderer_exr VulkanSceneRenderer_robotics_sensors nlohmann_json::nlohmann_json
 )
 target_sources(sensor_camera_dataset_tests PRIVATE
     ${CMAKE_SOURCE_DIR}/src/renderer/core/SensorCameraDataset.cpp)
-set_tests_properties(bim_sensor_label_tests sensor_camera_tests sensor_camera_dataset_tests
+set_tests_properties(bim_sensor_label_tests sensor_camera_tests collision_sensor_camera_tests sensor_camera_dataset_tests
     PROPERTIES LABELS "robotics;cpu" TIMEOUT 30)
 
 add_custom_test(dataset_simulation_report_tests
@@ -3470,6 +3475,12 @@ if(ENABLE_PHYSICS)
                 --executable "$<TARGET_FILE:BimRoboticsNavigation>"
                 --fixtures "${TESTS_DIR}/fixtures/robotics/navigation")
         set_tests_properties(bim_navigation_protocol PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 180)
+
+        add_test(NAME bim_drive_stream
+            COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_drive_stream.py"
+                --executable "$<TARGET_FILE:BimRoboticsSim>"
+                --fixtures "${TESTS_DIR}/fixtures/robotics")
+        set_tests_properties(bim_drive_stream PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 60)
 
         add_test(NAME bim_nav2_map_export
             COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_nav2_map.py"

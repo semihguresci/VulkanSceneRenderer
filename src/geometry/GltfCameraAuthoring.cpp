@@ -268,7 +268,7 @@ bool scan(GltfCameraAuthoringSourceView source, int32_t selected,
       }
       if (ext == channel.target_extensions.end() || !ext->second.IsObject() || !ext->second.Has("pointer") ||
           !ext->second.Get("pointer").IsString()) return false;
-      const auto& path = ext->second.Get("pointer").Get<std::string>();
+      const auto& path = ext->second.Get("pointer").template Get<std::string>();
       if (path.size() > limits.maxPointerBytes) return false;
       std::optional<P> property;
       if (!cameraPointer(path, source.cameras.size(), selected, source.cameras[size_t(selected)], property)) return false;
