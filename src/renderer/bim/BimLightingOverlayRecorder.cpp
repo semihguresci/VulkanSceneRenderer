@@ -502,6 +502,8 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
   const bool native = phase != BimRasterOverlayPhase::Display;
   if (!display && !native)
     return;
+  const auto &floorPlan = bim.floorPlan;
+  const auto displayMode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
   const bool lineListWideLinesSupported = p.debug.lineListWideLinesSupported;
   if (display) {
     const auto &cap = bim.sectionClipCapGeometry.scene;
@@ -524,7 +526,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
       .indexSlice = bim.scene.indexSlice,
       .indexType = bim.scene.indexType};
   const VkPipelineLayout oitLayout =
-      native && inputs.nativeOitSet != VK_NULL_HANDLE
+      inputs.nativeOitSet != VK_NULL_HANDLE
           ? p.pipelineLayout(RenderTechniqueId::ForwardRaster, kBimNativeOitLayout)
           : VK_NULL_HANDLE;
   const auto recordPrimitive = [&](BimPrimitiveFramePassRecordInputs primitive,
@@ -534,7 +536,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
     primitive.pushConstants = inputs.wireframePushConstants;
     primitive.debugOverlay = inputs.debugOverlay;
     primitive.bimManager = p.services.bimManager;
-    if (oitLayout != VK_NULL_HANDLE &&
+    if (native && oitLayout != VK_NULL_HANDLE &&
         hasDepthTestedNativePrimitive(primitive.style.enabled,
                                       primitive.style.depthTest, primitive.nativeDraws)) {
       const VkPipeline oitPipeline =
@@ -547,6 +549,41 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
     }
     (void)recordBimPrimitiveFramePassCommands(cmd, primitive);
   };
+
+  const bool reflectionDiagnostic = p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster &&
+      screenReflectionDebugView(p.debug.screenReflections) != 0u;
+  const bool canSortFloorPlan = oitLayout != VK_NULL_HANDLE && !p.screenshot.sceneLinear &&
+      (displayMode == ui::GBufferViewMode::Lit || displayMode == ui::GBufferViewMode::Overview) &&
+      !reflectionDiagnostic && floorPlan.enabled && floorPlan.depthTest &&
+      hasDrawCommands(bim.floorPlanDrawCommands) && hasBimPrimitiveFramePassGeometry(primitiveGeometry) &&
+      inputs.wireframePushConstants && inputs.debugOverlay;
+  const VkPipeline floorPlanOit = canSortFloorPlan
+      ? p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimFloorPlanOitPipeline)
+      : VK_NULL_HANDLE;
+  if (native && floorPlanOit != VK_NULL_HANDLE) {
+    // Write the colored plan lines at their own depth so only nearer layers
+    // attenuate them. The same eligibility check suppresses the deferred display replay.
+    const BimPrimitivePassPlan plan{
+        .active = true,
+        .opacity = sanitizeBimLightingOverlayOpacity(floorPlan.opacity),
+        .primitiveSize = sanitizeBimLightingOverlayLineWidth(floorPlan.lineWidth),
+        .cpuDrawSources = {bim.floorPlanDrawCommands}};
+    (void)recordBimPrimitivePassCommands(cmd, {
+        .plan = &plan,
+        .geometryReady = true,
+        .depthPipeline = floorPlanOit,
+        .wireframeLayout = oitLayout,
+        .sceneDescriptorSet = primitiveGeometry.sceneDescriptorSet,
+        .vertexSlice = primitiveGeometry.vertexSlice,
+        .indexSlice = primitiveGeometry.indexSlice,
+        .indexType = primitiveGeometry.indexType,
+        .pushConstants = inputs.wireframePushConstants,
+        .debugOverlay = inputs.debugOverlay,
+        .color = floorPlan.color,
+        .recordLineWidth = true,
+        .wideLinesSupported = lineListWideLinesSupported,
+        .oitDescriptorSet = inputs.nativeOitSet});
+  }
 
   const auto &points = bim.primitivePasses.pointCloud;
   const auto nativePointDraws = primitiveDrawLists(bim.nativePointDraws);
@@ -611,7 +648,6 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
 
   const auto &pointStyle = bim.pointCurveStyle.points;
   const auto &curveStyle = bim.pointCurveStyle.curves;
-  const auto &floorPlan = bim.floorPlan;
   const auto &markers = bim.coordinationMarkers;
   const auto &plane = bim.sectionPlaneVisual;
   const auto markerGeometry = overlayGeometry(inputs.bimDescriptorSet,
@@ -625,8 +661,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
       .rect = {.offset = {0, 0}, .extent = inputs.extent},
       .baseArrayLayer = 0u,
       .layerCount = 1u};
-  const auto displayMode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
-  const bool floorPlanEnabled = floorPlan.enabled &&
+  const bool floorPlanEnabled = floorPlan.enabled && floorPlanOit == VK_NULL_HANDLE &&
       !bimFloorPlanUsesPresentationOverlay(p.runtime.activeTechnique, displayMode, floorPlan.depthTest);
   (void)recordBimLightingOverlayFrameCommands(
       cmd, {.bimGeometryReady = hasBimPrimitiveFramePassGeometry(primitiveGeometry),

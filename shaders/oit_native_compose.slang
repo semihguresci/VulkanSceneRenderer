@@ -25,7 +25,7 @@ void computeMain(uint3 id : SV_DispatchThreadID)
     // One invocation owns this texel. Keep scene alpha, which carries volume
     // coverage when OpenVDB ran, and leave the lists available to diagnostics.
     float4 background = sceneColor[pixel];
-    float3 color = ResolveOitPixel(pixel, background.rgb).compositedColor;
+    float3 color = ResolveOitPixel(pixel, background.rgb, true).compositedColor;
     // Conversion to the half-float target must not turn bright radiance into
     // infinity, which later display and capture shaders treat as invalid.
     sceneColor[pixel] = float4(clamp(color, -65504.0.xxx, 65504.0.xxx), background.a);

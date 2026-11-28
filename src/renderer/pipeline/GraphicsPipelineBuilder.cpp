@@ -1306,8 +1306,15 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.bimCurveStrokeNoDepth = pipelineManager_.createGraphicsPipeline(
       curveStrokePCI, "bim_curve_stroke_no_depth_pipeline");
 
-  const auto createNativeOitPipeline = [&](RenderingGraphicsPipelineCreateInfo info, const char *name) {
-    const std::array stages{info.pStages[0], makeStage(bimNativeOitFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
+  const auto createBimOitPipeline = [&](RenderingGraphicsPipelineCreateInfo info,
+                                        const char *name, bool displayOverlay = false) {
+    std::array stages{info.pStages[0], makeStage(bimNativeOitFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
+    const VkBool32 displayOverlayValue = VK_TRUE;
+    const VkSpecializationMapEntry displayOverlayEntry{1u, 0u, sizeof(displayOverlayValue)};
+    const VkSpecializationInfo displayOverlayInfo{1u, &displayOverlayEntry,
+                                                   sizeof(displayOverlayValue), &displayOverlayValue};
+    if (displayOverlay)
+      stages[1].pSpecializationInfo = &displayOverlayInfo;
     info.pStages = stages.data();
     info.layout = bimNativeOitLayout;
     info.pDepthStencilState = &wfDepthDS;
@@ -1315,9 +1322,10 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
     pipelines.extraHandles.push_back({.key = {RenderTechniqueId::ForwardRaster, name},
         .pipeline = pipelineManager_.createGraphicsPipeline(info, name)});
   };
-  createNativeOitPipeline(pointCloudPCI, kBimNativePointOitPipeline);
-  createNativeOitPipeline(curvePCI, kBimNativeCurveOitPipeline);
-  createNativeOitPipeline(curveStrokePCI, kBimNativeCurveStrokeOitPipeline);
+  createBimOitPipeline(pointCloudPCI, kBimNativePointOitPipeline);
+  createBimOitPipeline(curvePCI, kBimNativeCurveOitPipeline);
+  createBimOitPipeline(curveStrokePCI, kBimNativeCurveStrokeOitPipeline);
+  createBimOitPipeline(floorPlanPCI, kBimFloorPlanOitPipeline, true);
 
   RenderingGraphicsPipelineCreateInfo capFillPCI = pointCloudPCI;
   capFillPCI.pInputAssemblyState = &triAssembly;

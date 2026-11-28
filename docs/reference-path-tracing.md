@@ -87,6 +87,12 @@ turn it off to show the full plan over the model. Set the line color, opacity,
 and width in the same panel. Devices without wide-line support use a one-pixel
 stroke.
 
+In both raster engines' **Lit** view and in **Forward Overview**, depth-tested
+plan lines sort with transparent surfaces. A transparent surface in front of
+a line attenuates it. A transparent surface behind the line leaves it visible.
+Overview's Transparency and Revealage panels show scene geometry without the
+plan lines.
+
 Path tracing, Deferred raster, and Forward raster draw the linework in the
 viewport, Viewport PNG and Window PNG. Scene EXR exports the raw linear image
 without the linework.

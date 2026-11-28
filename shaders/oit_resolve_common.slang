@@ -33,7 +33,8 @@ struct OitResolveResult
     float revealage;
 };
 
-OitResolveResult ResolveOitPixel(uint2 pixelCoord, float3 sceneColor)
+OitResolveResult ResolveOitPixel(uint2 pixelCoord, float3 sceneColor,
+                                 bool includeDisplayOverlays)
 {
     OitResolveResult result;
     result.compositedColor = FiniteColorOr(sceneColor, 0.0.xxx);
@@ -55,7 +56,8 @@ OitResolveResult ResolveOitPixel(uint2 pixelCoord, float3 sceneColor)
 
     uint sortedIndices[MAX_OIT_NODES_PER_PIXEL];
     uint nodeCount = 0u;
-    while (current != INVALID_NODE_INDEX && nodeCount < MAX_OIT_NODES_PER_PIXEL)
+    for (uint visited = 0u; current != INVALID_NODE_INDEX &&
+         visited < MAX_OIT_NODES_PER_PIXEL; ++visited)
     {
         if (current >= uOit.nodeCapacity)
         {
@@ -63,6 +65,11 @@ OitResolveResult ResolveOitPixel(uint2 pixelCoord, float3 sceneColor)
         }
 
         TransparentNode node = transparentNodes[current];
+        if (!includeDisplayOverlays && (node.flags & OIT_NODE_DISPLAY_OVERLAY) != 0u)
+        {
+            current = node.next;
+            continue;
+        }
         float nodeDepth = FiniteOr(node.depth, 0.0);
         uint insertAt = nodeCount;
         while (insertAt > 0u)

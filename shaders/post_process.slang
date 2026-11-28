@@ -469,7 +469,7 @@ float3 DebugTextureViewColor(uint mode, float2 uv, uint2 pixelCoord,
         {
             return 0.0.xxx;
         }
-        OitResolveResult oit = ResolveOitPixel(pixelCoord, 0.0.xxx);
+        OitResolveResult oit = ResolveOitPixel(pixelCoord, 0.0.xxx, false);
         return mode == 6u ? oit.transparentColor : oit.revealage.xxx;
     }
     if (mode == 11u)

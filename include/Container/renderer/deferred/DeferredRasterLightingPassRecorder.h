@@ -47,7 +47,8 @@ public:
               bool deferBimDisplayOverlays = false,
               bool oitActive = false) const;
 
-  void recordBimDisplayOverlays(VkCommandBuffer cmd, const FrameRecordParams &p) const;
+  void recordBimDisplayOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
+                                bool oitActive) const;
 
 private:
   DeferredRasterLightingPassServices services_{};

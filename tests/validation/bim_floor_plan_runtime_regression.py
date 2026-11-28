@@ -60,6 +60,22 @@ LIT_OCCLUSION_CASES = (
     (44, "deferred-return", "deferred-raster", True, False),
 )
 LIT_OCCLUSION_COLOR = (.64, .035, .64)
+DEPTH_TRANSPARENCY_ZONES = (
+    ("clear", -1.2, (), 0),
+    ("behind", -.4, (-1.5, -1.2), 166),
+    ("front", .4, (1.2, 1.5), 166),
+    ("opaque", 1.2, (1.5,), 255),
+)
+DEPTH_TRANSPARENCY_CASES = (
+    (4, "off", "deferred-raster"), (8, "depth", "deferred-raster"), (12, "no-depth", "deferred-raster"),
+    (16, "off", "forward-raster"), (20, "depth", "forward-raster"), (24, "no-depth", "forward-raster"),
+)
+DEPTH_TRANSPARENCY_RUNS = {
+    "depth-transparency": DEPTH_TRANSPARENCY_CASES,
+    "linear-depth-transparency": tuple(case for case in DEPTH_TRANSPARENCY_CASES if case[1] != "no-depth"),
+    "overview-depth-transparency": ((4, "off", "forward-raster"), (8, "depth", "forward-raster"),
+                                     (12, "no-depth", "forward-raster")),
+}
 
 
 def require(condition, message):
@@ -135,12 +151,45 @@ def lit_occlusion_fixture(path):
                                indent=2) + "\n", encoding="utf-8")
 
 
+def depth_transparency_fixture(path):
+    meshes, elements = [], []
+
+    def add_panel(name, kind, bounds, z, gray, alpha):
+        mesh_id = len(meshes) + 1
+        meshes.append(panel(mesh_id, bounds, z))
+        elements.append({"mesh_id": mesh_id, "guid": name, "type": kind,
+                         "color": {"r": gray, "g": gray, "b": gray, "a": alpha}})
+
+    for label, x, roof_depths, alpha in DEPTH_TRANSPARENCY_ZONES:
+        # The wall generates ground-plan linework at y=0, z=0. Its mesh starts
+        # higher, so it cannot hide transparent roofs behind the measured line.
+        add_panel(f"{label}-wall", "IfcWall", (x - .25, .65, x + .25, 1.2), 0, 145, 255)
+        for i, z in enumerate(roof_depths):
+            # The larger roof covers the entire line with margin and does not
+            # generate its own plan edges. Only its depth changes between pairs.
+            add_panel(f"{label}-roof-{i}", "IfcRoof", (x - .34, -.28, x + .34, .28), z, 180, alpha)
+    path.write_text(json.dumps({"schema_version": "1.1.0", "meshes": meshes, "elements": elements},
+                               indent=2) + "\n", encoding="utf-8")
+
+
 def settings(*, enabled=True, elevation=GROUND, depth=False, color=(1, 0, 0), opacity=1, width=5):
     return {"enabled": enabled, "elevation": elevation, "depthTest": depth,
             "color": list(color), "opacity": opacity, "lineWidth": width}
 
 
 def sequence_plan(mode, comparison):
+    if mode in DEPTH_TRANSPARENCY_RUNS:
+        cases = DEPTH_TRANSPARENCY_RUNS[mode]
+        events = [{"frame": 2, "orthographic": True}]
+        last_technique = cases[0][2]
+        for frame, stage, technique in cases:
+            style = settings(enabled=stage != "off", depth=stage != "no-depth", color=LIT_OCCLUSION_COLOR)
+            event = {"frame": frame - 1, "bimFloorPlan": style}
+            if technique != last_technique:
+                event["technique"] = technique
+            events.append(event)
+            last_technique = technique
+        return [frame for frame, _, _ in cases], events
     if mode == "lit-occlusion":
         events = [{"frame": 2, "orthographic": True}]
         last_technique, last_style = "deferred-raster", None
@@ -308,10 +357,13 @@ def record(renderer, model, output, technique, mode, report, *, comparison, gene
                                     "events": events}, indent=2) + "\n", encoding="utf-8")
     extension = "exr" if mode.startswith("linear") else "png"
     screenshot = output / f"{name}.{extension}"
-    roof_fixture = mode in ("overview-transparency", "lit-occlusion", "linear-occlusion")
-    display_mode = {"depth-view": "depth", "overview-transparency": "overview"}.get(mode, "lit")
+    roof_fixture = mode in ("overview-transparency", "lit-occlusion", "linear-occlusion") or mode in DEPTH_TRANSPARENCY_RUNS
+    display_mode = {"depth-view": "depth", "overview-transparency": "overview",
+                    "overview-depth-transparency": "overview"}.get(mode, "lit")
     width, height = OVERVIEW_EXTENT if roof_fixture else (WIDTH, HEIGHT)
     position, target = ((0, 1.675, 8), (0, 1.675, 0)) if roof_fixture else (POSITION, TARGET)
+    if mode in DEPTH_TRANSPARENCY_RUNS:
+        position, target = (0, .45, 8), (0, .45, 0)
     temporal = ["--taa", "--taa-history-weight", ".98"] if mode == "lit-occlusion" else ["--no-taa"]
     command = [str(renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui", "--validation",
                "--width", str(width), "--height", str(height), "--msaa", "1", *temporal, "--no-bloom",
@@ -387,6 +439,11 @@ def fixed_camera(samples):
             "The fixed camera changed while exercising floor-plan settings")
 
 
+def overview_panel_slice(left, top, right, bottom):
+    width, height = OVERVIEW_EXTENT
+    return slice(round(top * height), round(bottom * height)), slice(round(left * width), round(right * width))
+
+
 def check_storey_filter(samples):
     import numpy as np
 
@@ -429,14 +486,11 @@ def check_overview_transparency(samples):
     images = {name: capture["pixels"] for name, capture in captures.items()}
     width, height = OVERVIEW_EXTENT
 
-    def panel_slice(left, top, right, bottom):
-        return np.s_[round(top * height):round(bottom * height), round(left * width):round(right * width)]
-
     # Match the Overview panel interiors in post_process.slang. Exclude the
     # panel borders so the right half reflects only the unobscured scene.
-    lit = panel_slice(.026, .046, .334, .264)
-    transparency = panel_slice(.026, .506, .334, .724)
-    revealage = panel_slice(.346, .506, .654, .724)
+    lit = overview_panel_slice(.026, .046, .334, .264)
+    transparency = overview_panel_slice(.026, .506, .334, .724)
+    revealage = overview_panel_slice(.346, .506, .654, .724)
     coverage = {}
     for label, baseline in (("deferred-on", "deferred-off"), ("forward-preserved", "forward-off"),
                             ("forward-on", "forward-off")):
@@ -465,7 +519,7 @@ def check_overview_transparency(samples):
         diagnostics[label] = {"coveredPixels": covered, "clearPixels": clear}
 
     outside_lit = np.ones((height, width), dtype=bool)
-    outside_lit[panel_slice(.02, .04, .342, .272)] = False
+    outside_lit[overview_panel_slice(.02, .04, .342, .272)] = False
     for label, baseline in (("deferred-on", "deferred-off"), ("forward-preserved", "forward-off"),
                             ("forward-on", "forward-off")):
         np.testing.assert_array_equal(images[label][outside_lit], images[baseline][outside_lit],
@@ -538,6 +592,130 @@ def check_occlusion_linear(samples):
                 f"Invalid {technique} scene-linear comparison")
         np.testing.assert_array_equal(off["pixels"], on["pixels"], err_msg=f"{technique}: roof plan entered raw EXR")
     return {"rawFramesExact": len(samples), "coveredFixture": True}
+
+
+def check_depth_transparency(samples, evidence, *, mode="depth-transparency"):
+    import numpy as np
+
+    fixed_camera(samples)
+    projection = samples[0]["state"]["camera"]["unjitteredViewProjColumns"]
+    require([column[3] for column in projection] == [0, 0, 0, 1], "Expected a fixed orthographic camera")
+    overview = mode == "overview-depth-transparency"
+    viewport = overview_panel_slice(.026, .046, .334, .264) if overview else np.s_[:, :]
+    minimum_ink = 12 if overview else 24
+
+    def color_signal(rgb):
+        return np.minimum(rgb[:, :, 0] - rgb[:, :, 1], rgb[:, :, 2] - rgb[:, :, 1])
+
+    by_technique = {}
+    for sample, (frame, stage, technique) in zip(samples, DEPTH_TRANSPARENCY_RUNS[mode], strict=True):
+        state = sample["state"]
+        require(sample["frame"] == frame and state["technique"] == technique
+                and sample["metadata"]["displayMode"] == (8 if overview else 0)
+                and not state["taa"]["enabled"], sample["image"])
+        require(state["scene"]["auxiliaryObjectCount"] >= 9, state["scene"])
+        active_passes = {row["name"] for row in state["passes"] if row["active"]}
+        require({"OitClear", "OitResolve"} <= active_passes and not state["oit"]["overflowed"],
+                f"{technique}/{stage}: transparent roofs require active OIT without overflow")
+        plan = state["bim"]["floorPlan"]
+        require(plan["requested"] == plan["enabled"] == (stage != "off")
+                and plan["depthTest"] == (stage != "no-depth") and plan["elevation"] == GROUND
+                and plan["drawCount"] > 0 and plan["pipelineReady"], plan)
+        if stage == "no-depth":
+            check_floor_plan_telemetry(sample, settings(color=LIT_OCCLUSION_COLOR))
+        by_technique.setdefault(technique, {})[stage] = sample["pixels"].astype(np.int16)
+
+    for technique, images in by_technique.items():
+        off = images["off"][viewport]
+        depth = images["depth"][viewport]
+        source_signal = color_signal(off)
+        exposed_ink = color_signal(images["no-depth"][viewport]) - source_signal > 25
+        depth_signal = np.maximum(color_signal(depth) - source_signal, 0)
+        zones = evidence[technique] = {}
+        for index, (label, _, _, _) in enumerate(DEPTH_TRANSPARENCY_ZONES):
+            cols = slice(index * off.shape[1] // 4, (index + 1) * off.shape[1] // 4)
+            mask = exposed_ink[:, cols]
+            require(np.count_nonzero(mask) >= minimum_ink, f"{technique}/{label}: the no-depth control lost its line")
+            rows, columns = np.nonzero(mask)
+            # The scene-color and presentation draws can differ at a line end.
+            # Keep a two-pixel margin around the control while checking leakage.
+            expected = np.zeros(mask.shape, dtype=bool)
+            expected[max(0, rows.min() - 2):rows.max() + 3,
+                     max(0, columns.min() - 2):columns.max() + 3] = True
+            if overview:
+                # The Lit tile resamples scene color, while the no-depth
+                # reference draws at tile resolution. Check each column's
+                # peak within the band so a one-pixel shift cannot hide ink.
+                signal = np.where(expected, depth_signal[:, cols], 0).max(axis=0)[np.any(mask, axis=0)]
+            else:
+                signal = depth_signal[:, cols][mask]
+            delta = np.abs(depth[:, cols] - off[:, cols]).max(axis=2)
+            zones[label] = {"controlPixels": int(np.count_nonzero(mask)),
+                            "visibleDepthPixels": int(np.count_nonzero(signal > 8)),
+                            "lineSignal": float(signal.mean()),
+                            "backgroundLevel": float(off[:, cols][mask].mean()),
+                            "maxDepthDelta": int(delta.max()),
+                            "changedOutsideLinePixels": int(np.count_nonzero(delta[~expected]))}
+        print(f"{technique}/{mode}: depth-tested transparent ordering {zones}", flush=True)
+
+    for technique, zones in evidence.items():
+        clear, behind, front, opaque = (zones[label] for label, _, _, _ in DEPTH_TRANSPARENCY_ZONES)
+        require(clear["lineSignal"] >= 25 and clear["visibleDepthPixels"] >= minimum_ink,
+                f"{technique}: exposed line missing with depth enabled: {zones}")
+        require(min(behind["backgroundLevel"], front["backgroundLevel"], opaque["backgroundLevel"])
+                > clear["backgroundLevel"] + 5, f"{technique}: missing roof in the line measurement: {zones}")
+        require(behind["lineSignal"] >= .80 * clear["lineSignal"],
+                f"{technique}: farther transparent surfaces attenuated the line: {zones}")
+        require(4 < front["lineSignal"] < .70 * clear["lineSignal"],
+                f"{technique}: nearer transparent surfaces must partially attenuate the line: {zones}")
+        require(opaque["maxDepthDelta"] == 0, f"{technique}: depth-tested line leaked through the opaque roof: {zones}")
+        require(all(zone["changedOutsideLinePixels"] == 0 for zone in zones.values()),
+                f"{technique}: depth-tested plan changed pixels outside the line: {zones}")
+
+    if overview:
+        images = by_technique["forward-raster"]
+        diagnostics = {}
+        for label, region, threshold in (
+                ("transparency", overview_panel_slice(.026, .506, .334, .724), 32),
+                ("revealage", overview_panel_slice(.346, .506, .654, .724), 223)):
+            baseline = images["off"][region]
+            brightness = baseline.max(axis=2)
+            roofs = brightness > threshold if label == "transparency" else brightness < threshold
+            require(np.count_nonzero(roofs) > 100, f"Forward Overview {label} diagnostic lacks transparent roofs")
+            np.testing.assert_array_equal(images["depth"][region], baseline,
+                                          err_msg=f"Sorted floor-plan ink changed Forward Overview {label}")
+            diagnostics[label] = {"roofPixels": int(np.count_nonzero(roofs)), "changedPixels": 0}
+        evidence["diagnostics"] = diagnostics
+
+
+def check_depth_transparency_linear(samples):
+    fixed_camera(samples)
+    for sample, (frame, stage, technique) in zip(samples, DEPTH_TRANSPARENCY_RUNS["linear-depth-transparency"], strict=True):
+        metadata = sample["metadata"]
+        plan = sample["state"]["bim"]["floorPlan"]
+        require(sample["frame"] == frame and sample["state"]["technique"] == technique
+                and plan["requested"] == (stage == "depth") and plan["depthTest"]
+                and metadata["bimFloorPlanImageRoute"] == "excluded-from-scene-linear", metadata)
+    for off, depth in zip(samples[::2], samples[1::2], strict=True):
+        technique = off["state"]["technique"]
+        require(technique == depth["state"]["technique"] and float(off["pixels"].max()) > .01,
+                f"Invalid {technique} depth-transparency EXR control")
+        require(off["decodedSha256"] == depth["decodedSha256"],
+                f"Depth-tested floor-plan ink entered the {technique} scene-linear image")
+    return {"rawFramesExact": len(samples)}
+
+
+def run_depth_transparency(renderer, model, output, report, *, generate_only):
+    captures = {}
+    for mode, cases in DEPTH_TRANSPARENCY_RUNS.items():
+        captures[mode] = record(renderer, model, output, cases[0][2], mode, report,
+                                comparison="forward-raster", generate_only=generate_only, check_telemetry=False)
+    if generate_only:
+        return
+    checks = report["checks"].setdefault("depthTransparency", {})
+    checks["sceneLinear"] = check_depth_transparency_linear(captures["linear-depth-transparency"])
+    for mode in ("depth-transparency", "overview-depth-transparency"):
+        check_depth_transparency(captures[mode], checks.setdefault(mode, {}), mode=mode)
 
 
 def check_styled(samples, *, missing=False):
@@ -613,8 +791,11 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--comparison", choices=COMPARISONS, default="path-tracing",
                         help="compare this technique with Deferred raster")
-    parser.add_argument("--storey-filter-only", action="store_true",
-                        help="check storey selection and clearing in one live Deferred/Forward sequence")
+    focused = parser.add_mutually_exclusive_group()
+    focused.add_argument("--storey-filter-only", action="store_true",
+                         help="check storey selection and clearing in one live Deferred/Forward sequence")
+    focused.add_argument("--depth-transparency-only", action="store_true",
+                         help="check depth-tested line ordering in one live Deferred/Forward sequence")
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true", help="write to a new run directory under --output")
     baseline = parser.add_mutually_exclusive_group()
@@ -627,8 +808,8 @@ def main():
             (args.expect_missing_forward_overlay and args.comparison != "forward-raster")):
         parser.error("The baseline option must match --comparison")
     expect_missing = args.expect_missing_path_overlay or args.expect_missing_forward_overlay
-    if args.storey_filter_only and expect_missing:
-        parser.error("The storey-filter check requires working raster overlays")
+    if (args.storey_filter_only or args.depth_transparency_only) and expect_missing:
+        parser.error("Focused raster checks require working overlays")
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_BIM_FLOOR_PLAN") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1 to run GPU captures")
         return 77
@@ -642,8 +823,10 @@ def main():
         output.mkdir(parents=True)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     model = output / "floor-plan.bim"
-    (storey_fixture if args.storey_filter_only else fixture)(model)
-    comparison = "forward-raster" if args.storey_filter_only else args.comparison
+    make_fixture = (depth_transparency_fixture if args.depth_transparency_only else
+                    storey_fixture if args.storey_filter_only else fixture)
+    make_fixture(model)
+    comparison = "forward-raster" if args.storey_filter_only or args.depth_transparency_only else args.comparison
     report = {"fixture": str(model), "comparison": comparison,
               "expectedMissingPathOverlay": args.expect_missing_path_overlay,
               "expectedMissingForwardOverlay": args.expect_missing_forward_overlay,
@@ -651,6 +834,13 @@ def main():
     if not args.generate_only:
         report["executableSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     try:
+        if args.depth_transparency_only:
+            run_depth_transparency(renderer, model, output, report, generate_only=args.generate_only)
+            if not args.generate_only:
+                require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["executableSha256"],
+                        "Renderer executable changed during capture")
+                report["passed"] = True
+            return 0
         if args.storey_filter_only:
             samples = record(renderer, model, output, "deferred-raster", "storey-filter", report,
                              comparison=comparison, generate_only=args.generate_only, check_telemetry=False)
@@ -692,6 +882,9 @@ def main():
                                    comparison=args.comparison, generate_only=args.generate_only, check_telemetry=False)
             linear_occlusion = record(renderer, roofs, output, "deferred-raster", "linear-occlusion", report,
                                       comparison=args.comparison, generate_only=args.generate_only, check_telemetry=True)
+            depth_roofs = output / "depth-transparent-bim.bim"
+            depth_transparency_fixture(depth_roofs)
+            run_depth_transparency(renderer, depth_roofs, output, report, generate_only=args.generate_only)
         if args.generate_only:
             return 0
         import numpy as np
