@@ -48,11 +48,11 @@ Use one shared scene engine, one selection context and one history. Rendering te
 | --- | --- | --- |
 | Interaction mode | Editor, Player | Whether scene authoring is permitted. |
 | Workspace | Layout, Materials, Lighting, BIM, Animation, Simulation, Volumes, Diagnostics | Which panels are arranged around the viewport. |
-| Render technique | Deferred raster, Forward rendering, Ray tracing, Path tracing | The implemented rendering path. |
+| Render technique | Deferred raster, Forward rendering, Vulkan ray tracing, Path tracing | The implemented rendering path. |
 | Display visualization | Supported lit and diagnostic views | What the viewport displays. |
 | Playback source | Animation clip, physics, volume sequence | Which independent clock a transport control operates. |
 
-Ray tracing uses the native Vulkan pipeline and Path tracing uses inline ray queries. Ray-query shadows and DDGI are features of the raster paths. Switching a workspace must never switch techniques or silently change lighting, camera, selection or simulation state. [Ray and path tracing](reference-path-tracing.md)
+Vulkan ray tracing uses the native Vulkan pipeline and Path tracing uses inline ray queries. Ray-query shadows and DDGI are features of the raster paths. Switching a workspace must never switch techniques or silently change lighting, camera, selection or simulation state. [Ray and path tracing](reference-path-tracing.md)
 
 ### Established editor patterns
 

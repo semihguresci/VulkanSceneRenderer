@@ -26,7 +26,7 @@ constexpr std::array kTechniqueNames{
 constexpr std::array kTechniqueDisplayNames{
     std::string_view{"Deferred raster"},
     std::string_view{"Forward rendering"},
-    std::string_view{"Ray tracing"},
+    std::string_view{"Vulkan ray tracing"},
     std::string_view{"Path tracing"},
     std::string_view{"Gaussian splatting"},
     std::string_view{"Radiance field"},
@@ -44,7 +44,7 @@ constexpr std::array<RenderTechniqueDescriptor, kTechniqueNames.size()>
          .implemented = true},
         {.id = RenderTechniqueId::RayTracing,
          .name = "ray-tracing",
-         .displayName = "Ray tracing",
+         .displayName = "Vulkan ray tracing",
          .implemented = true,
          .requiresRayTracing = true},
         {.id = RenderTechniqueId::PathTracing,
