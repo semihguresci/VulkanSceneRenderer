@@ -1,5 +1,8 @@
 # Headless BIM navigation training
 
+The policy benchmark compares the grid oracle, live Jazzy Nav2, and a learned
+policy on common BIM maps. [Run the comparison](bim-navigation-policy-benchmark.md)
+
 The optional Gymnasium environment runs a differential-drive robot in a BIM
 collision world. Its native process uses the fixed-step Jolt simulator. The
 Python package owns the observation space, navigation reward, episode

@@ -3476,6 +3476,10 @@ if(ENABLE_PHYSICS)
                 --fixtures "${TESTS_DIR}/fixtures/robotics/navigation")
         set_tests_properties(bim_navigation_protocol PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 180)
 
+        add_test(NAME bim_navigation_policy_benchmark_tests
+            COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_navigation_policy_benchmark_tests.py")
+        set_tests_properties(bim_navigation_policy_benchmark_tests PROPERTIES LABELS "cpu;physics;robotics" TIMEOUT 30)
+
         add_test(NAME bim_drive_stream
             COMMAND "${Python3_EXECUTABLE}" -B "${TESTS_DIR}/robotics/bim_drive_stream.py"
                 --executable "$<TARGET_FILE:BimRoboticsSim>"

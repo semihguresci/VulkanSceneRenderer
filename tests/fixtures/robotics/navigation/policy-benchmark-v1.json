@@ -1,0 +1,336 @@
+{
+  "schema": "container.bim-navigation-policy-suite",
+  "version": 1,
+  "scorer": {
+    "goalToleranceMeters": 0.25,
+    "ticksPerSecond": 60,
+    "driveTicks": 1800
+  },
+  "cases": {
+    "train": [
+      {
+        "id": "doorway-open",
+        "family": "doorway",
+        "expected": "aperture",
+        "source": "doorway.ifc",
+        "mapRequest": {
+          "schema": "container.bim-navigation-map-request",
+          "version": 1,
+          "sourceNamespace": "doorway",
+          "originMeters": [
+            -3.1,
+            -3.1
+          ],
+          "sizeCells": [
+            62,
+            62
+          ],
+          "resolutionMeters": 0.1,
+          "floorMeters": 1.2,
+          "floorToleranceMeters": 0.02,
+          "radiusMeters": 0.25,
+          "heightMeters": 1.6,
+          "openDoorIds": [
+            "bim/7:doorway/guid/9:door-guid"
+          ],
+          "waypoints": [
+            {
+              "id": "start",
+              "positionMeters": [
+                -1.55,
+                0.05
+              ],
+              "yawRadians": 0.0
+            },
+            {
+              "id": "goal",
+              "positionMeters": [
+                1.55,
+                0.05
+              ],
+              "yawRadians": 0.0
+            }
+          ]
+        }
+      },
+      {
+        "id": "doorway-closed",
+        "family": "doorway",
+        "expected": "detour",
+        "source": "doorway.ifc",
+        "mapRequest": {
+          "schema": "container.bim-navigation-map-request",
+          "version": 1,
+          "sourceNamespace": "doorway",
+          "originMeters": [
+            -3.1,
+            -3.1
+          ],
+          "sizeCells": [
+            62,
+            62
+          ],
+          "resolutionMeters": 0.1,
+          "floorMeters": 1.2,
+          "floorToleranceMeters": 0.02,
+          "radiusMeters": 0.25,
+          "heightMeters": 1.6,
+          "openDoorIds": [],
+          "waypoints": [
+            {
+              "id": "start",
+              "positionMeters": [
+                -1.55,
+                0.05
+              ],
+              "yawRadians": 0.0
+            },
+            {
+              "id": "goal",
+              "positionMeters": [
+                1.55,
+                0.05
+              ],
+              "yawRadians": 0.0
+            }
+          ]
+        }
+      }
+    ],
+    "test": [
+      {
+        "id": "offset-hall-held-out",
+        "family": "offset-hall",
+        "expected": "detour",
+        "source": "navigation/offset-hall.ifc",
+        "mapRequest": {
+          "schema": "container.bim-navigation-map-request",
+          "version": 1,
+          "sourceNamespace": "offset-hall",
+          "originMeters": [
+            -4.6,
+            -3.6
+          ],
+          "sizeCells": [
+            92,
+            72
+          ],
+          "resolutionMeters": 0.1,
+          "floorMeters": 0.0,
+          "floorToleranceMeters": 0.02,
+          "radiusMeters": 0.25,
+          "heightMeters": 1.6,
+          "openDoorIds": [],
+          "waypoints": [
+            {
+              "id": "start",
+              "positionMeters": [
+                -2.6,
+                -1.55
+              ],
+              "yawRadians": 0.0
+            },
+            {
+              "id": "goal",
+              "positionMeters": [
+                2.65,
+                1.55
+              ],
+              "yawRadians": 0.0
+            }
+          ]
+        }
+      },
+      {
+        "id": "lidar-corner-held-out",
+        "family": "lidar-corner",
+        "expected": "direct",
+        "source": "lidar-corner.ifc",
+        "mapRequest": {
+          "schema": "container.bim-navigation-map-request",
+          "version": 1,
+          "sourceNamespace": "lidar-corner",
+          "originMeters": [
+            -6.1,
+            -6.1
+          ],
+          "sizeCells": [
+            122,
+            122
+          ],
+          "resolutionMeters": 0.1,
+          "floorMeters": 0.0,
+          "floorToleranceMeters": 0.02,
+          "radiusMeters": 0.25,
+          "heightMeters": 1.6,
+          "openDoorIds": [],
+          "waypoints": [
+            {
+              "id": "start",
+              "positionMeters": [
+                0.0,
+                0.0
+              ],
+              "yawRadians": 0.4
+            },
+            {
+              "id": "goal",
+              "positionMeters": [
+                2.4,
+                1.1
+              ],
+              "yawRadians": 0.0
+            }
+          ]
+        }
+      },
+      {
+        "id": "rooms-open-shifted",
+        "family": "rooms",
+        "expected": "aperture",
+        "source": "room-connectivity.ifc",
+        "mapRequest": {
+          "schema": "container.bim-navigation-map-request",
+          "version": 1,
+          "sourceNamespace": "rooms",
+          "originMeters": [
+            -3.1,
+            -3.1
+          ],
+          "sizeCells": [
+            62,
+            62
+          ],
+          "resolutionMeters": 0.1,
+          "floorMeters": 1.2,
+          "floorToleranceMeters": 0.02,
+          "radiusMeters": 0.25,
+          "heightMeters": 1.6,
+          "openDoorIds": [
+            "bim/5:rooms/guid/22:0000000000000000000044"
+          ],
+          "waypoints": [
+            {
+              "id": "start",
+              "positionMeters": [
+                -1.55,
+                -1.65
+              ],
+              "yawRadians": 0.0
+            },
+            {
+              "id": "goal",
+              "positionMeters": [
+                1.55,
+                -1.65
+              ],
+              "yawRadians": 0.0
+            }
+          ]
+        }
+      },
+      {
+        "id": "rooms-upper",
+        "family": "rooms",
+        "expected": "direct",
+        "source": "room-connectivity.ifc",
+        "mapRequest": {
+          "schema": "container.bim-navigation-map-request",
+          "version": 1,
+          "sourceNamespace": "rooms",
+          "originMeters": [
+            -3.1,
+            -3.1
+          ],
+          "sizeCells": [
+            62,
+            62
+          ],
+          "resolutionMeters": 0.1,
+          "floorMeters": 3.7,
+          "floorToleranceMeters": 0.02,
+          "radiusMeters": 0.25,
+          "heightMeters": 1.6,
+          "openDoorIds": [],
+          "waypoints": [
+            {
+              "id": "start",
+              "positionMeters": [
+                -1.55,
+                0.05
+              ],
+              "yawRadians": 0.0
+            },
+            {
+              "id": "goal",
+              "positionMeters": [
+                1.55,
+                0.05
+              ],
+              "yawRadians": 0.0
+            }
+          ]
+        }
+      }
+    ],
+    "controls": [
+      {
+        "id": "rooms-closed-shifted",
+        "family": "rooms",
+        "expected": "unreachable",
+        "source": "room-connectivity.ifc",
+        "mapRequest": {
+          "schema": "container.bim-navigation-map-request",
+          "version": 1,
+          "sourceNamespace": "rooms",
+          "originMeters": [
+            -3.1,
+            -3.1
+          ],
+          "sizeCells": [
+            62,
+            62
+          ],
+          "resolutionMeters": 0.1,
+          "floorMeters": 1.2,
+          "floorToleranceMeters": 0.02,
+          "radiusMeters": 0.25,
+          "heightMeters": 1.6,
+          "openDoorIds": [],
+          "waypoints": [
+            {
+              "id": "start",
+              "positionMeters": [
+                -1.55,
+                -1.65
+              ],
+              "yawRadians": 0.0
+            },
+            {
+              "id": "goal",
+              "positionMeters": [
+                1.55,
+                -1.65
+              ],
+              "yawRadians": 0.0
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "evaluation": {
+    "trainSeeds": [
+      287,
+      1637,
+      2081
+    ],
+    "checkpoints": [
+      0,
+      3000,
+      10000,
+      24000
+    ],
+    "nav2Repeats": 3
+  }
+}

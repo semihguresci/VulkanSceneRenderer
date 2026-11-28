@@ -74,10 +74,12 @@ if ($physics) {
         'bim_fixed_step_replay',
         'bim_fleet_missions',
         'bim_navigation_protocol',
+        'bim_navigation_policy_benchmark_tests',
         'bim_drive_stream',
         'bim_nav2_map_export'
     )
-    $scriptTests += @('bim_fixed_step_replay', 'bim_fleet_missions', 'bim_navigation_protocol', 'bim_drive_stream', 'bim_nav2_map_export')
+    $scriptTests += @('bim_fixed_step_replay', 'bim_fleet_missions', 'bim_navigation_protocol',
+                      'bim_navigation_policy_benchmark_tests', 'bim_drive_stream', 'bim_nav2_map_export')
     $tools += @('BimRoboticsCollision', 'BimRoboticsSim', 'BimRoboticsFleet', 'BimRoboticsNavigation', 'BimRoboticsNavMap')
 }
 if ($urdf) {
