@@ -13,6 +13,10 @@
 #include "scene_clip_common.slang"
 #include "object_index_common.slang"
 #include "pbr_material_common.slang"
+#if defined(BIM_ISSUE_MARKER_OIT)
+#define OIT_WRITE_SET 1
+#include "oit_write_common.slang"
+#endif
 
 [[vk::push_constant]]
 ConstantBuffer<WireframePushConstants> pc;
@@ -82,6 +86,9 @@ void geomMain(triangle VSOutput input[3], inout TriangleStream<GSOutput> stream)
     stream.RestartStrip();
 }
 
+#if defined(BIM_ISSUE_MARKER_OIT)
+[earlydepthstencil]
+#endif
 [shader("fragment")]
 float4 fragMain(GSOutput input) : SV_Target0
 {
@@ -102,5 +109,14 @@ float4 fragMain(GSOutput input) : SV_Target0
     {
         discard;
     }
-    return float4(pc.colorIntensity.rgb, alpha);
+    float4 color = float4(pc.colorIntensity.rgb, alpha);
+#if defined(BIM_ISSUE_MARKER_OIT)
+    uint2 pixel = uint2(input.pos.xy);
+    uint nodeIndex = AllocateOitNode(pixel);
+    if (nodeIndex != INVALID_NODE_INDEX)
+        AppendOitNode(pixel, nodeIndex, input.pos.z, color, OIT_NODE_DISPLAY_OVERLAY);
+    return 0.0.xxxx;
+#else
+    return color;
+#endif
 }

@@ -260,6 +260,9 @@ add_slang_output(
 add_slang_output(
     SLANG_OUTPUTS "${SHADERS_DIR}/wireframe_debug.slang" "fragMain"
     "${COMPILED_SHADERS_DIR}/bim_native_oit.frag.spv" -DBIM_NATIVE_OIT=1)
+add_slang_output(
+    SLANG_OUTPUTS "${SHADERS_DIR}/wireframe_fallback.slang" "fragMain"
+    "${COMPILED_SHADERS_DIR}/bim_issue_marker_oit.frag.spv" -DBIM_ISSUE_MARKER_OIT=1)
 
 # Optional forward fragment queries handle opaque MSAA receivers that differ
 # from the single resolved-depth visibility buffer. Baseline lighting shaders

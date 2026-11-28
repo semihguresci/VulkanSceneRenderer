@@ -270,6 +270,11 @@ void registerDeferredRasterPipelineRecipes(PipelineRegistry &registry) {
         .shaderStages = {"spv_shaders/wireframe_debug.vert.spv", "spv_shaders/bim_native_oit.frag.spv"},
         .layoutName = kBimNativeOitLayout});
   }
+  registry.registerRecipe(PipelineRecipe{
+      .key = {kDeferredRasterTechnique, kBimIssueMarkerOitPipeline}, .kind = PipelineRecipeKind::Graphics,
+      .shaderStages = {"spv_shaders/wireframe_fallback.vert.spv", "spv_shaders/wireframe_fallback.geom.spv",
+                       "spv_shaders/bim_issue_marker_oit.frag.spv"},
+      .layoutName = kBimNativeOitLayout});
   registry.registerRecipe(
       PipelineRecipe{.key = {kDeferredRasterTechnique, "bim-depth-prepass"},
                      .kind = PipelineRecipeKind::Graphics,

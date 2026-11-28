@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 
+from bim_floor_plan_runtime_regression import OVERVIEW_EXTENT, overview_panel_slice, panel
 from display_capture_test_support import emitter_fixture, validation_log_error
 from physics_auxiliary_regression import cube
 
@@ -21,6 +22,14 @@ FRAMES = {
 }
 TECHNICAL_FRAMES = {"technical-depth": 15, "technical-no-depth": 16, "technical-off": 17}
 TECHNICAL_PREVIEWS = ("technical-depth", "technical-no-depth")
+PIN_DEPTH_ZONES = (
+    ("clear", -1.2, (), 0),
+    ("behind", -.4, (-1.5, -1.2), 166),
+    ("front", .4, (1.2, 1.5), 166),
+    ("opaque", 1.2, (1.5,), 255),
+)
+PIN_DEPTH_STAGES = ("off", *(zone[0] for zone in PIN_DEPTH_ZONES), "off-again")
+PIN_HEIGHT = 1.2
 
 
 def require(condition, message):
@@ -58,6 +67,39 @@ def fixtures(folder):
     return mesh, bim
 
 
+def pin_depth_fixture(path):
+    meshes, elements = [], []
+    for label, x, depths, alpha in PIN_DEPTH_ZONES:
+        for z in depths:
+            mesh_id = len(meshes) + 1
+            # The octahedral pin extends 0.35 units either side of its center.
+            # Keep all wire tips covered without touching either adjacent zone.
+            meshes.append(panel(mesh_id, (x - .385, PIN_HEIGHT - .40, x + .385, PIN_HEIGHT + .40), z))
+            elements.append(dict(mesh_id=mesh_id, guid=f"{label}-{mesh_id}", type="IfcRoof",
+                                 color=dict(r=180, g=180, b=180, a=alpha)))
+    path.write_text(json.dumps(dict(schema_version="1.1.0", meshes=meshes, elements=elements), indent=2) + "\n",
+                    encoding="utf-8")
+
+
+def pin_depth_sequence(path, techniques, stages):
+    frames = {}
+    events = [{"frame": 2, "orthographic": True}]
+    annotations = {label: {"issuePin": [x, PIN_HEIGHT, 0]} for label, x, _, _ in PIN_DEPTH_ZONES}
+    active_technique = techniques[0]
+    for technique in techniques:
+        for stage in stages:
+            frame = (len(frames) + 1) * 4
+            frames[f"{technique}/{stage}"] = frame
+            event = {"frame": frame - 1, "bimAnnotations": annotations.get(stage, {})}
+            if technique != active_technique:
+                event["technique"] = technique
+                active_technique = technique
+            events.append(event)
+    path.write_text(json.dumps(dict(schemaVersion=1, frames=max(frames.values()), sampleFrames=list(frames.values()),
+                                    events=events), indent=2) + "\n", encoding="utf-8")
+    return frames
+
+
 def sequence_plan(frames):
     snapshots = {
         "off": {}, "issue-pin": {"issuePin": [-1.8, 2.45, -.25]},
@@ -80,41 +122,51 @@ def sequence_plan(frames):
                 events=[events[frame] for frame in sorted(events)])
 
 
-def read_capture(path, technique):
+def read_capture(path, technique, *, extent=(WIDTH, HEIGHT), mode=None):
     import cv2
     import numpy as np
     from PIL import Image
 
     metadata = json.loads(Path(f"{path}.capture.json").read_bytes())
     state = json.loads(path.with_suffix(".telemetry.json").read_bytes())
-    require((metadata["width"], metadata["height"], metadata["includesUi"]) == (WIDTH, HEIGHT, False) and
+    width, height = extent
+    require((metadata["width"], metadata["height"], metadata["includesUi"]) == (width, height, False) and
             state["technique"] == technique and state["validationEnabled"], f"Wrong capture state for {path}")
     if path.suffix == ".exr":
         require(metadata["source"] == "raster-scene-composite" and metadata["colorSpace"] == "linear-sRGB" and
                 not metadata["exposureApplied"] and not metadata["toneMappingApplied"], f"Wrong EXR metadata for {path}")
         bgr = cv2.imdecode(np.frombuffer(path.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-        require(bgr is not None and bgr.shape == (HEIGHT, WIDTH, 3) and bgr.dtype == np.float32 and
+        require(bgr is not None and bgr.shape == (height, width, 3) and bgr.dtype == np.float32 and
                 np.isfinite(bgr).all(), f"Invalid scene-linear radiance {path}")
         return bgr[:, :, ::-1], state
-    require(metadata["source"] == "viewport", f"Wrong viewport capture route for {path}")
+    require(metadata["source"] == "viewport"
+            and (mode is None or metadata["displayMode"] == (8 if mode == "overview" else 0)),
+            f"Wrong viewport capture route for {path}")
     with Image.open(path) as image:
-        require(image.format == "PNG" and image.size == (WIDTH, HEIGHT), f"Wrong viewport image {path}")
+        require(image.format == "PNG" and image.size == extent, f"Wrong viewport image {path}")
         return np.asarray(image.convert("RGB")), state
 
 
-def record(renderer, output, model, bim, sequence, frames, technique, extension, report, generate_only):
-    name = f"{technique}-{extension}"
+def record(renderer, output, model, bim, sequence, frames, technique, extension, report, generate_only, *,
+           mode="lit", pin_ordering=False):
+    name = f"issue-pin-ordering-{mode}-{extension}" if pin_ordering else f"{technique}-{extension}"
     screenshot = output / f"{name}.{extension}"
     log = output / f"{name}.log"
-    command = [str(renderer), "--model", str(model), "--bim-model", str(bim), "--import-scale", "1",
-               "--hidden", "--no-ui", "--validation", "--width", str(WIDTH), "--height", str(HEIGHT),
+    extent = OVERVIEW_EXTENT if pin_ordering else (WIDTH, HEIGHT)
+    width, height = extent
+    camera_height = str(PIN_HEIGHT) if pin_ordering else "1"
+    model_args = ["--model", str(bim)] if pin_ordering else ["--model", str(model), "--bim-model", str(bim)]
+    command = [str(renderer), *model_args, "--import-scale", "1",
+               "--hidden", "--no-ui", "--validation", "--width", str(width), "--height", str(height),
                "--msaa", "1", "--no-taa", "--no-bloom", "--render-technique", technique,
-               "--display-mode", "lit", "--camera-position", "0", "1", "8", "--camera-target", "0", "1", "0",
+               "--display-mode", mode, "--camera-position", "0", camera_height, "8", "--camera-target", "0", camera_height, "0",
                "--camera-fov", "45", "--sky", "plain", "--sky-horizon", "0", "0", "0",
                "--exposure", "1", "--directional-intensity", "2", "--directional-direction", "-.3", "-.2", "-1",
                "--environment-intensity", "0", "--bounce-intensity", ".2", "--fixed-dt", ".016666667",
                "--screenshot-viewport", "--capture-sequence", str(sequence), "--screenshot", str(screenshot)]
-    row = dict(technique=technique, format=extension, command=command, log=str(log), captures=[])
+    if pin_ordering:
+        command += ["--no-ddgi", "--no-ray-query", "--tone-map", "neutral"]
+    row = dict(technique=technique, mode=mode, format=extension, command=command, log=str(log), captures=[])
     report["runs"].append(row)
     if generate_only:
         return {}
@@ -128,13 +180,25 @@ def record(renderer, output, model, bim, sequence, frames, technique, extension,
     if os.environ.get("VK_LOADER_DEBUG") == "layer":
         require('Insert instance layer "VK_LAYER_KHRONOS_validation"' in text, f"Missing validation layer: {log}")
     images = {}
+    projection = None
     for kind, frame in frames.items():
         image = screenshot if frame == max(frames.values()) else output / f"{name}.frame-{frame:04}.{extension}"
-        pixels, state = read_capture(image, technique)
-        require(Path(state["scene"]["auxiliary"]).resolve() == bim and state["scene"]["auxiliaryObjectCount"] >= 3,
+        active_technique = kind.split("/", 1)[0] if pin_ordering else technique
+        pixels, state = read_capture(image, active_technique, extent=extent, mode=mode if pin_ordering else None)
+        require(Path(state["scene"]["auxiliary"]).resolve() == bim
+                and state["scene"]["auxiliaryObjectCount"] >= (5 if pin_ordering else 3),
                 f"Incomplete fixture in {image}")
+        if pin_ordering:
+            current = state["camera"]["unjitteredViewProjColumns"]
+            if projection is None:
+                projection = current
+            active_passes = {row["name"] for row in state["passes"] if row["active"]}
+            require(current == projection and [column[3] for column in current] == [0, 0, 0, 1]
+                    and {"OitClear", "OitResolve"} <= active_passes and not state["oit"]["overflowed"],
+                    f"Expected fixed orthographic camera and transparent surfaces in {image}")
         images[kind] = pixels
-        row["captures"].append(dict(kind=kind, frame=frame, image=str(image), revision=state["build"]["revision"],
+        row["captures"].append(dict(kind=kind, frame=frame, technique=active_technique,
+                                     image=str(image), revision=state["build"]["revision"],
                                     decodedSha256=hashlib.sha256(pixels.tobytes()).hexdigest()))
     return images
 
@@ -186,18 +250,116 @@ def inspect(png, exr, missing_previews):
     return checks
 
 
+def inspect_pin_depth(images, techniques, evidence, *, mode="lit"):
+    import numpy as np
+
+    viewport = overview_panel_slice(.026, .046, .334, .264) if mode == "overview" else np.s_[:, :]
+
+    def blue_signal(rgb):
+        return np.minimum(rgb[:, :, 2] - rgb[:, :, 0], rgb[:, :, 2] - rgb[:, :, 1])
+
+    for technique in techniques:
+        off = images[f"{technique}/off"][viewport].astype(np.int16)
+        signal_off = blue_signal(off)
+        zones = evidence[technique] = {}
+        for index, (label, _, _, _) in enumerate(PIN_DEPTH_ZONES):
+            image = images[f"{technique}/{label}"][viewport].astype(np.int16)
+            width = image.shape[1]
+            start, end = index * width // 4, (index + 1) * width // 4
+            signal = np.maximum(blue_signal(image) - signal_off, 0)[:, start:end]
+            changed = np.any(image != off, axis=2)
+            center = off[off.shape[0] // 2 - 2:off.shape[0] // 2 + 3, (start + end) // 2]
+            zones[label] = dict(blueSignal=int(signal.sum()), visiblePixels=int(np.count_nonzero(signal > 4)),
+                                backgroundLevel=float(center.mean()), changedPixels=int(changed.sum()),
+                                changedOutsideZone=int(changed[:, :start].sum() + changed[:, end:].sum()))
+        print(f"{technique}/{mode}: depth-ordered BIM issue pins {zones}", flush=True)
+
+    for technique, zones in evidence.items():
+        np.testing.assert_array_equal(images[f"{technique}/off-again"], images[f"{technique}/off"],
+                                      err_msg=f"{technique}/{mode}: disabled pin left a stale image")
+        clear, behind, front, opaque = (zones[label] for label, _, _, _ in PIN_DEPTH_ZONES)
+        min_pixels = 8 if mode == "overview" else 24
+        require(clear["visiblePixels"] >= min_pixels, f"{technique}/{mode}: exposed issue pin missing: {zones}")
+        require(min(behind["backgroundLevel"], front["backgroundLevel"], opaque["backgroundLevel"])
+                > clear["backgroundLevel"] + 5, f"{technique}/{mode}: an occluder missed the pin: {zones}")
+        require(behind["blueSignal"] >= .65 * clear["blueSignal"],
+                f"{technique}/{mode}: farther translucent surfaces attenuated the issue pin: {zones}")
+        require(.02 * clear["blueSignal"] < front["blueSignal"] < .70 * clear["blueSignal"],
+                f"{technique}/{mode}: nearer translucent surfaces must partially attenuate the issue pin: {zones}")
+        require(opaque["changedPixels"] == 0 and all(zone["changedOutsideZone"] == 0 for zone in zones.values()),
+                f"{technique}/{mode}: pin leaked through opaque depth or changed an unrelated zone: {zones}")
+
+    if mode == "overview":
+        diagnostics = {}
+        for label, pane, threshold in (
+                ("transparency", overview_panel_slice(.026, .506, .334, .724), 32),
+                ("revealage", overview_panel_slice(.346, .506, .654, .724), 223)):
+            off_tile = images["forward-raster/off"][pane]
+            brightness = off_tile.max(axis=2)
+            roof_pixels = np.count_nonzero(brightness > threshold if label == "transparency" else brightness < threshold)
+            require(roof_pixels > 100, f"Forward Overview {label} diagnostic lacks transparent roofs")
+            for stage in PIN_DEPTH_STAGES[1:-1]:
+                np.testing.assert_array_equal(images[f"forward-raster/{stage}"][pane], off_tile,
+                                              err_msg=f"Issue pin changed Forward Overview {label} at {stage}")
+            diagnostics[label] = {"roofPixels": int(roof_pixels), "changedPixels": 0}
+        evidence["diagnostics"] = diagnostics
+
+
+def inspect_linear_pin_depth(images):
+    compared = 0
+    for technique in TECHNIQUES:
+        off = images[f"{technique}/off"]
+        require(float(off.max()) > .01, f"The {technique} EXR control lost its scene")
+        for stage in ("behind", "front"):
+            require(images[f"{technique}/{stage}"].tobytes() == off.tobytes(),
+                    f"The {stage} issue pin entered the {technique} scene-linear EXR")
+            compared += 1
+    return {"unchangedOnFrames": compared}
+
+
+def run_pin_depth(renderer, output, report, generate_only, *, lit_only=False):
+    bim = output / "issue-pin-depth-ordering.bim"
+    pin_depth_fixture(bim)
+    sequence = output / "issue-pin-ordering-lit.sequence.json"
+    frames = pin_depth_sequence(sequence, TECHNIQUES, PIN_DEPTH_STAGES)
+    lit = record(renderer, output, None, bim, sequence, frames, TECHNIQUES[0], "png", report, generate_only,
+                 pin_ordering=True)
+    evidence = report["checks"].setdefault("issuePinDepth", {})
+    if not generate_only:
+        inspect_pin_depth(lit, TECHNIQUES, evidence.setdefault("lit", {}))
+    if lit_only:
+        return
+
+    sequence = output / "issue-pin-ordering-linear.sequence.json"
+    frames = pin_depth_sequence(sequence, TECHNIQUES, ("off", "behind", "front"))
+    linear = record(renderer, output, None, bim, sequence, frames, TECHNIQUES[0], "exr", report, generate_only,
+                    pin_ordering=True)
+    sequence = output / "issue-pin-ordering-overview.sequence.json"
+    frames = pin_depth_sequence(sequence, ("forward-raster",), PIN_DEPTH_STAGES)
+    overview = record(renderer, output, None, bim, sequence, frames, "forward-raster", "png", report, generate_only,
+                      mode="overview", pin_ordering=True)
+    if not generate_only:
+        evidence["sceneLinear"] = inspect_linear_pin_depth(linear)
+        inspect_pin_depth(overview, ("forward-raster",), evidence.setdefault("overview", {}), mode="overview")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true", help="Make a fresh run directory beneath the output.")
+    parser.add_argument("--issue-pin-ordering-only", nargs="?", const="all", choices=("lit", "all"),
+                        help="run only the depth-tested issue-pin sequence, optionally Lit only")
     baseline = parser.add_mutually_exclusive_group()
     baseline.add_argument("--expect-missing-forward-annotations", action="store_true",
                           help="check the older capture format on a build without Forward annotations")
     baseline.add_argument("--expect-missing-forward-technical", action="store_true",
                           help="expect only Technical elevation to be missing from Forward raster")
     args = parser.parse_args()
+    expect_missing = args.expect_missing_forward_annotations or args.expect_missing_forward_technical
+    if args.issue_pin_ordering_only and expect_missing:
+        parser.error("The issue-pin ordering check requires working raster annotation pipelines")
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_BIM_FLOOR_PLAN") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1 to run GPU captures")
         return 77
@@ -208,16 +370,22 @@ def main():
         output = Path(tempfile.mkdtemp(prefix="run-", dir=output))
     else:
         output.mkdir(parents=True)
-    model, bim = fixtures(output)
-    frames = FRAMES if args.expect_missing_forward_annotations else FRAMES | TECHNICAL_FRAMES
-    sequence = output / "annotations.sequence.json"
-    sequence.write_text(json.dumps(sequence_plan(frames), indent=2) + "\n", encoding="utf-8")
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     report = dict(passed=False, runs=[], checks={}, expectedMissingForwardAnnotations=args.expect_missing_forward_annotations,
                   expectedMissingForwardTechnical=args.expect_missing_forward_technical)
     if not args.generate_only:
         report["rendererSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     try:
+        if args.issue_pin_ordering_only:
+            run_pin_depth(renderer, output, report, args.generate_only, lit_only=args.issue_pin_ordering_only == "lit")
+            if not args.generate_only:
+                require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["rendererSha256"], "Renderer changed")
+                report["passed"] = True
+            return 0
+        model, bim = fixtures(output)
+        frames = FRAMES if args.expect_missing_forward_annotations else FRAMES | TECHNICAL_FRAMES
+        sequence = output / "annotations.sequence.json"
+        sequence.write_text(json.dumps(sequence_plan(frames), indent=2) + "\n", encoding="utf-8")
         for technique in TECHNIQUES:
             png, exr = (record(renderer, output, model, bim, sequence, frames, technique, extension, report, args.generate_only)
                         for extension in ("png", "exr"))
@@ -231,6 +399,8 @@ def main():
                 checks = inspect(png, exr, missing_previews)
                 report["checks"][technique] = checks
                 print(technique, checks, flush=True)
+        if not expect_missing:
+            run_pin_depth(renderer, output, report, args.generate_only)
         if not args.generate_only:
             require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["rendererSha256"], "Renderer changed")
             report["passed"] = True
