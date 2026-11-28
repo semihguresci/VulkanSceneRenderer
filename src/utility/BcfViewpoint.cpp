@@ -398,7 +398,8 @@ float floatAttribute(std::string_view tag, std::string_view name,
   char* end = nullptr;
   const double parsed = std::strtod(value->c_str(), &end);
   if (end == value->c_str() || end == nullptr || *end != '\0' ||
-      !std::isfinite(parsed)) {
+      !std::isfinite(parsed) ||
+      std::abs(parsed) > std::numeric_limits<float>::max()) {
     return fallback;
   }
   return static_cast<float>(parsed);
@@ -698,7 +699,8 @@ std::optional<float> floatElement(std::string_view xml,
   std::string text(*body);
   char* end = nullptr;
   const double parsed = std::strtod(text.c_str(), &end);
-  if (end == text.c_str() || end == nullptr || !std::isfinite(parsed)) {
+  if (end == text.c_str() || end == nullptr || !std::isfinite(parsed) ||
+      std::abs(parsed) > std::numeric_limits<float>::max()) {
     return std::nullopt;
   }
   while (*end != '\0') {
@@ -738,7 +740,7 @@ bool readStandardPerspectiveCamera(std::string_view xml,
   }
 
   const float directionLength = glm::length(*direction);
-  if (directionLength <= 1.0e-6f) {
+  if (!std::isfinite(directionLength) || directionLength <= 1.0e-6f) {
     return false;
   }
   const glm::vec3 forward = *direction / directionLength;
@@ -773,8 +775,12 @@ std::optional<std::string> readTextFile(const std::filesystem::path& path) {
   if (!file) {
     return std::nullopt;
   }
-  return std::string((std::istreambuf_iterator<char>(file)),
-                     std::istreambuf_iterator<char>());
+  try {
+    return std::string((std::istreambuf_iterator<char>(file)),
+                       std::istreambuf_iterator<char>());
+  } catch (const std::ios_base::failure&) {
+    return std::nullopt;
+  }
 }
 
 bool writeTextFile(const std::filesystem::path& path, std::string_view text) {
@@ -1167,23 +1173,42 @@ std::optional<BcfViewpointMarkup> ImportVisualizationInfoMarkup(
 
 bool SaveVisualizationInfo(const ViewpointSnapshotState& snapshot,
                            const std::filesystem::path& path) {
+  return SaveVisualizationInfo(snapshot, BcfViewpointMarkup{}, path);
+}
+
+bool SaveVisualizationInfo(const ViewpointSnapshotState& snapshot,
+                           const BcfViewpointMarkup& markup,
+                           const std::filesystem::path& path) {
   std::ofstream file(path, std::ios::binary);
   if (!file) {
     return false;
   }
-  file << ExportVisualizationInfo(snapshot);
+  file << ExportVisualizationInfo(snapshot, markup);
+  file.close();
   return static_cast<bool>(file);
 }
 
 std::optional<ViewpointSnapshotState> LoadVisualizationInfo(
     const std::filesystem::path& path) {
-  std::ifstream file(path, std::ios::binary);
-  if (!file) {
+  const auto xml = readTextFile(path);
+  return xml ? ImportVisualizationInfo(*xml) : std::nullopt;
+}
+
+std::optional<BcfVisualizationInfo> LoadVisualizationInfoWithMarkup(
+    const std::filesystem::path& path) {
+  const auto xml = readTextFile(path);
+  if (!xml) {
     return std::nullopt;
   }
-  std::string text((std::istreambuf_iterator<char>(file)),
-                   std::istreambuf_iterator<char>());
-  return ImportVisualizationInfo(text);
+  auto snapshot = ImportVisualizationInfo(*xml);
+  if (!snapshot) {
+    return std::nullopt;
+  }
+  return BcfVisualizationInfo{
+      .snapshot = std::move(*snapshot),
+      .markup =
+          ImportVisualizationInfoMarkup(*xml).value_or(BcfViewpointMarkup{}),
+  };
 }
 
 std::string ExportMarkup(const BcfMarkup& markup) {
@@ -1525,6 +1550,24 @@ namespace {
          std::isfinite(position.z);
 }
 
+void appendBcfIssuePins(const container::ui::bcf::BcfViewpointMarkup& markup,
+                       std::vector<BimCoordinationOverlayIssuePin>& issuePins) {
+  issuePins.reserve(issuePins.size() + markup.pins.size());
+  for (const container::ui::bcf::BcfPin& pin : markup.pins) {
+    if (!pin.hasLocation || !finiteIssuePinPosition(pin.location)) {
+      continue;
+    }
+    issuePins.push_back({.position = pin.location,
+                         .label = pin.label,
+                         .ifcGuid = pin.ifcGuid,
+                         .sourceId = pin.sourceId,
+                         .primaryObjectIndex =
+                             kInvalidBimCoordinationOverlayObjectIndex,
+                         .secondaryObjectIndex =
+                             kInvalidBimCoordinationOverlayObjectIndex});
+  }
+}
+
 } // namespace
 
 std::vector<BimCoordinationOverlayIssuePin>
@@ -1533,21 +1576,15 @@ exportBcfPinsAsIssueOverlayMarkers(
   std::vector<BimCoordinationOverlayIssuePin> issuePins;
   for (const container::ui::bcf::BcfViewpointMarkup &viewpoint :
        markup.viewpoints) {
-    issuePins.reserve(issuePins.size() + viewpoint.pins.size());
-    for (const container::ui::bcf::BcfPin &pin : viewpoint.pins) {
-      if (!pin.hasLocation || !finiteIssuePinPosition(pin.location)) {
-        continue;
-      }
-      issuePins.push_back({.position = pin.location,
-                           .label = pin.label,
-                           .ifcGuid = pin.ifcGuid,
-                           .sourceId = pin.sourceId,
-                           .primaryObjectIndex =
-                               kInvalidBimCoordinationOverlayObjectIndex,
-                           .secondaryObjectIndex =
-                               kInvalidBimCoordinationOverlayObjectIndex});
-    }
+    appendBcfIssuePins(viewpoint, issuePins);
   }
+  return issuePins;
+}
+
+std::vector<BimCoordinationOverlayIssuePin> exportBcfPinsAsIssueOverlayMarkers(
+    const container::ui::bcf::BcfViewpointMarkup& markup) {
+  std::vector<BimCoordinationOverlayIssuePin> issuePins;
+  appendBcfIssuePins(markup, issuePins);
   return issuePins;
 }
 

@@ -75,6 +75,7 @@ struct RendererTelemetryView;
 namespace container::ui {
 
 class OpenVdbAuthoringPanel;
+namespace bcf { struct BcfVisualizationInfo; }
 namespace detail { class GltfXmpInspector; }
 
 struct GltfInspectorSource {
@@ -1437,6 +1438,7 @@ private:
   void drawDdgiControls();
   void drawDdgiRoomPlanControls();
   void drawBimHardClashPanel(const BimInspectionState &inspection);
+  void clearStandaloneBcfIssuePins();
   [[nodiscard]] int sampleModelIndexForPath(const std::string &path) const;
 
   struct BimMeasurementPointState {
@@ -1657,7 +1659,8 @@ private:
   std::string bimSunHoursCsvPath_{"bim-sun-hours.csv"};
   std::optional<size_t> bimSunHoursSelectedCell_{};
   bool bimSunHoursViewportVisible_{true};
-  std::vector<ViewpointSnapshotState> viewpointSnapshots_{};
+  std::vector<std::unique_ptr<bcf::BcfVisualizationInfo>> storedViewpoints_{};
+  const bcf::BcfVisualizationInfo *activeStandaloneBcfViewpoint_{nullptr};
   int selectedViewpointSnapshotIndex_{-1};
   uint32_t nextViewpointSnapshotId_{1};
   std::string bcfViewpointPath_{"container-viewpoint.bcfv"};

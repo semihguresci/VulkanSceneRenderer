@@ -52,6 +52,11 @@ struct BcfViewpointMarkup {
   std::vector<BcfMarkupLine> lines{};
 };
 
+struct BcfVisualizationInfo {
+  ViewpointSnapshotState snapshot{};
+  BcfViewpointMarkup markup{};
+};
+
 struct BcfMarkup {
   BcfTopic topic{};
   std::vector<BcfComment> comments{};
@@ -89,9 +94,14 @@ struct BcfTopicFolder {
 
 bool SaveVisualizationInfo(const ViewpointSnapshotState& snapshot,
                            const std::filesystem::path& path);
+bool SaveVisualizationInfo(const ViewpointSnapshotState& snapshot,
+                           const BcfViewpointMarkup& markup,
+                           const std::filesystem::path& path);
 
 [[nodiscard]] std::optional<ViewpointSnapshotState> LoadVisualizationInfo(
     const std::filesystem::path& path);
+[[nodiscard]] std::optional<BcfVisualizationInfo>
+LoadVisualizationInfoWithMarkup(const std::filesystem::path& path);
 
 [[nodiscard]] std::string ExportMarkup(const BcfMarkup& markup);
 
