@@ -1,4 +1,4 @@
-"""Exercise the headless BIM drive and camera stream against an authored IFC door."""
+"""Exercise native drive, camera, and LiDAR streams against authored IFC fixtures."""
 
 import argparse
 import base64
@@ -174,10 +174,34 @@ def check_clean_tick_limit(executable, model, scenario, limit):
     requests.append({"op": "close"})
     description, *samples, close = exchange(executable, model, scenario, requests)
     assert description["ok"] and type(description["tickLimit"]) is int and description["tickLimit"] == limit
-    assert description["camera"] is None and close["ok"]
+    assert description["camera"] is None and description["lidar"] is None and close["ok"]
     for tick, sample in enumerate(samples):
         check_sample(sample, tick)
-        assert sample["camera"] is None, sample
+        assert sample["camera"] is None and sample["lidar"] is None, sample
+
+
+def check_lidar_stream(executable, fixtures):
+    model = fixtures / "lidar-corner.ifc"
+    planar = (4.0, 3 * math.sqrt(2), 3.0) + ("no-hit",) * 5
+    raised = tuple(value / math.cos(math.pi / 12) for value in planar[:3]) + planar[3:]
+    for case, expected in (("planar", planar), ("layered", (2.5,) * 8 + planar + raised)):
+        scenario = fixtures / f"lidar-corner-ros2-{case}.json"
+        requests = [{"op": "describe"}, {"op": "observe"}, step(2), {"op": "observe"}]
+        requests.extend(step(tick, speed=0) for tick in range(1, 27))
+        requests.append({"op": "close"})
+        description, initial, rejected, cached, *samples, close = exchange(executable, model, scenario, requests)
+        calibration = description["lidar"]
+        assert calibration["baseFromSensor"] == {"xyz": [0, 0, 1.25], "quaternionXyzw": [0, 0, 0, 1]}, calibration
+        assert calibration["azimuthSamples"] == 8 and math.isclose(calibration["azimuthIncrement"], math.pi / 4)
+        assert not rejected["ok"] and initial == cached and close["ok"], case
+        assert initial["lidar"]["sampleIndex"] == 0
+        for actual, target in zip(initial["lidar"]["rangesMeters"], expected, strict=True):
+            if isinstance(target, str):
+                assert actual == target, (case, actual, target)
+            else:
+                assert isinstance(actual, (int, float)) and math.isclose(actual, target, abs_tol=2e-5), (case, actual, target)
+        assert [(row["tick"], row["lidar"]["sampleIndex"]) for row in samples if row["lidar"] is not None] == [
+            (9, 1), (18, 2), (26, 3)], case
 
 
 def main():
@@ -187,6 +211,7 @@ def main():
     args = parser.parse_args()
     executable = args.executable.resolve(strict=True)
     model = (args.fixtures / "doorway.ifc").resolve(strict=True)
+    check_lidar_stream(executable, args.fixtures.resolve(strict=True))
 
     with tempfile.TemporaryDirectory(prefix="bim-drive-stream-") as temporary:
         directory = Path(temporary)
@@ -204,7 +229,7 @@ def main():
             center[door_open] = check_run(run_stream(executable, model, scenario, camera), model, door_open)
         assert math.isnan(center[True]), ("open door obstructed the center camera ray", center[True])
         assert math.isclose(center[False], 1.52, abs_tol=0.005), ("wrong central closed-door depth", center[False])
-    print("Verified committed drive ticks, camera payloads, and the open and closed IFC door")
+    print("Verified committed drive ticks, RGB-D, planar and layered LiDAR, and the open and closed IFC door")
     return 0
 
 
