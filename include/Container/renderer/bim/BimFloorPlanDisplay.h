@@ -3,7 +3,6 @@
 #include <Container/renderer/core/RenderTechnique.h>
 #include <Container/utility/GuiManager.h>
 
-#include <algorithm>
 #include <string_view>
 
 namespace container::renderer {
@@ -20,16 +19,6 @@ enum class BimFloorPlanViewportRoute {
     RenderTechniqueId technique, ui::GBufferViewMode mode, bool depthTest) {
   return technique == RenderTechniqueId::ForwardRaster &&
          mode == ui::GBufferViewMode::Overview && !depthTest;
-}
-
-// Inner Lit tile of the Overview grid in post_process.slang.
-inline constexpr float kOverviewLitTileLeft = 0.02f + 0.006f;
-inline constexpr float kOverviewLitTileTop = 0.04f + 0.006f;
-inline constexpr float kOverviewLitTileWidth = (0.98f - 0.02f) / 3.0f - 2.0f * 0.006f;
-inline constexpr float kOverviewLitTileHeight = (0.96f - 0.04f) / 4.0f - 2.0f * 0.006f;
-
-[[nodiscard]] constexpr float bimFloorPlanOverviewLineWidth(float lineWidth) {
-  return std::max(1.0f, lineWidth * kOverviewLitTileHeight);
 }
 
 // Raster floor plans are in scene color before post_process.slang selects the

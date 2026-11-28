@@ -1,5 +1,6 @@
 #include "Container/renderer/pipeline/GraphicsPipelineBuilder.h"
 #include "Container/geometry/Model.h"
+#include "Container/renderer/bim/BimLightingOverlayRecorder.h"
 #include "Container/renderer/bim/BimSunHoursOverlay.h"
 #include "Container/renderer/debug/DebugOverlayRenderer.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
@@ -1184,15 +1185,25 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.bimFloorPlanNoDepth = pipelineManager_.createGraphicsPipeline(
       floorPlanPCI, "bim_floor_plan_no_depth_pipeline");
 
-  // Composite the floor plan into the display image and preserve its alpha.
-  VkPipelineColorBlendAttachmentState floorPlanDisplayAttach = overlayAttach;
-  floorPlanDisplayAttach.colorWriteMask &= ~VK_COLOR_COMPONENT_A_BIT;
-  const auto floorPlanDisplayBlend = makeBlend(&floorPlanDisplayAttach, 1);
+  // Blend BIM overlays in the display image and preserve its alpha.
+  VkPipelineColorBlendAttachmentState bimDisplayAttach = overlayAttach;
+  bimDisplayAttach.colorWriteMask &= ~VK_COLOR_COMPONENT_A_BIT;
+  const auto bimDisplayBlend = makeBlend(&bimDisplayAttach, 1);
+
+  RenderingGraphicsPipelineCreateInfo clashDisplayPCI = wfPCI;
+  clashDisplayPCI.renderPass = renderPasses.postProcess;
+  clashDisplayPCI.pRasterizationState = useNativeWireframe ? &wfRaster : &wfFbRaster;
+  clashDisplayPCI.pDepthStencilState = &noDS;
+  clashDisplayPCI.pColorBlendState = &bimDisplayBlend;
+  pipelines.extraHandles.push_back({
+      .key = {RenderTechniqueId::ForwardRaster, kBimXrayClashDisplayPipeline},
+      .pipeline = pipelineManager_.createGraphicsPipeline(clashDisplayPCI, "bim_xray_clash_display_pipeline")});
+
   RenderingGraphicsPipelineCreateInfo floorPlanDisplayPCI = floorPlanPCI;
   floorPlanDisplayPCI.layout = floorPlanDisplayLayout;
   floorPlanDisplayPCI.renderPass = renderPasses.postProcess;
   floorPlanDisplayPCI.pDepthStencilState = &noDS;
-  floorPlanDisplayPCI.pColorBlendState = &floorPlanDisplayBlend;
+  floorPlanDisplayPCI.pColorBlendState = &bimDisplayBlend;
   pipelines.extraHandles.push_back({
       .key = {RenderTechniqueId::ForwardRaster,
               std::string(forwardRasterPipelineName(

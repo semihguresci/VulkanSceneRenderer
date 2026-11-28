@@ -4,6 +4,7 @@
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/bim/BimFrameGpuVisibilityRecorder.h"
+#include "Container/renderer/bim/BimLightingOverlayRecorder.h"
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/culling/GpuCullManager.h"
@@ -1940,6 +1941,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
          .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
          .recordAfterFullscreenDraw = [deferred, &p,
                                        ppSets](VkCommandBuffer passCmd) {
+           recordBimXrayClashOverlay(passCmd, p, deferred->swapchainExtent(), deferred->debugOverlay());
            recordBimSunHoursOverlay(passCmd, p);
            if (p.screenshot.viewportOnly) {
              if (auto* gui = deferred->guiManager())

@@ -4,6 +4,9 @@
 #include "Container/renderer/bim/BimPrimitivePassRecorder.h"
 #include "Container/renderer/bim/BimSectionClipCapPassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
+#include "Container/renderer/scene/SceneViewport.h"
+
+#include <glm/gtc/color_space.hpp>
 
 #include <algorithm>
 
@@ -13,6 +16,16 @@ namespace {
 
 [[nodiscard]] bool hasDrawCommands(const std::vector<DrawCommand> *commands) {
   return commands != nullptr && !commands->empty();
+}
+
+[[nodiscard]] bool presentsBimXrayClash(const FrameRecordParams &p) {
+  const auto technique = p.runtime.activeTechnique;
+  const auto mode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
+  const auto &markers = p.bim.coordinationMarkers;
+  return (technique == RenderTechniqueId::ForwardRaster || technique == RenderTechniqueId::DeferredRaster) &&
+         (mode == ui::GBufferViewMode::Lit || mode == ui::GBufferViewMode::Overview) &&
+         !p.screenshot.sceneLinear && markers.clashMarkersEnabled && !markers.clashDepthTest &&
+         hasDrawCommands(p.bim.coordinationClashMarkerDrawCommands);
 }
 
 BimLightingOverlayGeometryBinding overlayGeometry(
@@ -423,6 +436,7 @@ bool hasBimRasterDisplayOverlays(const FrameRecordParams &p) {
       (bim.coordinationMarkers.issueMarkersEnabled &&
        hasDrawCommands(bim.coordinationIssueMarkerDrawCommands)) ||
       (bim.coordinationMarkers.clashMarkersEnabled &&
+       !presentsBimXrayClash(p) &&
        hasDrawCommands(bim.coordinationClashMarkerDrawCommands)) ||
       (bim.sectionPlaneVisual.enabled && hasDrawCommands(bim.sectionPlaneVisualDrawCommands)))
     return true;
@@ -596,7 +610,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                                          .color = markers.issueColor,
                                          .opacity = markers.issueOpacity,
                                          .lineWidth = markers.issueLineWidth},
-            .coordinationClashMarkers = {.enabled = markers.clashMarkersEnabled,
+            .coordinationClashMarkers = {.enabled = markers.clashMarkersEnabled && !presentsBimXrayClash(p),
                                          .depthTest = markers.depthTest && markers.clashDepthTest,
                                          .color = markers.clashColor,
                                          .opacity = markers.clashOpacity,
@@ -647,6 +661,55 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
             .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
             .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported,
             .lineListWideLinesSupported = lineListWideLinesSupported});
+}
+
+void recordBimXrayClashOverlay(VkCommandBuffer cmd, const FrameRecordParams &p,
+                               VkExtent2D extent, const DebugOverlayRenderer *debugOverlay) {
+  if (!presentsBimXrayClash(p) || !p.pushConstants.wireframe || !debugOverlay)
+    return;
+
+  const auto technique = p.runtime.activeTechnique;
+  const auto layout = p.pipelineLayout(technique, "wireframe");
+  const auto pipeline = p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimXrayClashDisplayPipeline);
+  const auto descriptor = p.descriptorSet(technique, "bim-scene-descriptor-set");
+  const auto geometry = overlayGeometry(descriptor, p.bim.coordinationMarkerScene);
+  if (layout == VK_NULL_HANDLE || pipeline == VK_NULL_HANDLE || descriptor == VK_NULL_HANDLE ||
+      geometry.vertexSlice.buffer == VK_NULL_HANDLE || geometry.indexSlice.buffer == VK_NULL_HANDLE)
+    return;
+
+  const bool overview = p.debug.displayMode == static_cast<uint32_t>(ui::GBufferViewMode::Overview);
+  if (overview && !recordOverviewLitTileViewport(cmd, extent))
+    return;
+
+  const auto &markers = p.bim.coordinationMarkers;
+  WireframePushConstants pushConstants = *p.pushConstants.wireframe;
+  pushConstants.useUnjitteredCamera = 1u;
+  if (p.pushConstants.bindless) {
+    pushConstants.sectionPlaneEnabled = p.pushConstants.bindless->sectionPlaneEnabled;
+    pushConstants.sectionPlane = p.pushConstants.bindless->sectionPlane;
+  }
+  const glm::vec3 color = p.postProcess.encodeSrgbOutput
+      ? glm::convertLinearToSRGB(markers.clashColor) : markers.clashColor;
+  (void)recordBimLightingOverlayFrameCommands(cmd, {
+      .bimGeometryReady = true,
+      .framebufferExtent = extent,
+      .coordinationClashMarkers = {.enabled = true,
+                                   .depthTest = false,
+                                   .color = color,
+                                   .opacity = markers.clashOpacity,
+                                   .lineWidth = overview ? overviewLitTileLineWidth(markers.clashLineWidth)
+                                                         : markers.clashLineWidth},
+      .draws = {.coordinationClashMarkers = p.bim.coordinationClashMarkerDrawCommands},
+      .coordinationMarkerGeometryReady = true,
+      .pipelines = {.wireframeNoDepth = pipeline},
+      .wireframeLayout = layout,
+      .coordinationMarkers = geometry,
+      .wireframePushConstants = &pushConstants,
+      .debugOverlay = debugOverlay,
+      .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
+      .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
+  if (overview)
+    recordSceneViewportAndScissor(cmd, extent);
 }
 
 } // namespace container::renderer

@@ -178,8 +178,9 @@ When a volume is loaded, **OpenVDB volume** exposes visibility, geometry shadows
 Open **Hard Clashes** and choose a category or a saved selection set for each
 group. Run the check to find pairs of closed solids that overlap by a positive
 volume. The panel lists overlap in cubic metres and reports skipped geometry
-and checks that failed. Select a result to frame both elements and show its
-clash marker. Use **Save BCF viewpoint** to share the selected pair and camera.
+and checks that failed. Select a result to frame both elements. In Forward and
+Deferred raster, the clash marker appears through scene geometry in Lit and in
+Overview's Lit tile. Use **Save BCF viewpoint** to share the selected pair and camera.
 
 Open **Sun Hours** to study direct sunlight on a horizontal grid. Fit the
 grid to the BIM model or edit its world coordinates and elevation. Set the

@@ -51,7 +51,8 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
         material.heightScale,
         material.heightOffset);
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
-    output.pos = mul(uCamera.viewProj, worldPos);
+    output.pos = mul(pc.useUnjitteredCamera != 0 && uCamera.temporalInfo.w != 0u
+                         ? uCamera.unjitteredViewProj : uCamera.viewProj, worldPos);
     output.worldPos = worldPos.xyz;
     return output;
 }
