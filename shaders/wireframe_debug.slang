@@ -16,7 +16,7 @@
 #if defined(BIM_NATIVE_OIT)
 #define OIT_WRITE_SET 1
 #include "oit_write_common.slang"
-[[vk::constant_id(1)]] const bool kOitDisplayOverlay = false;
+[[vk::constant_id(1)]] const uint kOitNodeFlags = 0u;
 #endif
 
 #include "scene_clip_common.slang"
@@ -102,8 +102,7 @@ float4 fragMain(PSInput input) : SV_Target0
         uint2 pixel = uint2(input.pos.xy);
         uint nodeIndex = AllocateOitNode(pixel);
         if (nodeIndex != INVALID_NODE_INDEX)
-            AppendOitNode(pixel, nodeIndex, input.pos.z, color,
-                          kOitDisplayOverlay ? OIT_NODE_DISPLAY_OVERLAY : 0u);
+            AppendOitNode(pixel, nodeIndex, input.pos.z, color, kOitNodeFlags);
     }
     return 0.0.xxxx;
 #else

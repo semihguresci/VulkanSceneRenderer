@@ -895,6 +895,10 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   const auto hasDraws = [](const FrameDrawLists &draws) {
     return hasOpaqueDrawCommands(draws) || hasTransparentDrawCommands(draws);
   };
+  const auto hasHighlight = [](const FrameDrawLists &draws) {
+    return hasDrawCommands(draws.hoveredDrawCommands) ||
+           hasDrawCommands(draws.selectedDrawCommands);
+  };
   const auto displayMode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
   const bool floorPlanInSceneColor = p.bim.floorPlan.enabled &&
       !bimFloorPlanUsesPresentationOverlay(p.runtime.activeTechnique, displayMode, p.bim.floorPlan.depthTest);
@@ -907,6 +911,8 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
         (!p.bim.technicalElevation.hiddenLineOverlay || p.bim.technicalElevation.depthTestLines)) ||
        hasDrawCommands(p.draws.hoveredDrawCommands) ||
        hasDrawCommands(p.bim.draws.hoveredDrawCommands) ||
+       hasHighlight(p.bim.nativePointDraws) || hasHighlight(p.bim.nativeCurveDraws) ||
+       hasHighlight(p.bim.nativeCurveStrokeDraws) ||
        (p.bim.pointCurveStyle.points.enabled && hasDraws(p.bim.pointDraws)) ||
        (p.bim.pointCurveStyle.curves.enabled && hasDraws(p.bim.curveDraws)));
   const bool historyValid =

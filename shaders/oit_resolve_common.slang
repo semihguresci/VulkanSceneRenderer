@@ -70,12 +70,11 @@ OitResolveResult ResolveOitPixel(uint2 pixelCoord, float3 sceneColor,
             current = node.next;
             continue;
         }
-        float nodeDepth = FiniteOr(node.depth, 0.0);
         uint insertAt = nodeCount;
         while (insertAt > 0u)
         {
             TransparentNode prevNode = transparentNodes[sortedIndices[insertAt - 1u]];
-            if (FiniteOr(prevNode.depth, 0.0) >= nodeDepth)
+            if (!OitNodePrecedes(node, prevNode))
             {
                 break;
             }

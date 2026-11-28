@@ -264,7 +264,10 @@ void registerDeferredRasterPipelineRecipes(PipelineRegistry &registry) {
         .layoutName = "wireframe"});
   }
   for (const auto *pipeline : {kBimNativePointOitPipeline, kBimNativeCurveOitPipeline,
-                               kBimNativeCurveStrokeOitPipeline, kBimFloorPlanOitPipeline}) {
+                               kBimNativeCurveStrokeOitPipeline, kBimFloorPlanOitPipeline,
+                               kBimPointHighlightOitPipeline, kBimCurveStrokeHighlightOitPipeline,
+                               kBimPointSelectionOitPipeline, kBimCurveSelectionOitPipeline,
+                               kBimCurveStrokeSelectionOitPipeline}) {
     registry.registerRecipe(PipelineRecipe{
         .key = {kDeferredRasterTechnique, pipeline}, .kind = PipelineRecipeKind::Graphics,
         .shaderStages = {"spv_shaders/wireframe_debug.vert.spv", "spv_shaders/bim_native_oit.frag.spv"},

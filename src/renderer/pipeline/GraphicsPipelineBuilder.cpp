@@ -1321,15 +1321,16 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.bimCurveStrokeNoDepth = pipelineManager_.createGraphicsPipeline(
       curveStrokePCI, "bim_curve_stroke_no_depth_pipeline");
 
+  // These flags match the transparent node flags in oit_common.slang.
+  constexpr uint32_t displayOverlay = 1u;
+  constexpr uint32_t selectionOverlay = displayOverlay | 2u;
   const auto createBimOitPipeline = [&](RenderingGraphicsPipelineCreateInfo info,
-                                        const char *name, bool displayOverlay = false) {
+                                        const char *name, uint32_t nodeFlags = 0u) {
     std::array stages{info.pStages[0], makeStage(bimNativeOitFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
-    const VkBool32 displayOverlayValue = VK_TRUE;
-    const VkSpecializationMapEntry displayOverlayEntry{1u, 0u, sizeof(displayOverlayValue)};
-    const VkSpecializationInfo displayOverlayInfo{1u, &displayOverlayEntry,
-                                                   sizeof(displayOverlayValue), &displayOverlayValue};
-    if (displayOverlay)
-      stages[1].pSpecializationInfo = &displayOverlayInfo;
+    const VkSpecializationMapEntry flagEntry{1u, 0u, sizeof(nodeFlags)};
+    const VkSpecializationInfo flagInfo{1u, &flagEntry, sizeof(nodeFlags), &nodeFlags};
+    if (nodeFlags != 0u)
+      stages[1].pSpecializationInfo = &flagInfo;
     info.pStages = stages.data();
     info.layout = bimNativeOitLayout;
     info.pDepthStencilState = &wfDepthDS;
@@ -1340,7 +1341,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   createBimOitPipeline(pointCloudPCI, kBimNativePointOitPipeline);
   createBimOitPipeline(curvePCI, kBimNativeCurveOitPipeline);
   createBimOitPipeline(curveStrokePCI, kBimNativeCurveStrokeOitPipeline);
-  createBimOitPipeline(floorPlanPCI, kBimFloorPlanOitPipeline, true);
+  createBimOitPipeline(floorPlanPCI, kBimFloorPlanOitPipeline, displayOverlay);
+  createBimOitPipeline(pointCloudPCI, kBimPointHighlightOitPipeline, displayOverlay);
+  createBimOitPipeline(curveStrokePCI, kBimCurveStrokeHighlightOitPipeline, displayOverlay);
+  createBimOitPipeline(pointCloudPCI, kBimPointSelectionOitPipeline, selectionOverlay);
+  createBimOitPipeline(curvePCI, kBimCurveSelectionOitPipeline, selectionOverlay);
+  createBimOitPipeline(curveStrokePCI, kBimCurveStrokeSelectionOitPipeline, selectionOverlay);
 
   RenderingGraphicsPipelineCreateInfo capFillPCI = pointCloudPCI;
   capFillPCI.pInputAssemblyState = &triAssembly;

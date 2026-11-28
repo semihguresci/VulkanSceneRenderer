@@ -415,13 +415,15 @@ bool recordBimLightingOverlayCommands(
   return recorded;
 }
 
-bool recordBimLightingOverlayFrameCommands(
-    VkCommandBuffer cmd, const BimLightingOverlayFrameRecordInputs &inputs) {
+namespace {
+
+bool recordBimLightingOverlayFramePlanCommands(
+    VkCommandBuffer cmd, const BimLightingOverlayFrameRecordInputs &inputs,
+    const BimLightingOverlayPlan &plan) {
   if (cmd == VK_NULL_HANDLE) {
     return false;
   }
 
-  const BimLightingOverlayPlan plan = buildBimLightingOverlayFramePlan(inputs);
   return recordBimLightingOverlayCommands(
       cmd, {.plan = &plan,
             .pipelines = inputs.pipelines,
@@ -438,6 +440,14 @@ bool recordBimLightingOverlayFrameCommands(
             .wireframeRasterModeSupported = inputs.wireframeRasterModeSupported,
             .wireframeWideLinesSupported = inputs.wireframeWideLinesSupported,
             .lineListWideLinesSupported = inputs.lineListWideLinesSupported});
+}
+
+} // namespace
+
+bool recordBimLightingOverlayFrameCommands(
+    VkCommandBuffer cmd, const BimLightingOverlayFrameRecordInputs &inputs) {
+  return recordBimLightingOverlayFramePlanCommands(
+      cmd, inputs, buildBimLightingOverlayFramePlan(inputs));
 }
 
 bool hasBimRasterDisplayOverlays(const FrameRecordParams &p) {
@@ -679,7 +689,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
         kBimNativeCurveStrokeOitPipeline);
   }
 
-  if (!display) {
+  if (!display && !sortDisplayOverlays) {
     return;
   }
 
@@ -698,72 +708,95 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
   floorPlanStyle.enabled = floorPlanStyle.enabled && floorPlanOit == VK_NULL_HANDLE &&
       !bimFloorPlanUsesPresentationOverlay(p.runtime.activeTechnique, displayMode, floorPlan.depthTest);
   issueMarkerStyle.enabled = issueMarkerStyle.enabled && issueMarkerOit == VK_NULL_HANDLE;
-  (void)recordBimLightingOverlayFrameCommands(
-      cmd, {.bimGeometryReady = hasBimPrimitiveFramePassGeometry(primitiveGeometry),
-            .framebufferExtent = inputs.extent,
-            .points = {.enabled = pointStyle.enabled,
-                       .depthTest = pointStyle.depthTest,
-                       .color = pointStyle.color,
-                       .opacity = pointStyle.opacity,
-                       .lineWidth = pointStyle.pointSize},
-            .curves = {.enabled = curveStyle.enabled,
-                       .depthTest = curveStyle.depthTest,
-                       .color = curveStyle.color,
-                       .opacity = curveStyle.opacity,
-                       .lineWidth = curveStyle.lineWidth},
-            .floorPlan = floorPlanStyle,
-            .coordinationIssueMarkers = issueMarkerStyle,
-            .coordinationClashMarkers = {.enabled = markers.clashMarkersEnabled && !presentsBimXrayClash(p),
-                                         .depthTest = markers.depthTest && markers.clashDepthTest,
-                                         .color = markers.clashColor,
-                                         .opacity = markers.clashOpacity,
-                                         .lineWidth = markers.clashLineWidth},
-            .sectionPlaneVisual = {.enabled = plane.enabled,
-                                   .depthTest = plane.depthTest,
-                                   .color = plane.color,
-                                   .opacity = plane.opacity,
-                                   .lineWidth = plane.lineWidth},
-            .draws = {.points = overlayDrawLists(bim.pointDraws),
-                      .curves = overlayDrawLists(bim.curveDraws),
-                      .floorPlan = bim.floorPlanDrawCommands,
-                      .sceneHover = p.draws.hoveredDrawCommands,
-                      .bimHover = bimHoverOit == VK_NULL_HANDLE ? bimHoverDraws : nullptr,
-                      .sceneSelection = p.draws.selectedDrawCommands,
-                      .bimSelection = presentsBimMeshSelection(p) ? nullptr : bim.draws.selectedDrawCommands,
-                      .nativePointHover = bim.nativePointDraws.hoveredDrawCommands,
-                      .nativeCurveHover = bim.nativeCurveDraws.hoveredDrawCommands,
-                      .nativePointSelection = bim.nativePointDraws.selectedDrawCommands,
-                      .nativeCurveSelection = bim.nativeCurveDraws.selectedDrawCommands,
-                      .nativeCurveStrokeHover =
-                          bim.nativeCurveStrokeDraws.hoveredDrawCommands,
-                      .nativeCurveStrokeSelection =
-                          bim.nativeCurveStrokeDraws.selectedDrawCommands,
-                      .coordinationIssueMarkers = bim.coordinationIssueMarkerDrawCommands,
-                      .coordinationClashMarkers = bim.coordinationClashMarkerDrawCommands,
-                      .sectionPlaneVisual = bim.sectionPlaneVisualDrawCommands},
-            .nativePointSize = points.pointSize,
-            .nativeCurveLineWidth = curves.lineWidth,
-            .coordinationMarkerGeometryReady =
-                markerGeometry.descriptorSet != VK_NULL_HANDLE &&
-                markerGeometry.vertexSlice.buffer != VK_NULL_HANDLE &&
-                markerGeometry.indexSlice.buffer != VK_NULL_HANDLE,
-            .sectionPlaneVisualGeometryReady =
-                planeGeometry.descriptorSet != VK_NULL_HANDLE &&
-                planeGeometry.vertexSlice.buffer != VK_NULL_HANDLE &&
-                planeGeometry.indexSlice.buffer != VK_NULL_HANDLE,
-            .pipelines = inputs.pipelines,
-            .wireframeLayout = inputs.wireframeLayout,
-            .scene = overlayGeometry(inputs.sceneDescriptorSet, p.scene),
-            .bim = bimGeometry,
-            .coordinationMarkers = markerGeometry,
-            .sectionPlaneVisualGeometry = planeGeometry,
-            .selectionStencilClearAttachment = selectionClear,
-            .selectionStencilClearRect = selectionRect,
-            .wireframePushConstants = inputs.wireframePushConstants,
-            .debugOverlay = inputs.debugOverlay,
-            .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
-            .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported,
-            .lineListWideLinesSupported = lineListWideLinesSupported});
+  const BimLightingOverlayFrameRecordInputs overlay{
+    .bimGeometryReady = hasBimPrimitiveFramePassGeometry(primitiveGeometry),
+    .framebufferExtent = inputs.extent,
+    .points = {.enabled = pointStyle.enabled,
+               .depthTest = pointStyle.depthTest,
+               .color = pointStyle.color,
+               .opacity = pointStyle.opacity,
+               .lineWidth = pointStyle.pointSize},
+    .curves = {.enabled = curveStyle.enabled,
+               .depthTest = curveStyle.depthTest,
+               .color = curveStyle.color,
+               .opacity = curveStyle.opacity,
+               .lineWidth = curveStyle.lineWidth},
+    .floorPlan = floorPlanStyle,
+    .coordinationIssueMarkers = issueMarkerStyle,
+    .coordinationClashMarkers = {.enabled = markers.clashMarkersEnabled && !presentsBimXrayClash(p),
+                                 .depthTest = markers.depthTest && markers.clashDepthTest,
+                                 .color = markers.clashColor,
+                                 .opacity = markers.clashOpacity,
+                                 .lineWidth = markers.clashLineWidth},
+    .sectionPlaneVisual = {.enabled = plane.enabled,
+                           .depthTest = plane.depthTest,
+                           .color = plane.color,
+                           .opacity = plane.opacity,
+                           .lineWidth = plane.lineWidth},
+    .draws = {.points = overlayDrawLists(bim.pointDraws),
+              .curves = overlayDrawLists(bim.curveDraws),
+              .floorPlan = bim.floorPlanDrawCommands,
+              .sceneHover = p.draws.hoveredDrawCommands,
+              .bimHover = bimHoverOit == VK_NULL_HANDLE ? bimHoverDraws : nullptr,
+              .sceneSelection = p.draws.selectedDrawCommands,
+              .bimSelection = presentsBimMeshSelection(p) ? nullptr : bim.draws.selectedDrawCommands,
+              .nativePointHover = bim.nativePointDraws.hoveredDrawCommands,
+              .nativeCurveHover = bim.nativeCurveDraws.hoveredDrawCommands,
+              .nativePointSelection = bim.nativePointDraws.selectedDrawCommands,
+              .nativeCurveSelection = bim.nativeCurveDraws.selectedDrawCommands,
+              .nativeCurveStrokeHover =
+                  bim.nativeCurveStrokeDraws.hoveredDrawCommands,
+              .nativeCurveStrokeSelection =
+                  bim.nativeCurveStrokeDraws.selectedDrawCommands,
+              .coordinationIssueMarkers = bim.coordinationIssueMarkerDrawCommands,
+              .coordinationClashMarkers = bim.coordinationClashMarkerDrawCommands,
+              .sectionPlaneVisual = bim.sectionPlaneVisualDrawCommands},
+    .nativePointSize = points.pointSize,
+    .nativeCurveLineWidth = curves.lineWidth,
+    .coordinationMarkerGeometryReady =
+        markerGeometry.descriptorSet != VK_NULL_HANDLE &&
+        markerGeometry.vertexSlice.buffer != VK_NULL_HANDLE &&
+        markerGeometry.indexSlice.buffer != VK_NULL_HANDLE,
+    .sectionPlaneVisualGeometryReady =
+        planeGeometry.descriptorSet != VK_NULL_HANDLE &&
+        planeGeometry.vertexSlice.buffer != VK_NULL_HANDLE &&
+        planeGeometry.indexSlice.buffer != VK_NULL_HANDLE,
+    .pipelines = inputs.pipelines,
+    .wireframeLayout = inputs.wireframeLayout,
+    .scene = overlayGeometry(inputs.sceneDescriptorSet, p.scene),
+    .bim = bimGeometry,
+    .coordinationMarkers = markerGeometry,
+    .sectionPlaneVisualGeometry = planeGeometry,
+    .selectionStencilClearAttachment = selectionClear,
+    .selectionStencilClearRect = selectionRect,
+    .wireframePushConstants = inputs.wireframePushConstants,
+    .debugOverlay = inputs.debugOverlay,
+    .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
+    .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported,
+    .lineListWideLinesSupported = lineListWideLinesSupported};
+  auto plan = buildBimLightingOverlayFramePlan(overlay);
+  if (sortDisplayOverlays) {
+    const auto sortHighlight = [&](BimLightingOverlayDrawPlan &highlight,
+                                   const char *pipelineName) {
+      const BimLightingOverlayFrameStyleState style{
+          .enabled = highlight.active, .color = highlight.color,
+          .opacity = highlight.opacity, .lineWidth = highlight.drawLineWidth};
+      const auto pipeline = sortedOverlayPipeline(style, bimGeometry,
+                                                  highlight.commands, pipelineName);
+      recordSortedOverlay(pipeline, style, bimGeometry, highlight.commands,
+                          highlight.rasterLineWidthApplies);
+      if (pipeline != VK_NULL_HANDLE)
+        highlight.active = false;
+    };
+    sortHighlight(plan.nativePointHover, kBimPointHighlightOitPipeline);
+    sortHighlight(plan.nativeCurveHover, kBimFloorPlanOitPipeline);
+    sortHighlight(plan.nativeCurveStrokeHover, kBimCurveStrokeHighlightOitPipeline);
+    sortHighlight(plan.nativePointSelection, kBimPointSelectionOitPipeline);
+    sortHighlight(plan.nativeCurveSelection, kBimCurveSelectionOitPipeline);
+    sortHighlight(plan.nativeCurveStrokeSelection, kBimCurveStrokeSelectionOitPipeline);
+  }
+  if (display)
+    (void)recordBimLightingOverlayFramePlanCommands(cmd, overlay, plan);
 }
 
 void recordBimPresentationFloorPlan(VkCommandBuffer cmd, const FrameRecordParams &p,
