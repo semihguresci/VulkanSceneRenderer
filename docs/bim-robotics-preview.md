@@ -4,8 +4,10 @@ The preview includes two reproducible workflows using an authored IFC doorway.
 The Windows dataset workflow renders synchronized color, depth, and BIM labels
 along a simulated robot trajectory. The Ubuntu workflow exports a floor map,
 drives the robot with ROS 2 Jazzy and Nav2, and verifies the recorded motion.
+See the build dashboard for workflow downloads, checksums, supported platforms,
+and measured results. [BIM robotics preview builds and evidence](https://github.com/semihguresci/VulkanSceneRenderer/blob/main/docs/bim-robotics-preview-release.md)
 For a larger IFC example with a recorded inspection route and portable replay,
-see the [Tekla House robotics demonstration](bim-tekla-robotics-demo.md).
+see the [Tekla House robotics demonstration](https://github.com/semihguresci/VulkanSceneRenderer/blob/main/docs/bim-tekla-robotics-demo.md).
 
 ## Record a dataset on Windows
 
@@ -99,10 +101,13 @@ use Developer PowerShell and the single-configuration Ninja preset.
 
 Enable `ENABLE_PHYSICS` for the simulator and map tools. These examples leave
 optional URDF and TinyUSDZ support off and use the checked-in IFC fixtures.
+Before packaging on Windows, prepare the pinned Vulkan loader and license
+described in the build prerequisites and set `$loader` to that directory.
 
 ```powershell
 $build = 'out/build/windows-robotics'
 cmake --preset windows-release -B $build `
+    "-DCONTAINER_VULKAN_LOADER_ROOT=$loader" `
     -DENABLE_PHYSICS=ON -DENABLE_ROBOTICS_URDF=OFF -DENABLE_TINYUSDZ_USD_LOADER=OFF `
     -DENABLE_TESTS=ON -DENABLE_OPENVDB=OFF `
     -DENABLE_SAMPLE_MODEL_DOWNLOAD=OFF -DENABLE_BIM_SAMPLE_MODEL_DOWNLOAD=OFF `
