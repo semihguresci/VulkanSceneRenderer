@@ -21,6 +21,30 @@ For deterministic captures, use `--render-technique path-tracing --path-spp 4
 to 1–64, the sample limit to 1–16,777,216, and bounce levels to 1–32. The defaults
 are 1, 65,536, 8 and seed 1. Capture sequences can switch to `path-tracing`.
 
+### Native Vulkan ray-tracing pipeline
+
+Choose **Ray tracing** in **Rendering Engine** or start the app with
+`--render-technique ray-tracing` to use the native Vulkan pipeline. The mode
+requires `VK_KHR_ray_tracing_pipeline`, acceleration structures, buffer device
+addresses, and bindless material descriptors. The ray-generation, any-hit,
+closest-hit, and miss shaders use the same scene and progressive light
+transport as the inline ray-query backend. `--no-ray-query` can disable inline
+queries while the native pipeline remains available.
+[Vulkan ray-tracing pipeline specification](https://docs.vulkan.org/refpages/latest/refpages/source/VK_KHR_ray_tracing_pipeline.html)
+
+The first pipeline compile can take a few minutes, depending on the Vulkan
+driver. When selected in the viewport, the current engine stays active during
+compilation, and **Cancel switch** keeps it selected. A successful compile is
+reused during that session while the shader generation and layouts match.
+Command-line startup and scripted captures wait for the pipeline before
+rendering their first native frame. Closing the window may leave the process
+running until the driver finishes compiling.
+
+Sample controls, raw EXR capture, viewport diagnostics, and BIM floor plans
+work in both modes. A capture reports the active backend in
+`referencePath.backend`. Optional spatial denoising uses inline queries to
+replay guides, and DLSS Ray Reconstruction is available in **Path tracing**.
+
 `--path-target-ms 8` enables adaptive batching against the previous completed
 reference Lighting pass on the GPU. The budget accepts 0.1–1000 milliseconds.
 `--path-spp` supplies the first batch after an accumulation reset and the

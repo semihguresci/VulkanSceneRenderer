@@ -327,6 +327,8 @@ $requiredFiles = @(
     'spv_shaders/volumetric_fog_integrate.comp.spv',
     'spv_shaders/volumetric_fog_composite.comp.spv',
     'spv_shaders/openvdb_transport_reference.comp.spv',
+    'spv_shaders/reference_pathtrace.rgen.spv', 'spv_shaders/reference_pathtrace.rmiss.spv',
+    'spv_shaders/reference_pathtrace.rchit.spv', 'spv_shaders/reference_pathtrace.rahit.spv',
     'spv_shaders/bim_viewport_occlusion.comp.spv',
     'spv_shaders/ray_shadow_trace.comp.spv',
     'spv_shaders/ray_shadow_filter.comp.spv',

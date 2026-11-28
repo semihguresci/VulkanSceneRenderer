@@ -2085,7 +2085,7 @@ bool SceneManager::reloadModel(
             VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
         if (deviceWrapper_->enabledVulkan12Features().bufferDeviceAddress)
           usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-        if (deviceWrapper_->rayQueriesEnabled())
+        if (deviceWrapper_->accelerationStructureSupported())
           usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
         const uint64_t outputBytes =
             allocationManager_->memoryManager()->bufferAllocationBytes(vertexBytes, usage);
@@ -3144,6 +3144,13 @@ void SceneManager::createDescriptorSetLayout() {
 
   for (auto &binding : bindings)
     binding.stageFlags |= VK_SHADER_STAGE_COMPUTE_BIT;
+  if (deviceWrapper_->rayTracingPipelineSupported()) {
+    // Native raygen shades surfaces and any-hit evaluates masked materials.
+    for (size_t index = 2; index <= 5; ++index) {
+      bindings[index].stageFlags |= VK_SHADER_STAGE_RAYGEN_BIT_KHR |
+                                    VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+    }
+  }
   std::array<VkDescriptorBindingFlags, 7> bindingFlags{
       0, 0, 0, 0, 0,
       VK_DESCRIPTOR_BINDING_PARTIALLY_BOUND_BIT,

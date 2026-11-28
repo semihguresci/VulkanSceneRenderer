@@ -1781,8 +1781,8 @@ void RendererFrontend::initialize() {
     subs_.guiManager->setLtcStatus(subs_.lightingManager->ltcStatus());
     subs_.guiManager->rayShadowSettings() = svc_.config.rayShadows;
     subs_.guiManager->setRayShadowSupport(
-        subs_.rayShadowManager->supported(),
-        subs_.rayShadowManager->supported()
+        subs_.rayShadowManager->inlineQueriesSupported(),
+        subs_.rayShadowManager->inlineQueriesSupported()
             ? "Supported"
             : (svc_.ctx.deviceWrapper->rayQueriesEnabled()
                    ? std::string(svc_.ctx.deviceWrapper->rayQuerySupport()
@@ -1841,10 +1841,13 @@ void RendererFrontend::initialize() {
       std::make_unique<container::scene::SceneProviderRegistry>();
   syncSceneProviders();
   auto techniqueRegistry = createDefaultRenderTechniqueRegistry();
-  const bool queries = svc_.ctx.deviceWrapper->rayQueriesEnabled();
-  subs_.deviceCapabilities.bufferDeviceAddress = queries;
-  subs_.deviceCapabilities.accelerationStructure = queries;
-  subs_.deviceCapabilities.rayQuery = queries;
+  const auto& device = *svc_.ctx.deviceWrapper;
+  const auto& features = device.enabledVulkan12Features();
+  subs_.deviceCapabilities.descriptorIndexing = features.descriptorIndexing == VK_TRUE;
+  subs_.deviceCapabilities.bufferDeviceAddress = features.bufferDeviceAddress == VK_TRUE;
+  subs_.deviceCapabilities.accelerationStructure = device.accelerationStructureSupported();
+  subs_.deviceCapabilities.rayTracingPipeline = device.rayTracingPipelineSupported();
+  subs_.deviceCapabilities.rayQuery = device.rayQueriesEnabled();
   subs_.techniqueRegistry =
       std::make_unique<RenderTechniqueRegistry>(std::move(techniqueRegistry));
   const RenderTechniqueId requestedTechnique =
@@ -1976,6 +1979,14 @@ void RendererFrontend::syncGuiRenderEngineOptions() {
 }
 
 void RendererFrontend::requestRenderTechnique(RenderTechniqueId requested) {
+  const bool switchToNative = requested == RenderTechniqueId::RayTracing &&
+      subs_.deviceCapabilities.rayTracingPipeline &&
+      (!subs_.activeTechnique || subs_.activeTechnique->id() != requested);
+  setInteractiveNativePathRequested(switchToNative);
+  if (interactiveNativePathRequested_) {
+    pendingRenderTechniqueChange_.reset();
+    return;
+  }
   if (subs_.activeTechnique != nullptr &&
       subs_.activeTechnique->id() == requested) {
     return;
@@ -1993,13 +2004,18 @@ void RendererFrontend::applyPendingRenderTechniqueChange() {
   pendingRenderTechniqueChange_.reset();
   if (subs_.temporalManager)
     subs_.temporalManager->reset("render technique changed");
-  if (subs_.referencePathTracePass)
-    subs_.referencePathTracePass->invalidateHistory();
   ++referenceTimingGeneration_;
   referenceAdaptiveBatch_.reset();
   referenceTimedLightingMs_.reset();
   referenceStatus_.clear();
   initializeRenderTechnique(requested, renderTechniqueName(requested));
+  if (auto& path = subs_.referencePathTracePass) {
+    if (!referencePathActive() ||
+        path->usesNativeRayPipeline() != (subs_.activeTechnique->id() == RenderTechniqueId::RayTracing))
+      retireReferencePathResources();
+    else
+      path->invalidateHistory();
+  }
   syncGuiRenderEngineOptions();
 
   if (subs_.guiManager) {
@@ -2184,6 +2200,7 @@ bool RendererFrontend::drawFrame(bool &framebufferResized) {
   if (modelLoad_ && modelLoad_->request && !modelLoad_->committing)
     ++modelLoad_->preparationFrames;
   const auto frameStart = TelemetryClock::now();
+  processInteractiveNativePath();
   applyPendingRenderTechniqueChange();
   const auto concurrencyPolicy = graphicsConcurrencyPolicy();
   const bool serializedGraphics =
@@ -3483,6 +3500,7 @@ void RendererFrontend::applyTemporalCapture(
     const auto technique = renderTechniqueIdFromName(event.technique);
     if (!technique)
       throw std::invalid_argument("Invalid capture technique");
+    setInteractiveNativePathRequested(false);
     pendingRenderTechniqueChange_ = *technique;
   }
   if (event.orthographic)
@@ -3663,6 +3681,7 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
         ? ForwardRasterPipelineId::BimFloorPlanDepth : ForwardRasterPipelineId::BimFloorPlanNoDepth);
     break;
   case RenderTechniqueId::PathTracing:
+  case RenderTechniqueId::RayTracing:
     pipelineTechnique = RenderTechniqueId::ForwardRaster;
     pipeline = forwardRasterPipelineName(style.depthTest
         ? ForwardRasterPipelineId::BimFloorPlanDisplayDepth : ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth);
@@ -3865,6 +3884,8 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
     const auto optix = optixSelected ? denoiser : ReferenceOidnStatus{};
     const auto rr = path ? path->dlssStatus() : ReferenceDlssStatus{};
     json["referencePath"] = {{"active", path != nullptr}, {"status", referenceStatus_},
+        {"backend", path ? nlohmann::json(path->usesNativeRayPipeline()
+            ? "vulkan-ray-tracing-pipeline" : "inline-ray-query") : nlohmann::json(nullptr)},
         {"display", referencePathDisplayName(referencePathDisplay())},
         {"attemptedSamples", path ? path->attemptedSamples() : 0},
         {"contentRevision", path ? path->submittedContentRevision() : 0},
@@ -4162,7 +4183,7 @@ nlohmann::json RendererFrontend::captureTelemetry() const {
       svc_.allocationManager.geometryArenaCapacityBytes();
   if (subs_.rayShadowManager) {
     auto &ray = *subs_.rayShadowManager;
-    json["rayShadows"] = {{"supported", ray.supported()},
+    json["rayShadows"] = {{"supported", ray.inlineQueriesSupported()},
                           {"active", ray.active()},
                           {"mode", uint32_t(ray.settings().mode)},
                           {"areaSamples", ray.settings().areaSamples},
@@ -5711,7 +5732,7 @@ RendererFrontend::pickTransformGizmoAxisAtCursor(double cursorX,
 }
 
 bool RendererFrontend::referencePathActive() const {
-  return subs_.activeTechnique && subs_.activeTechnique->id() == RenderTechniqueId::PathTracing;
+  return subs_.activeTechnique && isReferenceRayTechnique(subs_.activeTechnique->id());
 }
 
 void RendererFrontend::requestScreenshot(std::filesystem::path outputPath, bool viewportOnly,
@@ -6388,6 +6409,8 @@ void RendererFrontend::drawModelLoadProgressFrame() {
 }
 
 void RendererFrontend::shutdown() {
+  preparedNativePath_ = {};
+  preparedInlinePath_ = {};
   bimSunHours_.stop.request_stop();
   if (bimSunHours_.job.valid()) {
     bimSunHours_.job.wait();
@@ -6638,6 +6661,9 @@ void RendererFrontend::processShaderReload(bool request, bool wait) {
 
     auto compiled = shaderReloadJob_.get();
     auto computeCandidate = svc_.pipelineManager.prepareComputeReload(compiled->directory);
+    auto nativeRayCandidate = subs_.referencePathTracePass
+        ? subs_.referencePathTracePass->prepareNativeRayReload(compiled->directory)
+        : std::shared_ptr<NativeReferenceRayPipeline>{};
     const bool rebakeBrdf = computeCandidate.changesShader("brdf_lut.comp.spv");
     const bool rebakeEnvironment = computeCandidate.changesShader("equirect_to_cubemap.comp.spv") ||
         computeCandidate.changesShader("irradiance_convolution.comp.spv") ||
@@ -6682,6 +6708,8 @@ void RendererFrontend::processShaderReload(bool request, bool wait) {
     subs_.pipelineBuilder->destroy(candidate);
     ++presentationPipelineGeneration_;
     svc_.pipelineManager.publishComputeReload(computeCandidate);
+    if (nativeRayCandidate)
+      subs_.referencePathTracePass->publishNativeRayReload(std::move(nativeRayCandidate));
     if (subs_.temporalManager)
       subs_.temporalManager->publishVelocityReload(velocityCandidate);
     if (subs_.pbrAuxiliaryPass)
@@ -7316,7 +7344,7 @@ void RendererFrontend::prepareGpuHierarchyFrame(uint32_t imageIndex) {
       subs_.gpuHierarchyPass = std::move(pass);
     }
     std::vector<HierarchyLocalTransform> locals;
-    if (!subs_.gpuRayInstancePass && svc_.ctx.deviceWrapper->rayQueriesEnabled()) {
+    if (!subs_.gpuRayInstancePass && svc_.ctx.deviceWrapper->accelerationStructureSupported()) {
       auto pass=std::make_unique<RayInstanceTransformPass>(svc_.ctx.deviceWrapper,
           *svc_.allocationManager.memoryManager(),svc_.pipelineManager);
       pass->createResources(activeShaderReload_?activeShaderReload_->directory:container::util::executableDirectory());
@@ -7603,7 +7631,7 @@ void RendererFrontend::updateFrameDescriptorSets(
 }
 
 void RendererFrontend::destroyGBufferResources() {
-  subs_.referencePathTracePass.reset();
+  retireReferencePathResources(false);
   referenceColorBound_.clear();
   referenceDiagnosticSeen_.clear();
   referenceStatus_.clear();
@@ -7844,6 +7872,7 @@ void RendererFrontend::writePendingScreenshot(uint32_t frameSlot, const FrameRec
     const auto denoiser = referenceCapture->oidnStatus();
     const bool optix = referenceCapture->optixSelected();
     metadata["referencePath"] = {
+        {"backend", referenceCapture->usesNativeRayPipeline() ? "vulkan-ray-tracing-pipeline" : "inline-ray-query"},
         {"attemptedSamplesPerPixel", referenceCapture->attemptedSamples()},
         {"contentRevision", referenceCapture->submittedContentRevision()},
         {"sampleLimit", svc_.config.pathSampleLimit},
@@ -10905,6 +10934,8 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     if (subs_.guiManager)
       subs_.rayShadowManager->settings() =
           subs_.guiManager->rayShadowSettings();
+    const bool rayShadowsRequested = subs_.rayShadowManager->inlineQueriesSupported() &&
+        subs_.rayShadowManager->settings().mode != RayShadowMode::Raster;
     const auto meshProvider = subs_.sceneProviderRegistry->providersForKind(
         container::scene::SceneProviderKind::Mesh);
     std::vector<DrawCommand> meshRayDraws;
@@ -10917,8 +10948,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
                           transparent.end());
     }
     if (!meshProvider.empty() && subs_.rayShadowManager->supported() &&
-        (surfaceScene ||
-         subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
+        (surfaceScene || rayShadowsRequested)) {
       sources.push_back(
           {.provider = meshProvider.front()->snapshot().id,
            .geometryRevision = subs_.sceneController->geometryRevision(),
@@ -10949,7 +10979,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
     std::vector<DrawCommand> bimDraws;
     if (subs_.bimManager && subs_.bimManager->hasScene() &&
         subs_.rayShadowManager->supported() &&
-        (surfaceScene || subs_.rayShadowManager->settings().mode != RayShadowMode::Raster)) {
+        (surfaceScene || rayShadowsRequested)) {
       auto filter = currentBimDrawFilter();
       // Draw budget/LOD and screen visibility limit raster work, not blockers.
       filter.drawBudgetEnabled = false;
@@ -11042,7 +11072,7 @@ RendererFrontend::buildFrameRecordParams(uint32_t imageIndex) {
           subs_.environmentManager->prefilteredView(),
           subs_.environmentManager->envSampler(), ddgiCompatible, scheduling);
     }
-    if (subs_.guiManager && subs_.rayShadowManager->supported()) {
+    if (subs_.guiManager && subs_.rayShadowManager->inlineQueriesSupported()) {
       const auto &ray = *subs_.rayShadowManager;
       std::string status =
           "Supported; allocations " +
@@ -11080,6 +11110,7 @@ void RendererFrontend::attachActiveTechniqueLifecycle(
   case RenderTechniqueId::DeferredRaster:
   case RenderTechniqueId::ForwardRaster:
   case RenderTechniqueId::PathTracing:
+  case RenderTechniqueId::RayTracing:
     params.lifecycle =
         subs_.deferredRasterFrameGraphContext->lifecycleHooks();
     break;

@@ -340,6 +340,16 @@ foreach(SLANG_COMPUTE_SHADER_NAME IN LISTS SLANG_COMPUTE_SHADER_NAMES)
     endif()
 endforeach()
 
+# Preserve function boundaries so raygen has one shared trace continuation.
+add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_pathtrace.slang" "raygenMain"
+    "${COMPILED_SHADERS_DIR}/reference_pathtrace.rgen.spv" -DREFERENCE_NATIVE_RAYS=1 -capability spvRayTracingKHR -O0)
+add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_pathtrace.slang" "missMain"
+    "${COMPILED_SHADERS_DIR}/reference_pathtrace.rmiss.spv" -DREFERENCE_NATIVE_RAYS=1 -capability spvRayTracingKHR)
+add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_pathtrace.slang" "closestHitMain"
+    "${COMPILED_SHADERS_DIR}/reference_pathtrace.rchit.spv" -DREFERENCE_NATIVE_RAYS=1 -capability spvRayTracingKHR)
+add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/reference_pathtrace.slang" "anyHitMain"
+    "${COMPILED_SHADERS_DIR}/reference_pathtrace.rahit.spv" -DREFERENCE_NATIVE_RAYS=1 -capability spvRayTracingKHR)
+
 if(CONTAINER_DLSS_AVAILABLE)
     add_slang_output(SLANG_OUTPUTS "${SHADERS_DIR}/temporal_compose.slang" "computeMain"
         "${COMPILED_SHADERS_DIR}/dlss_compose.comp.spv" -DDLSS_TRANSPARENCY=1)

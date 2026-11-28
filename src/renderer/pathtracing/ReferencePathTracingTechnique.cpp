@@ -6,10 +6,16 @@
 
 namespace container::renderer {
 RenderTechniqueAvailability ReferencePathTracingTechnique::availability(const RenderSystemContext& context) const {
-  const auto shared=ForwardRasterTechnique{}.availability(context);
-  if(!shared.available) return shared;
-  if(!context.deviceCapabilities || !context.deviceCapabilities->supportsPathTracing())
+  const auto shared = ForwardRasterTechnique{}.availability(context);
+  if (!shared.available) return shared;
+  const auto* caps = context.deviceCapabilities;
+  if (nativeRayPipeline_) {
+    if (!caps || !caps->supportsRayTracing())
+      return RenderTechniqueAvailability::unavailable(
+          "Ray tracing requires an enabled VK_KHR_ray_tracing_pipeline and bindless scene resources");
+  } else if (!caps || !caps->supportsPathTracing()) {
     return RenderTechniqueAvailability::unavailable("Path tracing requires enabled Vulkan ray queries and bindless scene resources");
+  }
   return RenderTechniqueAvailability::availableNow();
 }
 TechniqueDebugModel ReferencePathTracingTechnique::debugModel() const {

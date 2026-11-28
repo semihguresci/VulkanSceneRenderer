@@ -408,7 +408,7 @@ forwardRasterSceneDepthGeometryReady(const FrameRecordParams &p) {
 }
 
 [[nodiscard]] bool pathTracingFloorPlanVisible(const FrameRecordParams &p) {
-  return p.runtime.activeTechnique == RenderTechniqueId::PathTracing &&
+  return isReferenceRayTechnique(p.runtime.activeTechnique) &&
          !p.screenshot.sceneLinear && p.bim.floorPlan.enabled &&
          p.bim.floorPlanDrawCommands != nullptr &&
          !p.bim.floorPlanDrawCommands->empty();
@@ -785,7 +785,7 @@ void recordForwardRasterSceneColorReadBarrier(VkCommandBuffer cmd,
 [[nodiscard]] RenderPassReadiness forwardRasterExposureAdaptationReadiness(
     const FrameRecordParams &p,
     const DeferredRasterFrameGraphContext &sharedContext) {
-  if (p.runtime.activeTechnique == RenderTechniqueId::PathTracing && p.debug.displayMode != 0)
+  if (isReferenceRayTechnique(p.runtime.activeTechnique) && p.debug.displayMode != 0)
     return renderPassNotNeeded();
   ExposureManager *exposureManager = sharedContext.exposureManager();
   if (exposureManager == nullptr || !exposureManager->isReady()) {
@@ -828,7 +828,7 @@ void recordForwardRasterExposureAdaptation(
 [[nodiscard]] RenderPassReadiness forwardRasterBloomReadiness(
     const FrameRecordParams &p,
     const DeferredRasterFrameGraphContext &sharedContext) {
-  if (p.runtime.activeTechnique == RenderTechniqueId::PathTracing && p.debug.displayMode != 0)
+  if (isReferenceRayTechnique(p.runtime.activeTechnique) && p.debug.displayMode != 0)
     return renderPassNotNeeded();
   BloomManager *bloomManager = sharedContext.bloomManager();
   if (bloomManager == nullptr || !bloomManager->isReady() ||
@@ -1050,7 +1050,7 @@ void recordForwardRasterPostProcessPass(
            p, ForwardRasterPipelineLayoutId::PostProcess),
        .descriptorSets = postProcessSets,
        .frameInputs =
-           {.displayMode = p.runtime.activeTechnique == RenderTechniqueId::PathTracing
+           {.displayMode = isReferenceRayTechnique(p.runtime.activeTechnique)
                 ? static_cast<container::ui::GBufferViewMode>(p.debug.displayMode) : sharedContext.displayMode(),
             .bloomPassActive = sharedContext.isPassActive(RenderPassId::Bloom),
             .bloomReady = bloomManager != nullptr && bloomManager->isReady(),
@@ -1086,7 +1086,7 @@ void recordForwardRasterPostProcessPass(
              gui->endFrame();
            return;
          }
-         if (p.services.ddgiManager && p.runtime.activeTechnique != RenderTechniqueId::PathTracing)
+         if (p.services.ddgiManager && !isReferenceRayTechnique(p.runtime.activeTechnique))
            p.services.ddgiManager->recordDebug(passCmd, p.runtime.imageIndex,
                                                postProcessSets[0]);
          recordForwardRasterLightGizmoOverlay(passCmd, p, sharedContext,

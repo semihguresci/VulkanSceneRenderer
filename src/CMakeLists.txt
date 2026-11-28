@@ -171,6 +171,7 @@ add_library(VulkanSceneRenderer_renderer
     renderer/raytracing/RaySceneAcceleration.cpp
     renderer/raytracing/RayShadowManager.cpp
     renderer/pathtracing/ReferencePathTracePass.cpp
+    renderer/pathtracing/NativeReferenceRayPipeline.cpp
     renderer/pathtracing/ReferencePathTracingTechnique.cpp
 
     renderer/culling/GpuCullManager.cpp

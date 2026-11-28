@@ -45,6 +45,7 @@ constexpr std::array<RenderTechniqueDescriptor, kTechniqueNames.size()>
         {.id = RenderTechniqueId::RayTracing,
          .name = "ray-tracing",
          .displayName = "Ray tracing",
+         .implemented = true,
          .requiresRayTracing = true},
         {.id = RenderTechniqueId::PathTracing,
          .name = "path-tracing",
@@ -175,6 +176,7 @@ RenderTechniqueRegistry createDefaultRenderTechniqueRegistry() {
   RenderTechniqueRegistry registry;
   registry.registerTechnique(std::make_unique<DeferredRasterTechnique>());
   registry.registerTechnique(std::make_unique<ForwardRasterTechnique>());
+  registry.registerTechnique(std::make_unique<ReferencePathTracingTechnique>(true));
   registry.registerTechnique(std::make_unique<ReferencePathTracingTechnique>());
   return registry;
 }

@@ -3,6 +3,7 @@
 #include "Container/app/RendererLightingSettings.h"
 #include "Container/app/Application.h"
 #include "Container/geometry/OpenVdbLoader.h"
+#include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/lighting/DdgiPreset.h"
 #include "Container/renderer/effects/DisplayGradePreset.h"
 #include "Container/renderer/lighting/SkyPreset.h"
@@ -1661,10 +1662,12 @@ void applyCommandLine(container::app::AppConfig& config, int argc,
       throw std::invalid_argument("--path-target-ms cannot be combined with --path-sample-series");
     const auto extension = container::util::pathToUtf8(
         container::util::pathFromUtf8(config.screenshotCapturePath).extension());
-    if (config.renderTechnique != "path-tracing" || !config.enableRayQueries ||
+    const auto technique = container::renderer::renderTechniqueIdFromName(config.renderTechnique);
+    if (!technique || !container::renderer::isReferenceRayTechnique(*technique) ||
+        (*technique == container::renderer::RenderTechniqueId::PathTracing && !config.enableRayQueries) ||
         lowerAscii(extension) != ".exr")
       throw std::invalid_argument(
-          "--path-sample-series requires path-tracing with ray queries and --screenshot FILE.exr");
+          "--path-sample-series requires path-tracing with ray queries or ray-tracing, and --screenshot FILE.exr");
     if (explicitPathSampleLimit || explicitFrameCapture || !config.temporalCaptureSequencePath.empty() ||
         config.gfxrecon.enabled() || !displayGradeOutput.empty() || !skyPresetOutput.empty())
       throw std::invalid_argument(

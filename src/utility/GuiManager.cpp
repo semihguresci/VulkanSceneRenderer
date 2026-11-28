@@ -5529,7 +5529,8 @@ void GuiManager::drawSceneControls(
         if (ImGui::Selectable(option.label.c_str(), selected) &&
             option.available && !selected) {
           pendingRenderEngineChange_ = option.id;
-          statusMessage_ = "Rendering engine change pending: " + option.label;
+          if (option.id != container::renderer::RenderTechniqueId::RayTracing)
+            statusMessage_ = "Rendering engine change pending: " + option.label;
         }
         ImGui::EndDisabled();
         if (!option.available && !option.unavailableReason.empty()) {
@@ -5544,7 +5545,13 @@ void GuiManager::drawSceneControls(
     }
   }
 
-  if (activeRenderEngine_ == container::renderer::RenderTechniqueId::PathTracing) {
+  if (nativeRayPipelineCompiling_) {
+    ImGui::TextUnformatted("Compiling ray tracing pipeline");
+    if (ImGui::SmallButton("Cancel switch"))
+      pendingRenderEngineChange_ = activeRenderEngine_;
+  }
+
+  if (container::renderer::isReferenceRayTechnique(activeRenderEngine_)) {
     if (!referencePathStatus_.empty()) ImGui::TextWrapped("%s", referencePathStatus_.c_str());
     int pathDisplay = static_cast<int>(referencePathDisplay_);
     if (ImGui::Combo("Reference display", &pathDisplay, "Beauty\0Standard error\0"))

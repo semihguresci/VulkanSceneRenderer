@@ -91,7 +91,9 @@ public:
   void recordFilter(VkCommandBuffer cmd, uint32_t image);
   void commit();
   RayShadowSettings &settings();
+  // Shared surface consumers may use native pipelines without inline queries.
   [[nodiscard]] bool supported() const;
+  [[nodiscard]] bool inlineQueriesSupported() const;
   [[nodiscard]] bool active() const;
   [[nodiscard]] VkBuffer readSettings(uint32_t image) const;
   [[nodiscard]] VkDeviceSize readSettingsSize() const;

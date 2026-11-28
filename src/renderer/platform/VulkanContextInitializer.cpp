@@ -104,6 +104,9 @@ VulkanContextResult VulkanContextInitializer::initialize(
     ci.enableValidationLayers  = config_.enableValidationLayers;
     ci.enabledFeatures.samplerAnisotropy       = VK_TRUE;
     ci.enableRayQueries = config_.enableRayQueries;
+    // Allow the native technique to be selected at runtime without rebuilding
+    // the logical device. --no-ray-query affects only inline query features.
+    ci.enableRayTracingPipeline = true;
     ci.enableOpacityMicromaps = config_.experimentalOpacityMicromaps;
     ci.enableFsrUpscaling = FsrUpscaler::builtWithSdk();
     ci.enableSwapchainMaintenance1 = enableMaintenance1;
@@ -192,6 +195,9 @@ VulkanContextResult VulkanContextInitializer::initialize(
                    ? "supported; raster lighting remains default"
                    : "disabled by configuration")
             : raySupport.unavailableReason());
+    container::log::ContainerLogger::instance().renderer()->info(
+        "Vulkan ray tracing pipeline: {}",
+        result.deviceWrapper->rayTracingPipelineSupported() ? "enabled" : "unavailable");
     if (DlssUpscaler::builtWithSdk()) {
       container::log::ContainerLogger::instance().renderer()->info(
           "DLSS Vulkan extensions: {}", result.deviceWrapper->dlssUpscalingEnabled()

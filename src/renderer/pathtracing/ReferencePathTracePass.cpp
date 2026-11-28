@@ -1,13 +1,17 @@
 #include <Container/renderer/pathtracing/ReferencePathTracePass.h>
 #include <Container/renderer/pathtracing/ReferenceFireflyClamp.h>
+#include "NativeReferenceRayPipeline.h"
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstring>
 #include <cstdio>
+#include <future>
 #include <stdexcept>
 #include <string>
 #include <tuple>
+#include <utility>
 #if CONTAINER_HAS_VK_OIDN
 #include <vk_oidn/vk_oidn.h>
 #endif
@@ -351,8 +355,11 @@ struct ReferencePathTracePass::Impl {
   std::shared_ptr<gpu::VulkanDevice> device;
   gpu::VulkanMemoryManager& memory;gpu::PipelineManager& pipelines;
   gpu::ComputePipeline pipeline{},emptyPipeline{};
+  std::shared_ptr<NativeReferenceRayPipeline> nativeRays;
+  std::future<NativeReferenceRayPipeline::Compilation> nativeCompilation;
   VkDescriptorSetLayout localLayout{},materialLayout{},lightLayout{};
   VkPipelineLayout layout{};VkDescriptorPool pool{};
+  bool nativeLayout{};
   std::unique_ptr<Image> mean,moment,display;
   ReferenceOidnSettings oidnSettings{};
   std::string oidnMessage{"off"};
@@ -378,10 +385,74 @@ struct ReferencePathTracePass::Impl {
   std::shared_ptr<const void> submittedContent;
   Impl(std::shared_ptr<gpu::VulkanDevice> d,gpu::VulkanMemoryManager& m,gpu::PipelineManager& p)
       :device(std::move(d)),memory(m),pipelines(p) {
-    if(!device || !device->rayQueriesEnabled()) fail("Vulkan ray queries are unavailable");
+    if(!device || (!device->rayQueriesEnabled() && !device->rayTracingPipelineSupported()))
+      fail("Vulkan ray traversal is unavailable");
     vkGetPhysicalDeviceProperties(device->physicalDevice(),&properties);
   }
-  ~Impl() {clear();pipelines.destroyPipeline(pipeline);pipelines.destroyPipeline(emptyPipeline);pipelines.destroyPipelineLayout(layout);pipelines.destroyDescriptorSetLayout(localLayout);}
+  ~Impl() {
+    // The driver may still be reading this pass's pipeline layout.
+    if (nativeCompilation.valid()) {
+      nativeCompilation.wait();
+      nativeCompilation = {};
+    }
+    clear();
+    nativeRays.reset();
+    pipelines.destroyPipeline(pipeline);
+    pipelines.destroyPipeline(emptyPipeline);
+    pipelines.destroyPipelineLayout(layout);
+    pipelines.destroyDescriptorSetLayout(localLayout);
+  }
+  void validateDescriptorLimits() const {
+    const auto& limits = properties.limits;
+    if (limits.maxPerStageDescriptorStorageBuffers < 10 || limits.maxDescriptorSetStorageBuffers < 10 ||
+        limits.maxPerStageDescriptorStorageImages < 3 || limits.maxDescriptorSetStorageImages < 3 ||
+        limits.maxPerStageDescriptorSampledImages < gpu::kMaterialTextureDescriptorCapacity + 1 ||
+        limits.maxDescriptorSetSampledImages < gpu::kMaterialTextureDescriptorCapacity + 1)
+      fail("extent, descriptors, or image budget exceeds supported limits");
+  }
+  void prepareLayout(VkDescriptorSetLayout materials, VkDescriptorSetLayout lights, bool native) {
+    if (!materials || !lights) fail("shared descriptor layouts are required");
+    if (layout) {
+      if (materialLayout != materials || lightLayout != lights || nativeLayout != native)
+        fail("shared descriptor layouts or traversal backend changed; recreate the pass");
+      return;
+    }
+
+    const std::array types{
+        VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+        VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
+        VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, VK_DESCRIPTOR_TYPE_SAMPLER,
+        VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
+    std::vector<VkDescriptorSetLayoutBinding> bindings;
+    bindings.reserve(types.size());
+    for (uint32_t i = 0; i < types.size(); ++i) {
+      VkShaderStageFlags stages = VK_SHADER_STAGE_COMPUTE_BIT;
+      if (native) {
+        stages |= VK_SHADER_STAGE_RAYGEN_BIT_KHR;
+        if (i == 0 || i == 2 || i == 3 || i == 11)
+          stages |= VK_SHADER_STAGE_ANY_HIT_BIT_KHR;
+      }
+      bindings.push_back({i, types[i], 1, stages, nullptr});
+    }
+    localLayout = pipelines.createDescriptorSetLayout(bindings, {});
+    try {
+      layout = pipelines.createPipelineLayout({materials, lights, localLayout}, {});
+    } catch (...) {
+      pipelines.destroyDescriptorSetLayout(localLayout);
+      throw;
+    }
+    materialLayout = materials;
+    lightLayout = lights;
+    nativeLayout = native;
+  }
+  void finishNativeCompilation() {
+    auto compiled = nativeCompilation.get();
+    auto candidate = std::make_shared<NativeReferenceRayPipeline>(*device, memory);
+    candidate->adopt(std::move(compiled));
+    nativeRays = std::move(candidate);
+  }
   void clear() {
 #if CONTAINER_HAS_DLSS_RR
     dlss.reset();
@@ -419,6 +490,10 @@ struct ReferencePathTracePass::Impl {
     oidnMessage = "off";
     const auto& settings = oidnSettings;
     if (!settings.optix && settings.quality == ReferenceOidnQuality::Off) return;
+    if (nativeRays && !device->rayQueriesEnabled()) {
+      oidnMessage = "Denoiser guide replay requires enabled Vulkan ray queries";
+      return;
+    }
 #if !CONTAINER_HAS_REFERENCE_OPTIX
     if (settings.optix) {
       oidnMessage = "OptiX 9.1.0 SDK was not enabled at build time";
@@ -474,6 +549,10 @@ struct ReferencePathTracePass::Impl {
     dlssMessage = "off";
     const auto mode = oidnSettings.dlss;
     if (mode == UpscaleMode::Native) return;
+    if (nativeRays) {
+      dlssMessage = "Ray Reconstruction requires the inline ray-query backend";
+      return;
+    }
 #if CONTAINER_HAS_DLSS_RR
     try {
       dlss = std::make_unique<ReferenceDlssPass>(device, memory, pipelines, root, mode, extent,
@@ -491,40 +570,65 @@ struct ReferencePathTracePass::Impl {
 ReferencePathTracePass::ReferencePathTracePass(std::shared_ptr<gpu::VulkanDevice> device,gpu::VulkanMemoryManager& memory,gpu::PipelineManager& pipelines)
     :impl_(std::make_unique<Impl>(std::move(device),memory,pipelines)) {}
 ReferencePathTracePass::~ReferencePathTracePass()=default;
+
+void ReferencePathTracePass::beginNativePipeline(const std::filesystem::path& shaderRoot,
+    VkDescriptorSetLayout materials, VkDescriptorSetLayout lights) {
+  auto& s = *impl_;
+  if (!s.device->rayTracingPipelineSupported()) fail("Vulkan ray-tracing pipeline is unavailable");
+  s.validateDescriptorLimits();
+  s.prepareLayout(materials, lights, true);
+  if (s.nativeRays || s.nativeCompilation.valid()) return;
+
+  auto code = NativeReferenceRayPipeline::loadShaders(shaderRoot / "spv_shaders");
+  s.nativeCompilation = std::async(std::launch::async,
+      [device = s.device, layout = s.layout, code = std::move(code)]() mutable {
+        return NativeReferenceRayPipeline::compile(*device, layout, std::move(code));
+      });
+}
+
+bool ReferencePathTracePass::pollNativePipeline() {
+  auto& s = *impl_;
+  if (s.nativeRays) return true;
+  if (!s.nativeCompilation.valid() ||
+      s.nativeCompilation.wait_for(std::chrono::seconds{0}) != std::future_status::ready) return false;
+  s.finishNativeCompilation();
+  return true;
+}
+
 void ReferencePathTracePass::createResources(const std::filesystem::path& root,uint32_t count,VkExtent2D extent,
-    VkDescriptorSetLayout materials,VkDescriptorSetLayout lights,uint64_t budget, ReferenceOidnSettings oidn) {
+    VkDescriptorSetLayout materials,VkDescriptorSetLayout lights,uint64_t budget, ReferenceOidnSettings oidn,
+    bool nativeRayPipeline) {
   auto& s=*impl_;const auto& limits=s.properties.limits;
+  if (nativeRayPipeline ? !s.device->rayTracingPipelineSupported() : !s.device->rayQueriesEnabled())
+    fail(nativeRayPipeline ? "Vulkan ray-tracing pipeline is unavailable" : "Vulkan ray queries are unavailable");
   if(!materials || !lights || !count || count>64 || !extent.width || !extent.height ||
       extent.width>limits.maxImageDimension2D || extent.height>limits.maxImageDimension2D ||
       (extent.width+7)/8>limits.maxComputeWorkGroupCount[0] || (extent.height+7)/8>limits.maxComputeWorkGroupCount[1] ||
       limits.maxComputeWorkGroupInvocations<64 || limits.maxComputeWorkGroupSize[0]<8 || limits.maxComputeWorkGroupSize[1]<8 ||
-      limits.maxPerStageDescriptorStorageBuffers<10 || limits.maxDescriptorSetStorageBuffers<10 ||
-      limits.maxPerStageDescriptorStorageImages<3 || limits.maxDescriptorSetStorageImages<3 ||
-      limits.maxPerStageDescriptorSampledImages<gpu::kMaterialTextureDescriptorCapacity+1 ||
-      limits.maxDescriptorSetSampledImages<gpu::kMaterialTextureDescriptorCapacity+1 ||
       uint64_t(extent.width)*extent.height*48>budget) fail("extent, descriptors, or image budget exceeds supported limits");
+  s.validateDescriptorLimits();
   VkFormatProperties format{};vkGetPhysicalDeviceFormatProperties(s.device->physicalDevice(),VK_FORMAT_R32G32B32A32_SFLOAT,&format);
   if((format.optimalTilingFeatures&(VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT|VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT))!=
       (VK_FORMAT_FEATURE_STORAGE_IMAGE_BIT|VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT|VK_FORMAT_FEATURE_TRANSFER_SRC_BIT)) fail("RGBA32F storage images are unavailable");
-  if(s.pipeline && (s.materialLayout!=materials || s.lightLayout!=lights)) fail("shared descriptor layouts changed; recreate the pass");
-  if(!s.pipeline) {
-    const std::array<VkDescriptorType,13> types{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER,VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR,
-      VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-      VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
-      VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,VK_DESCRIPTOR_TYPE_SAMPLER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER};
-    std::vector<VkDescriptorSetLayoutBinding> bindings;
-    for(uint32_t i=0;i<types.size();++i) bindings.push_back({i,types[i],1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr});
-    try {
-      s.localLayout=s.pipelines.createDescriptorSetLayout(bindings,{});
-      s.layout=s.pipelines.createPipelineLayout({materials,lights,s.localLayout},{});
-      s.pipeline=s.pipelines.createComputePipeline(root/"spv_shaders"/"reference_pathtrace.comp.spv",s.layout,"reference_pathtrace");
-      s.emptyPipeline=s.pipelines.createComputePipeline(root/"spv_shaders"/"reference_background.comp.spv",s.layout,"reference_background");
-    } catch(...) {
-      s.pipelines.destroyPipeline(s.pipeline);s.pipelines.destroyPipeline(s.emptyPipeline);s.pipelines.destroyPipelineLayout(s.layout);
-      s.pipelines.destroyDescriptorSetLayout(s.localLayout);throw;
+  s.prepareLayout(materials, lights, nativeRayPipeline);
+  const auto shaderDirectory = root / "spv_shaders";
+  if (nativeRayPipeline) {
+    if (!s.nativeRays && s.nativeCompilation.valid()) s.finishNativeCompilation();
+    if (!s.nativeRays) {
+      auto candidate = std::make_shared<NativeReferenceRayPipeline>(*s.device, s.memory);
+      if (!candidate->supportsExtent(extent)) fail("extent exceeds the Vulkan ray dispatch limit");
+      candidate->adopt(NativeReferenceRayPipeline::compile(
+          *s.device, s.layout, NativeReferenceRayPipeline::loadShaders(shaderDirectory)));
+      s.nativeRays = std::move(candidate);
     }
-    s.materialLayout=materials;s.lightLayout=lights;
+    if (!s.nativeRays->supportsExtent(extent)) fail("extent exceeds the Vulkan ray dispatch limit");
+  } else if (!s.pipeline) {
+    s.pipeline = s.pipelines.createComputePipeline(
+        shaderDirectory / "reference_pathtrace.comp.spv", s.layout, "reference_pathtrace");
   }
+  if (!s.emptyPipeline)
+    s.emptyPipeline = s.pipelines.createComputePipeline(
+        shaderDirectory / "reference_background.comp.spv", s.layout, "reference_background");
   s.clear();s.extent=extent;s.imageBudget=budget;
   try {
     s.mean=std::make_unique<Impl::Image>(s.device,s.memory,extent);
@@ -548,6 +652,9 @@ void ReferencePathTracePass::createResources(const std::filesystem::path& root,u
   } catch(...) {s.clear();throw;}
   setDenoising(root, oidn);
 }
+
+void ReferencePathTracePass::releaseFrameResources() { impl_->clear(); }
+
 void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTraceInput& input,
     std::span<const gpu::GpuMaterial> materialData, std::span<const RayInstanceData> instanceData) {
   auto& s=*impl_;
@@ -615,7 +722,8 @@ void ReferencePathTracePass::prepareFrame(uint32_t image, const ReferencePathTra
       f.key.groundColor = glm::vec4(ground.color, 0.0f);
     }
   }
-  f.boundPipeline=input.emptyScene?static_cast<VkPipeline>(s.emptyPipeline):static_cast<VkPipeline>(s.pipeline);
+  f.boundPipeline = input.emptyScene ? static_cast<VkPipeline>(s.emptyPipeline)
+      : s.nativeRays ? s.nativeRays->pipeline() : static_cast<VkPipeline>(s.pipeline);
   f.boundContent=input.emptyScene?s.emptyPipeline.contentIdentity():s.pipeline.contentIdentity();
   f.reset=!s.historyValid || settings.sampleLimit<s.samples || std::memcmp(&f.key,&s.submittedKey,sizeof(f.key))!=0 ||
       sceneKey(source)!=sceneKey(s.submittedScene) || input.contentRevision!=s.submittedRevision ||
@@ -690,11 +798,14 @@ void ReferencePathTracePass::record(VkCommandBuffer cmd,uint32_t image) {
   auto& s=*impl_;
   if(!cmd || image>=s.frames.size() || s.pendingImage!=image || !s.frames[image].prepared) fail("frame is not prepared for recording");
   auto& f=s.frames[image];
+  const bool traceNative = s.nativeRays && !f.input.emptyScene;
+  const VkPipelineStageFlags2 sampleStage = traceNative
+      ? VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
   if(!s.initialized) {
     std::array<VkImageMemoryBarrier2,3> barriers{};const std::array images{s.mean->image,s.moment->image,s.display->image};
     for(size_t i=0;i<3;++i) {
       auto& b=barriers[i];b.sType=VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2;
-      b.dstStageMask=VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;b.dstAccessMask=VK_ACCESS_2_SHADER_READ_BIT|VK_ACCESS_2_SHADER_WRITE_BIT;
+      b.dstStageMask=sampleStage;b.dstAccessMask=VK_ACCESS_2_SHADER_READ_BIT|VK_ACCESS_2_SHADER_WRITE_BIT;
       b.oldLayout=VK_IMAGE_LAYOUT_UNDEFINED;b.newLayout=VK_IMAGE_LAYOUT_GENERAL;
       b.srcQueueFamilyIndex=b.dstQueueFamilyIndex=VK_QUEUE_FAMILY_IGNORED;b.image=images[i];b.subresourceRange={VK_IMAGE_ASPECT_COLOR_BIT,0,1,0,1};
     }
@@ -704,12 +815,18 @@ void ReferencePathTracePass::record(VkCommandBuffer cmd,uint32_t image) {
   auto* denoiser = s.denoiser.get();
   if (denoiser && !denoiser->initialized) denoiser->initializeImages(cmd);
 #endif
-  barrier(cmd,VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,VK_ACCESS_2_SHADER_READ_BIT|VK_ACCESS_2_SHADER_WRITE_BIT|VK_ACCESS_2_UNIFORM_READ_BIT);
+  barrier(cmd,sampleStage,VK_ACCESS_2_SHADER_READ_BIT|VK_ACCESS_2_SHADER_WRITE_BIT|VK_ACCESS_2_UNIFORM_READ_BIT);
   std::array sets{f.input.materials, f.input.lights, f.set, VkDescriptorSet{}};
   const auto dispatch = [&](VkPipeline pipeline, VkPipelineLayout layout, uint32_t setCount) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, layout, 0, setCount, sets.data(), 0, nullptr);
     vkCmdDispatch(cmd, (s.extent.width + 7) / 8, (s.extent.height + 7) / 8, 1);
+  };
+  const auto dispatchSamples = [&] {
+    if (traceNative)
+      s.nativeRays->record(cmd, s.layout, std::span{sets}.first(3), s.extent);
+    else
+      dispatch(f.boundPipeline, s.layout, 3);
   };
   f.handoffWeight = 0.0f;
   float targetWeight = 0.0f;
@@ -726,11 +843,11 @@ void ReferencePathTracePass::record(VkCommandBuffer cmd,uint32_t image) {
     vkCmdPushConstants(cmd, denoiser->pipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(replay), replay.data());
     dispatch(static_cast<VkPipeline>(pipeline), denoiser->pipelineLayout, 4);
   };
-  if (canGuide && f.guideSamples == firstSample) {
+  if (canGuide && f.guideSamples == firstSample && !traceNative) {
     dispatchGuided({});
     f.guideSamples = samples;
   } else {
-    dispatch(f.boundPipeline, s.layout, 3);
+    dispatchSamples();
     if (canGuide) {
       // Replay missed guide addresses without changing any core sample or diagnostic.
       const auto work = std::min({samples - f.guideSamples,
@@ -741,7 +858,7 @@ void ReferencePathTracePass::record(VkCommandBuffer cmd,uint32_t image) {
     }
   }
 #else
-  dispatch(f.boundPipeline, s.layout, 3);
+  dispatchSamples();
 #endif
 #if CONTAINER_HAS_VK_OIDN || CONTAINER_HAS_REFERENCE_OPTIX
   if (denoiser) {
@@ -1099,4 +1216,21 @@ VkImage ReferencePathTracePass::meanImage() const {return impl_->mean?impl_->mea
 VkImage ReferencePathTracePass::momentImage() const {return impl_->moment?impl_->moment->image:VK_NULL_HANDLE;}
 VkImageView ReferencePathTracePass::displayView() const {return impl_->display?static_cast<VkImageView>(*impl_->display->view):VK_NULL_HANDLE;}
 VkImageView ReferencePathTracePass::meanView() const {return impl_->mean?static_cast<VkImageView>(*impl_->mean->view):VK_NULL_HANDLE;}
+bool ReferencePathTracePass::usesNativeRayPipeline() const { return bool(impl_->nativeRays); }
+
+std::shared_ptr<NativeReferenceRayPipeline> ReferencePathTracePass::prepareNativeRayReload(
+    const std::filesystem::path& shaderRoot) const {
+  const auto& s = *impl_;
+  if (!s.nativeRays) return {};
+  auto code = NativeReferenceRayPipeline::loadShaders(shaderRoot / "spv_shaders");
+  if (s.nativeRays->matchesShaders(code)) return {};
+  auto pipeline = std::make_shared<NativeReferenceRayPipeline>(*s.device, s.memory);
+  pipeline->adopt(NativeReferenceRayPipeline::compile(*s.device, s.layout, std::move(code)));
+  return pipeline;
+}
+
+void ReferencePathTracePass::publishNativeRayReload(
+    std::shared_ptr<NativeReferenceRayPipeline> candidate) noexcept {
+  if (candidate) impl_->nativeRays = std::move(candidate);
+}
 } // namespace container::renderer
