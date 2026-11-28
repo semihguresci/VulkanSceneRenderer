@@ -8646,6 +8646,7 @@ void GuiManager::drawSceneControls(
                 if (!entry.status.empty()) {
                   label += " [" + entry.status + "]";
                 }
+                ImGui::PushID(static_cast<int>(entry.id));
                 if (ImGui::Selectable(label.c_str(), selected)) {
                   selectedBcfTopicArchiveIndex_ = static_cast<int>(i);
                   showBcfTopicPins(entry);
@@ -8653,6 +8654,7 @@ void GuiManager::drawSceneControls(
                 if (selected) {
                   ImGui::SetItemDefaultFocus();
                 }
+                ImGui::PopID();
               }
               ImGui::EndCombo();
             }
@@ -8727,12 +8729,14 @@ void GuiManager::drawSceneControls(
               const std::string label =
                   ViewpointSnapshotDisplayName(storedViewpoints_[i]->snapshot,
                                                i);
+              ImGui::PushID(storedViewpoints_[i].get());
               if (ImGui::Selectable(label.c_str(), selected)) {
                 selectedViewpointSnapshotIndex_ = static_cast<int>(i);
               }
               if (selected) {
                 ImGui::SetItemDefaultFocus();
               }
+              ImGui::PopID();
             }
             ImGui::EndCombo();
           }
@@ -8803,6 +8807,10 @@ void GuiManager::drawSceneControls(
                                            "; kept current BIM filters"
                                      : "Restored " + restoredName)
                     : "Failed to restore viewpoint";
+            if (restored && activeStandaloneBcfViewpoint_ == &selectedViewpoint &&
+                !bimLayerVisibilityState_.markupLayerVisible) {
+              statusMessage_ += ". Enable Issue markers under Layer Visibility.";
+            }
           }
           ImGui::SameLine();
           if (!hasBcfPath) {
