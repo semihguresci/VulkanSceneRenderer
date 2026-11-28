@@ -3669,6 +3669,7 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
       : frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config));
   const auto viewportRoute = bimFloorPlanViewportRouteName(
       bimFloorPlanViewportRoute(technique, displayMode));
+  const bool overviewOverlay = bimFloorPlanUsesOverviewOverlay(technique, displayMode, style.depthTest);
   auto pipelineTechnique = technique;
   std::string_view pipeline;
   switch (technique) {
@@ -3677,8 +3678,11 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
         ? DeferredRasterPipelineId::BimFloorPlanDepth : DeferredRasterPipelineId::BimFloorPlanNoDepth);
     break;
   case RenderTechniqueId::ForwardRaster:
-    pipeline = forwardRasterPipelineName(style.depthTest
-        ? ForwardRasterPipelineId::BimFloorPlanDepth : ForwardRasterPipelineId::BimFloorPlanNoDepth);
+    if (overviewOverlay)
+      pipeline = forwardRasterPipelineName(ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth);
+    else
+      pipeline = forwardRasterPipelineName(style.depthTest
+          ? ForwardRasterPipelineId::BimFloorPlanDepth : ForwardRasterPipelineId::BimFloorPlanNoDepth);
     break;
   case RenderTechniqueId::PathTracing:
   case RenderTechniqueId::RayTracing:
@@ -3714,7 +3718,8 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
                      {"color", {style.color.r, style.color.g, style.color.b}},
                      {"opacity", sanitizeBimLightingOverlayOpacity(style.opacity)},
                      {"lineWidth", style.lineWidth},
-                     {"rasterLineWidth", rasterBimLightingOverlayLineWidth(style.lineWidth, wideLines)},
+                     {"rasterLineWidth", rasterBimLightingOverlayLineWidth(overviewOverlay
+                          ? bimFloorPlanOverviewLineWidth(style.lineWidth) : style.lineWidth, wideLines)},
                      {"drawCount", drawCount},
                      {"projectedGroundDrawCount", hasScene ? bim->floorPlanGroundDrawCommands(storey).size() : 0u},
                      {"sourceElevationDrawCount", hasScene ? bim->floorPlanSourceElevationDrawCommands(storey).size() : 0u},

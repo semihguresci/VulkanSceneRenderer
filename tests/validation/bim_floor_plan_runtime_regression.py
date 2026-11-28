@@ -38,6 +38,14 @@ STOREY_CASES = (
     (36, "clear", "forward-raster", "", GROUND, True),
     (40, "back-to-deferred", "deferred-raster", "", SOURCE, True),
 )
+OVERVIEW_EXTENT = (512, 384)
+OVERVIEW_CASES = (
+    (4, "deferred-off", "deferred-raster", False),
+    (8, "deferred-on", "deferred-raster", True),
+    (12, "forward-preserved", "forward-raster", True),
+    (16, "forward-off", "forward-raster", False),
+    (20, "forward-on", "forward-raster", True),
+)
 
 
 def require(condition, message):
@@ -77,12 +85,38 @@ def storey_fixture(path):
     path.write_text(json.dumps(model, indent=2) + "\n", encoding="utf-8")
 
 
+def overview_transparency_fixture(path):
+    meshes = [panel(1, (-3., 1.1, -.55, 2.25), 0), panel(2, (.55, 1.1, 3., 2.25), 0)]
+    # Two nearly opaque transparent roofs cover only the left wall. Roofs do not
+    # contribute plan lines. The right wall provides a control in the same frame.
+    meshes += [panel(3, (-3.45, .7, -.25, 2.65), 1.2), panel(4, (-3.45, .7, -.25, 2.65), 1.5)]
+    elements = []
+    for mesh_id, name, kind, gray, alpha in (
+        (1, "left-wall", "IfcWall", 145, 255), (2, "right-wall", "IfcWall", 145, 255),
+        (3, "left-roof-back", "IfcRoof", 180, 250), (4, "left-roof-front", "IfcRoof", 180, 250),
+    ):
+        elements.append({"mesh_id": mesh_id, "guid": name, "type": kind,
+                         "color": {"r": gray, "g": gray, "b": gray, "a": alpha}})
+    path.write_text(json.dumps({"schema_version": "1.1.0", "meshes": meshes, "elements": elements},
+                               indent=2) + "\n", encoding="utf-8")
+
+
 def settings(*, enabled=True, elevation=GROUND, depth=False, color=(1, 0, 0), opacity=1, width=5):
     return {"enabled": enabled, "elevation": elevation, "depthTest": depth,
             "color": list(color), "opacity": opacity, "lineWidth": width}
 
 
 def sequence_plan(mode, comparison):
+    if mode == "overview-transparency":
+        style = settings(elevation=SOURCE, color=(1, 0, 1))
+        return [case[0] for case in OVERVIEW_CASES], [
+            {"frame": 1, "bimFloorPlan": {**style, "enabled": False}},
+            {"frame": 2, "orthographic": True},
+            {"frame": 7, "bimFloorPlan": style},
+            {"frame": 11, "technique": comparison},
+            {"frame": 15, "bimFloorPlan": {**style, "enabled": False}},
+            {"frame": 19, "bimFloorPlan": style},
+        ]
     if mode == "storey-filter":
         events = []
         technique, storey, style = "deferred-raster", None, None
@@ -134,27 +168,28 @@ def sequence_plan(mode, comparison):
     raise ValueError(mode)
 
 
-def read_capture(image, frame, technique):
+def read_capture(image, frame, technique, *, extent=(WIDTH, HEIGHT)):
     import cv2
     import numpy as np
     from PIL import Image
 
     metadata = json.loads(Path(f"{image}.capture.json").read_bytes())
     state = json.loads(image.with_suffix(".telemetry.json").read_bytes())
-    require((metadata["width"], metadata["height"], metadata["includesUi"]) == (WIDTH, HEIGHT, False), metadata)
+    width, height = extent
+    require((metadata["width"], metadata["height"], metadata["includesUi"]) == (width, height, False), metadata)
     require(state["technique"] == technique and state["validationEnabled"], state.get("technique"))
     if image.suffix == ".exr":
         source = "path-trace-mean" if technique == "path-tracing" else "raster-scene-composite"
         require(metadata["source"] == source and metadata["colorSpace"] == "linear-sRGB"
                 and not metadata["exposureApplied"] and not metadata["toneMappingApplied"], metadata)
         bgr = cv2.imdecode(np.frombuffer(image.read_bytes(), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
-        require(bgr is not None and bgr.shape == (HEIGHT, WIDTH, 3) and bgr.dtype == np.float32
+        require(bgr is not None and bgr.shape == (height, width, 3) and bgr.dtype == np.float32
                 and np.isfinite(bgr).all(), f"Invalid raw scene-linear capture {image}")
         pixels = bgr[:, :, ::-1]
     else:
         require(metadata["source"] == "viewport", metadata)
         with Image.open(image) as png:
-            require(png.format == "PNG" and png.size == (WIDTH, HEIGHT), image)
+            require(png.format == "PNG" and png.size == extent, image)
             pixels = np.asarray(png.convert("RGB"))
     return {"frame": frame, "image": str(image), "state": state, "pixels": pixels,
             "metadata": metadata, "decodedSha256": hashlib.sha256(pixels.tobytes()).hexdigest()}
@@ -169,6 +204,8 @@ def check_floor_plan_telemetry(sample, style, *, storey=None, has_lines=True):
     overlay = bim["floorPlan"]
     if state["technique"] == "path-tracing":
         route = "presentation-overlay"
+    elif metadata.get("displayMode") == 8:
+        route = "overview"
     elif metadata.get("displayMode") == 4:
         route = "excluded-by-display-mode"
     else:
@@ -187,12 +224,16 @@ def check_floor_plan_telemetry(sample, style, *, storey=None, has_lines=True):
     require(math.isclose(overlay["opacity"], style["opacity"], abs_tol=1e-6)
             and all(math.isclose(actual, expected, abs_tol=1e-6)
                     for actual, expected in zip(overlay["color"], style["color"], strict=True)), overlay)
+    display_overlay = state["technique"] == "forward-raster" and route == "overview" and not style["depthTest"]
     width = style["lineWidth"] if state["wideLinesSupported"] else 1
-    require(overlay["rasterLineWidth"] == width, overlay)
+    if display_overlay:
+        require(1 <= overlay["rasterLineWidth"] <= width, overlay)
+    else:
+        require(overlay["rasterLineWidth"] == width, overlay)
     projected, source = overlay["projectedGroundDrawCount"], overlay["sourceElevationDrawCount"]
     require((projected > 0 and source > 0) if has_lines else projected == source == 0, overlay)
     require(overlay["drawCount"] == (source if style["elevation"] == "source-elevation" else projected), overlay)
-    pipeline = "bim-floor-plan-display" if state["technique"] == "path-tracing" else "bim-floor-plan"
+    pipeline = "bim-floor-plan-display" if state["technique"] == "path-tracing" or display_overlay else "bim-floor-plan"
     require(overlay["pipelineReady"] and overlay["pipeline"] ==
             f"{pipeline}-{'depth' if style['depthTest'] else 'no-depth'}", overlay)
 
@@ -205,16 +246,21 @@ def record(renderer, model, output, technique, mode, report, *, comparison, gene
                                     "events": events}, indent=2) + "\n", encoding="utf-8")
     extension = "exr" if mode.startswith("linear") else "png"
     screenshot = output / f"{name}.{extension}"
-    display_mode = "depth" if mode == "depth-view" else "lit"
+    overview = mode == "overview-transparency"
+    display_mode = {"depth-view": "depth", "overview-transparency": "overview"}.get(mode, "lit")
+    width, height = OVERVIEW_EXTENT if overview else (WIDTH, HEIGHT)
+    position, target = ((0, 1.675, 8), (0, 1.675, 0)) if overview else (POSITION, TARGET)
     command = [str(renderer), "--model", str(model), "--import-scale", "1", "--hidden", "--no-ui", "--validation",
-               "--width", str(WIDTH), "--height", str(HEIGHT), "--msaa", "1", "--no-taa", "--no-bloom",
+               "--width", str(width), "--height", str(height), "--msaa", "1", "--no-taa", "--no-bloom",
                "--render-technique", technique, "--display-mode", display_mode, "--exposure", "1",
-               "--camera-position", *map(str, POSITION), "--camera-target", *map(str, TARGET), "--camera-fov", str(FOV),
+               "--camera-position", *map(str, position), "--camera-target", *map(str, target), "--camera-fov", str(FOV),
                "--sky", "plain", "--sky-horizon", "0", "0", "0", "--environment-intensity", "0",
                "--directional-intensity", "2", "--directional-direction", "-.3", "-.2", "-1", "--bounce-intensity", "0",
                "--path-spp", "4", "--path-samples", "13", "--path-bounces", "1", "--path-seed", "23",
                "--fixed-dt", ".016666667", "--screenshot-viewport", "--capture-sequence", str(sequence),
                "--screenshot", str(screenshot)]
+    if overview:
+        command.extend(["--no-ddgi", "--no-ray-query", "--tone-map", "neutral"])
     log = screenshot.with_suffix(".log")
     row = {"technique": technique, "mode": mode, "command": command, "log": str(log), "captures": []}
     report["runs"].append(row)
@@ -234,7 +280,7 @@ def record(renderer, model, output, technique, mode, report, *, comparison, gene
         image = screenshot if frame == frames[-1] else output / f"{name}.frame-{frame:04}.{extension}"
         active_technique = next((event["technique"] for event in reversed(events)
                                  if event["frame"] <= frame and "technique" in event), technique)
-        sample = read_capture(image, frame, active_technique)
+        sample = read_capture(image, frame, active_technique, extent=(width, height))
         state = sample["state"]
         require(Path(state["scene"]["auxiliary"]).resolve() == model, "The authored BIM fixture was not loaded")
         if check_telemetry:
@@ -306,6 +352,63 @@ def check_storey_filter(samples):
                           ("all-source", "back-to-deferred")):
         np.testing.assert_array_equal(masks[before], masks[after], err_msg=f"{before} vs. {after}")
     return counts
+
+
+def check_overview_transparency(samples):
+    import numpy as np
+
+    fixed_camera(samples)
+    projection = samples[0]["state"]["camera"]["unjitteredViewProjColumns"]
+    require([column[3] for column in projection] == [0, 0, 0, 1], "Expected a fixed orthographic camera")
+    captures = {label: sample for sample, (_, label, technique, _) in zip(samples, OVERVIEW_CASES, strict=True)
+                if sample["state"]["technique"] == technique and sample["metadata"]["displayMode"] == 8}
+    require(len(captures) == len(OVERVIEW_CASES), "The Overview display mode or renderer changed unexpectedly")
+    images = {name: capture["pixels"] for name, capture in captures.items()}
+    width, height = OVERVIEW_EXTENT
+
+    def panel_slice(left, top, right, bottom):
+        return np.s_[round(top * height):round(bottom * height), round(left * width):round(right * width)]
+
+    # Match the Overview panel interiors in post_process.slang. Exclude the
+    # panel borders so the right half reflects only the unobscured scene.
+    lit = panel_slice(.026, .046, .334, .264)
+    transparency = panel_slice(.026, .506, .334, .724)
+    revealage = panel_slice(.346, .506, .654, .724)
+    coverage = {}
+    for label, baseline in (("deferred-on", "deferred-off"), ("forward-preserved", "forward-off"),
+                            ("forward-on", "forward-off")):
+        on = images[label][lit].astype(np.int16)
+        off = images[baseline][lit].astype(np.int16)
+        magenta = (on[:, :, 0] > on[:, :, 1] + 25) & (on[:, :, 2] > on[:, :, 1] + 25)
+        changed = np.max(np.abs(on - off), axis=2) > 8
+        covered, clear = (int(lane.sum()) for lane in np.array_split(magenta & changed, 2, axis=1))
+        require(min(covered, clear) >= 10 and covered >= .4 * clear,
+                f"{label}: Overview Lit tile lost visible plan linework under transparent BIM geometry "
+                f"(covered={covered}, clear={clear})")
+        coverage[label] = {"coveredPixels": covered, "clearPixels": clear}
+
+    diagnostics = {}
+    for label, region, threshold in (("transparency", transparency, 32), ("revealage", revealage, 223)):
+        control = images["forward-off"][region]
+        visible = control.max(axis=2) > threshold
+        if label == "revealage":
+            visible = ~visible
+        covered, clear = (int(lane.sum()) for lane in np.array_split(visible, 2, axis=1))
+        require(covered > 100 and covered > 10 * clear,
+                f"Forward Overview {label} tile did not report the transparent roofs ({covered}, {clear})")
+        for frame in ("forward-preserved", "forward-on"):
+            np.testing.assert_array_equal(images[frame][region], control,
+                                          err_msg=f"Floor plan changed the Overview {label} tile")
+        diagnostics[label] = {"coveredPixels": covered, "clearPixels": clear}
+
+    outside_lit = np.ones((height, width), dtype=bool)
+    outside_lit[panel_slice(.02, .04, .342, .272)] = False
+    for label in ("forward-preserved", "forward-on"):
+        np.testing.assert_array_equal(images[label][outside_lit], images["forward-off"][outside_lit],
+                                      err_msg="The Forward floor plan escaped the Overview Lit tile")
+    for _, label, _, enabled in OVERVIEW_CASES:
+        check_floor_plan_telemetry(captures[label], settings(enabled=enabled, elevation=SOURCE, color=(1, 0, 1)))
+    return {"floorPlan": coverage, "transparencyDiagnostics": diagnostics}
 
 
 def check_styled(samples, *, missing=False):
@@ -444,9 +547,14 @@ def main():
                           comparison=args.comparison, generate_only=args.generate_only,
                           check_telemetry=not expect_missing)
         depth_view = []
+        overview = []
         if args.comparison == "forward-raster" and not expect_missing:
             depth_view = record(renderer, model, output, "deferred-raster", "depth-view", report,
                                 comparison=args.comparison, generate_only=args.generate_only, check_telemetry=True)
+            overview_model = output / "overview-transparent-bim.bim"
+            overview_transparency_fixture(overview_model)
+            overview = record(renderer, overview_model, output, "deferred-raster", "overview-transparency", report,
+                              comparison=args.comparison, generate_only=args.generate_only, check_telemetry=False)
         if args.generate_only:
             return 0
         import numpy as np
@@ -465,6 +573,8 @@ def main():
                 require(np.ptp(before["pixels"][:, :, 0]) > 0, "The depth control is a flat image")
                 np.testing.assert_array_equal(before["pixels"], after["pixels"])
             report["checks"]["depthViewExcludesFloorPlan"] = True
+        if overview:
+            report["checks"]["overviewTransparency"] = check_overview_transparency(overview)
         require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["executableSha256"],
                 "Renderer executable changed during capture")
         report["passed"] = True
