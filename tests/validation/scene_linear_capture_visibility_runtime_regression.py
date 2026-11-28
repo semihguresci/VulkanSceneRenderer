@@ -20,6 +20,7 @@ from renderer_mcp_runtime_regression import Client, initialize, wait_for
 WIDTH, HEIGHT = 640, 480
 TECHNIQUES = ("deferred-raster", "forward-raster")
 STATES = ("visible", "covered", "cropped", "hidden", "restored")
+MONITOR_EDGE_STATE = "partially-offscreen"
 INTENSITIES = (0, 3)
 
 
@@ -31,10 +32,12 @@ def require(condition, message):
 class Desktop:
     """Cover or crop the test renderer HWND and verify the resulting desktop state."""
 
-    def __init__(self, window_origin=None):
+    def __init__(self, window_origin=None, *, monitor_edge=False):
         user32 = ct.WinDLL("user32", use_last_error=True)
         gdi32 = ct.WinDLL("gdi32", use_last_error=True)
         self.window_origin = window_origin
+        self.restore_origin = None
+        self.states = (*STATES[:-1], MONITOR_EDGE_STATE, STATES[-1]) if monitor_edge else STATES
         self.callback_type = ct.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
 
         def bind(name, result, *arguments):
@@ -45,6 +48,26 @@ class Desktop:
 
         dpi = bind("SetThreadDpiAwarenessContext", wt.HANDLE, wt.HANDLE)
         require(dpi(ct.c_void_p(-4)), "Could not enable physical-pixel Win32 coordinates")
+        if monitor_edge:
+            self.monitor_from_point = bind("MonitorFromPoint", wt.HANDLE, wt.POINT, wt.DWORD)
+            monitor_callback = ct.WINFUNCTYPE(wt.BOOL, wt.HANDLE, wt.HDC, ct.POINTER(wt.RECT), wt.LPARAM)
+            enumerate_monitors = bind("EnumDisplayMonitors", wt.BOOL, wt.HDC, ct.POINTER(wt.RECT), monitor_callback, wt.LPARAM)
+            monitors = []
+
+            @monitor_callback
+            def collect_monitor(_monitor, _dc, bounds, _data):
+                rect = bounds.contents
+                monitors.append((rect.left, rect.top, rect.right, rect.bottom))
+                return True
+
+            require(enumerate_monitors(None, None, collect_monitor, 0) and monitors,
+                    "Could not enumerate Win32 display monitors")
+            self.monitor_right = max(rect[2] for rect in monitors)
+            rightmost = [rect for rect in monitors if rect[2] == self.monitor_right
+                         and rect[2] - rect[0] >= WIDTH // 2 and rect[3] - rect[1] >= HEIGHT]
+            require(rightmost, "The right desktop edge cannot fit half the capture extent")
+            _, top, _, bottom = max(rightmost, key=lambda rect: rect[3] - rect[1])
+            self.edge_origin = (self.monitor_right - WIDTH // 2, top + (bottom - top - HEIGHT) // 2)
         self.enum_windows = bind("EnumWindows", wt.BOOL, self.callback_type, wt.LPARAM)
         self.window_pid = bind("GetWindowThreadProcessId", wt.DWORD, wt.HWND, ct.POINTER(wt.DWORD))
         self.title = bind("GetWindowTextW", ct.c_int, wt.HWND, wt.LPWSTR, ct.c_int)
@@ -151,10 +174,12 @@ class Desktop:
         if state in ("visible", "restored"):
             # Bring only the test window above unrelated windows without activating it.
             # HWND_TOPMOST, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW and optional SWP_NOMOVE.
-            left, top = self.window_origin or (0, 0)
-            flags = 0x0051 if self.window_origin is not None else 0x0053
+            origin = self.restore_origin or self.window_origin
+            left, top = origin or (0, 0)
+            flags = 0x0051 if origin is not None else 0x0053
             require(self.place(hwnd, ct.c_void_p(-1), left, top, 0, 0, flags),
                     "Could not show the test renderer above other windows")
+            self.restore_origin = None
         elif state == "hidden":
             self.show(hwnd, 0)  # SW_HIDE leaves the window and swapchain extent intact.
             require(self.set_region(hwnd, None, False), "Could not remove the crop from the hidden renderer window")
@@ -169,6 +194,13 @@ class Desktop:
             if not self.set_region(hwnd, region, True):
                 self.delete_object(region)  # On success Windows takes ownership.
                 raise RuntimeError("Could not crop the renderer's native client region")
+        elif state == MONITOR_EDGE_STATE:
+            outer = wt.RECT()
+            require(self.window_rect(hwnd, ct.byref(outer)), "Could not measure the test window border")
+            self.restore_origin = (outer.left, outer.top)
+            edge_x, edge_y = self.edge_origin
+            require(self.place(hwnd, ct.c_void_p(-1), edge_x + outer.left - x, edge_y + outer.top - y,
+                               0, 0, 0x0051), "Could not move half of the test renderer outside the desktop")
         else:
             raise ValueError(f"Unknown test desktop state {state!r}")
         require(self.flush() == 0, "Could not wait for the Windows desktop compositor")
@@ -204,6 +236,11 @@ class Desktop:
         elif state == "cropped":
             matches = (visible and exposed and hwnd not in owners[3:] and self.cover not in owners[3:]
                        and region_type == 2 and window_region == self.left_half_region(hwnd, x, width))
+        elif state == MONITOR_EDGE_STATE:
+            # WindowFromPoint can still identify a window beyond a monitor's edge.
+            monitor_presence = [bool(self.monitor_from_point(wt.POINT(*point), 0)) for point in points]
+            matches = (visible and exposed and x + width // 2 == self.monitor_right
+                       and monitor_presence == [True] * 3 + [False] * 3)
         else:
             matches = not visible and hwnd not in owners
         if state != "cropped":
@@ -212,6 +249,8 @@ class Desktop:
                   "windowRegion": window_region,
                   "clientProbeOwners": ["renderer" if owner == hwnd else "cover" if owner == self.cover
                                         else "other" for owner in owners]}
+        if state == MONITOR_EDGE_STATE:
+            sample.update(monitorRight=self.monitor_right, clientProbeOnMonitor=monitor_presence)
         if not matches:
             sample["rendererOwner"] = self.owner_details(hwnd)
             sample["probeOwnerWindows"] = [self.owner_details(owner) for owner in owners]
@@ -283,7 +322,7 @@ def capture(client, desktop, hwnd, folder, name, state, *, viewport=False, inclu
                    "decodedSha256": hashlib.sha256(image.tobytes()).hexdigest()}
 
 
-def check_images(images):
+def check_images(images, states):
     import numpy as np
 
     visible = images["visible"]
@@ -295,14 +334,14 @@ def check_images(images):
     require(np.count_nonzero(changed) > 1000, "The covered EXR region has no meaningful frame-to-frame change")
     require(np.count_nonzero(np.any(visible["viewport.png"] != visible["window.png"], axis=2)) > 1000,
             "Window PNG did not include GUI pixels excluded from viewport PNG")
-    for state in STATES[1:]:
+    for state in states[1:]:
         for name in visible:
             np.testing.assert_array_equal(images[state][name], visible[name], err_msg=f"{state} {name}")
     return {"changedRightHalfExrPixels": int(np.count_nonzero(changed)),
             "viewportAndWindowDifferent": True, "allVisibilityCapturesEqual": True}
 
 
-def native_clipping_pixels(images, production_visible, row):
+def native_clipping_pixels(images, production_visible, row, states):
     import numpy as np
 
     visible = images["visible"]
@@ -311,13 +350,13 @@ def native_clipping_pixels(images, production_visible, row):
 
     # Each rectangle describes the affected part in capture-local coordinates.
     # For the native control, an unaffected pixel still has to match exactly.
-    regions = {"visible": WIDTH, "covered": WIDTH // 2, "cropped": WIDTH // 2,
+    regions = {"visible": WIDTH, "covered": WIDTH // 2, "cropped": WIDTH // 2, MONITOR_EDGE_STATE: WIDTH // 2,
                "hidden": 0, "restored": WIDTH}
     dark_exr, bright_exr = (f"radiance-{intensity}.exr" for intensity in INTENSITIES)
     other_exr = {dark_exr: bright_exr, bright_exr: dark_exr}
     reports = []
     row["pixelComparisons"] = reports
-    for state in STATES:
+    for state in states:
         start = regions[state]
         for name, reference in visible.items():
             sample = images[state][name]
@@ -421,7 +460,7 @@ def run_technique(renderer, output, technique, desktop, report, *, clipping_cont
             initialize(client)
             require(client.call("renderer_get_settings")["technique"] == technique, "Wrong renderer technique")
             hwnd = wait_for(lambda: desktop.find(process.pid), timeout=15)
-            for state in STATES:
+            for state in desktop.states:
                 desktop.apply(hwnd, state)
                 images[state] = {}
                 for intensity in INTENSITIES:
@@ -430,7 +469,7 @@ def run_technique(renderer, output, technique, desktop, report, *, clipping_cont
                     name = f"radiance-{intensity}.exr"
                     images[state][name], evidence = capture(
                         client, desktop, hwnd, folder, f"{state}-{name}", state,
-                        allow_nonfinite=bool(clipping_control) and state in ("covered", "cropped", "hidden"))
+                        allow_nonfinite=bool(clipping_control) and state not in ("visible", "restored"))
                     row["captures"].append({"state": state, "kind": name, **evidence})
                 for name, viewport in (("viewport.png", True), ("window.png", False)):
                     images[state][name], evidence = capture(client, desktop, hwnd, folder, f"{state}-{name}", state,
@@ -452,12 +491,12 @@ def run_technique(renderer, output, technique, desktop, report, *, clipping_cont
     row["renderer"] = renderer_identity(log_text)
     if clipping_control:
         row["clippingProvenance"] = clipping_provenance(log_text, log, clipping_control["layerName"])
-        native_clipping_pixels(images, production_visible, row)
+        native_clipping_pixels(images, production_visible, row, desktop.states)
         outcome = "observed" if row["nativeClippingObserved"] else "not observed"
         print(f"{technique}: VK_TRUE native clipping {outcome} in {len(row['captures'])} captures", flush=True)
     else:
         require("[clip-fixture]" not in log_text, f"The production run loaded the clipping fixture: {log}")
-        row.update(check_images(images))
+        row.update(check_images(images, desktop.states))
         print(f"{technique}: {len(row['captures'])} production captures matched across all window states", flush=True)
     return images["visible"]
 
@@ -470,6 +509,8 @@ def main():
                         help="write to a fresh run directory under output")
     parser.add_argument("--window-origin", nargs=2, type=int, metavar=("X", "Y"),
                         help="physical screen coordinates for the test window's upper-left corner")
+    parser.add_argument("--probe-monitor-edge", action="store_true",
+                        help="move half of the test window beyond the desktop's rightmost monitor")
     parser.add_argument("--clipping-control-layer-dir", type=Path,
                         help="run an additional real-window VK_TRUE control using the pass-through fixture")
     parser.add_argument("--require-native-clipping", action="store_true",
@@ -495,7 +536,8 @@ def main():
         "pbrMetallicRoughness": {"baseColorFactor": [.45, .4, .35, 1], "metallicFactor": 0, "roughnessFactor": .65},
     })
     renderer_hash = hashlib.sha256(renderer.read_bytes()).hexdigest()
-    report = {"rendererSha256": renderer_hash, "windowOrigin": args.window_origin, "techniques": [], "passed": False}
+    report = {"rendererSha256": renderer_hash, "windowOrigin": args.window_origin,
+              "monitorEdgeRequested": args.probe_monitor_edge, "techniques": [], "passed": False}
     control = None
     if args.clipping_control_layer_dir is not None:
         layer_dir = args.clipping_control_layer_dir.resolve(strict=True)
@@ -509,7 +551,7 @@ def main():
                    "librarySha256": hashlib.sha256(library.read_bytes()).hexdigest(),
                    "qualificationRequired": args.require_native_clipping, "techniques": []}
         report["nativeClippingControl"] = control
-    desktop = Desktop(args.window_origin)
+    desktop = Desktop(args.window_origin, monitor_edge=args.probe_monitor_edge)
     try:
         visible = {}
         for technique in TECHNIQUES:

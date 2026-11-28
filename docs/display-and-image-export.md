@@ -127,6 +127,9 @@ client area by a Win32 window region, hidden, and restored. It verifies desktop
 coverage and client dimensions around every capture and uses the local renderer
 MCP endpoint to request captures. The script accepts `--window-origin X Y` to
 place the test window on an unobstructed monitor using physical screen pixels.
+Add `--probe-monitor-edge` to move the right half of the client area beyond the
+desktop's rightmost monitor. The test verifies the physical monitor boundary and
+the original client extent around each capture before restoring the window.
 
 ```powershell
 $env:CONTAINER_RUN_GPU_CAPTURE_VISIBILITY = '1'
@@ -146,6 +149,7 @@ cmake --build $build --config Release --target swapchain_capture_clip_layer Vulk
 $env:CONTAINER_RUN_GPU_CAPTURE_VISIBILITY = '1'
 python -B tests/validation/scene_linear_capture_visibility_runtime_regression.py `
     "$build/VulkanSceneRenderer.exe" out/native-capture-clipping --managed-output `
+    --probe-monitor-edge `
     --clipping-control-layer-dir "$build/test-fixtures/swapchain-capture-clip/Release"
 ```
 
