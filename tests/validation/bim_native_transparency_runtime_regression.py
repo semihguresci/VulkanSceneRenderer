@@ -63,16 +63,17 @@ def panel_node(label, center, depths, opacity, bottom=.85, top=2.47):
         "usd::usdgeom::mesh": panel_mesh(center, depths, bottom, top)}}
 
 
-def fixture(path):
+def fixture(path, *, native_only=False):
     nodes = []
     for label, center, depths in ZONES:
         nodes.extend(primitive_nodes(label, center))
-        if depths:
+        if depths and not native_only:
             nodes.append(panel_node(f"{label}-panels", center, depths, 250 / 255))
     # A separate upper strip guards against making native primitives ignore all
     # depth tests. The main three zones and their original camera stay unchanged.
-    nodes.extend(primitive_nodes("opaque-front", 1.06, point_rows=(2.5, 2.6), curve_rows=(2.72,)))
-    nodes.append(panel_node("opaque-front-panel", 1.06, (2.,), 1., bottom=2.4, top=2.82))
+    if not native_only:
+        nodes.extend(primitive_nodes("opaque-front", 1.06, point_rows=(2.5, 2.6), curve_rows=(2.72,)))
+        nodes.append(panel_node("opaque-front-panel", 1.06, (2.,), 1., bottom=2.4, top=2.82))
     children = {node["path"]: node["path"] for node in nodes}
     save(path, {"data": [{"path": "root", "children": children}, *nodes]})
 
@@ -113,6 +114,10 @@ def inspect(stats, technique, mode):
                              ("amberCurvePixels", 5 if mode == "overview" else 64)):
         clear = zones["clear"][channel]
         require(clear >= minimum, f"{technique}/{mode}: exposed native geometry is missing: {stats}")
+        if mode == "transparency":
+            require(all(zone[channel] >= max(minimum, clear * .5) for zone in zones.values()),
+                    f"{technique}: native-only geometry did not reach the OIT diagnostic: {stats}")
+            continue
         require(zones["rear-roof"][channel] >= max(minimum, clear * .5),
                 f"{technique}/{mode}: transparent geometry behind the native surface covered it: {stats}")
         # Two front alpha=250/255 layers transmit only (5/255)^2. Their
@@ -134,13 +139,14 @@ def read_capture(image, mode, technique, model):
 
     state = json.loads(image.with_suffix(".telemetry.json").read_bytes())
     receipt = json.loads(Path(f"{image}.capture.json").read_bytes())
+    display_mode, object_count = {"lit": (0, 11), "overview": (8, 11), "transparency": (6, 6)}[mode]
     require(state["technique"] == technique and state["validationEnabled"] and state["msaaSamples"] == 1
             and not state["taa"]["enabled"] and Path(state["scene"]["auxiliary"]).resolve() == model
-            and state["scene"]["auxiliaryObjectCount"] == 11
+            and state["scene"]["auxiliaryObjectCount"] == object_count
             and state["scene"]["import"]["status"] in ("Complete", "Unreported")
             and not state["oit"]["overflowed"], f"Unexpected geometry/render state: {image}")
     require((receipt["width"], receipt["height"], receipt["source"], receipt["displayMode"], receipt["includesUi"])
-            == (WIDTH, HEIGHT, "viewport", 8 if mode == "overview" else 0, False)
+            == (WIDTH, HEIGHT, "viewport", display_mode, False)
             and not receipt["bim"]["floorPlan"]["requested"], f"Wrong capture route: {image}")
     projection = state["camera"]["unjitteredViewProjColumns"]
     require([column[3] for column in projection] == [0, 0, 0, 1], f"Expected orthographic camera: {image}")
@@ -220,7 +226,9 @@ def main():
     else:
         output.mkdir(parents=True)
     model, spec = output / "native-primitives-with-depth-ordered-roofs.ifcx", output / "events.json"
+    native_only_model = output / "native-primitives-only.ifcx"
     fixture(model)
+    fixture(native_only_model, native_only=True)
     sequence(spec)
     (output / "vk_layer_settings.txt").write_text("khronos_validation.validate_sync = true\n", encoding="utf-8")
     report = dict(passed=False, generatedOnly=args.generate_only, lanes={}, primitiveZ=0,
@@ -228,11 +236,14 @@ def main():
     if not args.generate_only:
         report["rendererSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     report["fixtureSha256"] = hashlib.sha256(model.read_bytes()).hexdigest()
+    report["nativeOnlyFixtureSha256"] = hashlib.sha256(native_only_model.read_bytes()).hexdigest()
     report["sequenceSha256"] = hashlib.sha256(spec.read_bytes()).hexdigest()
     try:
         for mode in ("lit", "overview"):
             run(renderer, output, model, spec, mode, report, layer_dir=args.layer_dir,
                 generate_only=args.generate_only)
+        run(renderer, output, native_only_model, spec, "transparency", report, layer_dir=args.layer_dir,
+            generate_only=args.generate_only)
         if not args.generate_only:
             require(report["rendererSha256"] == hashlib.sha256(renderer.read_bytes()).hexdigest(), "Renderer changed")
             report["passed"] = True

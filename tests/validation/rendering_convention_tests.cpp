@@ -9052,7 +9052,8 @@ TEST(RenderingConventionTests,
   EXPECT_TRUE(contains(pipelineBuilder, "bim_curve_depth_pipeline"));
   EXPECT_TRUE(contains(pipelineBuilder, "bim_curve_no_depth_pipeline"));
   EXPECT_TRUE(contains(wireframeShader, "SV_PointSize"));
-  EXPECT_TRUE(contains(wireframeShader, "output.pointSize = max(pc.lineWidth"));
+  EXPECT_TRUE(contains(wireframeShader, "kUseLargePoints != 0u ? max(pc.lineWidth, 1.0) : 1.0"));
+  EXPECT_TRUE(contains(pipelineBuilder, "pointCloudStages.front().pSpecializationInfo = &pointSizeInfo"));
 }
 
 TEST(RenderingConventionTests,
