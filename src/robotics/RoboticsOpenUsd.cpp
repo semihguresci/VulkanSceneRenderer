@@ -8,16 +8,90 @@
 #include <glm/matrix.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
-#include <limits>
+#include <fstream>
 #include <map>
-#include <sstream>
 #include <stdexcept>
 #include <tuple>
 #include <utility>
 
 namespace container::robotics {
 namespace {
+
+class StagedUsdLayer {
+public:
+  explicit StagedUsdLayer(const std::filesystem::path& destination) {
+    const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
+    for (unsigned attempt = 0; attempt < 64; ++attempt) {
+      auto candidate = destination.parent_path() /
+          (".usd-stage-" + std::to_string(stamp) + '-' + std::to_string(attempt));
+      auto layer = candidate / "layer.usda";
+      std::error_code error;
+      if (std::filesystem::create_directory(candidate, error)) {
+        directory_ = std::move(candidate);
+        path_ = std::move(layer);
+        return;
+      }
+      if (error && error != std::errc::file_exists)
+        throw std::filesystem::filesystem_error("Creating USD export staging directory", candidate, error);
+    }
+    throw std::runtime_error("Could not create a unique USD export staging directory");
+  }
+
+  ~StagedUsdLayer() {
+    std::error_code ignored;
+    std::filesystem::remove(path_, ignored);
+    std::filesystem::remove(directory_, ignored);
+  }
+
+  [[nodiscard]] const std::filesystem::path& path() const { return path_; }
+
+private:
+  std::filesystem::path directory_;
+  std::filesystem::path path_;
+};
+
+void flushUsdLayer(const std::filesystem::path& path) {
+#ifdef _WIN32
+  const HANDLE file = CreateFileW(path.c_str(), GENERIC_WRITE, 0, nullptr, OPEN_EXISTING,
+                                  FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file == INVALID_HANDLE_VALUE) util::atomicFileError("opening staged USD layer", GetLastError());
+  const bool flushed = FlushFileBuffers(file) != 0;
+  const auto flushError = flushed ? ERROR_SUCCESS : GetLastError();
+  const bool closed = CloseHandle(file) != 0;
+  const auto closeError = closed ? ERROR_SUCCESS : GetLastError();
+#else
+  const int file = ::open(path.c_str(), O_WRONLY);
+  if (file < 0) util::atomicFileError("opening staged USD layer", errno);
+  int result;
+  do { result = ::fsync(file); } while (result != 0 && errno == EINTR);
+  const bool flushed = result == 0;
+  const auto flushError = flushed ? 0 : errno;
+  const bool closed = ::close(file) == 0;
+  const auto closeError = closed ? 0 : errno;
+#endif
+  if (!flushed) util::atomicFileError("flushing staged USD layer", flushError);
+  if (!closed) util::atomicFileError("closing staged USD layer", closeError);
+}
+
+void publishUsdLayer(const std::filesystem::path& output, const detail::OpenUsdData& stage) {
+  const auto writerMutex = util::replacementMutex(output);
+  const std::lock_guard writerLock(*writerMutex);
+  StagedUsdLayer file(output);
+  const auto& path = file.path();
+  try {
+    std::ofstream layer;
+    layer.exceptions(std::ios::badbit | std::ios::failbit);
+    layer.open(path, std::ios::binary | std::ios::out);
+    detail::writeOpenUsdLayer(layer, stage);
+    layer.close();
+  } catch (const std::ios_base::failure& error) {
+    throw std::runtime_error(std::string("Writing the staged OpenUSD layer failed: ") + error.what());
+  }
+  flushUsdLayer(path);
+  util::replaceFileAtomically(path, output);
+}
 
 bool isParentRelationship(SemanticRelationshipKind kind) {
   return kind == SemanticRelationshipKind::Contains || kind == SemanticRelationshipKind::Aggregates ||
@@ -164,15 +238,7 @@ RoboticsOpenUsdResult writeRoboticsOpenUsd(const std::filesystem::path& output,
   const auto duplicates = std::ranges::unique(stage.diagnostics, {}, diagnosticKey);
   stage.diagnostics.erase(duplicates.begin(), duplicates.end());
 
-  std::ostringstream layer;
-  layer.exceptions(std::ios::badbit | std::ios::failbit);
-  detail::writeOpenUsdLayer(layer, stage);
-  const auto text = std::move(layer).str();
-#ifdef _WIN32
-  if (text.size() > std::numeric_limits<uint32_t>::max())
-    throw std::length_error("The USDA stage exceeds the supported atomic file size");
-#endif
-  util::writeFileAtomically(output, text);
+  publishUsdLayer(output, stage);
   result.diagnostics = std::move(stage.diagnostics);
   return result;
 }

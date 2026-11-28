@@ -4,6 +4,8 @@ The preview includes two reproducible workflows using an authored IFC doorway.
 The Windows dataset workflow renders synchronized color, depth, and BIM labels
 along a simulated robot trajectory. The Ubuntu workflow exports a floor map,
 drives the robot with ROS 2 Jazzy and Nav2, and verifies the recorded motion.
+For a larger IFC example with a recorded inspection route and portable replay,
+see the [Tekla House robotics demonstration](bim-tekla-robotics-demo.md).
 
 ## Record a dataset on Windows
 
