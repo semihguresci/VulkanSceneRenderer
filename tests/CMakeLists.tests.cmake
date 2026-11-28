@@ -3289,6 +3289,17 @@ if(Python3_Interpreter_FOUND)
     set_tests_properties(robotics_usd_roundtrip PROPERTIES
         LABELS "robotics;cpu;requires-openusd" SKIP_RETURN_CODE 77 TIMEOUT 120)
 
+    set(isaac_fixture_tools)
+    if(ENABLE_PHYSICS)
+        set(isaac_fixture_tools --native-tools "$<TARGET_FILE:BimRoboticsUsd>"
+            "$<TARGET_FILE:BimRoboticsSim>" "$<TARGET_FILE:BimRoboticsCollision>")
+    endif()
+    add_test(NAME robotics_isaac_compare_tests
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TEST_VALIDATION_DIR}/robotics_isaac_compare_tests.py" ${isaac_fixture_tools})
+    set_tests_properties(robotics_isaac_compare_tests PROPERTIES
+        LABELS "robotics;cpu" TIMEOUT 300)
+
     add_test(NAME robotics_gpu_smoke_runner_tests
         COMMAND "${Python3_EXECUTABLE}" -B
             "${TEST_VALIDATION_DIR}/robotics_gpu_smoke_runner_tests.py")

@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "robotId": "isaac-corner-smoke",
+  "ticksPerSecond": 60,
+  "ticks": 90,
+  "initialFeet": [0, 0, 0],
+  "initialYaw": 0,
+  "seed": 221,
+  "commands": [
+    {"tick": 0, "linear": 0.2, "angular": 0},
+    {"tick": 30, "linear": 0, "angular": 0.7},
+    {"tick": 75, "linear": 0, "angular": 0}
+  ]
+}

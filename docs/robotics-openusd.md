@@ -81,3 +81,7 @@ SDK is unavailable. [Isaac Sim standalone workflow](https://docs.isaacsim.omnive
 & 'C:\isaacsim\python.bat' tests/validation/robotics_usd_roundtrip.py `
     --exporter "$build/BimRoboticsUsd.exe" --output-dir "$output/isaac-check" --isaac
 ```
+
+Use the [portable Isaac replay smoke test](bim-isaac-smoke.md) to compare
+recorded robot poses, native collision rays, and rendered semantics in Isaac
+Sim or Isaac Lab.
