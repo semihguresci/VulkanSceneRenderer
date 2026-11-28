@@ -107,7 +107,7 @@ using fixed cameras and paired viewport and scene-linear captures.
 | --- | --- | --- | --- |
 | Floor-plan linework | Drawn | Drawn | Drawn |
 | Issue and clash markers, section-plane visual, section cap fill and hatching | Drawn when enabled and geometry is available | Missing | Drawn when enabled and geometry is available |
-| BIM technical elevation hidden lines | Drawn with the depth-tested lines option | Missing | Drawn with the depth-tested lines option |
+| BIM elevation in Hidden line style | Depth-tested contours | Missing | Depth-tested contours |
 | Mesh hover and selection | Hover and selection | Missing | Hover and selection |
 | Native BIM points and curves | Drawn, including hover and selection | Outside the traced triangle scene | Drawn, including hover and selection |
 | Styled point and curve placeholder overlays | Drawn when enabled | Missing | Drawn when enabled |
@@ -116,11 +116,12 @@ Path tracing applies scene clipping to rays. The section-plane visual and cap
 previews are separate display routes. Interactive hard-clash detection is
 tracked in [#155](https://github.com/semihguresci/VulkanSceneRenderer/issues/155).
 
-Issue pins, BIM mesh hover outlines, native point and curve highlights,
-depth-tested Technical elevation contours, and section-cap and cut-plane previews
-use their scene depth for transparency in both raster engines' **Lit** view and
-in **Forward Overview**. Transparent foreground surfaces dim them. A transparent
-surface behind them leaves them visible. The cut-plane grid is visible from either side.
+Issue pins, BIM mesh hover outlines, native point and curve highlights, section-cap
+and cut-plane previews, and depth-tested elevation contours in Technical and
+Hidden line styles use their scene depth for transparency in both raster engines'
+**Lit** view and in **Forward Overview**. Transparent foreground surfaces dim
+them. A transparent surface behind them leaves them visible. The cut-plane grid
+is visible from either side.
 
 A capture sequence can set the floor-plan display for a fixed camera. Each
 `bimFloorPlan` event supplies all settings and applies them until the next

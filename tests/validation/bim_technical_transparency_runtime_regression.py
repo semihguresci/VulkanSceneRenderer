@@ -1,4 +1,4 @@
-"""Check Technical BIM contours against front, rear and opaque geometry."""
+"""Check Technical and Hidden line BIM contours against layered geometry."""
 
 import argparse
 import hashlib
@@ -16,7 +16,8 @@ WIDTH, HEIGHT = 512, 384
 EXR_MAX_LINEAR_DELTA = .002
 TECHNIQUES = ("deferred-raster", "forward-raster")
 MODES = ("lit", "overview", "exr")
-FRAMES = {"off": 4, "no-depth": 8, "depth": 12, "off-again": 16}
+FRAMES = {"off": 4, "no-depth": 8, "depth": 12, "hidden-line": 16, "off-again": 20}
+DEPTH_STYLES = ("depth", "hidden-line")
 ZONES = (("clear", -1.2, ()), ("rear", -.4, ((-1.5, 250), (-1.2, 250))),
          ("front", .4, ((1.2, 250), (1.5, 250))), ("opaque", 1.2, ((1.5, 255),)))
 # Pixel centers inside the Overview Lit tile, matching post_process.slang.
@@ -58,7 +59,8 @@ def sequence_plan():
         {"frame": 1, "orthographic": True, "bimAnnotations": {}},
         {"frame": 5, "bimAnnotations": {"technicalLines": False}},
         {"frame": 9, "bimAnnotations": {"technicalLines": True}},
-        {"frame": 13, "bimAnnotations": {}},
+        {"frame": 13, "bimAnnotations": {"hiddenLines": True}},
+        {"frame": 17, "bimAnnotations": {}},
     ])
 
 
@@ -132,17 +134,17 @@ def inspect(images, technique, mode):
     if mode == "exr":
         require(float(off.max()) > .01, f"{technique}: empty scene-linear control")
         raw = {}
-        for label in ("no-depth", "depth", "off-again"):
+        for label in ("no-depth", *DEPTH_STYLES, "off-again"):
             delta = np.max(np.abs(images[label] - off), axis=2)
             raw[label] = dict(changedPixels=int(np.count_nonzero(delta)),
                               pixelsAboveLimit=int(np.count_nonzero(delta > EXR_MAX_LINEAR_DELTA)),
                               maxLinearDelta=float(delta.max()))
             if raw[label]["pixelsAboveLimit"]:
-                errors.append(f"{label} Technical contour changed the scene-linear image")
+                errors.append(f"{label} contour changed the scene-linear image")
         return {"sceneLinearFrames": raw, "maxAllowedLinearDelta": EXR_MAX_LINEAR_DELTA}, errors
 
     if not np.array_equal(off, images["off-again"]):
-        errors.append("disabling Technical left stale pixels")
+        errors.append("disabling elevation contours left stale pixels")
 
     overview = mode == "overview"
     if overview:
@@ -155,7 +157,7 @@ def inspect(images, technique, mode):
     rows = slice(round(.19 * height), round(.81 * height))
     margin = round(.0375 * width)
     counts = {}
-    for label in ("no-depth", "depth"):
+    for label in ("no-depth", *DEPTH_STYLES):
         delta = np.max(np.abs(images[label][viewport].astype(np.int16) - background), axis=2)
         counts[label] = {}
         for index, (name, _, _) in enumerate(ZONES):
@@ -165,24 +167,25 @@ def inspect(images, technique, mode):
                                        changedPixels=int(np.count_nonzero(patch)))
 
     minimum = 8 if overview else 32
-    no_depth, depth = counts["no-depth"], counts["depth"]
+    no_depth = counts["no-depth"]
     for name, pixels in no_depth.items():
         if pixels["visiblePixels"] < max(minimum, .6 * no_depth["clear"]["visiblePixels"]):
             errors.append(f"no-depth contour disappeared in the {name} control")
-    if depth["clear"]["visiblePixels"] < minimum:
-        errors.append("clear depth-tested contour disappeared")
-    if depth["rear"]["visiblePixels"] < max(minimum, .65 * depth["clear"]["visiblePixels"]):
-        errors.append("rear transparent geometry attenuated the depth-tested contour")
-    if depth["opaque"]["changedPixels"]:
-        errors.append("depth-tested contour leaked through opaque geometry")
-
     # Deferred Overview has no transparent node production. Its depth-tested
     # contour still draws in the Lit tile and respects the opaque control.
     sorted_depth = technique == "forward-raster" or not overview
-    if sorted_depth and depth["front"]["visiblePixels"]:
-        errors.append("depth-tested contour escaped the nearly opaque front glass")
-    if not sorted_depth and depth["front"]["visiblePixels"] < minimum:
-        errors.append("Deferred Overview lost its depth-tested contour")
+    for label in DEPTH_STYLES:
+        depth = counts[label]
+        if depth["clear"]["visiblePixels"] < minimum:
+            errors.append(f"clear {label} contour disappeared")
+        if depth["rear"]["visiblePixels"] < max(minimum, .65 * depth["clear"]["visiblePixels"]):
+            errors.append(f"rear transparent geometry attenuated the {label} contour")
+        if depth["opaque"]["changedPixels"]:
+            errors.append(f"{label} contour leaked through opaque geometry")
+        if sorted_depth and depth["front"]["visiblePixels"]:
+            errors.append(f"{label} contour escaped the nearly opaque front glass")
+        if not sorted_depth and depth["front"]["visiblePixels"] < minimum:
+            errors.append(f"Deferred Overview lost its {label} contour")
 
     diagnostics = {}
     if overview:
@@ -192,10 +195,12 @@ def inspect(images, technique, mode):
             errors.append("no-depth Technical changed pixels outside the Overview Lit tile")
         for name, left, right in (("transparency", .03, .33), ("revealage", .35, .65)):
             pane = np.s_[round(.51 * HEIGHT):round(.72 * HEIGHT), round(left * WIDTH):round(right * WIDTH)]
-            changed = int(np.count_nonzero(np.any(images["depth"][pane] != off[pane], axis=2)))
-            diagnostics[name] = changed
-            if changed:
-                errors.append(f"depth-tested Technical changed the Overview {name} tile")
+            diagnostics[name] = {}
+            for label in DEPTH_STYLES:
+                changed = int(np.count_nonzero(np.any(images[label][pane] != off[pane], axis=2)))
+                diagnostics[name][label] = changed
+                if changed:
+                    errors.append(f"{label} changed the Overview {name} tile")
     return {"interiorPixels": counts, "sortedDepth": sorted_depth, "diagnosticPixelsChanged": diagnostics}, errors
 
 
