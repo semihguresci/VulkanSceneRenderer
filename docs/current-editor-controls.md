@@ -195,8 +195,9 @@ For models with plan linework, **Floor plan overlay** shows it in Deferred
 raster, Forward raster, and Path tracing. Choose the projection, depth test, color, opacity,
 and line width in the BIM panel. [BIM floor-plan overlay](reference-path-tracing.md#bim-floor-plan-overlay)
 
-In Forward raster **Overview**, turn off **Floor plan depth test** to draw the
-plan over transparent surfaces in the **Lit** tile.
+Turn off **Floor plan depth test** to draw the plan over the model in **Lit**
+or in Overview's **Lit** tile. In these views the lines use the selected color
+and opacity without scene exposure or tone mapping.
 
 **Storey filter** limits both elevation modes and SVG drawing export to the
 selected storey. **Show storey only** and **Plan slice preset** apply that same

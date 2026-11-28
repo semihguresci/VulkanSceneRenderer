@@ -2,6 +2,7 @@
 #include "Container/renderer/pipeline/PreparedGraphicsPipelines.h"
 #include "Container/renderer/temporal/TemporalVelocityVertexInput.h"
 #include "Container/geometry/Vertex.h"
+#include "Container/renderer/bim/BimFloorPlanDisplay.h"
 #include "Container/renderer/bim/BimSurfacePassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderGraph.h"
@@ -892,8 +893,11 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   const auto hasDraws = [](const FrameDrawLists &draws) {
     return hasOpaqueDrawCommands(draws) || hasTransparentDrawCommands(draws);
   };
+  const auto displayMode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
+  const bool floorPlanInSceneColor = p.bim.floorPlan.enabled &&
+      !bimFloorPlanUsesPresentationOverlay(p.runtime.activeTechnique, displayMode, p.bim.floorPlan.depthTest);
   recordedDisplayOverlays_ = !recordedSceneLinear_ &&
-      (p.debug.temporalForceReactive || p.debug.wireframe.enabled || p.bim.floorPlan.enabled ||
+      (p.debug.temporalForceReactive || p.debug.wireframe.enabled || floorPlanInSceneColor ||
        p.bim.coordinationMarkers.issueMarkersEnabled ||
        p.bim.coordinationMarkers.clashMarkersEnabled ||
        p.bim.sectionPlaneVisual.enabled || p.bim.sectionClipCapGeometry.valid() ||

@@ -260,17 +260,24 @@ TEST(RenderTechniqueRegistry, DefaultRegistryRegistersDeferredAndForwardRaster) 
   EXPECT_EQ(registry.techniques().size(), 4u);
 }
 
-TEST(RenderTechniqueRegistry, BothRayTechniquesCompositeBimPlansAfterPostProcessing) {
+TEST(RenderTechniqueRegistry, BimPlanPresentationFollowsDepthAndDisplayMode) {
   using namespace container::renderer;
   using container::ui::GBufferViewMode;
   for (const auto technique : {RenderTechniqueId::RayTracing, RenderTechniqueId::PathTracing}) {
-    EXPECT_EQ(bimFloorPlanViewportRoute(technique, GBufferViewMode::Lit),
+    EXPECT_EQ(bimFloorPlanViewportRoute(technique, GBufferViewMode::Lit, true),
               BimFloorPlanViewportRoute::PresentationOverlay);
   }
-  EXPECT_EQ(bimFloorPlanViewportRoute(RenderTechniqueId::DeferredRaster, GBufferViewMode::Lit),
-            BimFloorPlanViewportRoute::SceneColor);
-  EXPECT_EQ(bimFloorPlanViewportRoute(RenderTechniqueId::ForwardRaster, GBufferViewMode::Lit),
-            BimFloorPlanViewportRoute::SceneColor);
+  for (const auto technique : {RenderTechniqueId::DeferredRaster, RenderTechniqueId::ForwardRaster}) {
+    EXPECT_EQ(bimFloorPlanViewportRoute(technique, GBufferViewMode::Lit, false),
+              BimFloorPlanViewportRoute::PresentationOverlay);
+    EXPECT_EQ(bimFloorPlanViewportRoute(technique, GBufferViewMode::Lit, true),
+              BimFloorPlanViewportRoute::SceneColor);
+    EXPECT_EQ(bimFloorPlanViewportRoute(technique, GBufferViewMode::Overview, false),
+              BimFloorPlanViewportRoute::Overview);
+    EXPECT_TRUE(bimFloorPlanUsesPresentationOverlay(technique, GBufferViewMode::Overview, false));
+    EXPECT_FALSE(bimFloorPlanUsesPresentationOverlay(technique, GBufferViewMode::Overview, true));
+    EXPECT_FALSE(bimFloorPlanUsesPresentationOverlay(technique, GBufferViewMode::Depth, false));
+  }
 }
 
 TEST(RenderTechniqueGuardrails, FrameRecorderDoesNotOwnGraphRegistration) {
