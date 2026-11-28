@@ -1122,19 +1122,42 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.wireframeDepth = pipelineManager_.createGraphicsPipeline(
       wfPCI, "wireframe_depth_pipeline");
 
+  // These flags match the transparent node flags in oit_common.slang.
+  constexpr uint32_t displayOverlay = 1u;
+  constexpr uint32_t selectionOverlay = displayOverlay | 2u;
+  const auto createBimOitPipeline = [&](RenderingGraphicsPipelineCreateInfo info,
+                                        const char *name, uint32_t nodeFlags = 0u,
+                                        VkShaderModule fragment = VK_NULL_HANDLE) {
+    std::vector<VkPipelineShaderStageCreateInfo> stages(info.pStages,
+                                                      info.pStages + info.stageCount);
+    stages.back() = makeStage(fragment != VK_NULL_HANDLE ? fragment : bimNativeOitFrag,
+                              VK_SHADER_STAGE_FRAGMENT_BIT);
+    const VkSpecializationMapEntry flagEntry{1u, 0u, sizeof(nodeFlags)};
+    const VkSpecializationInfo flagInfo{1u, &flagEntry, sizeof(nodeFlags), &nodeFlags};
+    if (nodeFlags != 0u)
+      stages.back().pSpecializationInfo = &flagInfo;
+    info.pStages = stages.data();
+    info.layout = bimNativeOitLayout;
+    info.pDepthStencilState = &wfDepthDS;
+    info.pColorBlendState = &noColorBlend;
+    pipelines.extraHandles.push_back({.key = {RenderTechniqueId::ForwardRaster, name},
+        .pipeline = pipelineManager_.createGraphicsPipeline(info, name)});
+  };
+
+  const VkShaderModule technicalOitFragment = useNativeWireframe
+      ? bimNativeOitFrag : bimIssueMarkerOitFrag;
+  // The shader-edge fallback already tags its fragments as display overlays.
+  const uint32_t technicalOitFlags = useNativeWireframe ? displayOverlay : 0u;
+  createBimOitPipeline(wfPCI, kBimTechnicalLinesOitPipeline, technicalOitFlags, technicalOitFragment);
+
   // Sorted issue pins use shader edges so their requested width works without
   // optional polygon wireframe or wide-line support.
-  auto issueMarkerOitStages = wfFbStages;
-  issueMarkerOitStages.back() = makeStage(bimIssueMarkerOitFrag, VK_SHADER_STAGE_FRAGMENT_BIT);
   auto issueMarkerOitPCI = wfPCI;
-  issueMarkerOitPCI.stageCount = static_cast<uint32_t>(issueMarkerOitStages.size());
-  issueMarkerOitPCI.pStages = issueMarkerOitStages.data();
+  issueMarkerOitPCI.stageCount = static_cast<uint32_t>(wfFbStages.size());
+  issueMarkerOitPCI.pStages = wfFbStages.data();
   issueMarkerOitPCI.pRasterizationState = &wfFbDepthRaster;
-  issueMarkerOitPCI.pColorBlendState = &noColorBlend;
   issueMarkerOitPCI.pDynamicState = &dynState;
-  issueMarkerOitPCI.layout = bimNativeOitLayout;
-  pipelines.extraHandles.push_back({.key = {RenderTechniqueId::ForwardRaster, kBimIssueMarkerOitPipeline},
-      .pipeline = pipelineManager_.createGraphicsPipeline(issueMarkerOitPCI, kBimIssueMarkerOitPipeline)});
+  createBimOitPipeline(issueMarkerOitPCI, kBimIssueMarkerOitPipeline, 0u, bimIssueMarkerOitFrag);
 
   if (useNativeWireframe) {
     wfPCI.pRasterizationState = &wfDepthFrontCullRaster;
@@ -1143,6 +1166,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   }
   pipelines.wireframeDepthFrontCull = pipelineManager_.createGraphicsPipeline(
       wfPCI, "wireframe_depth_front_cull_pipeline");
+  createBimOitPipeline(wfPCI, kBimTechnicalLinesOitFrontCullPipeline,
+                       technicalOitFlags, technicalOitFragment);
 
   if (useNativeWireframe) {
     wfPCI.pRasterizationState = &wfRaster;
@@ -1321,23 +1346,6 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.bimCurveStrokeNoDepth = pipelineManager_.createGraphicsPipeline(
       curveStrokePCI, "bim_curve_stroke_no_depth_pipeline");
 
-  // These flags match the transparent node flags in oit_common.slang.
-  constexpr uint32_t displayOverlay = 1u;
-  constexpr uint32_t selectionOverlay = displayOverlay | 2u;
-  const auto createBimOitPipeline = [&](RenderingGraphicsPipelineCreateInfo info,
-                                        const char *name, uint32_t nodeFlags = 0u) {
-    std::array stages{info.pStages[0], makeStage(bimNativeOitFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
-    const VkSpecializationMapEntry flagEntry{1u, 0u, sizeof(nodeFlags)};
-    const VkSpecializationInfo flagInfo{1u, &flagEntry, sizeof(nodeFlags), &nodeFlags};
-    if (nodeFlags != 0u)
-      stages[1].pSpecializationInfo = &flagInfo;
-    info.pStages = stages.data();
-    info.layout = bimNativeOitLayout;
-    info.pDepthStencilState = &wfDepthDS;
-    info.pColorBlendState = &noColorBlend;
-    pipelines.extraHandles.push_back({.key = {RenderTechniqueId::ForwardRaster, name},
-        .pipeline = pipelineManager_.createGraphicsPipeline(info, name)});
-  };
   createBimOitPipeline(pointCloudPCI, kBimNativePointOitPipeline);
   createBimOitPipeline(curvePCI, kBimNativeCurveOitPipeline);
   createBimOitPipeline(curveStrokePCI, kBimNativeCurveStrokeOitPipeline);

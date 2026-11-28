@@ -8,6 +8,7 @@
 namespace container::renderer {
 
 struct FrameRecordParams;
+struct DeferredDebugOverlayRecordInputs;
 
 inline constexpr char kBimDisplayWireframePipeline[] = "bim-display-wireframe";
 inline constexpr char kBimDisplayWireframeFrontCullPipeline[] = "bim-display-wireframe-front-cull";
@@ -17,6 +18,8 @@ inline constexpr char kBimNativeCurveOitPipeline[] = "bim-native-curve-oit";
 inline constexpr char kBimNativeCurveStrokeOitPipeline[] = "bim-native-curve-stroke-oit";
 inline constexpr char kBimFloorPlanOitPipeline[] = "bim-floor-plan-oit";
 inline constexpr char kBimIssueMarkerOitPipeline[] = "bim-issue-marker-oit";
+inline constexpr char kBimTechnicalLinesOitPipeline[] = "bim-technical-lines-oit";
+inline constexpr char kBimTechnicalLinesOitFrontCullPipeline[] = "bim-technical-lines-oit-front-cull";
 inline constexpr char kBimPointHighlightOitPipeline[] = "bim-point-highlight-oit";
 inline constexpr char kBimCurveStrokeHighlightOitPipeline[] = "bim-curve-stroke-highlight-oit";
 inline constexpr char kBimPointSelectionOitPipeline[] = "bim-point-selection-oit";
@@ -169,6 +172,9 @@ void recordBimXrayClashOverlay(VkCommandBuffer cmd, const FrameRecordParams &p,
                                VkExtent2D extent, const DebugOverlayRenderer *debugOverlay);
 
 [[nodiscard]] bool presentsBimTechnicalLines(const FrameRecordParams &p);
+[[nodiscard]] bool recordBimTechnicalOitLines(VkCommandBuffer cmd, const FrameRecordParams &p,
+                                             const DeferredDebugOverlayRecordInputs &inputs,
+                                             VkDescriptorSet oitSet);
 void recordBimTechnicalPresentationLines(VkCommandBuffer cmd, const FrameRecordParams &p,
                                         VkExtent2D extent, const DebugOverlayRenderer *debugOverlay);
 

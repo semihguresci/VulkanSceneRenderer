@@ -702,14 +702,15 @@ void DeferredRasterLightingPassRecorder::record(
       cmd, debugOverlayRecordInputs);
   (void)recordDeferredDebugOverlaySurfaceNormalCommands(
       cmd, debugOverlayRecordInputs);
-  if (lightingState.wireframeOverlayMode && !presentsBimTechnicalLines(p)) {
+  auto bimOverlays = bimRasterOverlayInputs(p, services_);
+  if (oitActive && transparentOitEnabled)
+    bimOverlays.nativeOitSet = deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::Oit);
+  if (lightingState.wireframeOverlayMode && !presentsBimTechnicalLines(p) &&
+      !recordBimTechnicalOitLines(cmd, p, debugOverlayRecordInputs, bimOverlays.nativeOitSet)) {
     (void)recordDeferredDebugOverlayWireframeOverlayCommands(
         cmd, debugOverlayRecordInputs);
   }
 
-  auto bimOverlays = bimRasterOverlayInputs(p, services_);
-  if (oitActive && transparentOitEnabled)
-    bimOverlays.nativeOitSet = deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::Oit);
   recordBimRasterOverlays(cmd, p, bimOverlays,
       deferBimDisplayOverlays ? BimRasterOverlayPhase::Native : BimRasterOverlayPhase::All);
 

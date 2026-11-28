@@ -358,9 +358,15 @@ bool recordDeferredDebugOverlaySurfaceNormalCommands(
 }
 
 bool recordDeferredDebugOverlayWireframeOverlayCommands(
-    VkCommandBuffer cmd, const DeferredDebugOverlayRecordInputs &inputs) {
+    VkCommandBuffer cmd, const DeferredDebugOverlayRecordInputs &inputs,
+    VkDescriptorSet oitSet) {
   if (!hasRequiredInputs(inputs)) {
     return false;
+  }
+
+  if (oitSet != VK_NULL_HANDLE) {
+    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            inputs.wireframeLayout, 1, 1, &oitSet, 0, nullptr);
   }
 
   bool recorded = false;

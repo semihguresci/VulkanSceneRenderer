@@ -922,6 +922,32 @@ bool presentsBimTechnicalLines(const FrameRecordParams &p) {
          p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimDisplayWireframePipeline) != VK_NULL_HANDLE;
 }
 
+bool recordBimTechnicalOitLines(VkCommandBuffer cmd, const FrameRecordParams &p,
+                               const DeferredDebugOverlayRecordInputs &inputs,
+                               VkDescriptorSet oitSet) {
+  const auto &style = p.bim.technicalElevation;
+  const auto mode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
+  if (oitSet == VK_NULL_HANDLE || p.screenshot.sceneLinear ||
+      !style.enabled || style.hiddenLineOverlay || !style.depthTestLines ||
+      (mode != ui::GBufferViewMode::Lit && mode != ui::GBufferViewMode::Overview) ||
+      (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster &&
+       screenReflectionDebugView(p.debug.screenReflections) != 0u)) {
+    return false;
+  }
+
+  auto sorted = inputs;
+  sorted.wireframeLayout = p.pipelineLayout(RenderTechniqueId::ForwardRaster, kBimNativeOitLayout);
+  sorted.pipelines.wireframeDepth = p.pipelineHandle(RenderTechniqueId::ForwardRaster,
+                                                     kBimTechnicalLinesOitPipeline);
+  sorted.pipelines.wireframeDepthFrontCull = p.pipelineHandle(RenderTechniqueId::ForwardRaster,
+                                                              kBimTechnicalLinesOitFrontCullPipeline);
+  if (sorted.wireframeLayout == VK_NULL_HANDLE || sorted.pipelines.wireframeDepth == VK_NULL_HANDLE ||
+      sorted.pipelines.wireframeDepthFrontCull == VK_NULL_HANDLE) {
+    return false;
+  }
+  return recordDeferredDebugOverlayWireframeOverlayCommands(cmd, sorted, oitSet);
+}
+
 void recordBimTechnicalPresentationLines(VkCommandBuffer cmd, const FrameRecordParams &p,
                                         VkExtent2D extent, const DebugOverlayRenderer *debugOverlay) {
   if (!presentsBimTechnicalLines(p) || !debugOverlay || !p.pushConstants.wireframe)
