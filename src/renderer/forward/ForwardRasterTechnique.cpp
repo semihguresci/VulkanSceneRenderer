@@ -964,6 +964,7 @@ void recordForwardRasterPostProcessPass(
   BloomManager *bloomManager = sharedContext.bloomManager();
   ExposureManager *exposureManager = sharedContext.exposureManager();
   const LightingManager *lightingManager = sharedContext.lightingManager();
+  const bool hasSelectionStroke = recordBimSelectionStrokeMask(cmd, p, extent, sharedContext.debugOverlay());
   static_cast<void>(recordDeferredPostProcessPassCommands(
       {.commandBuffer = cmd,
        .renderPass = p.postProcess.renderPass,
@@ -1004,11 +1005,13 @@ void recordForwardRasterPostProcessPass(
        .captureSceneLinear = p.screenshot.sceneLinear,
        .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
        .recordAfterFullscreenDraw = [&sharedContext, &p, extent,
-                                     postProcessSets](VkCommandBuffer passCmd) {
+                                     postProcessSets, hasSelectionStroke](VkCommandBuffer passCmd) {
          recordBimPresentationFloorPlan(passCmd, p, extent, sharedContext.debugOverlay(),
              sharedContext.isPassActive(RenderPassId::DepthPrepass) &&
              sharedContext.isPassActive(RenderPassId::DepthToReadOnly));
          recordBimXrayClashOverlay(passCmd, p, extent, sharedContext.debugOverlay());
+         if (hasSelectionStroke)
+           recordBimSelectionDisplay(passCmd, p, postProcessSets[0]);
          recordBimSunHoursOverlay(passCmd, p);
          if (p.screenshot.viewportOnly) {
            if (auto* gui = sharedContext.guiManager())

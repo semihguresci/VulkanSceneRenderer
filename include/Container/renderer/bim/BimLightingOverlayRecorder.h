@@ -10,6 +10,12 @@ namespace container::renderer {
 struct FrameRecordParams;
 
 inline constexpr char kBimXrayClashDisplayPipeline[] = "bim-xray-clash-display";
+inline constexpr char kBimSelectionClearSilhouettePipeline[] = "bim-selection-clear-silhouette";
+inline constexpr char kBimSelectionExpandSilhouettePipeline[] = "bim-selection-expand-silhouette";
+inline constexpr char kBimSelectionDisplayPipeline[] = "bim-selection-display";
+inline constexpr char kBimSelectionStrokeImage[] = "bim-selection-stroke";
+inline constexpr VkFormat kBimSelectionStrokeFormat = VK_FORMAT_R8_UNORM;
+inline constexpr uint32_t kBimSelectionStrokeBinding = 17;
 
 struct BimLightingOverlayGeometryBinding {
   VkDescriptorSet descriptorSet{VK_NULL_HANDLE};
@@ -147,5 +153,10 @@ void recordBimPresentationFloorPlan(VkCommandBuffer cmd, const FrameRecordParams
 
 void recordBimXrayClashOverlay(VkCommandBuffer cmd, const FrameRecordParams &p,
                                VkExtent2D extent, const DebugOverlayRenderer *debugOverlay);
+
+[[nodiscard]] bool recordBimSelectionStrokeMask(VkCommandBuffer cmd, const FrameRecordParams &p,
+                                                VkExtent2D extent, const DebugOverlayRenderer *debugOverlay);
+void recordBimSelectionDisplay(VkCommandBuffer cmd, const FrameRecordParams &p,
+                               VkDescriptorSet postProcessSet);
 
 } // namespace container::renderer
