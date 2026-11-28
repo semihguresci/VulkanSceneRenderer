@@ -299,7 +299,7 @@ void recordForwardEditorOverlays(
   (void)recordDeferredDebugOverlayGeometryCommands(cmd, inputs);
   (void)recordDeferredDebugOverlayNormalValidationCommands(cmd, inputs);
   (void)recordDeferredDebugOverlaySurfaceNormalCommands(cmd, inputs);
-  if (state.wireframeOverlayMode)
+  if (state.wireframeOverlayMode && !presentsBimTechnicalLines(p))
     (void)recordDeferredDebugOverlayWireframeOverlayCommands(cmd, inputs);
 }
 

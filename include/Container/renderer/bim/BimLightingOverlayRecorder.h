@@ -9,7 +9,8 @@ namespace container::renderer {
 
 struct FrameRecordParams;
 
-inline constexpr char kBimXrayClashDisplayPipeline[] = "bim-xray-clash-display";
+inline constexpr char kBimDisplayWireframePipeline[] = "bim-display-wireframe";
+inline constexpr char kBimDisplayWireframeFrontCullPipeline[] = "bim-display-wireframe-front-cull";
 inline constexpr char kBimSelectionClearSilhouettePipeline[] = "bim-selection-clear-silhouette";
 inline constexpr char kBimSelectionExpandSilhouettePipeline[] = "bim-selection-expand-silhouette";
 inline constexpr char kBimSelectionDisplayPipeline[] = "bim-selection-display";
@@ -153,6 +154,10 @@ void recordBimPresentationFloorPlan(VkCommandBuffer cmd, const FrameRecordParams
 
 void recordBimXrayClashOverlay(VkCommandBuffer cmd, const FrameRecordParams &p,
                                VkExtent2D extent, const DebugOverlayRenderer *debugOverlay);
+
+[[nodiscard]] bool presentsBimTechnicalLines(const FrameRecordParams &p);
+void recordBimTechnicalPresentationLines(VkCommandBuffer cmd, const FrameRecordParams &p,
+                                        VkExtent2D extent, const DebugOverlayRenderer *debugOverlay);
 
 [[nodiscard]] bool recordBimSelectionStrokeMask(VkCommandBuffer cmd, const FrameRecordParams &p,
                                                 VkExtent2D extent, const DebugOverlayRenderer *debugOverlay);

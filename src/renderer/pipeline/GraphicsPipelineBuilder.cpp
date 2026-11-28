@@ -749,7 +749,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   // ---- create pipelines -----------------------------------------------------
   auto& pipelines = result.pipelines;
-  pipelines.extraHandles.reserve(12);
+  pipelines.extraHandles.reserve(13);
 
   // Depth prepass
   scenePCI.pVertexInputState = &posTexNormInput;
@@ -1218,14 +1218,18 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       .key = {RenderTechniqueId::ForwardRaster, kBimSelectionDisplayPipeline},
       .pipeline = pipelineManager_.createGraphicsPipeline(selectionDisplayPCI, kBimSelectionDisplayPipeline)});
 
-  RenderingGraphicsPipelineCreateInfo clashDisplayPCI = wfPCI;
-  clashDisplayPCI.renderPass = renderPasses.postProcess;
-  clashDisplayPCI.pRasterizationState = useNativeWireframe ? &wfRaster : &wfFbRaster;
-  clashDisplayPCI.pDepthStencilState = &noDS;
-  clashDisplayPCI.pColorBlendState = &bimDisplayBlend;
+  RenderingGraphicsPipelineCreateInfo wireframeDisplayPCI = wfPCI;
+  wireframeDisplayPCI.renderPass = renderPasses.postProcess;
+  wireframeDisplayPCI.pRasterizationState = useNativeWireframe ? &wfRaster : &wfFbRaster;
+  wireframeDisplayPCI.pDepthStencilState = &noDS;
+  wireframeDisplayPCI.pColorBlendState = &bimDisplayBlend;
   pipelines.extraHandles.push_back({
-      .key = {RenderTechniqueId::ForwardRaster, kBimXrayClashDisplayPipeline},
-      .pipeline = pipelineManager_.createGraphicsPipeline(clashDisplayPCI, "bim_xray_clash_display_pipeline")});
+      .key = {RenderTechniqueId::ForwardRaster, kBimDisplayWireframePipeline},
+      .pipeline = pipelineManager_.createGraphicsPipeline(wireframeDisplayPCI, kBimDisplayWireframePipeline)});
+  wireframeDisplayPCI.pRasterizationState = useNativeWireframe ? &wfFrontCullRaster : &wfFbFrontCullRaster;
+  pipelines.extraHandles.push_back({
+      .key = {RenderTechniqueId::ForwardRaster, kBimDisplayWireframeFrontCullPipeline},
+      .pipeline = pipelineManager_.createGraphicsPipeline(wireframeDisplayPCI, kBimDisplayWireframeFrontCullPipeline)});
 
   RenderingGraphicsPipelineCreateInfo floorPlanDisplayPCI = floorPlanPCI;
   floorPlanDisplayPCI.layout = floorPlanDisplayLayout;

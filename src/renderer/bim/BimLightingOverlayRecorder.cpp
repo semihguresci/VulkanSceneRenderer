@@ -4,6 +4,8 @@
 #include "Container/renderer/bim/BimPrimitivePassRecorder.h"
 #include "Container/renderer/bim/BimSectionClipCapPassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
+#include "Container/renderer/deferred/DeferredRasterDebugOverlayRecorder.h"
+#include "Container/renderer/deferred/DeferredRasterLighting.h"
 #include "Container/renderer/forward/ForwardRasterPipelineBridge.h"
 #include "Container/renderer/forward/ForwardRasterResourceBridge.h"
 #include "Container/renderer/scene/SceneViewport.h"
@@ -745,7 +747,7 @@ void recordBimXrayClashOverlay(VkCommandBuffer cmd, const FrameRecordParams &p,
 
   const auto technique = p.runtime.activeTechnique;
   const auto layout = p.pipelineLayout(technique, "wireframe");
-  const auto pipeline = p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimXrayClashDisplayPipeline);
+  const auto pipeline = p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimDisplayWireframePipeline);
   const auto descriptor = p.descriptorSet(technique, "bim-scene-descriptor-set");
   const auto geometry = overlayGeometry(descriptor, p.bim.coordinationMarkerScene);
   if (layout == VK_NULL_HANDLE || pipeline == VK_NULL_HANDLE || descriptor == VK_NULL_HANDLE ||
@@ -783,6 +785,79 @@ void recordBimXrayClashOverlay(VkCommandBuffer cmd, const FrameRecordParams &p,
       .debugOverlay = debugOverlay,
       .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
       .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
+  if (overview)
+    recordSceneViewportAndScissor(cmd, extent);
+}
+
+bool presentsBimTechnicalLines(const FrameRecordParams &p) {
+  const auto technique = p.runtime.activeTechnique;
+  const auto mode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
+  const auto &style = p.bim.technicalElevation;
+  return (technique == RenderTechniqueId::ForwardRaster || technique == RenderTechniqueId::DeferredRaster) &&
+         (mode == ui::GBufferViewMode::Lit || mode == ui::GBufferViewMode::Overview) &&
+         !p.screenshot.sceneLinear && style.enabled && !style.hiddenLineOverlay && !style.depthTestLines &&
+         p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimDisplayWireframePipeline) != VK_NULL_HANDLE;
+}
+
+void recordBimTechnicalPresentationLines(VkCommandBuffer cmd, const FrameRecordParams &p,
+                                        VkExtent2D extent, const DebugOverlayRenderer *debugOverlay) {
+  if (!presentsBimTechnicalLines(p) || !debugOverlay || !p.pushConstants.wireframe)
+    return;
+
+  const auto technique = p.runtime.activeTechnique;
+  const auto layout = p.pipelineLayout(technique, "wireframe");
+  if (!layout)
+    return;
+  const DeferredDebugOverlayPipelineHandles pipelines{
+      .wireframeNoDepth = p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimDisplayWireframePipeline),
+      .wireframeNoDepthFrontCull = p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimDisplayWireframeFrontCullPipeline)};
+  const auto &style = p.bim.technicalElevation;
+  const auto lighting = buildDeferredLightingFrameState({
+      .wireframeSupported = true,
+      .bimTechnicalElevation = {.enabled = true, .depthTestLines = false, .lineColor = style.lineColor,
+                                .lineWidth = style.lineWidth, .overlayIntensity = style.overlayIntensity},
+      .pipelines = {.wireframeNoDepth = true}});
+  const auto sceneSet = p.descriptorSet(technique, "scene-descriptor-set");
+  const auto bimSet = p.descriptorSet(technique, "bim-scene-descriptor-set");
+  const bool sceneReady = sceneSet && p.scene.vertexSlice.buffer && p.scene.indexSlice.buffer;
+  const bool bimReady = bimSet && p.bim.scene.vertexSlice.buffer && p.bim.scene.indexSlice.buffer;
+  const bool overview = p.debug.displayMode == static_cast<uint32_t>(ui::GBufferViewMode::Overview);
+  const float width = overview ? overviewLitTileLineWidth(lighting.wireframeSettings.lineWidth)
+                               : lighting.wireframeSettings.lineWidth;
+  const auto plan = buildDeferredDebugOverlayPlan({
+      .frameState = {.wireframeOverlayMode = true, .wireframeDepthTest = false, .wireframeLineWidth = width},
+      .pipelines = {.wireframeNoDepth = true, .wireframeNoDepthFrontCull = pipelines.wireframeNoDepthFrontCull != VK_NULL_HANDLE},
+      .wireframePushConstantsReady = true,
+      .sources = {{{.source = DeferredDebugOverlaySource::Scene, .geometryReady = sceneReady,
+                     .draws = debugOverlayDrawLists(p.draws)},
+                    {.source = DeferredDebugOverlaySource::BimMesh, .geometryReady = bimReady,
+                     .draws = debugOverlayDrawLists(p.bim.draws)},
+                    {.source = DeferredDebugOverlaySource::BimPointPlaceholders, .geometryReady = bimReady,
+                     .draws = debugOverlayDrawLists(p.bim.pointDraws)},
+                    {.source = DeferredDebugOverlaySource::BimCurvePlaceholders, .geometryReady = bimReady,
+                     .draws = debugOverlayDrawLists(p.bim.curveDraws)}}},
+      .sourceCount = kDeferredDebugOverlaySourceCapacity});
+  if (plan.wireframeOverlaySourceCount == 0 || (overview && !recordOverviewLitTileViewport(cmd, extent)))
+    return;
+
+  WireframePushConstants pushConstants = *p.pushConstants.wireframe;
+  pushConstants.useUnjitteredCamera = 1u;
+  if (p.pushConstants.bindless) {
+    pushConstants.sectionPlaneEnabled = p.pushConstants.bindless->sectionPlaneEnabled;
+    pushConstants.sectionPlane = p.pushConstants.bindless->sectionPlane;
+  }
+  const auto &color = lighting.wireframeSettings.color;
+  (void)recordDeferredDebugOverlayWireframeOverlayCommands(cmd, {
+      .plan = &plan, .pipelines = pipelines, .wireframeLayout = layout,
+      .scene = {.descriptorSet = sceneSet, .vertexSlice = p.scene.vertexSlice,
+                .indexSlice = p.scene.indexSlice, .indexType = p.scene.indexType},
+      .bim = {.descriptorSet = bimSet, .vertexSlice = p.bim.scene.vertexSlice,
+              .indexSlice = p.bim.scene.indexSlice, .indexType = p.bim.scene.indexType},
+      .wireframePushConstants = &pushConstants,
+      .wireframeColor = p.postProcess.encodeSrgbOutput ? glm::convertLinearToSRGB(color) : color,
+      .wireframeIntensity = lighting.wireframeIntensity, .wireframeLineWidth = width,
+      .wireframeRasterModeSupported = p.debug.wireframeRasterModeSupported,
+      .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported, .debugOverlay = debugOverlay});
   if (overview)
     recordSceneViewportAndScissor(cmd, extent);
 }
