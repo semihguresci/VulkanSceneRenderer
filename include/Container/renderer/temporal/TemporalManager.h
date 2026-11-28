@@ -25,6 +25,7 @@ class PreparedGraphicsPipelines;
 struct FrameRecordParams;
 enum class RenderPassId : uint8_t;
 class RenderGraphBuilder;
+class DeferredRasterFrameGraphContext;
 class FrameResourceManager;
 
 enum class FsrFrameStage : uint8_t { JitterQuery, Dispatch };
@@ -80,7 +81,7 @@ public:
                          const container::gpu::AllocatedBuffer &camera,
                          bool resolveThisFrame);
   void recordVelocity(VkCommandBuffer cmd, const FrameRecordParams &frame);
-  void recordResolve(VkCommandBuffer cmd, const FrameRecordParams &frame);
+  void recordResolve(VkCommandBuffer cmd, const FrameRecordParams &frame, bool oitActive);
   void commit();
   void reset(std::string reason) { state_.reset(std::move(reason)); }
   bool active() const { return (settings_.enabled || upscalingActive()) && !inputs_.empty(); }
@@ -153,7 +154,8 @@ private:
   bool historyDisplayOverlays_{false};
 };
 
-void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor);
+void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor,
+                            const DeferredRasterFrameGraphContext* rasterContext);
 VkImageLayout temporalSceneColorLayout(const FrameRecordParams &frame);
 VkImageView temporalSceneColorView(const FrameRecordParams &frame,
                                    VkImageView nativeView);

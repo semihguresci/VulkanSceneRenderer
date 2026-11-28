@@ -27,6 +27,7 @@ struct BimPrimitivePassRecordInputs {
   glm::vec3 color{1.0f};
   bool recordLineWidth{false};
   bool wideLinesSupported{false};
+  VkDescriptorSet oitDescriptorSet{VK_NULL_HANDLE};
 };
 
 struct BimPrimitiveFramePassStyle {
@@ -64,6 +65,7 @@ struct BimPrimitiveFramePassRecordInputs {
   const WireframePushConstants *pushConstants{nullptr};
   const DebugOverlayRenderer *debugOverlay{nullptr};
   BimManager *bimManager{nullptr};
+  VkDescriptorSet oitDescriptorSet{VK_NULL_HANDLE};
 };
 
 [[nodiscard]] bool hasBimPrimitiveFramePassGeometry(

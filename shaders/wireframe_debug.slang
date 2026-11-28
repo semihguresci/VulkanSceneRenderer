@@ -13,6 +13,10 @@
 #if defined(BIM_FLOOR_PLAN_DISPLAY_DEPTH)
 [[vk::binding(6, 1)]] Texture2D<float> floorPlanSceneDepth;
 #endif
+#if defined(BIM_NATIVE_OIT)
+#define OIT_WRITE_SET 1
+#include "oit_write_common.slang"
+#endif
 
 #include "scene_clip_common.slang"
 #include "object_index_common.slang"
@@ -20,6 +24,8 @@
 
 [[vk::push_constant]]
 ConstantBuffer<WireframePushConstants> pc;
+
+[[vk::constant_id(0)]] const uint kUseLargePoints = 1u;
 
 struct VSInput
 {
@@ -59,12 +65,16 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID,
     float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
     output.pos = mul(pc.useUnjitteredCamera != 0 && uCamera.temporalInfo.w != 0u
                          ? uCamera.unjitteredViewProj : uCamera.viewProj, worldPos);
-    output.pointSize = max(pc.lineWidth, 1.0);
+    output.pointSize = kUseLargePoints != 0u ? max(pc.lineWidth, 1.0) : 1.0;
     output.worldPos = worldPos.xyz;
     output.objectColor = material.color;
     return output;
 }
 
+#if defined(BIM_NATIVE_OIT)
+// A fragment behind opaque geometry must fail depth before it inserts a node.
+[earlydepthstencil]
+#endif
 [shader("fragment")]
 float4 fragMain(PSInput input) : SV_Target0
 {
@@ -84,7 +94,19 @@ float4 fragMain(PSInput input) : SV_Target0
 
     float4 color = pc.useObjectColor != 0
         ? input.objectColor : float4(pc.colorIntensity.rgb, 1.0);
-    return float4(color.rgb, saturate(color.a * pc.colorIntensity.a));
+    color.a = saturate(color.a * pc.colorIntensity.a);
+#if defined(BIM_NATIVE_OIT)
+    if (color.a > 0.0)
+    {
+        uint2 pixel = uint2(input.pos.xy);
+        uint nodeIndex = AllocateOitNode(pixel);
+        if (nodeIndex != INVALID_NODE_INDEX)
+            AppendOitNode(pixel, nodeIndex, input.pos.z, color);
+    }
+    return 0.0.xxxx;
+#else
+    return color;
+#endif
 }
 
 

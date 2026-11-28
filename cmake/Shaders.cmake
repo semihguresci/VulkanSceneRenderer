@@ -66,6 +66,7 @@ set(SLANG_INCLUDE_SHADER_NAMES
     screen_space_light_shadow_common.slang
     screen_reflections_ray_common.slang
     oit_common.slang
+    oit_write_common.slang
     push_constants_common.slang
     display_tone_curves.slang
     scene_clip_common.slang
@@ -256,6 +257,9 @@ add_slang_output(
     SLANG_OUTPUTS "${SHADERS_DIR}/wireframe_debug.slang" "fragMain"
     "${COMPILED_SHADERS_DIR}/bim_floor_plan_display_depth.frag.spv"
     -DBIM_FLOOR_PLAN_DISPLAY_DEPTH=1)
+add_slang_output(
+    SLANG_OUTPUTS "${SHADERS_DIR}/wireframe_debug.slang" "fragMain"
+    "${COMPILED_SHADERS_DIR}/bim_native_oit.frag.spv" -DBIM_NATIVE_OIT=1)
 
 # Optional forward fragment queries handle opaque MSAA receivers that differ
 # from the single resolved-depth visibility buffer. Baseline lighting shaders

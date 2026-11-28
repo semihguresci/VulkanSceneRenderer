@@ -968,14 +968,18 @@ TEST(RenderingConventionTests, TransparentOitWritesAreDepthTestedEarly) {
       readRepoTextFile("src/renderer/pipeline/GraphicsPipelineBuilder.cpp");
   const std::string transparent =
       readRepoTextFile("shaders/forward_transparent.slang");
+  const std::string nativePrimitive = readRepoTextFile("shaders/wireframe_debug.slang");
+  const std::string writer = readRepoTextFile("shaders/oit_write_common.slang");
 
   EXPECT_TRUE(contains(pipelineBuilder, "transparentDS = depthPrepassDS"));
   EXPECT_TRUE(
       contains(pipelineBuilder, "transparentDS.depthWriteEnable = VK_FALSE"));
   EXPECT_TRUE(contains(transparent, "[earlydepthstencil]"));
-  EXPECT_TRUE(contains(transparent, "InterlockedCompareExchange(nodeCounter[stripe]"));
-  EXPECT_TRUE(contains(transparent,
-                       "InterlockedExchange(headPointerImage[pixelCoord]"));
+  EXPECT_TRUE(contains(nativePrimitive, "[earlydepthstencil]"));
+  EXPECT_TRUE(contains(transparent, "AppendOitNode(pixelCoord"));
+  EXPECT_TRUE(contains(nativePrimitive, "AppendOitNode(pixel"));
+  EXPECT_TRUE(contains(writer, "InterlockedCompareExchange(nodeCounter[stripe]"));
+  EXPECT_TRUE(contains(writer, "InterlockedExchange(headPointerImage[pixel]"));
 }
 
 TEST(RenderingConventionTests, SamplePickerDiscoversIfc5Examples) {

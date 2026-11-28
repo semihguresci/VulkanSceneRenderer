@@ -8,6 +8,7 @@
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderGraph.h"
 #include "Container/renderer/culling/GpuCullManager.h"
+#include "Container/renderer/deferred/DeferredRasterFrameGraphContext.h"
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
 #include "Container/renderer/effects/OitManager.h"
 #include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
@@ -885,7 +886,7 @@ void TemporalManager::recordVelocity(VkCommandBuffer cmd,
 }
 
 void TemporalManager::recordResolve(VkCommandBuffer cmd,
-                                    const FrameRecordParams &p) {
+                                    const FrameRecordParams &p, bool oitActive) {
   if (!needed(p))
     return;
   // Editor overlays are rendered into the HDR scene only on display frames.
@@ -927,16 +928,6 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   dependency(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
   const auto &input = inputs_.at(p.runtime.imageIndex);
-  // The OIT producer's storage writes and previous consumers are ordered even
-  // if the graph's optional OIT preparation node is inactive.
-  const bool transparent = !p.debug.fullWireframe() &&
-      (hasTransparentDrawCommands(p) ||
-      (p.bim.nativePointDraws.transparentDrawCommands &&
-       !p.bim.nativePointDraws.transparentDrawCommands->empty()) ||
-      (p.bim.nativeCurveDraws.transparentDrawCommands &&
-       !p.bim.nativeCurveDraws.transparentDrawCommands->empty()) ||
-      (p.bim.nativeCurveStrokeDraws.transparentDrawCommands &&
-       !p.bim.nativeCurveStrokeDraws.transparentDrawCommands->empty()));
   // HDR editor overlays and native primitives do not expose matching surface
   // velocity. Their conservative fallback cannot borrow an opaque surface.
   const bool fallback = recordedDisplayOverlays_ ||
@@ -949,7 +940,7 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   const bool volumeCoverage = p.services.openVdbVolumeRenderer &&
                              p.services.openVdbVolumeRenderer->records(p);
   const std::array<uint32_t, 4> compose = {
-      extent_.width, extent_.height, transparent ? 1u : 0u,
+      extent_.width, extent_.height, oitActive ? 1u : 0u,
       (fallback ? 1u : 0u) | (volumeCoverage ? 2u : 0u) |
           (fsrActive() ? 4u : 0u)};
   const auto composeLayout = dlssActive() ? dlssComposeLayout_ : composeLayout_;
@@ -962,7 +953,7 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
   dependency(cmd, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
              VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT);
   if (upscalingActive()) {
-    recordUpscale(cmd, p, input, transparent, historyValid);
+    recordUpscale(cmd, p, input, oitActive, historyValid);
     resolveRecorded_ = true;
     return;
   }
@@ -1144,7 +1135,8 @@ uint64_t TemporalManager::allocatedBytes() const {
   return bytes;
 }
 
-void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor) {
+void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor,
+                            const DeferredRasterFrameGraphContext* rasterContext) {
   graph.addPass(RenderPassId::TemporalVelocity, {predecessor},
                 [](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   if (p.services.temporalManager)
@@ -1163,9 +1155,11 @@ void registerTemporalPasses(RenderGraphBuilder& graph, RenderPassId predecessor)
        RenderResourceId::OcclusionCullDraws},
       {RenderResourceId::TemporalMotion});
   graph.addPass(RenderPassId::TemporalResolve, {RenderPassId::TemporalVelocity},
-                [](VkCommandBuffer cmd, const FrameRecordParams &p) {
+                [rasterContext](VkCommandBuffer cmd, const FrameRecordParams &p) {
                   if (p.services.temporalManager)
-                    p.services.temporalManager->recordResolve(cmd, p);
+                    p.services.temporalManager->recordResolve(cmd, p, rasterContext &&
+                        rasterContext->isPassActive(RenderPassId::OitClear) &&
+                        rasterContext->isPassActive(RenderPassId::OitResolve));
                 });
   graph.setPassReadiness(
       RenderPassId::TemporalResolve, [](const FrameRecordParams &p) {

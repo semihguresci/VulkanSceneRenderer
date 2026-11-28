@@ -5,7 +5,8 @@
 #include "local_shadow_common.slang"
 #include "shadow_common.slang"
 #include "screen_space_light_shadow_common.slang"
-#include "oit_common.slang"
+#define OIT_WRITE_SET 2
+#include "oit_write_common.slang"
 #include "push_constants_common.slang"
 
 #include "object_data_common.slang"
@@ -20,10 +21,6 @@
 [[vk::binding(0, 1)]] ConstantBuffer<LightingBuffer> uLighting;
 [[vk::binding(1, 1)]] StructuredBuffer<PointLightData> uPointLights;
 [[vk::binding(2, 1)]] StructuredBuffer<AreaLightData> uAreaLights;
-[[vk::binding(0, 2)]] RWTexture2D<uint> headPointerImage;
-[[vk::binding(1, 2)]] RWStructuredBuffer<TransparentNode> transparentNodes;
-[[vk::binding(2, 2)]] RWStructuredBuffer<uint> nodeCounter;
-[[vk::binding(3, 2)]] ConstantBuffer<OitMetadataBuffer> uOit;
 [[vk::binding(7, 3)]] ConstantBuffer<ShadowBuffer> uShadow;
 [[vk::binding(8, 3)]] Texture2DArray<float> gShadowAtlas;
 [[vk::binding(9, 3)]] SamplerComparisonState gShadowSampler;
@@ -793,58 +790,11 @@ float4 fragMain(VSOutput vertIn, bool isFrontFace : SV_IsFrontFace) : SV_Target0
     }
 
     uint2 pixelCoord = uint2(vertIn.pos.xy);
-    if (pixelCoord.x >= uOit.viewportWidth || pixelCoord.y >= uOit.viewportHeight)
-    {
+    uint nodeIndex = AllocateOitNode(pixelCoord);
+    if (nodeIndex == INVALID_NODE_INDEX)
         return 0.0.xxxx;
-    }
 
-    if (IsHelperLane())
-    {
-        return 0.0.xxxx;
-    }
-
-    // Interleave neighboring pixels across independent counters. Saturation
-    // preserves overflow demand without ever reusing an index in this frame.
-    uint stripe = (pixelCoord.x + 23u * pixelCoord.y) %
-                  min(OIT_COUNTER_STRIPE_COUNT, uOit.nodeCapacity);
-    uint stripeLimit = (uOit.counterLimit - 2u - stripe) / OIT_COUNTER_STRIPE_COUNT + 2u;
-    uint ordinal;
-    InterlockedAdd(nodeCounter[stripe], 0u, ordinal);
-    [loop]
-    while (ordinal < stripeLimit)
-    {
-        uint previousCount;
-        InterlockedCompareExchange(nodeCounter[stripe], ordinal, ordinal + 1u, previousCount);
-        if (previousCount == ordinal)
-        {
-            break;
-        }
-        ordinal = previousCount;
-    }
-    uint nodeIndex = ordinal * OIT_COUNTER_STRIPE_COUNT + stripe;
-    if (nodeIndex >= uOit.nodeCapacity)
-    {
-        // One fragment per stripe is sufficient to flag any dropped nodes.
-        uint stripeCapacity = (uOit.nodeCapacity - 1u - stripe) / OIT_COUNTER_STRIPE_COUNT + 1u;
-        if (ordinal == stripeCapacity)
-        {
-            InterlockedOr(nodeCounter[OIT_COUNTER_OVERFLOW_INDEX], 1u);
-        }
-        return 0.0.xxxx;
-    }
-
-    TransparentNode node;
-    node.color = float4(ApplyAerialPerspective(lighting, vertIn.worldPos, uCamera, uLighting),
-                        saturate(baseAlpha));
-    node.depth = saturate(vertIn.pos.z);
-    node.next = INVALID_NODE_INDEX;
-    node.padding0 = 0.0;
-    node.padding1 = 0.0;
-
-    uint previousHead = INVALID_NODE_INDEX;
-    InterlockedExchange(headPointerImage[pixelCoord], nodeIndex, previousHead);
-    node.next = previousHead;
-    transparentNodes[nodeIndex] = node;
-
+    AppendOitNode(pixelCoord, nodeIndex, vertIn.pos.z,
+                  float4(ApplyAerialPerspective(lighting, vertIn.worldPos, uCamera, uLighting), baseAlpha));
     return 0.0.xxxx;
 }

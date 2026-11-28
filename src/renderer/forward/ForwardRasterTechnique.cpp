@@ -270,6 +270,11 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
                            forwardRasterPipelineLayoutName(
                                ForwardRasterPipelineLayoutId::Wireframe));
   }
+  for (const auto *pipeline : {kBimNativePointOitPipeline, kBimNativeCurveOitPipeline,
+                               kBimNativeCurveStrokeOitPipeline}) {
+    registerGraphicsRecipe(pipeline, {"spv_shaders/wireframe_debug.vert.spv",
+                                      "spv_shaders/bim_native_oit.frag.spv"}, kBimNativeOitLayout);
+  }
   registerGraphicsRecipe("selection-outline",
                          {"spv_shaders/selection_outline.vert.spv",
                           "spv_shaders/selection_outline.frag.spv"},
@@ -704,7 +709,7 @@ forwardRasterPostProcessDescriptorSets(const FrameRecordParams &p) {
 
 [[nodiscard]] bool forwardRasterHasTransparentWork(const FrameRecordParams &p) {
   return !p.debug.fullWireframe() &&
-         (hasTransparentDrawCommands(p) || hasBimTransparentGeometry(p));
+         (hasTransparentDrawCommands(p) || hasBimTransparentGeometry(p) || hasBimNativeOitDrawCommands(p));
 }
 
 [[nodiscard]] DeferredTransparentOitFrameResourceInputs
@@ -1389,11 +1394,11 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   }
   graph.addPass(RenderPassId::Lighting, {RenderPassId::OitClear},
                 [sharedContext = context.deferredRaster](VkCommandBuffer cmd, const FrameRecordParams &p) {
-                  (void)recordForwardRasterLightingPassCommands(cmd, p);
+                  const bool oitActive = sharedContext && sharedContext->isPassActive(RenderPassId::OitClear) &&
+                                         sharedContext->isPassActive(RenderPassId::OitResolve);
+                  (void)recordForwardRasterLightingPassCommands(cmd, p, oitActive);
                   if (p.services.openVdbVolumeRenderer)
-                    p.services.openVdbVolumeRenderer->record(cmd, p,
-                        sharedContext && sharedContext->isPassActive(RenderPassId::OitClear) &&
-                        sharedContext->isPassActive(RenderPassId::OitResolve));
+                    p.services.openVdbVolumeRenderer->record(cmd, p, oitActive);
                 });
   graph.setPassReadiness(RenderPassId::Lighting,
                          [](const FrameRecordParams &p) {
@@ -1414,7 +1419,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   graph.setPassResourceTransitions(RenderPassId::Lighting, {});
   RenderGraphBuilder temporalGraph(graph);
   registerVolumetricFogPass(temporalGraph, RenderPassId::Lighting, context.deferredRaster);
-  registerTemporalPasses(temporalGraph, RenderPassId::VolumetricFog);
+  registerTemporalPasses(temporalGraph, RenderPassId::VolumetricFog, context.deferredRaster);
   registerRayShadowPasses(temporalGraph);
   registerDdgiPasses(temporalGraph);
 

@@ -263,6 +263,13 @@ void registerDeferredRasterPipelineRecipes(PipelineRegistry &registry) {
                          "spv_shaders/wireframe_debug.frag.spv"},
         .layoutName = "wireframe"});
   }
+  for (const auto *pipeline : {kBimNativePointOitPipeline, kBimNativeCurveOitPipeline,
+                               kBimNativeCurveStrokeOitPipeline}) {
+    registry.registerRecipe(PipelineRecipe{
+        .key = {kDeferredRasterTechnique, pipeline}, .kind = PipelineRecipeKind::Graphics,
+        .shaderStages = {"spv_shaders/wireframe_debug.vert.spv", "spv_shaders/bim_native_oit.frag.spv"},
+        .layoutName = kBimNativeOitLayout});
+  }
   registry.registerRecipe(
       PipelineRecipe{.key = {kDeferredRasterTechnique, "bim-depth-prepass"},
                      .kind = PipelineRecipeKind::Graphics,
@@ -1755,7 +1762,9 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     deferred->lightingPassRecorder(p).record(cmd, p,
                                             deferredRasterSceneDescriptorSet(p),
                                             lightingSets, transparentSets,
-                                            deferred->isPassActive(RenderPassId::BimReflectionDisplayOverlays));
+                                            deferred->isPassActive(RenderPassId::BimReflectionDisplayOverlays),
+                                            deferred->isPassActive(RenderPassId::OitClear) &&
+                                                deferred->isPassActive(RenderPassId::OitResolve));
     // The SSR diagnostic writes its own RGB. Composite media first so the
     // diagnostic stays readable while retaining volume coverage for temporal.
     if (volumeBeforeReflectionDebug(p))
@@ -1802,7 +1811,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
   });
 
   registerVolumetricFogPass(graph, RenderPassId::OpenVdbVolume, deferred);
-  registerTemporalPasses(graph, RenderPassId::VolumetricFog);
+  registerTemporalPasses(graph, RenderPassId::VolumetricFog, deferred);
   registerRayShadowPasses(graph);
   registerDdgiPasses(graph);
 

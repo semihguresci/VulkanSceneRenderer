@@ -11,6 +11,10 @@ struct FrameRecordParams;
 
 inline constexpr char kBimDisplayWireframePipeline[] = "bim-display-wireframe";
 inline constexpr char kBimDisplayWireframeFrontCullPipeline[] = "bim-display-wireframe-front-cull";
+inline constexpr char kBimNativeOitLayout[] = "bim-native-oit";
+inline constexpr char kBimNativePointOitPipeline[] = "bim-native-point-oit";
+inline constexpr char kBimNativeCurveOitPipeline[] = "bim-native-curve-oit";
+inline constexpr char kBimNativeCurveStrokeOitPipeline[] = "bim-native-curve-stroke-oit";
 inline constexpr char kBimSelectionClearSilhouettePipeline[] = "bim-selection-clear-silhouette";
 inline constexpr char kBimSelectionExpandSilhouettePipeline[] = "bim-selection-expand-silhouette";
 inline constexpr char kBimSelectionDisplayPipeline[] = "bim-selection-display";
@@ -125,6 +129,7 @@ struct BimRasterOverlayRecordInputs {
   VkPipeline capHatch{VK_NULL_HANDLE};
   const WireframePushConstants *wireframePushConstants{nullptr};
   const DebugOverlayRenderer *debugOverlay{nullptr};
+  VkDescriptorSet nativeOitSet{VK_NULL_HANDLE};
 };
 
 [[nodiscard]] BimLightingOverlayInputs buildBimLightingOverlayFramePlanInputs(
@@ -143,6 +148,7 @@ recordBimLightingOverlayCommands(VkCommandBuffer cmd,
 enum class BimRasterOverlayPhase { All, Native, Display };
 
 [[nodiscard]] bool hasBimRasterDisplayOverlays(const FrameRecordParams &p);
+[[nodiscard]] bool hasBimNativeOitDrawCommands(const FrameRecordParams &p);
 
 void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                              const BimRasterOverlayRecordInputs &inputs,

@@ -59,6 +59,8 @@ Lit and overview accumulate scene HDR; other raw views
 bypass temporal work and jitter. UI and transform/light gizmos render afterwards
 on the stable camera. HDR geometry/debug overlays and native point/curve displays
 use a conservative current-frame fallback because they lack matching velocity.
+Native BIM points, curves, and tessellated strokes participate in depth-sorted
+transparency in raster views that composite OIT.
 
 ## Runtime policy and costs
 

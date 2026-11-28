@@ -150,6 +150,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkShaderModule nvFrag = loadModule("spv_shaders/normal_validation.frag.spv");
   VkShaderModule wfVert = loadModule("spv_shaders/wireframe_debug.vert.spv");
   VkShaderModule wfFrag = loadModule("spv_shaders/wireframe_debug.frag.spv");
+  const auto bimNativeOitFrag = loadModule("spv_shaders/bim_native_oit.frag.spv");
   VkShaderModule floorPlanDisplayDepthFrag =
       loadModule("spv_shaders/bim_floor_plan_display_depth.frag.spv");
   VkShaderModule wfFbVert =
@@ -678,6 +679,11 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   layouts.bimSunHours = pipelineManager_.createPipelineLayout({}, {sunHoursPCR});
   layouts.wireframe =
       pipelineManager_.createPipelineLayout({descriptorLayouts.scene}, {wfPCR});
+  const auto bimNativeOitLayout = pipelineManager_.createPipelineLayout(
+      {descriptorLayouts.scene, descriptorLayouts.oit}, {wfPCR});
+  layouts.extraLayouts.push_back({
+      .key = {RenderTechniqueId::ForwardRaster, kBimNativeOitLayout},
+      .layout = bimNativeOitLayout});
   const VkPipelineLayout floorPlanDisplayLayout =
       pipelineManager_.createPipelineLayout(
           {descriptorLayouts.scene, descriptorLayouts.lighting}, {wfPCR});
@@ -749,7 +755,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   // ---- create pipelines -----------------------------------------------------
   auto& pipelines = result.pipelines;
-  pipelines.extraHandles.reserve(13);
+  pipelines.extraHandles.reserve(16);
 
   // Depth prepass
   scenePCI.pVertexInputState = &posTexNormInput;
@@ -1254,9 +1260,14 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       .pipeline = pipelineManager_.createGraphicsPipeline(
           floorPlanDisplayPCI, "bim_floor_plan_display_depth_pipeline")});
 
+  const uint32_t useLargePoints = device_->enabledFeatures().largePoints == VK_TRUE ? 1u : 0u;
+  const VkSpecializationMapEntry pointSizeEntry{0, 0, sizeof(useLargePoints)};
+  const VkSpecializationInfo pointSizeInfo{1, &pointSizeEntry, sizeof(useLargePoints), &useLargePoints};
+  auto pointCloudStages = wfStages;
+  pointCloudStages.front().pSpecializationInfo = &pointSizeInfo;
   RenderingGraphicsPipelineCreateInfo pointCloudPCI = meshPCI;
-  pointCloudPCI.stageCount = static_cast<uint32_t>(wfStages.size());
-  pointCloudPCI.pStages = wfStages.data();
+  pointCloudPCI.stageCount = static_cast<uint32_t>(pointCloudStages.size());
+  pointCloudPCI.pStages = pointCloudStages.data();
   pointCloudPCI.pVertexInputState = &posTexNormNoTex1Input;
   pointCloudPCI.pInputAssemblyState = &pointAssembly;
   pointCloudPCI.pRasterizationState = &noCullRaster;
@@ -1273,6 +1284,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       pointCloudPCI, "bim_point_cloud_no_depth_pipeline");
 
   RenderingGraphicsPipelineCreateInfo curvePCI = pointCloudPCI;
+  curvePCI.pStages = wfStages.data();
   curvePCI.pInputAssemblyState = &lineAssembly;
   curvePCI.pRasterizationState = &normalLineRaster;
   curvePCI.pDynamicState = &lineDynState;
@@ -1285,6 +1297,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       curvePCI, "bim_curve_no_depth_pipeline");
 
   RenderingGraphicsPipelineCreateInfo curveStrokePCI = pointCloudPCI;
+  curveStrokePCI.pStages = wfStages.data();
   curveStrokePCI.pInputAssemblyState = &triAssembly;
   curveStrokePCI.pDepthStencilState = &wfDepthDS;
   pipelines.bimCurveStrokeDepth = pipelineManager_.createGraphicsPipeline(
@@ -1292,6 +1305,19 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   curveStrokePCI.pDepthStencilState = &wfNoDepthDS;
   pipelines.bimCurveStrokeNoDepth = pipelineManager_.createGraphicsPipeline(
       curveStrokePCI, "bim_curve_stroke_no_depth_pipeline");
+
+  const auto createNativeOitPipeline = [&](RenderingGraphicsPipelineCreateInfo info, const char *name) {
+    const std::array stages{info.pStages[0], makeStage(bimNativeOitFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
+    info.pStages = stages.data();
+    info.layout = bimNativeOitLayout;
+    info.pDepthStencilState = &wfDepthDS;
+    info.pColorBlendState = &noColorBlend;
+    pipelines.extraHandles.push_back({.key = {RenderTechniqueId::ForwardRaster, name},
+        .pipeline = pipelineManager_.createGraphicsPipeline(info, name)});
+  };
+  createNativeOitPipeline(pointCloudPCI, kBimNativePointOitPipeline);
+  createNativeOitPipeline(curvePCI, kBimNativeCurveOitPipeline);
+  createNativeOitPipeline(curveStrokePCI, kBimNativeCurveStrokeOitPipeline);
 
   RenderingGraphicsPipelineCreateInfo capFillPCI = pointCloudPCI;
   capFillPCI.pInputAssemblyState = &triAssembly;

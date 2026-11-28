@@ -59,6 +59,11 @@ BimPrimitivePassDrawLists primitiveDrawLists(const FrameDrawLists &draws) {
           .transparentDoubleSidedDrawCommands = draws.transparentDoubleSidedDrawCommands};
 }
 
+[[nodiscard]] bool hasDepthTestedNativePrimitive(
+    bool enabled, bool depthTest, const BimPrimitivePassDrawLists &draws) {
+  return enabled && depthTest && hasBimPrimitivePassDrawCommands(draws);
+}
+
 BimLightingOverlayDrawLists overlayDrawLists(const FrameDrawLists &draws) {
   return {.opaqueSingleSidedDrawCommands = draws.opaqueSingleSidedDrawCommands,
           .transparentSingleSidedDrawCommands = draws.transparentSingleSidedDrawCommands,
@@ -477,6 +482,18 @@ bool hasBimRasterDisplayOverlays(const FrameRecordParams &p) {
   });
 }
 
+bool hasBimNativeOitDrawCommands(const FrameRecordParams &p) {
+  const auto &bim = p.bim;
+  const auto &points = bim.primitivePasses.pointCloud;
+  const auto &curves = bim.primitivePasses.curves;
+  return hasDepthTestedNativePrimitive(points.enabled, points.depthTest,
+                                      primitiveDrawLists(bim.nativePointDraws)) ||
+         hasDepthTestedNativePrimitive(curves.enabled, curves.depthTest,
+                                      primitiveDrawLists(bim.nativeCurveDraws)) ||
+         hasDepthTestedNativePrimitive(curves.enabled, curves.depthTest,
+                                      primitiveDrawLists(bim.nativeCurveStrokeDraws));
+}
+
 void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                              const BimRasterOverlayRecordInputs &inputs,
                              BimRasterOverlayPhase phase) {
@@ -506,75 +523,86 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
       .vertexSlice = bim.scene.vertexSlice,
       .indexSlice = bim.scene.indexSlice,
       .indexType = bim.scene.indexType};
+  const VkPipelineLayout oitLayout =
+      native && inputs.nativeOitSet != VK_NULL_HANDLE
+          ? p.pipelineLayout(RenderTechniqueId::ForwardRaster, kBimNativeOitLayout)
+          : VK_NULL_HANDLE;
+  const auto recordPrimitive = [&](BimPrimitiveFramePassRecordInputs primitive,
+                                   const char *oitPipelineName) {
+    primitive.geometry = primitiveGeometry;
+    primitive.wireframeLayout = inputs.wireframeLayout;
+    primitive.pushConstants = inputs.wireframePushConstants;
+    primitive.debugOverlay = inputs.debugOverlay;
+    primitive.bimManager = p.services.bimManager;
+    if (oitLayout != VK_NULL_HANDLE &&
+        hasDepthTestedNativePrimitive(primitive.style.enabled,
+                                      primitive.style.depthTest, primitive.nativeDraws)) {
+      const VkPipeline oitPipeline =
+          p.pipelineHandle(RenderTechniqueId::ForwardRaster, oitPipelineName);
+      if (oitPipeline != VK_NULL_HANDLE) {
+        primitive.pipelines.depth = oitPipeline;
+        primitive.wireframeLayout = oitLayout;
+        primitive.oitDescriptorSet = inputs.nativeOitSet;
+      }
+    }
+    (void)recordBimPrimitiveFramePassCommands(cmd, primitive);
+  };
+
   const auto &points = bim.primitivePasses.pointCloud;
   const auto nativePointDraws = primitiveDrawLists(bim.nativePointDraws);
   // The all-in-one route already gives native draws precedence over placeholders.
   if (native || !hasBimPrimitivePassDrawCommands(nativePointDraws)) {
-    (void)recordBimPrimitiveFramePassCommands(
-        cmd, {.style = {.kind = BimPrimitivePassKind::Points,
-                        .enabled = points.enabled,
-                        .depthTest = points.depthTest,
-                        .placeholderRangePreviewEnabled =
-                            display && points.placeholderRangePreviewEnabled,
-                        .nativeDrawsUseGpuVisibility = bim.nativePointDrawsUseGpuVisibility,
-                        .opacity = points.opacity,
-                        .primitiveSize = points.pointSize,
-                        .color = points.color},
-              .placeholderDraws = primitiveDrawLists(bim.pointDraws),
-              .nativeDraws = nativePointDraws,
-              .geometry = primitiveGeometry,
-              .pipelines = {.depth = inputs.pipelines.bimPointCloudDepth,
-                            .noDepth = inputs.pointCloudNoDepth},
-              .wireframeLayout = inputs.wireframeLayout,
-              .pushConstants = inputs.wireframePushConstants,
-              .debugOverlay = inputs.debugOverlay,
-              .bimManager = p.services.bimManager});
+    recordPrimitive(
+        {.style = {.kind = BimPrimitivePassKind::Points,
+                   .enabled = points.enabled,
+                   .depthTest = points.depthTest,
+                   .placeholderRangePreviewEnabled =
+                       display && points.placeholderRangePreviewEnabled,
+                   .nativeDrawsUseGpuVisibility = bim.nativePointDrawsUseGpuVisibility,
+                   .opacity = points.opacity,
+                   .primitiveSize = points.pointSize,
+                   .color = points.color},
+         .placeholderDraws = primitiveDrawLists(bim.pointDraws),
+         .nativeDraws = nativePointDraws,
+         .pipelines = {.depth = inputs.pipelines.bimPointCloudDepth,
+                       .noDepth = inputs.pointCloudNoDepth}},
+        kBimNativePointOitPipeline);
   }
 
   const auto &curves = bim.primitivePasses.curves;
   const auto nativeCurveDraws = primitiveDrawLists(bim.nativeCurveDraws);
   if (native || !hasBimPrimitivePassDrawCommands(nativeCurveDraws)) {
-    (void)recordBimPrimitiveFramePassCommands(
-        cmd, {.style = {.kind = BimPrimitivePassKind::Curves,
-                        .enabled = curves.enabled,
-                        .depthTest = curves.depthTest,
-                        .placeholderRangePreviewEnabled =
-                            display && curves.placeholderRangePreviewEnabled,
-                        .nativeDrawsUseGpuVisibility =
-                            bim.nativeCurveDrawsUseGpuVisibility,
-                        .opacity = curves.opacity,
-                        .primitiveSize = curves.lineWidth,
-                        .color = curves.color,
-                        .recordLineWidth = true,
-                        .wideLinesSupported = lineListWideLinesSupported},
-              .placeholderDraws = primitiveDrawLists(bim.curveDraws),
-              .nativeDraws = nativeCurveDraws,
-              .geometry = primitiveGeometry,
-              .pipelines = {.depth = inputs.pipelines.bimCurveDepth,
-                            .noDepth = inputs.curveNoDepth},
-              .wireframeLayout = inputs.wireframeLayout,
-              .pushConstants = inputs.wireframePushConstants,
-              .debugOverlay = inputs.debugOverlay,
-              .bimManager = p.services.bimManager});
+    recordPrimitive(
+        {.style = {.kind = BimPrimitivePassKind::Curves,
+                   .enabled = curves.enabled,
+                   .depthTest = curves.depthTest,
+                   .placeholderRangePreviewEnabled =
+                       display && curves.placeholderRangePreviewEnabled,
+                   .nativeDrawsUseGpuVisibility = bim.nativeCurveDrawsUseGpuVisibility,
+                   .opacity = curves.opacity,
+                   .primitiveSize = curves.lineWidth,
+                   .color = curves.color,
+                   .recordLineWidth = true,
+                   .wideLinesSupported = lineListWideLinesSupported},
+         .placeholderDraws = primitiveDrawLists(bim.curveDraws),
+         .nativeDraws = nativeCurveDraws,
+         .pipelines = {.depth = inputs.pipelines.bimCurveDepth,
+                       .noDepth = inputs.curveNoDepth}},
+        kBimNativeCurveOitPipeline);
   }
 
   if (native) {
-    (void)recordBimPrimitiveFramePassCommands(
-        cmd, {.style = {.kind = BimPrimitivePassKind::CurveStrokes,
-                        .enabled = curves.enabled,
-                        .depthTest = curves.depthTest,
-                        .nativeDrawsUseGpuVisibility =
-                            bim.nativeCurveStrokeDrawsUseGpuVisibility,
-                        .opacity = curves.opacity,
-                        .color = curves.color},
-              .nativeDraws = primitiveDrawLists(bim.nativeCurveStrokeDraws),
-              .geometry = primitiveGeometry,
-              .pipelines = {.depth = inputs.pipelines.bimCurveStrokeDepth,
-                            .noDepth = inputs.curveStrokeNoDepth},
-              .wireframeLayout = inputs.wireframeLayout,
-              .pushConstants = inputs.wireframePushConstants,
-              .debugOverlay = inputs.debugOverlay,
-              .bimManager = p.services.bimManager});
+    recordPrimitive(
+        {.style = {.kind = BimPrimitivePassKind::CurveStrokes,
+                   .enabled = curves.enabled,
+                   .depthTest = curves.depthTest,
+                   .nativeDrawsUseGpuVisibility = bim.nativeCurveStrokeDrawsUseGpuVisibility,
+                   .opacity = curves.opacity,
+                   .color = curves.color},
+         .nativeDraws = primitiveDrawLists(bim.nativeCurveStrokeDraws),
+         .pipelines = {.depth = inputs.pipelines.bimCurveStrokeDepth,
+                       .noDepth = inputs.curveStrokeNoDepth}},
+        kBimNativeCurveStrokeOitPipeline);
   }
 
   if (!display) {

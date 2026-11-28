@@ -44,7 +44,8 @@ public:
               VkDescriptorSet sceneSet,
               const std::array<VkDescriptorSet, 2> &lightingSets,
               const std::array<VkDescriptorSet, 4> &transparentSets,
-              bool deferBimDisplayOverlays = false) const;
+              bool deferBimDisplayOverlays = false,
+              bool oitActive = false) const;
 
   void recordBimDisplayOverlays(VkCommandBuffer cmd, const FrameRecordParams &p) const;
 
