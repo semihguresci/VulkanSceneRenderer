@@ -1147,11 +1147,11 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
         .pipeline = pipelineManager_.createGraphicsPipeline(info, name)});
   };
 
-  const VkShaderModule technicalOitFragment = useNativeWireframe
+  const VkShaderModule wireframeOitFragment = useNativeWireframe
       ? bimNativeOitFrag : bimIssueMarkerOitFrag;
   // The shader-edge fallback already tags its fragments as display overlays.
-  const uint32_t technicalOitFlags = useNativeWireframe ? displayOverlay : 0u;
-  createBimOitPipeline(wfPCI, kBimTechnicalLinesOitPipeline, technicalOitFlags, technicalOitFragment);
+  const uint32_t wireframeOitFlags = useNativeWireframe ? displayOverlay : 0u;
+  createBimOitPipeline(wfPCI, kBimDepthWireframeOitPipeline, wireframeOitFlags, wireframeOitFragment);
 
   // Sorted issue pins use shader edges so their requested width works without
   // optional polygon wireframe or wide-line support.
@@ -1169,8 +1169,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   }
   pipelines.wireframeDepthFrontCull = pipelineManager_.createGraphicsPipeline(
       wfPCI, "wireframe_depth_front_cull_pipeline");
-  createBimOitPipeline(wfPCI, kBimTechnicalLinesOitFrontCullPipeline,
-                       technicalOitFlags, technicalOitFragment);
+  createBimOitPipeline(wfPCI, kBimDepthWireframeOitFrontCullPipeline,
+                       wireframeOitFlags, wireframeOitFragment);
 
   if (useNativeWireframe) {
     wfPCI.pRasterizationState = &wfRaster;

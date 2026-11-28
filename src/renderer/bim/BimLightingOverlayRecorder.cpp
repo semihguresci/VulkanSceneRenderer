@@ -593,7 +593,8 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                                        const BimLightingOverlayFrameStyleState &style,
                                        const BimLightingOverlayGeometryBinding &geometry,
                                        const std::vector<DrawCommand> *commands,
-                                       bool useRasterLineWidth) {
+                                       bool useRasterLineWidth,
+                                       const WireframePushConstants *pushConstants = nullptr) {
     if (!native || pipeline == VK_NULL_HANDLE)
       return;
     // Insert display fragments at their own depth. In Deferred, the same
@@ -612,7 +613,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
         .vertexSlice = geometry.vertexSlice,
         .indexSlice = geometry.indexSlice,
         .indexType = geometry.indexType,
-        .pushConstants = inputs.wireframePushConstants,
+        .pushConstants = pushConstants ? pushConstants : inputs.wireframePushConstants,
         .debugOverlay = inputs.debugOverlay,
         .color = style.color,
         .recordLineWidth = useRasterLineWidth,
@@ -710,6 +711,18 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
   const auto &plane = bim.sectionPlaneVisual;
   const auto planeGeometry = overlayGeometry(inputs.bimDescriptorSet,
                                              bim.sectionPlaneVisualScene);
+  BimLightingOverlayFrameStyleState planeStyle{
+      .enabled = plane.enabled, .depthTest = plane.depthTest, .color = plane.color,
+      .opacity = plane.opacity, .lineWidth = plane.lineWidth};
+  const VkPipeline planeOit = sortedOverlayPipeline(
+      planeStyle, planeGeometry, bim.sectionPlaneVisualDrawCommands, kBimDepthWireframeOitPipeline);
+  if (planeOit != VK_NULL_HANDLE) {
+    WireframePushConstants planePush = *inputs.wireframePushConstants;
+    planePush.sectionPlaneEnabled = 0u;
+    recordSortedOverlay(planeOit, planeStyle, planeGeometry, bim.sectionPlaneVisualDrawCommands,
+                        p.debug.wireframeRasterModeSupported, &planePush);
+    planeStyle.enabled = false;
+  }
   const VkClearAttachment selectionClear{
       .aspectMask = VK_IMAGE_ASPECT_STENCIL_BIT,
       .clearValue = {.depthStencil = {0.0f, 0u}}};
@@ -740,11 +753,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                                  .color = markers.clashColor,
                                  .opacity = markers.clashOpacity,
                                  .lineWidth = markers.clashLineWidth},
-    .sectionPlaneVisual = {.enabled = plane.enabled,
-                           .depthTest = plane.depthTest,
-                           .color = plane.color,
-                           .opacity = plane.opacity,
-                           .lineWidth = plane.lineWidth},
+    .sectionPlaneVisual = planeStyle,
     .draws = {.points = overlayDrawLists(bim.pointDraws),
               .curves = overlayDrawLists(bim.curveDraws),
               .floorPlan = bim.floorPlanDrawCommands,
@@ -950,9 +959,9 @@ bool recordBimTechnicalOitLines(VkCommandBuffer cmd, const FrameRecordParams &p,
   auto sorted = inputs;
   sorted.wireframeLayout = p.pipelineLayout(RenderTechniqueId::ForwardRaster, kBimNativeOitLayout);
   sorted.pipelines.wireframeDepth = p.pipelineHandle(RenderTechniqueId::ForwardRaster,
-                                                     kBimTechnicalLinesOitPipeline);
+                                                     kBimDepthWireframeOitPipeline);
   sorted.pipelines.wireframeDepthFrontCull = p.pipelineHandle(RenderTechniqueId::ForwardRaster,
-                                                              kBimTechnicalLinesOitFrontCullPipeline);
+                                                              kBimDepthWireframeOitFrontCullPipeline);
   if (sorted.wireframeLayout == VK_NULL_HANDLE || sorted.pipelines.wireframeDepth == VK_NULL_HANDLE ||
       sorted.pipelines.wireframeDepthFrontCull == VK_NULL_HANDLE) {
     return false;

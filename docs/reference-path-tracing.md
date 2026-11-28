@@ -117,10 +117,10 @@ previews are separate display routes. Interactive hard-clash detection is
 tracked in [#155](https://github.com/semihguresci/VulkanSceneRenderer/issues/155).
 
 Issue pins, BIM mesh hover outlines, native point and curve highlights,
-depth-tested Technical elevation contours, and section-cap previews use their
-scene depth for transparency in both raster engines' **Lit** view and in
-**Forward Overview**. Transparent foreground surfaces dim them. A transparent
-surface behind them leaves them visible.
+depth-tested Technical elevation contours, and section-cap and cut-plane previews
+use their scene depth for transparency in both raster engines' **Lit** view and
+in **Forward Overview**. Transparent foreground surfaces dim them. A transparent
+surface behind them leaves them visible. The cut-plane grid is visible from either side.
 
 A capture sequence can set the floor-plan display for a fixed camera. Each
 `bimFloorPlan` event supplies all settings and applies them until the next
