@@ -5,6 +5,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      preview_version:
+        description: 'Optional paired robotics preview archive version (for example, 0.3.0-preview.1)'
+        type: string
+        default: ''
 
 permissions:
   contents: read
@@ -16,7 +21,7 @@ jobs:
   windows-robotics:
     name: Windows robotics (${{ matrix.profile }})
     runs-on: windows-2025-vs2026
-    timeout-minutes: 90
+    timeout-minutes: ${{ github.event_name == 'workflow_dispatch' && inputs.preview_version != '' && matrix.profile == 'physics-only' && 150 || 90 }}
     strategy:
       fail-fast: false
       matrix:
@@ -78,11 +83,39 @@ jobs:
           }
           "VULKAN_SDK=$sdk" >> $env:GITHUB_ENV
 
+      - name: Provision the pinned Windows preview loader
+        if: github.event_name == 'workflow_dispatch' && inputs.preview_version != '' && matrix.profile == 'physics-only'
+        shell: pwsh
+        env:
+          PREVIEW_VERSION: ${{ inputs.preview_version }}
+        run: |
+          if ($env:PREVIEW_VERSION -cnotmatch '\Av?[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?\z') {
+            throw 'preview_version must look like 0.3.0-preview.1.'
+          }
+          $component = 'VulkanRT-X64-1.4.363.0-Components'
+          $loaderZip = Join-Path $env:RUNNER_TEMP "$component.zip"
+          $download = @{
+            Uri = "https://sdk.lunarg.com/sdk/download/1.4.363.0/windows/$component.zip"
+            OutFile = $loaderZip
+            MaximumRetryCount = 3
+          }
+          Invoke-WebRequest @download
+          if ((Get-FileHash -LiteralPath $loaderZip -Algorithm SHA256).Hash -ne 'A25A927AA8B9F0371048F1861CF88AC3B9BC9B1FB332C42D897C8AB32695769A') {
+            throw 'The LunarG runtime components archive SHA-256 did not match.'
+          }
+          Expand-Archive -LiteralPath $loaderZip -DestinationPath $env:RUNNER_TEMP
+          $components = Join-Path $env:RUNNER_TEMP $component
+          $loader = Join-Path $env:RUNNER_TEMP 'robotics-preview-loader'
+          New-Item -ItemType Directory -Path $loader | Out-Null
+          Copy-Item -LiteralPath "$components/x64/vulkan-1.dll", "$components/VulkanRT-License.txt" -Destination $loader
+          "PREVIEW_LOADER_ROOT=$loader" >> $env:GITHUB_ENV
+
       - name: Configure and build headless robotics targets
         shell: pwsh
         env:
           VCPKG_BINARY_SOURCES: "clear;files,${{ runner.temp }}/robotics-vcpkg-cache,readwrite"
           VCPKG_KEEP_ENV_VARS: VULKAN_SDK
+          PREVIEW_VERSION: ${{ inputs.preview_version }}
         run: |
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
           $vs = & $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
@@ -113,11 +146,25 @@ jobs:
             '-DENABLE_BIM_SAMPLE_MODEL_DOWNLOAD=OFF'
             '-DENABLE_USD_SAMPLE_MODEL_DOWNLOAD=OFF'
           )
+          if ($env:PREVIEW_LOADER_ROOT) {
+            $options += "-DCONTAINER_VULKAN_LOADER_ROOT=$env:PREVIEW_LOADER_ROOT"
+          }
           cmake --preset windows-release @options
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           & ./tests/robotics/run_validation.ps1 -BuildDirectory out/build/windows-release `
               -Profile '${{ matrix.profile }}' -Phase Build
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          if ($env:PREVIEW_LOADER_ROOT) {
+            $build = 'out/build/windows-release'
+            cmake --build $build --parallel 4 --target VulkanSceneRenderer OpenVdbTransportRender `
+                BimRoboticsSim BimRoboticsNavMap BimRoboticsCollision BimRoboticsDataset
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            & ./cmake/package_windows.ps1 -Version $env:PREVIEW_VERSION -RuntimeDirectory $build `
+                -BuildDirectory $build -VcpkgInstalledDirectory "$build/vcpkg_installed" `
+                -IncludeRoboticsPreview -OutputDirectory out/robotics-preview-windows
+          }
 
       - name: Save vcpkg binaries
         if: ${{ !cancelled() && matrix.profile == 'full' && steps.vcpkg-cache.outputs.cache-hit != 'true' }}
@@ -131,6 +178,49 @@ jobs:
         run: |
           & ./tests/robotics/run_validation.ps1 -BuildDirectory out/build/windows-release `
               -Profile '${{ matrix.profile }}' -Phase Test
+
+      - name: Check the Windows preview from an extracted archive
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.preview_version != '' && matrix.profile == 'physics-only'
+        shell: pwsh
+        env:
+          PREVIEW_VERSION: ${{ inputs.preview_version }}
+        run: |
+          $packages = 'out/robotics-preview-windows'
+          $name = "VulkanSceneRenderer-$env:PREVIEW_VERSION-windows-x64-robotics-preview"
+          $archive = "$packages/$name.zip"
+          $expected = (Get-Content -LiteralPath "$archive.sha256" -Raw).Split(' ')[0]
+          if ((Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash -ne $expected) {
+            throw 'The Windows preview archive SHA-256 did not match its sidecar.'
+          }
+          $destination = Join-Path $env:RUNNER_TEMP 'relocated robotics preview'
+          Expand-Archive -LiteralPath $archive -DestinationPath $destination
+          $runtime = Join-Path $destination $name
+          $metadata = Get-Content -LiteralPath "$runtime/build-info.json" -Raw | ConvertFrom-Json
+          if ($metadata.source_commit -ne $env:GITHUB_SHA -or $metadata.version -ne $env:PREVIEW_VERSION -or -not $metadata.robotics_preview) {
+            throw 'The extracted Windows archive has incorrect preview metadata.'
+          }
+          $metadata.source_commit | Set-Content -LiteralPath "$packages/source-commit.txt" -Encoding ascii
+          Push-Location -LiteralPath $runtime
+          try {
+            foreach ($tool in 'BimRoboticsSim', 'BimRoboticsNavMap', 'BimRoboticsCollision', 'BimRoboticsDataset') {
+              & "./$tool.exe" --help
+              if ($LASTEXITCODE -ne 0) { throw "Packaged $tool failed with exit code $LASTEXITCODE." }
+            }
+          } finally {
+            Pop-Location
+          }
+
+      - name: Upload the Windows robotics preview
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.preview_version != '' && matrix.profile == 'physics-only'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: robotics-preview-windows-x64
+          path: |
+            out/robotics-preview-windows/*.zip
+            out/robotics-preview-windows/*.zip.sha256
+            out/robotics-preview-windows/source-commit.txt
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Stage the Nav2 maps and physical verifier
         id: nav2-input
@@ -391,18 +481,40 @@ jobs:
 
       - name: Run the Nav2 preview from an extracted archive
         shell: bash
+        env:
+          PREVIEW_VERSION: ${{ inputs.preview_version }}
         run: |
           source /opt/ros/jazzy/setup.bash
           evidence="$PWD/out/ros2-contract"
+          version="${PREVIEW_VERSION:-0.1.0-ci}"
+          if [[ ! "$version" =~ ^v?[0123456789]+\.[0123456789]+\.[0123456789]+(-[A-Za-z0-9.-]+)?$ ]]; then
+            echo 'preview_version must look like 0.3.0-preview.1.' >&2
+            exit 1
+          fi
+          package="VulkanSceneRenderer-$version-linux-x64-nav2-preview"
           python3 -B tools/package_bim_nav2_preview.py --build-dir out/build/linux-ros2-contract \
-            --version 0.1.0-ci --output "$evidence/packages" | tee "$evidence/preview-package.log"
+            --version "$version" --output "$evidence/packages" | tee "$evidence/preview-package.log"
+          git rev-parse HEAD > "$evidence/packages/source-commit.txt"
+          (
+            cd "$evidence/packages"
+            sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"
+          )
           install_dir="$(mktemp -d)/relocated preview"
           mkdir -p "$install_dir"
-          tar -xzf "$evidence/packages/VulkanSceneRenderer-0.1.0-ci-linux-x64-nav2-preview.tar.gz" -C "$install_dir"
+          tar -xzf "$evidence/packages/$package.tar.gz" -C "$install_dir"
           export VK_DRIVER_FILES="$evidence/no-vulkan-icd.json"
           cd /tmp
-          python3 -B "$install_dir/VulkanSceneRenderer-0.1.0-ci-linux-x64-nav2-preview/tools/bim_nav2_preview.py" \
+          python3 -B "$install_dir/$package/tools/bim_nav2_preview.py" \
             --output "$evidence/preview" | tee "$evidence/preview.log"
+
+      - name: Upload the Linux Nav2 preview
+        if: success() && github.event_name == 'workflow_dispatch' && inputs.preview_version != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: robotics-preview-linux-x64
+          path: out/ros2-contract/packages/
+          if-no-files-found: error
+          compression-level: 0
 
       - name: Upload ROS 2 contract evidence
         if: always()

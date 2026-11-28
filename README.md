@@ -130,6 +130,12 @@ unsigned; verify the archive against the release's `SHA256SUMS.txt` using
 See the preview's [TAA results and limits](docs/taa-validation.md). Report issues
 with the build/release identity, GPU, driver, launch command and console output.
 
+## BIM robotics preview
+
+Record a synchronized RGB-D dataset on Windows or drive the simulated robot
+through a BIM doorway with Jazzy Nav2 on Ubuntu. The preview guide links the
+workflow downloads, clean-install recipes, and measured results. [BIM robotics preview builds and evidence](docs/bim-robotics-preview-release.md)
+
 ## Documentation
 
 | Topic | Guides |
