@@ -9,6 +9,7 @@ param(
     [string]$TinyUsdzSourceDirectory = '',
     [string]$OpenVdbInstalledDirectory = '',
     [string]$BuildDirectory = '',
+    [switch]$IncludeRoboticsPreview,
     [string]$OutputDirectory = (Join-Path $PSScriptRoot '../out/packages')
 )
 
@@ -19,6 +20,7 @@ $runtimeDirectory = (Resolve-Path $RuntimeDirectory).Path
 $dependencyDirectory = (Resolve-Path (Join-Path $VcpkgInstalledDirectory 'x64-windows/share')).Path
 $outputDirectory = [IO.Path]::GetFullPath($OutputDirectory)
 $packageName = "VulkanSceneRenderer-$Version-windows-x64"
+if ($IncludeRoboticsPreview) { $packageName += '-robotics-preview' }
 $stagingDirectory = Join-Path $outputDirectory $packageName
 $archivePath = Join-Path $outputDirectory "$packageName.zip"
 
@@ -114,6 +116,9 @@ $physicsValue = $physicsOption[0].Matches[0].Groups[1].Value
 # values such as Y or 2 must not omit the notice from an enabled binary.
 $physicsEnabled = $physicsValue -notmatch '^(|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND)$' -and
     $physicsValue -notmatch '-NOTFOUND$'
+if ($IncludeRoboticsPreview -and -not $physicsEnabled) {
+    throw 'The robotics preview requires ENABLE_PHYSICS=ON. Configure a Release build and build the robotics tools.'
+}
 $joltLicense = Join-Path $buildTreeDirectory 'third_party_licenses/Jolt-MIT.txt'
 if ($physicsEnabled -and -not (Test-Path -LiteralPath $joltLicense -PathType Leaf)) {
     throw "The physics-enabled build is missing its Jolt MIT notice: $joltLicense"
@@ -366,6 +371,30 @@ if ($dlssRrEnabled) {
 if ($fsrEnabled -or $dlssEnabled) {
     $requiredFiles += 'spv_shaders/fsr_inputs.comp.spv'
 }
+$roboticsExecutables = @()
+$roboticsFiles = @()
+$roboticsUrdfNotice = ''
+if ($IncludeRoboticsPreview) {
+    $roboticsExecutables = @('BimRoboticsSim.exe', 'BimRoboticsNavMap.exe',
+        'BimRoboticsCollision.exe', 'BimRoboticsDataset.exe')
+    $roboticsFiles = @('docs/bim-robotics-preview.md', 'tools/robotics_preview_dataset.py',
+        'tests/fixtures/robotics/doorway.ifc')
+    $requiredFiles += $roboticsExecutables
+    foreach ($relativePath in $roboticsFiles) {
+        if (-not (Test-Path -LiteralPath (Join-Path $sourceDirectory $relativePath) -PathType Leaf)) {
+            throw "Missing robotics preview source file: $relativePath"
+        }
+    }
+    $urdfOption = @(Select-String -LiteralPath $cachePath -Pattern '^ENABLE_ROBOTICS_URDF:BOOL=(.*)$')
+    if ($urdfOption.Count -eq 1 -and
+        $urdfOption[0].Matches[0].Groups[1].Value -notmatch '^(|0|OFF|NO|FALSE|N|IGNORE|NOTFOUND)$' -and
+        $urdfOption[0].Matches[0].Groups[1].Value -notmatch '-NOTFOUND$') {
+        $roboticsUrdfNotice = Join-Path $dependencyDirectory 'tinyxml2/copyright'
+        if (-not (Test-Path -LiteralPath $roboticsUrdfNotice -PathType Leaf)) {
+            throw 'The URDF-enabled robotics preview requires the tinyxml2 copyright in the selected vcpkg installed directory.'
+        }
+    }
+}
 foreach ($relativePath in $requiredFiles) {
     if (-not (Test-Path -LiteralPath (Join-Path $runtimeDirectory $relativePath) -PathType Leaf)) {
         throw "Missing runtime file: $relativePath"
@@ -409,6 +438,7 @@ if ($openVdbEnabled -or $nanoIoEnabled) {
 if ($gltfCompressionEnabled['DRACO']) {
     $runtimeExecutables += Join-Path $runtimeDirectory 'ContainerDracoWorker.exe'
 }
+$runtimeExecutables += @($roboticsExecutables | ForEach-Object { Join-Path $runtimeDirectory $_ })
 $runtimeStageArguments = @(
     "-DEXECUTABLES=$($runtimeExecutables -join '|')",
     "-DDESTINATION=$stagingDirectory"
@@ -465,6 +495,19 @@ foreach ($workflow in @('hdri.json', 'restyle.json')) {
     Copy-Item -LiteralPath (Join-Path $sourceDirectory "tools/comfyui_workflows/$workflow") -Destination $workflowDirectory.FullName
 }
 Copy-Item -LiteralPath (Join-Path $sourceDirectory 'docs/gfxreconstruct.md') -Destination (Join-Path $stagingDirectory 'GFXRECONSTRUCT.md')
+foreach ($relativePath in $roboticsFiles) {
+    $destination = Join-Path $stagingDirectory $relativePath
+    New-Item -ItemType Directory -Path (Split-Path -Parent $destination) -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $sourceDirectory $relativePath) -Destination $destination
+}
+if ($IncludeRoboticsPreview) {
+    Add-Content -LiteralPath (Join-Path $stagingDirectory 'README.md') -Value @'
+
+## Robotics preview
+
+See [Run the robotics preview](docs/bim-robotics-preview.md) to capture and verify an RGB-D dataset using the included IFC example.
+'@
+}
 
 $licensesDirectory = (New-Item -ItemType Directory -Path (Join-Path $stagingDirectory 'THIRD_PARTY_LICENSES')).FullName
 foreach ($notice in $vulkanSdkCoreNotices) {
@@ -504,6 +547,9 @@ if ($nanoVdbEnabled) {
 }
 if ($physicsEnabled) {
     Copy-Item -LiteralPath $joltLicense -Destination (Join-Path $licensesDirectory 'Jolt-MIT.txt')
+}
+if ($roboticsUrdfNotice) {
+    Copy-Item -LiteralPath $roboticsUrdfNotice -Destination (Join-Path $licensesDirectory 'tinyxml2.txt')
 }
 if ($openVdbEnabled -or $nanoCodecNotices.Count -gt 0) {
     # Preserve the notices of all transitive vcpkg dependencies, including the
@@ -564,6 +610,9 @@ $hashedRuntimeFiles = @(
     Get-Item -LiteralPath (Join-Path $stagingDirectory 'OpenVdbTransportRender.exe')
     if ($openVdbEnabled -or $nanoIoEnabled) { Get-Item -LiteralPath (Join-Path $stagingDirectory 'OpenVdbTool.exe') }
     if ($gltfCompressionEnabled['DRACO']) { Get-Item -LiteralPath (Join-Path $stagingDirectory 'ContainerDracoWorker.exe') }
+    foreach ($relativePath in ($roboticsExecutables + $roboticsFiles)) {
+        Get-Item -LiteralPath (Join-Path $stagingDirectory $relativePath)
+    }
     $runtimeDlls
     Get-ChildItem -LiteralPath (Join-Path $stagingDirectory 'spv_shaders') -Filter '*.spv' -File
     $ltcAssets
@@ -593,6 +642,7 @@ foreach ($file in ($hashedRuntimeFiles | Sort-Object FullName)) {
     selected_dependencies = $selectedDependencies
     physics_enabled = $physicsEnabled
     physics_engine = $(if ($physicsEnabled) { 'Jolt 5.6.0' } else { 'disabled' })
+    robotics_preview = [bool]$IncludeRoboticsPreview
     gltf_draco_enabled = $gltfCompressionEnabled['DRACO']
     gltf_meshopt_enabled = $gltfCompressionEnabled['MESHOPT']
     texture_ktx_enabled = $textureCodecsEnabled['KTX']
@@ -619,6 +669,7 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 [IO.Compression.ZipFile]::CreateFromDirectory($stagingDirectory, $archivePath,
     [IO.Compression.CompressionLevel]::Optimal, $true)
 $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
-"$hash  $packageName.zip" | Set-Content -LiteralPath (Join-Path $outputDirectory 'SHA256SUMS.txt') -Encoding ASCII
+$checksumName = $(if ($IncludeRoboticsPreview) { "$packageName.zip.sha256" } else { 'SHA256SUMS.txt' })
+"$hash  $packageName.zip" | Set-Content -LiteralPath (Join-Path $outputDirectory $checksumName) -Encoding ASCII
 Write-Output "Created $archivePath"
 Write-Output "SHA256: $hash"

@@ -290,9 +290,10 @@ jobs:
           packages=(build-essential cmake git curl ca-certificates ninja-build pkg-config zip unzip
                     libvulkan-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev
                     libxt-dev libxkbcommon-dev libwayland-dev libegl-dev libgl-dev
-                    autoconf automake libtool bison gperf python3 python3-colcon-common-extensions
+                    autoconf automake libtool bison gperf python3 python3-yaml python3-colcon-common-extensions
                     ros-jazzy-builtin-interfaces ros-jazzy-geometry-msgs ros-jazzy-nav-msgs
                     ros-jazzy-launch-ros ros-jazzy-rclpy ros-jazzy-ros2launch ros-jazzy-rosgraph-msgs ros-jazzy-sensor-msgs
+                    ros-jazzy-navigation2 ros-jazzy-nav2-bringup ros-jazzy-rosbag2-storage-mcap ros-jazzy-ros2bag
                     ros-jazzy-tf2-msgs ros-jazzy-tf2-ros-py)
           apt-get update
           apt-get install -y --no-install-recommends "${packages[@]}"
@@ -323,10 +324,10 @@ jobs:
           path: out/ros2-vcpkg-cache
           key: ubuntu-24.04-jazzy-x64-robotics-vcpkg-5f8c424e-${{ hashFiles('vcpkg.json', 'vcpkg-configuration.json', 'cmake/vcpkg-overlay-ports/**') }}
 
-      - name: Build the native headless simulator
+      - name: Build the native headless robotics tools
         shell: bash
         run: |
-          # Shared configure discovers Vulkan and slangc. This job builds only the native simulator.
+          # The shared configure discovers Vulkan and slangc even for headless targets.
           export VCPKG_ROOT="$PWD/out/ros2-vcpkg"
           export VCPKG_MAX_CONCURRENCY=4
           export VCPKG_BINARY_SOURCES="clear;files,$PWD/out/ros2-vcpkg-cache,readwrite"
@@ -341,7 +342,8 @@ jobs:
             -DENABLE_TINYUSDZ_USD_LOADER=OFF -DENABLE_OPENVDB=OFF \
             -DENABLE_SAMPLE_MODEL_DOWNLOAD=OFF -DENABLE_BIM_SAMPLE_MODEL_DOWNLOAD=OFF \
             -DENABLE_USD_SAMPLE_MODEL_DOWNLOAD=OFF 2>&1 | tee out/ros2-contract/native-configure.log
-          cmake --build "$build" --parallel 4 --target BimRoboticsSim 2>&1 | tee out/ros2-contract/native-build.log
+          cmake --build "$build" --parallel 4 --target BimRoboticsSim BimRoboticsNavMap BimRoboticsCollision \
+            2>&1 | tee out/ros2-contract/native-build.log
 
       - name: Save vcpkg binaries
         if: steps.ros2-vcpkg-cache.outputs.cache-hit != 'true'
@@ -386,6 +388,21 @@ jobs:
                   command.extend(("--expect-range", f"{beam}={metres}"))
               subprocess.run(command, check=True, timeout=60)
           PY
+
+      - name: Run the Nav2 preview from an extracted archive
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          evidence="$PWD/out/ros2-contract"
+          python3 -B tools/package_bim_nav2_preview.py --build-dir out/build/linux-ros2-contract \
+            --version 0.1.0-ci --output "$evidence/packages" | tee "$evidence/preview-package.log"
+          install_dir="$(mktemp -d)/relocated preview"
+          mkdir -p "$install_dir"
+          tar -xzf "$evidence/packages/VulkanSceneRenderer-0.1.0-ci-linux-x64-nav2-preview.tar.gz" -C "$install_dir"
+          export VK_DRIVER_FILES="$evidence/no-vulkan-icd.json"
+          cd /tmp
+          python3 -B "$install_dir/VulkanSceneRenderer-0.1.0-ci-linux-x64-nav2-preview/tools/bim_nav2_preview.py" \
+            --output "$evidence/preview" | tee "$evidence/preview.log"
 
       - name: Upload ROS 2 contract evidence
         if: always()
