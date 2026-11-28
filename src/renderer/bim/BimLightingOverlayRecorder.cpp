@@ -949,7 +949,7 @@ bool recordBimTechnicalOitLines(VkCommandBuffer cmd, const FrameRecordParams &p,
   const auto &style = p.bim.technicalElevation;
   const auto mode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
   if (oitSet == VK_NULL_HANDLE || p.screenshot.sceneLinear ||
-      !style.enabled || style.hiddenLineOverlay || !style.depthTestLines ||
+      !style.enabled || !style.depthTestLines ||
       (mode != ui::GBufferViewMode::Lit && mode != ui::GBufferViewMode::Overview) ||
       (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster &&
        screenReflectionDebugView(p.debug.screenReflections) != 0u)) {
