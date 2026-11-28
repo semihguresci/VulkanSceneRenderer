@@ -181,7 +181,8 @@ def summary(methods, cases_by_family):
     point = {name: {m: average(matrix, families, identities[name], m) for m in METRICS}
              for name, matrix in methods.items()}
     draws = {name: defaultdict(list) for name in methods}
-    differences = {name: defaultdict(list) for name in methods if name.startswith('learned-')}
+    differences = {name: defaultdict(list) for name in methods
+                   if 'navfn-rpp' in methods and name.startswith('learned-')}
     for _ in range(4000):
         groups = rng.choices(families, k=len(families))
         sampled = {}
@@ -214,7 +215,7 @@ def main():
     for row in cases:
         families[row['family']].append(row['id'])
     tolerance, budget = protocol['goalToleranceMeters'], protocol['driveTicks']
-    methods = {'oracle': {'grid': {}}, 'navfn-rpp': {}}
+    methods = {'oracle': {'grid': {}}}
     for row in cases:
         case, proof = row['id'], proofs[row['id']]
         route = proof['route']
@@ -225,9 +226,10 @@ def main():
             'setupSeconds': proof['setupSeconds'], 'travelledMeters': route['lengthMeters'],
             'status': 'geometric-reference', 'simulatedSeconds': None,
         }
-    for repeat in range(1, protocol['nav2Repeats'] + 1):
+    nav2_repeats = protocol['nav2Repeats']
+    for repeat in range(1, nav2_repeats + 1):
         group = root / 'nav2' / f'repeat-{repeat}'
-        methods['navfn-rpp'][str(repeat)] = {
+        methods.setdefault('navfn-rpp', {})[str(repeat)] = {
             row['id']: score(group / row['id'] / 'drive.jsonl', read(group / row['id'] / 'episode.json'),
                              proofs[row['id']], nav2=True, tolerance=tolerance, budget=budget,
                              initial_yaw=yaws[row['id']]) for row in cases
@@ -248,17 +250,19 @@ def main():
             }
     estimates, contrasts = summary(methods, families)
     controls = {}
-    for row in protocol['cases']['controls']:
-        name = row['id']
-        directory = root / 'nav2' / 'repeat-1' / name
-        result = read(directory / 'episode.json')
-        controls[name] = verify_control(directory, result, proofs[name], tolerance=tolerance,
-                                        budget=budget, initial_yaw=yaws[name])
+    if nav2_repeats:
+        for row in protocol['cases']['controls']:
+            name = row['id']
+            directory = root / 'nav2' / 'repeat-1' / name
+            result = read(directory / 'episode.json')
+            controls[name] = verify_control(directory, result, proofs[name], tolerance=tolerance,
+                                            budget=budget, initial_yaw=yaws[name])
     report = {'schema': 'container.bim-navigation-benchmark-probe', 'version': 1, 'families': families,
               'sampleBudgets': protocol['checkpoints'], 'metrics': estimates, 'pairedDeltaFromNav2': contrasts,
               'replays': methods, 'trainingWallSecondsBySeed': training_wall, 'controlCases': controls,
               'intervalDefinition': '4000 paired bootstrap draws of held-out BIM families and whole method repeats or training seeds'}
-    (root / 'comparison.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n', encoding='utf-8')
+    (root / 'comparison.json').write_text(json.dumps(report, indent=2, allow_nan=False) + '\n',
+                                          encoding='utf-8', newline='\n')
     for method, metrics in estimates.items():
         print(method, ', '.join(f'{key}={val["estimate"]:.3f}' for key, val in metrics.items()))
 

@@ -9,3 +9,9 @@ docs/images/readme/grades/*.json -text whitespace=cr-at-eol
 # Preserve the published byte identities of the prepared gallery scene.
 docs/images/readme/scenes/ABeautifulGame-studio-prepared.gltf text eol=lf
 docs/images/readme/scenes/ABeautifulGame-studio-NOTICE.txt text eol=lf
+
+# Policy benchmarks record exact IFC bytes as native scene identities.
+tests/fixtures/robotics/doorway.ifc text eol=lf
+tests/fixtures/robotics/lidar-corner.ifc text eol=lf
+tests/fixtures/robotics/room-connectivity.ifc text eol=lf
+tests/fixtures/robotics/navigation/offset-hall.ifc text eol=lf

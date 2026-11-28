@@ -41,7 +41,7 @@ def json_text(value):
 
 
 def write(path, value):
-    path.write_text(json_text(value) + "\n", encoding="utf-8")
+    path.write_text(json_text(value) + "\n", encoding="utf-8", newline="\n")
 
 
 def require(condition, message):
