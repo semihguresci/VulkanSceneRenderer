@@ -114,7 +114,7 @@ float4 fragMain(GSOutput input) : SV_Target0
     uint2 pixel = uint2(input.pos.xy);
     uint nodeIndex = AllocateOitNode(pixel);
     if (nodeIndex != INVALID_NODE_INDEX)
-        AppendOitNode(pixel, nodeIndex, input.pos.z, color, OIT_NODE_DISPLAY_OVERLAY);
+        AppendOitNode(pixel, nodeIndex, input.pos.z, color, OIT_NODE_STANDARD_OVERLAY);
     return 0.0.xxxx;
 #else
     return color;

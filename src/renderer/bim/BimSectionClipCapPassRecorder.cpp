@@ -2,6 +2,8 @@
 
 #include "Container/renderer/bim/BimSectionCapBuilder.h"
 
+#include <array>
+
 namespace container::renderer {
 
 namespace {
@@ -148,9 +150,11 @@ bool recordBimSectionClipCapPassCommands(
     return false;
   }
 
+  const std::array sets{inputs.sceneDescriptorSet, inputs.oitDescriptorSet};
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          inputs.wireframeLayout, 0, 1,
-                          &inputs.sceneDescriptorSet, 0, nullptr);
+                          inputs.wireframeLayout, 0,
+                          inputs.oitDescriptorSet == VK_NULL_HANDLE ? 1u : 2u,
+                          sets.data(), 0, nullptr);
   bindGeometry(cmd, inputs.vertexSlice, inputs.indexSlice, inputs.indexType);
 
   WireframePushConstants pc = *inputs.pushConstants;
@@ -200,7 +204,8 @@ bool recordBimSectionClipCapFramePassCommands(
             .indexSlice = inputs.geometry.indexSlice,
             .indexType = inputs.geometry.indexType,
             .pushConstants = inputs.pushConstants,
-            .debugOverlay = inputs.debugOverlay});
+            .debugOverlay = inputs.debugOverlay,
+            .oitDescriptorSet = inputs.oitDescriptorSet});
 }
 
 } // namespace container::renderer

@@ -1122,9 +1122,12 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   pipelines.wireframeDepth = pipelineManager_.createGraphicsPipeline(
       wfPCI, "wireframe_depth_pipeline");
 
-  // These flags match the transparent node flags in oit_common.slang.
-  constexpr uint32_t displayOverlay = 1u;
-  constexpr uint32_t selectionOverlay = displayOverlay | 2u;
+  // Match the display tag and equal-depth layer order in oit_common.slang.
+  constexpr uint32_t displayTag = 1u;
+  constexpr uint32_t sectionCapFillOverlay = displayTag | (1u << 1u);
+  constexpr uint32_t sectionCapHatchOverlay = displayTag | (2u << 1u);
+  constexpr uint32_t displayOverlay = displayTag | (3u << 1u);
+  constexpr uint32_t selectionOverlay = displayTag | (4u << 1u);
   const auto createBimOitPipeline = [&](RenderingGraphicsPipelineCreateInfo info,
                                         const char *name, uint32_t nodeFlags = 0u,
                                         VkShaderModule fragment = VK_NULL_HANDLE) {
@@ -1363,6 +1366,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   capFillPCI.pDepthStencilState = &wfDepthDS;
   pipelines.bimSectionClipCapFill = pipelineManager_.createGraphicsPipeline(
       capFillPCI, "bim_section_clip_cap_fill_pipeline");
+  createBimOitPipeline(capFillPCI, kBimSectionCapFillOitPipeline, sectionCapFillOverlay);
 
   RenderingGraphicsPipelineCreateInfo capHatchPCI = capFillPCI;
   capHatchPCI.pInputAssemblyState = &lineAssembly;
@@ -1370,6 +1374,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   capHatchPCI.pDynamicState = &lineDynState;
   pipelines.bimSectionClipCapHatch = pipelineManager_.createGraphicsPipeline(
       capHatchPCI, "bim_section_clip_cap_hatch_pipeline");
+  createBimOitPipeline(capHatchPCI, kBimSectionCapHatchOitPipeline, sectionCapHatchOverlay);
 
   // Surface normal lines
   RenderingGraphicsPipelineCreateInfo snPCI = meshPCI;

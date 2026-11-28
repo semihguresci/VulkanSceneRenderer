@@ -32,6 +32,9 @@ PIN_DEPTH_STAGES = ("off", *(zone[0] for zone in PIN_DEPTH_ZONES), "off-again")
 PIN_HEIGHT = 1.2
 HOVER_DEPTH_STAGES = (*PIN_DEPTH_STAGES[:-1], "front-pick", "opaque-pick", "off-again")
 HOVER_CAMERA_HEIGHT = 1.2
+CAP_STAGES = {"off": {}, "fill": {"capFill": True}, "hatch": {"capHatch": True},
+              "both": {"capFill": True, "capHatch": True}, "off-again": {}}
+CAP_PLANE = {"rear-cut": [0, 0, -1, .15], "front-cut": [0, 0, 1, -.15]}
 
 
 def require(condition, message):
@@ -153,6 +156,50 @@ def hover_depth_sequence(path, techniques, stages):
     path.write_text(json.dumps(dict(schemaVersion=1, frames=max(frames.values()), sampleFrames=list(frames.values()),
                                     events=events), indent=2) + "\n", encoding="utf-8")
     return frames, probes
+
+
+def section_cap_fixture(path):
+    meshes, elements = [], []
+
+    def add(name, kind, mesh, alpha, gray):
+        meshes.append(mesh)
+        color = dict(r=gray, g=gray, b=gray, a=alpha)
+        elements.append(dict(mesh_id=mesh["mesh_id"], guid=name, type=kind, color=color))
+
+    for zone, x, _, _ in PIN_DEPTH_ZONES:
+        # Four lateral faces intersect either half-space in the same closed
+        # contour. The observer-facing opening keeps the front-cut cap visible.
+        ymin, ymax, w = .65, 1.35, .28
+        rim = [(x - w, ymin), (x + w, ymin), (x + w, ymax), (x - w, ymax)]
+        coords = [value for z in (-.65, .65) for dx, dy in rim for value in (dx, -z, dy)]
+        indices = [0, 2, 1, 0, 3, 2]
+        for i in range(4):
+            j = (i + 1) % 4
+            indices.extend((i, j, j + 4, i, j + 4, i + 4))
+        add(f"{zone}-wall", "IfcWall", dict(mesh_id=len(meshes), coordinates=coords, indices=indices), 255, 185)
+        layers = {"behind": (-.10, -.25), "front": (.32, .48), "opaque": (.45,)}.get(zone, ())
+        alpha = {"behind": 250, "front": 166, "opaque": 255}.get(zone, 255)
+        for i, z in enumerate(layers):
+            bounds = (x - w - .03, ymin - .03, x + w + .03, ymax + .03)
+            add(f"{zone}-cover-{i}", "IfcRoof", panel(len(meshes), bounds, z), alpha, 185)
+    path.write_text(json.dumps(dict(schema_version="1.1.0", meshes=meshes, elements=elements), indent=2) + "\n",
+                    encoding="utf-8")
+
+
+def section_cap_sequence(path, cuts):
+    frames, events = {}, [{"frame": 1, "orthographic": True}]
+    for technique in TECHNIQUES:
+        for cut in cuts:
+            for stage, flags in CAP_STAGES.items():
+                frame = (len(frames) + 1) * 3 + 3
+                frames[f"{technique}/{cut}/{stage}"] = frame
+                event = {"frame": frame - 2, "bimAnnotations": flags}
+                if stage == "off":
+                    event.update(technique=technique, sectionPlane=CAP_PLANE[cut])
+                events.append(event)
+    path.write_text(json.dumps(dict(schemaVersion=1, frames=max(frames.values()), sampleFrames=list(frames.values()),
+                                    events=events), indent=2) + "\n", encoding="utf-8")
+    return frames
 
 
 def sequence_plan(frames):
@@ -520,6 +567,103 @@ def run_hover_depth(renderer, output, report, generate_only, *, lit_only=False):
             inspect_hover_depth(captures, techniques, evidence.setdefault(mode, {}), mode=mode)
 
 
+def compare_section_caps(images, techniques, cuts, evidence, *, mode, extension):
+    import numpy as np
+
+    failures = []
+    lit = overview_panel_slice(.026, .046, .334, .264) if mode == "overview" else np.s_[:, :]
+    for technique in techniques:
+        for cut in cuts:
+            cases = {stage: images[f"{technique}/{cut}/{stage}"] for stage in CAP_STAGES}
+            off = cases["off"]
+            key = f"{technique}/{cut}"
+            scores = evidence.setdefault(key, {})
+            if extension == "exr":
+                require(float(off.max()) > .01, f"Empty scene-linear cut reference in {key}")
+                for stage in tuple(CAP_STAGES)[1:]:
+                    delta = np.max(np.abs(off - cases[stage]), axis=2)
+                    largest = float(delta.max())
+                    scores[stage] = {"maxAbsoluteDelta": largest,
+                                     "changedPixels": int(np.count_nonzero(delta))}
+                    if largest > .002:
+                        failures.append(f"{key}/{stage} changed scene-linear radiance: {scores[stage]}")
+                continue
+            if not np.array_equal(off, cases["off-again"]):
+                failures.append(f"{key}/{mode} retained cap pixels after switching off")
+            height = off[lit].shape[0]
+            band = slice(round(.35 * height), round(.65 * height))
+            rendered = {stage: image[lit][band, :, :3].astype(np.int16) for stage, image in cases.items()}
+            hatch_mask = np.max(np.abs(rendered["hatch"] - rendered["off"]), axis=2) > 2
+            for stage, reference in (("fill", "off"), ("hatch", "off"), ("both", "fill")):
+                zones = {}
+                bands = [np.array_split(pixels, 4, axis=1)
+                         for pixels in (rendered[reference], rendered[stage], hatch_mask)]
+                for (zone, *_), before, after, hatch in zip(PIN_DEPTH_ZONES, *bands, strict=True):
+                    delta = np.max(np.abs(after - before), axis=2)
+                    visible = delta > 2
+                    peak = np.unravel_index(delta.argmax(), delta.shape)
+                    center = (delta.shape[0] // 2, delta.shape[1] // 2)
+                    zones[zone] = dict(signal=int(delta[visible].sum()),
+                                       changedPixels=int(np.count_nonzero(visible)),
+                                       maxAbsoluteDelta=int(delta[peak]),
+                                       peakRgbBefore=before[peak].tolist(), peakRgbAfter=after[peak].tolist(),
+                                       centerRgbBefore=before[center].tolist(), centerRgbAfter=after[center].tolist())
+                    if stage == "both":
+                        zones[zone]["pixelsOnHatch"] = int(np.count_nonzero(visible & hatch))
+                scores[stage] = zones
+                clear = zones["clear"]
+                if clear["signal"] < (60 if mode == "overview" else 350):
+                    failures.append(f"{key}/{mode}/{stage} lacks an exposed section cap: {zones}")
+                if cut == "rear-cut":
+                    rear = zones["behind"]
+                    if mode == "overview" and stage != "fill":
+                        # The subpixel placement of narrow hatch lines affects
+                        # the downsampled intensity sum. Compare coverage and
+                        # peak contrast independently in the smaller tile.
+                        visible_behind = (rear["changedPixels"] >= .7 * clear["changedPixels"]
+                                          and rear["maxAbsoluteDelta"] >= .6 * clear["maxAbsoluteDelta"])
+                    else:
+                        visible_behind = rear["signal"] >= .65 * clear["signal"]
+                    if not visible_behind:
+                        failures.append(f"{key}/{mode}/{stage} lost cap ink under rear glass: {zones}")
+                else:
+                    if zones["front"]["signal"] > .35 * clear["signal"]:
+                        failures.append(f"{key}/{mode}/{stage} did not attenuate behind front glass: {zones}")
+                    if zones["opaque"]["maxAbsoluteDelta"]:
+                        failures.append(f"{key}/{mode}/{stage} appeared over opaque geometry: {zones}")
+                if stage == "both":
+                    for zone in ("clear", "behind") if cut == "rear-cut" else ("clear",):
+                        result = zones[zone]
+                        if result["pixelsOnHatch"] < .8 * result["changedPixels"]:
+                            failures.append(f"{key}/{mode} changed cap fill outside its hatch: {zone}: {result}")
+    if mode == "overview":
+        diagnostic = {f"forward-raster/{stage}": images[f"forward-raster/rear-cut/{stage}"] for stage in CAP_STAGES}
+        evidence["diagnostics"] = inspect_overview_diagnostics(diagnostic, tuple(CAP_STAGES)[1:], "Section cap")
+    print(f"Section cap {mode}/{extension}: {len(images)} captures, {len(failures)} failed pixel checks", flush=True)
+    return failures
+
+
+def run_section_cap_depth(renderer, output, report, generate_only, *, lit_only=False):
+    bim = output / "section-cap-depth-ordering.bim"
+    section_cap_fixture(bim)
+    evidence = report["checks"].setdefault("sectionCapDepth", {})
+    lanes = [("lit", "png", tuple(CAP_PLANE))]
+    if not lit_only:
+        lanes += [("overview", "png", ("rear-cut",)), ("lit", "exr", tuple(CAP_PLANE))]
+    failures = []
+    for mode, extension, cuts in lanes:
+        sequence = output / f"section-cap-ordering-{mode}-{extension}.sequence.json"
+        frames = section_cap_sequence(sequence, cuts)
+        captures = record(renderer, output, None, bim, sequence, frames, TECHNIQUES[0], extension, report,
+                          generate_only, mode=mode, ordering="section-cap")
+        if not generate_only:
+            failures.extend(compare_section_caps(captures, TECHNIQUES, cuts,
+                                                evidence.setdefault(f"{mode}/{extension}", {}),
+                                                mode=mode, extension=extension))
+    evidence["failures"] = failures
+    require(not failures, "\n".join(failures))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
@@ -531,6 +675,8 @@ def main():
                          help="run only the depth-tested issue-pin sequence, optionally Lit only")
     focused.add_argument("--bim-hover-ordering-only", nargs="?", const="all", choices=("lit", "all"),
                          help="run only the depth-tested BIM hover sequence, optionally Lit only")
+    focused.add_argument("--section-cap-ordering-only", nargs="?", const="all", choices=("lit", "all"),
+                         help="run only the depth-tested section cap sequence, optionally Lit only")
     baseline = parser.add_mutually_exclusive_group()
     baseline.add_argument("--expect-missing-forward-annotations", action="store_true",
                           help="check the older capture format on a build without Forward annotations")
@@ -538,7 +684,7 @@ def main():
                           help="expect only Technical elevation to be missing from Forward raster")
     args = parser.parse_args()
     expect_missing = args.expect_missing_forward_annotations or args.expect_missing_forward_technical
-    focused_mode = args.issue_pin_ordering_only or args.bim_hover_ordering_only
+    focused_mode = args.issue_pin_ordering_only or args.bim_hover_ordering_only or args.section_cap_ordering_only
     if focused_mode and expect_missing:
         parser.error("The depth-ordering checks require working raster annotation pipelines")
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_BIM_FLOOR_PLAN") != "1":
@@ -558,7 +704,8 @@ def main():
         report["rendererSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     try:
         if focused_mode:
-            check_ordering = run_pin_depth if args.issue_pin_ordering_only else run_hover_depth
+            check_ordering = (run_pin_depth if args.issue_pin_ordering_only else
+                              run_hover_depth if args.bim_hover_ordering_only else run_section_cap_depth)
             check_ordering(renderer, output, report, args.generate_only, lit_only=focused_mode == "lit")
             if not args.generate_only:
                 require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["rendererSha256"], "Renderer changed")
@@ -584,6 +731,7 @@ def main():
         if not expect_missing:
             run_pin_depth(renderer, output, report, args.generate_only)
             run_hover_depth(renderer, output, report, args.generate_only)
+            run_section_cap_depth(renderer, output, report, args.generate_only)
         if not args.generate_only:
             require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["rendererSha256"], "Renderer changed")
             report["passed"] = True
