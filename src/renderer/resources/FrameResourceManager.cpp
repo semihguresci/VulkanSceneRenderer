@@ -1,6 +1,7 @@
 #include "Container/renderer/resources/FrameResourceManager.h"
 
 #include "Container/common/CommonVMA.h"
+#include "Container/renderer/bim/BimLightingOverlayRecorder.h"
 #include "Container/renderer/effects/OitManager.h"
 #include "Container/renderer/lighting/SubmittedUploadWait.h"
 #include "Container/utility/AllocationManager.h"
@@ -253,7 +254,7 @@ void FrameResourceManager::createDescriptorSetLayouts() {
   }
 
   if (postProcessLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 17> b = {{
+    const std::array<VkDescriptorSetLayoutBinding, 18> b = {{
         {0, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
          nullptr},
         {1, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
@@ -285,6 +286,7 @@ void FrameResourceManager::createDescriptorSetLayouts() {
         {15, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // temporal diagnostics
         {13, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // exposure state
         {16, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}, // linear capture
+        {kBimSelectionStrokeBinding, VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr},
     }};
     const std::vector<VkDescriptorBindingFlags> flags(b.size(), 0);
     postProcessLayout_ = pipelineMgr_->createDescriptorSetLayout(
@@ -483,7 +485,7 @@ void FrameResourceManager::create(
   {
     std::array<VkDescriptorPoolSize, 4> sizes = {{
         {VK_DESCRIPTOR_TYPE_SAMPLER, n * 2},          // gBuffer sampler + bloom sampler
-        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 10},    // sceneColor + 4 gbuf + depth + bloom + shadow atlas
+        {VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE, n * 11},
         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, n * 3},   // tile grid, exposure state, linear capture
         {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, n * 2},   // camera + shadow UBO
     }};
@@ -537,6 +539,16 @@ void FrameResourceManager::create(
     f.lightingDescriptorSet    = lightSets[i];
     f.postProcessDescriptorSet = postSets[i];
     f.oitDescriptorSet         = oitSets[i];
+    f.bimSelectionStroke = createAttachment(kBimSelectionStrokeFormat,
+        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT,
+        VK_IMAGE_ASPECT_COLOR_BIT, VK_SAMPLE_COUNT_1_BIT, displayExtent);
+    const VkDescriptorImageInfo selectionImage{VK_NULL_HANDLE, f.bimSelectionStroke.view,
+                                               VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
+    const VkWriteDescriptorSet selectionWrite{.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+        .dstSet = f.postProcessDescriptorSet, .dstBinding = kBimSelectionStrokeBinding,
+        .descriptorCount = 1, .descriptorType = VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE,
+        .pImageInfo = &selectionImage};
+    vkUpdateDescriptorSets(dev, 1, &selectionWrite, 0, nullptr);
 
     f.albedo   = createAttachment(formats_.albedo,
                    VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
@@ -901,6 +913,7 @@ void FrameResourceManager::destroy() {
     destroyAttachment(f.temporalDiagnostics);
     destroyAttachment(f.sceneColor);
     destroyAttachment(f.sceneColorMsaa);
+    destroyAttachment(f.bimSelectionStroke);
     destroyAttachment(f.oitHeadPointers);
 
     allocationMgr_->destroyBuffer(f.oitNodeBuffer);
@@ -1378,11 +1391,12 @@ void FrameResourceManager::updateDescriptorSets(
 AttachmentImage FrameResourceManager::createAttachment(VkFormat fmt,
                                                         VkImageUsageFlags usage,
                                                         VkImageAspectFlags aspect,
-                                                        VkSampleCountFlagBits samples) const {
+                                                        VkSampleCountFlagBits samples,
+                                                        VkExtent2D extent) const {
   AttachmentImage a{};
   a.format = fmt;
   a.samples = samples;
-  const VkExtent2D ext = sceneExtent_;
+  const VkExtent2D ext = extent.width && extent.height ? extent : sceneExtent_;
 
   VkImageCreateInfo ii{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
   ii.imageType   = VK_IMAGE_TYPE_2D;
@@ -1636,6 +1650,9 @@ void FrameResourceManager::publishFrameResourceBindings() {
               VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT |
                   VK_IMAGE_USAGE_SAMPLED_BIT |
                   VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    bindImageBinding(kForwardRasterTechnique, kBimSelectionStrokeImage,
+        frameImageBinding(f.bimSelectionStroke, swapChain_->extent(),
+                          VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT));
     const FrameImageBinding depthSamplingBinding =
         frameImageBinding(f.depthStencil.image, f.depthSamplingView,
                           f.depthStencil.format, ext,

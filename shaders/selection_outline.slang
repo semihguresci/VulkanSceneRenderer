@@ -49,7 +49,8 @@ VSOutput vertMain(VSInput input, uint instanceID : SV_InstanceID)
         material.heightOffset);
 
     const float4 worldPos = mul(obj.model, float4(objectPosition, 1.0));
-    const float4 clipPos = mul(uCamera.viewProj, worldPos);
+    const float4 clipPos = mul(pc.useUnjitteredCamera != 0 && uCamera.temporalInfo.w != 0u
+                               ? uCamera.unjitteredViewProj : uCamera.viewProj, worldPos);
 
     const float2 viewport =
         max(float2(pc.padding7, pc.padding8), float2(1.0, 1.0));

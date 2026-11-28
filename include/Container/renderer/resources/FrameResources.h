@@ -39,6 +39,7 @@ struct FrameResources {
   VkImageView     depthSamplingView{VK_NULL_HANDLE};
   AttachmentImage sceneColor{};
   AttachmentImage sceneColorMsaa{};
+  AttachmentImage bimSelectionStroke{};
   AttachmentImage
       temporalMotion{}; // signed UV, expected previous depth, validity
   AttachmentImage temporalIdentity{};

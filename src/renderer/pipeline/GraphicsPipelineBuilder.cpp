@@ -139,6 +139,8 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       loadModule("spv_shaders/transparent_pick.frag.spv");
   VkShaderModule postVert = loadModule("spv_shaders/post_process.vert.spv");
   VkShaderModule postFrag = loadModule("spv_shaders/post_process.frag.spv");
+  const auto selectionDisplayVert = loadModule("spv_shaders/bim_selection_display.vert.spv");
+  const auto selectionDisplayFrag = loadModule("spv_shaders/bim_selection_display.frag.spv");
   const auto sunHoursVert = loadModule("spv_shaders/bim_sun_hours.vert.spv");
   const auto sunHoursFrag = loadModule("spv_shaders/bim_sun_hours.frag.spv");
   VkShaderModule dbgVert = loadModule("spv_shaders/geometry_debug.vert.spv");
@@ -747,7 +749,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
 
   // ---- create pipelines -----------------------------------------------------
   auto& pipelines = result.pipelines;
-  pipelines.extraHandles.reserve(9);
+  pipelines.extraHandles.reserve(12);
 
   // Depth prepass
   scenePCI.pVertexInputState = &posTexNormInput;
@@ -1189,6 +1191,32 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   VkPipelineColorBlendAttachmentState bimDisplayAttach = overlayAttach;
   bimDisplayAttach.colorWriteMask &= ~VK_COLOR_COMPONENT_A_BIT;
   const auto bimDisplayBlend = makeBlend(&bimDisplayAttach, 1);
+
+  // The presentation stroke uses the same displaced triangles as the scene
+  // stencil path. Its mask has no depth attachment and is sampled after OIT.
+  container::gpu::RenderingPass selectionStrokePass{};
+  selectionStrokePass.colorFormats = {kBimSelectionStrokeFormat};
+  auto selectionStrokePCI = selectionMaskPCI;
+  selectionStrokePCI.renderPass = &selectionStrokePass;
+  selectionStrokePCI.pDepthStencilState = &noDS;
+  selectionStrokePCI.pColorBlendState = &opaqueBlend;
+  pipelines.extraHandles.push_back({
+      .key = {RenderTechniqueId::ForwardRaster, kBimSelectionClearSilhouettePipeline},
+      .pipeline = pipelineManager_.createGraphicsPipeline(selectionStrokePCI, kBimSelectionClearSilhouettePipeline)});
+  selectionStrokePCI.pStages = selOutlineStages.data();
+  pipelines.extraHandles.push_back({
+      .key = {RenderTechniqueId::ForwardRaster, kBimSelectionExpandSilhouettePipeline},
+      .pipeline = pipelineManager_.createGraphicsPipeline(selectionStrokePCI, kBimSelectionExpandSilhouettePipeline)});
+
+  const std::array selectionDisplayStages{
+      makeStage(selectionDisplayVert, VK_SHADER_STAGE_VERTEX_BIT),
+      makeStage(selectionDisplayFrag, VK_SHADER_STAGE_FRAGMENT_BIT)};
+  auto selectionDisplayPCI = postPCI;
+  selectionDisplayPCI.pStages = selectionDisplayStages.data();
+  selectionDisplayPCI.pColorBlendState = &bimDisplayBlend;
+  pipelines.extraHandles.push_back({
+      .key = {RenderTechniqueId::ForwardRaster, kBimSelectionDisplayPipeline},
+      .pipeline = pipelineManager_.createGraphicsPipeline(selectionDisplayPCI, kBimSelectionDisplayPipeline)});
 
   RenderingGraphicsPipelineCreateInfo clashDisplayPCI = wfPCI;
   clashDisplayPCI.renderPass = renderPasses.postProcess;

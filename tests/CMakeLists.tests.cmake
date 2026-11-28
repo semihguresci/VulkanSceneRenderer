@@ -1263,6 +1263,14 @@ set_tests_properties(bim_floor_plan_storey_filter_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 330
     LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME bim_selection_outline_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/bim_selection_outline_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/bim-selection-outline" --managed-output)
+set_tests_properties(bim_selection_outline_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 720
+    LABELS "bim;requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME bim_annotation_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/bim_annotation_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"

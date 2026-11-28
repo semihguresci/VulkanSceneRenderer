@@ -30,6 +30,14 @@ namespace {
          hasDrawCommands(p.bim.coordinationClashMarkerDrawCommands);
 }
 
+[[nodiscard]] bool presentsBimMeshSelection(const FrameRecordParams &p) {
+  const auto technique = p.runtime.activeTechnique;
+  const auto mode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
+  return (technique == RenderTechniqueId::ForwardRaster || technique == RenderTechniqueId::DeferredRaster) &&
+         (mode == ui::GBufferViewMode::Lit || mode == ui::GBufferViewMode::Overview) &&
+         !p.screenshot.sceneLinear && hasDrawCommands(p.bim.draws.selectedDrawCommands);
+}
+
 BimLightingOverlayGeometryBinding overlayGeometry(
     VkDescriptorSet descriptorSet, const FrameSceneGeometry &scene) {
   return {.descriptorSet = descriptorSet,
@@ -629,7 +637,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                       .sceneHover = p.draws.hoveredDrawCommands,
                       .bimHover = bim.draws.hoveredDrawCommands,
                       .sceneSelection = p.draws.selectedDrawCommands,
-                      .bimSelection = bim.draws.selectedDrawCommands,
+                      .bimSelection = presentsBimMeshSelection(p) ? nullptr : bim.draws.selectedDrawCommands,
                       .nativePointHover = bim.nativePointDraws.hoveredDrawCommands,
                       .nativeCurveHover = bim.nativeCurveDraws.hoveredDrawCommands,
                       .nativePointSelection = bim.nativePointDraws.selectedDrawCommands,
@@ -777,6 +785,89 @@ void recordBimXrayClashOverlay(VkCommandBuffer cmd, const FrameRecordParams &p,
       .wireframeWideLinesSupported = p.debug.wireframeWideLinesSupported});
   if (overview)
     recordSceneViewportAndScissor(cmd, extent);
+}
+
+bool recordBimSelectionStrokeMask(VkCommandBuffer cmd, const FrameRecordParams &p,
+                                  VkExtent2D extent, const DebugOverlayRenderer *debugOverlay) {
+  if (!presentsBimMeshSelection(p) || !p.pushConstants.wireframe || !debugOverlay)
+    return false;
+
+  const auto technique = p.runtime.activeTechnique;
+  const auto layout = p.pipelineLayout(technique, "wireframe");
+  const auto clearSilhouette = p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimSelectionClearSilhouettePipeline);
+  const auto expandSilhouette = p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimSelectionExpandSilhouettePipeline);
+  const auto *mask = p.imageBinding(RenderTechniqueId::ForwardRaster, kBimSelectionStrokeImage);
+  const auto geometry = overlayGeometry(p.descriptorSet(technique, "bim-scene-descriptor-set"), p.bim.scene);
+  if (!mask || !mask->image || !mask->view || !layout || !clearSilhouette || !expandSilhouette ||
+      mask->extent.width != extent.width || mask->extent.height != extent.height ||
+      !bindGeometryIfReady(cmd, geometry, layout))
+    return false;
+
+  const bool overview = p.debug.displayMode == static_cast<uint32_t>(ui::GBufferViewMode::Overview);
+  if (overview) {
+    if (!recordOverviewLitTileViewport(cmd, extent))
+      return false;
+  } else {
+    recordSceneViewportAndScissor(cmd, extent);
+  }
+
+  // The previous use of this swapchain image's mask is retired with the frame.
+  VkImageMemoryBarrier2 barrier{.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2,
+      .dstStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
+      .dstAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
+      .oldLayout = VK_IMAGE_LAYOUT_UNDEFINED, .newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+      .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED, .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
+      .image = mask->image, .subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}};
+  const VkDependencyInfo dependency{.sType = VK_STRUCTURE_TYPE_DEPENDENCY_INFO,
+      .imageMemoryBarrierCount = 1, .pImageMemoryBarriers = &barrier};
+  vkCmdPipelineBarrier2(cmd, &dependency);
+
+  const VkRenderingAttachmentInfo attachment{.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO,
+      .imageView = mask->view, .imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+      .loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR, .storeOp = VK_ATTACHMENT_STORE_OP_STORE};
+  const VkRenderingInfo rendering{.sType = VK_STRUCTURE_TYPE_RENDERING_INFO,
+      .renderArea = {{0, 0}, extent}, .layerCount = 1,
+      .colorAttachmentCount = 1, .pColorAttachments = &attachment};
+  vkCmdBeginRendering(cmd, &rendering);
+  WireframePushConstants pushConstants = *p.pushConstants.wireframe;
+  pushConstants.useUnjitteredCamera = 1u;
+  pushConstants.useObjectColor = 0u;
+  if (p.pushConstants.bindless) {
+    pushConstants.sectionPlaneEnabled = p.pushConstants.bindless->sectionPlaneEnabled;
+    pushConstants.sectionPlane = p.pushConstants.bindless->sectionPlane;
+  }
+  // Use the full display extent so Overview scales the stroke with the scene tile.
+  pushConstants.padding7 = static_cast<float>(extent.width);
+  pushConstants.padding8 = static_cast<float>(extent.height);
+  const auto &commands = *p.bim.draws.selectedDrawCommands;
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, expandSilhouette);
+  debugOverlay->drawSelectionStroke(cmd, layout, commands, glm::vec3(1.0f), pushConstants);
+  // Erase the entire original union after all expanded triangles are drawn.
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, clearSilhouette);
+  debugOverlay->drawWireframe(cmd, layout, commands, glm::vec3(0.0f), 1.0f, 1.0f, pushConstants);
+  vkCmdEndRendering(cmd);
+
+  barrier.srcStageMask = VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT;
+  barrier.srcAccessMask = VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT;
+  barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
+  barrier.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
+  barrier.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+  barrier.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+  vkCmdPipelineBarrier2(cmd, &dependency);
+  return true;
+}
+
+void recordBimSelectionDisplay(VkCommandBuffer cmd, const FrameRecordParams &p,
+                               VkDescriptorSet postProcessSet) {
+  const auto pipeline = p.pipelineHandle(RenderTechniqueId::ForwardRaster, kBimSelectionDisplayPipeline);
+  const auto layout = p.pipelineLayout(p.runtime.activeTechnique, "post-process");
+  if (!pipeline || !layout || !postProcessSet)
+    return;
+  const glm::vec4 color(p.postProcess.encodeSrgbOutput ? glm::convertLinearToSRGB(kSelectionColor) : kSelectionColor, 1.0f);
+  vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+  vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 0, 1, &postProcessSet, 0, nullptr);
+  vkCmdPushConstants(cmd, layout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(color), &color);
+  vkCmdDraw(cmd, 3, 1, 0, 0);
 }
 
 } // namespace container::renderer

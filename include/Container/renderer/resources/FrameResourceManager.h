@@ -206,7 +206,8 @@ class FrameResourceManager {
   AttachmentImage createAttachment(VkFormat fmt, VkImageUsageFlags usage,
                                    VkImageAspectFlags aspect,
                                    VkSampleCountFlagBits samples =
-                                       VK_SAMPLE_COUNT_1_BIT) const;
+                                       VK_SAMPLE_COUNT_1_BIT,
+                                   VkExtent2D extent = {}) const;
   void            destroyAttachment(AttachmentImage& a) const;
   void            initializeFrameImages(VkImage newFallbackShadow,
                                         VkImage newFallbackLocalShadow) const;

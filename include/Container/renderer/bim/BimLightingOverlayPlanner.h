@@ -8,6 +8,8 @@
 
 namespace container::renderer {
 
+inline constexpr glm::vec3 kSelectionColor{1.0f, 0.46f, 0.0f};
+
 struct DrawCommand;
 
 enum class BimLightingOverlayKind : uint32_t {

@@ -1900,6 +1900,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
     const LightingManager *lightingManager = deferred->lightingManager();
     const ExposureManager *exposureManager = deferred->exposureManager();
     p.screenshot.sensorTimestamps.record(cmd, FrameSensorReadbackTimestamps::RgbBegin);
+    const bool hasSelectionStroke = recordBimSelectionStrokeMask(cmd, p, extent, deferred->debugOverlay());
     static_cast<void>(recordDeferredPostProcessPassCommands(
         {.commandBuffer = cmd,
          .renderPass = p.postProcess.renderPass,
@@ -1940,9 +1941,11 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
          .captureSceneLinear = p.screenshot.sceneLinear,
          .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
          .recordAfterFullscreenDraw = [deferred, &p,
-                                       ppSets](VkCommandBuffer passCmd) {
+                                       ppSets, hasSelectionStroke](VkCommandBuffer passCmd) {
            recordBimPresentationFloorPlan(passCmd, p, deferred->swapchainExtent(), deferred->debugOverlay());
            recordBimXrayClashOverlay(passCmd, p, deferred->swapchainExtent(), deferred->debugOverlay());
+           if (hasSelectionStroke)
+             recordBimSelectionDisplay(passCmd, p, ppSets[0]);
            recordBimSunHoursOverlay(passCmd, p);
            if (p.screenshot.viewportOnly) {
              if (auto* gui = deferred->guiManager())

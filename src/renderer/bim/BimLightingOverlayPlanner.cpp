@@ -9,7 +9,6 @@ namespace container::renderer {
 namespace {
 
 constexpr glm::vec3 kHoverColor{0.0f, 0.72f, 1.0f};
-constexpr glm::vec3 kSelectionColor{1.0f, 0.46f, 0.0f};
 
 [[nodiscard]] bool hasDrawCommands(const std::vector<DrawCommand> *commands) {
   return commands != nullptr && !commands->empty();
