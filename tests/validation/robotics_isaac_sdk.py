@@ -27,9 +27,17 @@ MAX_LOAD_UPDATES = 180
 MAX_QUERY_UPDATES = 180
 MAX_RENDER_UPDATES = 60
 PHASE_TIMEOUT_SECONDS = 60.0
+ISAAC_SIM_RELEASE = "6.2.0"
+# NVIDIA's 6.2.0 x86-64 installers and app wheels retain this runtime stamp.
+ISAAC_SIM_GA_RUNTIME_STAMP = (
+    ISAAC_SIM_RELEASE, "rc.14", "6", "2", "0", "rc", "14", "release.52805.02189a84.gl",
+)
 
 REFERENCES = {
     "simulationApp": "https://docs.isaacsim.omniverse.nvidia.com/6.2.0/py/source/extensions/isaacsim.simulation_app/docs/index.html",
+    "isaacSimRelease": "https://github.com/isaac-sim/IsaacSim/releases/tag/v6.2.0",
+    "isaacSimDownloads": "https://docs.isaacsim.omniverse.nvidia.com/6.2.0/installation/download.html#latest-release",
+    "isaacSimAppWheels": "https://pypi.nvidia.com/isaacsim-app/",
     "labAppLauncher": "https://isaac-sim.github.io/IsaacLab/v3.0.0/source/api/lab/isaaclab.app.html",
     "labLauncherSource": "https://github.com/isaac-sim/IsaacLab/blob/v3.0.0/source/isaaclab/isaaclab/app/app_launcher.py",
     "worldTransforms": "https://docs.omniverse.nvidia.com/kit/docs/omni.usd/1.19.12/omni.usd/omni.usd.get_world_transform_matrix.html",
@@ -88,6 +96,16 @@ def _ga_version(actual, expected, label):
     # Build metadata does not change the GA release. Pre-release tags do.
     core = str(actual).split("+", 1)[0]
     _require(core == expected, f"Unsupported {label} version {actual!r}; this lane targets {expected} GA")
+
+
+def _check_isaac_sim_version(raw_version):
+    _require(len(raw_version) == 8, f"Unexpected Isaac Sim runtime version: {raw_version!r}")
+    release, prerelease, _, _, _, pretag, prebuild, _ = raw_version
+    _ga_version(release, ISAAC_SIM_RELEASE, "Isaac Sim")
+    if prerelease or pretag or prebuild:
+        _require(tuple(raw_version) == ISAAC_SIM_GA_RUNTIME_STAMP,
+                 f"Isaac Sim prerelease is not supported: {raw_version!r}")
+    return ISAAC_SIM_RELEASE
 
 
 def _close_app(app, report):
@@ -424,9 +442,7 @@ def run_sdk(backend: str, bundle: dict, report_dir: Path) -> dict:
 
         raw_version = list(get_version())
         report["isaacSimVersionRaw"] = raw_version
-        _require(bool(raw_version), "Isaac Sim did not report its runtime version")
-        _ga_version(raw_version[0], "6.2.0", "Isaac Sim")
-        _require(len(raw_version) < 6 or not raw_version[5], f"Isaac Sim prerelease is not supported: {raw_version}")
+        report["isaacSimRelease"] = _check_isaac_sim_version(raw_version)
         report["openUsdVersion"] = list(Usd.GetVersion())
         verify_dependencies(bundle)
         stage = _open_context_stage(app, stage_path)

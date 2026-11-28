@@ -15,6 +15,7 @@ import unittest
 from unittest.mock import patch
 
 from robotics_isaac_compare import load_bundle, verify_dependencies, verify_robot, verify_stage
+from robotics_isaac_sdk import _check_isaac_sim_version
 from robotics_isaac_smoke import check_sdk_process
 
 
@@ -244,6 +245,26 @@ class NativeFixtureTests(unittest.TestCase):
 
                 verify_dependencies(bundle)
                 verify_stage(Usd.Stage.Open(str(bundle["stage"])), bundle)
+
+
+class SdkVersionTests(unittest.TestCase):
+    def test_accepts_released_isaac_sim_versions(self):
+        ga = ("6.2.0", "", "6", "2", "0", "", "", "")
+        published_build = ("6.2.0", "rc.14", "6", "2", "0", "rc", "14", "release.52805.02189a84.gl")
+        for version in (ga, published_build):
+            with self.subTest(version=version):
+                self.assertEqual(_check_isaac_sim_version(version), "6.2.0")
+
+    def test_rejects_other_isaac_sim_prereleases(self):
+        versions = (
+            ("6.2.0", "rc.14", "6", "2", "0", "rc", "14", ""),
+            ("6.2.0", "rc.14", "6", "2", "0", "rc", "14", "release.52806.02189a84.gl"),
+            ("6.2.0", "rc.13", "6", "2", "0", "rc", "13", "release.52805.02189a84.gl"),
+            ("6.2.1", "", "6", "2", "1", "", "", ""),
+        )
+        for version in versions:
+            with self.subTest(version=version), self.assertRaises(RuntimeError):
+                _check_isaac_sim_version(version)
 
 
 class SdkProcessTests(unittest.TestCase):

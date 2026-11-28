@@ -57,10 +57,17 @@ Run the Isaac Sim check with the simulator's Python launcher. On Windows:
 ```
 
 Use `python.sh` in a Linux Isaac Sim installation. For the Isaac Lab check,
-run the same script in the Python environment configured for Isaac Lab and
-select `--backend isaac-lab`. The simulator modes load the real Kit stage and
-record the installed version. The Lab mode starts Kit through Isaac Lab and
-checks the authored PhysX scene. [Isaac Sim standalone Python](https://docs.isaacsim.omniverse.nvidia.com/6.2.0/python_scripting/manual_standalone_python.html) · [Isaac Lab installation](https://isaac-sim.github.io/IsaacLab/main/source/setup/installation/index.html)
+set up Lab 3.0.0 with Isaac Sim. When installing the Lab wheel, include the
+`isaacsim` extra and use the dependency overrides in the versioned installation
+guide. Run the same script in that Python environment with `--backend isaac-lab`.
+The Lab mode starts Kit through Isaac Lab and checks the authored PhysX scene.
+[Isaac Sim standalone Python](https://docs.isaacsim.omniverse.nvidia.com/6.2.0/python_scripting/manual_standalone_python.html) · [Isaac Lab 3.0.0 setup with Isaac Sim](https://isaac-sim.github.io/IsaacLab/v3.0.0/source/isaaclab/installation.html#installing-the-isaacsim-extra)
+
+The receipt records the normalized Isaac Sim release and the raw Kit version.
+NVIDIA's 6.2.0 Windows and Linux x86-64 standalone archives and app wheels
+carry the runtime stamp `6.2.0-rc.14+release.52805.02189a84.gl`. The test
+recognizes this exact stamp as 6.2.0 GA.
+[Isaac Sim 6.2.0 release](https://github.com/isaac-sim/IsaacSim/releases/tag/v6.2.0) · [Standalone installer downloads](https://docs.isaacsim.omniverse.nvidia.com/6.2.0/installation/download.html#latest-release) · [NVIDIA app wheel index](https://pypi.nvidia.com/isaacsim-app/)
 
 The simulator checks query world-space robot poses at the selected timeline
 times. Real PhysX rays must hit the expected wall and slab proxies at the
