@@ -2122,7 +2122,7 @@ bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
       static_cast<size_t>(kGridSegments + 1u) *
       static_cast<size_t>(kGridSegments + 1u));
   sectionPlaneVisualIndices_.reserve(static_cast<size_t>(kGridSegments) *
-                                     static_cast<size_t>(kGridSegments) * 6u);
+                                     static_cast<size_t>(kGridSegments) * 12u);
   const float halfSize = size * 0.5f;
   for (uint32_t y = 0u; y <= kGridSegments; ++y) {
     const float v = static_cast<float>(y) / static_cast<float>(kGridSegments);
@@ -2152,12 +2152,11 @@ bool BimManager::rebuildSectionPlaneVisualGeometry(glm::vec4 plane, float size,
       const uint32_t i1 = i0 + 1u;
       const uint32_t i2 = i0 + rowStride;
       const uint32_t i3 = i2 + 1u;
-      sectionPlaneVisualIndices_.push_back(i0);
-      sectionPlaneVisualIndices_.push_back(i2);
-      sectionPlaneVisualIndices_.push_back(i1);
-      sectionPlaneVisualIndices_.push_back(i1);
-      sectionPlaneVisualIndices_.push_back(i2);
-      sectionPlaneVisualIndices_.push_back(i3);
+      // Show the grid from either side of the cut. The wireframe pipelines
+      // cull the opposite winding, so each triangle blends only once.
+      sectionPlaneVisualIndices_.insert(sectionPlaneVisualIndices_.end(),
+                                        {i0, i2, i1, i1, i2, i3,
+                                         i0, i1, i2, i1, i3, i2});
     }
   }
 

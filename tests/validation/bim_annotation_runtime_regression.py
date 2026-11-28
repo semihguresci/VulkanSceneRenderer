@@ -35,6 +35,7 @@ HOVER_CAMERA_HEIGHT = 1.2
 CAP_STAGES = {"off": {}, "fill": {"capFill": True}, "hatch": {"capHatch": True},
               "both": {"capFill": True, "capHatch": True}, "off-again": {}}
 CAP_PLANE = {"rear-cut": [0, 0, -1, .15], "front-cut": [0, 0, 1, -.15]}
+GRID_STAGES = {"off": {}, "grid": {"sectionVisual": True}, "off-again": {}}
 
 
 def require(condition, message):
@@ -186,11 +187,11 @@ def section_cap_fixture(path):
                     encoding="utf-8")
 
 
-def section_cap_sequence(path, cuts):
+def section_cap_sequence(path, cuts, stages=CAP_STAGES):
     frames, events = {}, [{"frame": 1, "orthographic": True}]
     for technique in TECHNIQUES:
         for cut in cuts:
-            for stage, flags in CAP_STAGES.items():
+            for stage, flags in stages.items():
                 frame = (len(frames) + 1) * 3 + 3
                 frames[f"{technique}/{cut}/{stage}"] = frame
                 event = {"frame": frame - 2, "bimAnnotations": flags}
@@ -664,6 +665,87 @@ def run_section_cap_depth(renderer, output, report, generate_only, *, lit_only=F
     require(not failures, "\n".join(failures))
 
 
+def compare_section_grid(images, evidence, *, mode, extension):
+    import numpy as np
+
+    failures = []
+    lit = overview_panel_slice(.026, .046, .334, .264) if mode == "overview" else np.s_[:, :]
+    for technique in TECHNIQUES:
+        for cut in CAP_PLANE:
+            key = f"{technique}/{cut}"
+            off, grid, restored = [images[f"{key}/{stage}"] for stage in GRID_STAGES]
+            if extension == "exr":
+                require(float(off.max()) > .01, f"Empty scene-linear cut-plane reference in {key}")
+                evidence[key] = {stage: float(np.max(np.abs(off - selected)))
+                                 for stage, selected in (("grid", grid), ("off-again", restored))}
+                if max(evidence[key].values()) > .002:
+                    failures.append(f"{key} leaked the cut-plane grid into scene-linear radiance: {evidence[key]}")
+                continue
+            if not np.array_equal(off, restored):
+                failures.append(f"{key}/{mode} retained cut-plane grid pixels after switching off")
+            before, after = off[lit].astype(np.int16), grid[lit].astype(np.int16)
+            height, width = before.shape[:2]
+            # Sample the interior common to each wall and its cover. The
+            # grid also spans the unoccluded margins of the viewport.
+            rows = slice(round(.4 * height), round(.6 * height))
+            zones = {}
+            for i, (zone, _, _, _) in enumerate(PIN_DEPTH_ZONES):
+                center = (i + .5) / 4
+                columns = slice(round((center - .065) * width), round((center + .065) * width))
+                delta = (after - before)[rows, columns]
+                blue_ink = delta[:, :, 2] - delta[:, :, 0]
+                visible = blue_ink > 4
+                zones[zone] = dict(signal=int(blue_ink[visible].sum()),
+                                   pixels=int(np.count_nonzero(visible)),
+                                   peakBlueInk=int(blue_ink.max()), maxAbsoluteDelta=int(np.abs(delta).max()))
+            evidence[key] = zones
+            clear = zones["clear"]
+            if clear["pixels"] < (5 if mode == "overview" else 30):
+                failures.append(f"{key}/{mode} lacks an exposed cut-plane grid: {zones}")
+            if cut == "rear-cut":
+                rear = zones["behind"]
+                if (rear["pixels"] < .55 * clear["pixels"]
+                        or rear["peakBlueInk"] < .55 * clear["peakBlueInk"]):
+                    failures.append(f"{key}/{mode} cut-plane grid disappeared behind rear glass: {zones}")
+            else:
+                # Deferred Overview displays opaque geometry and the grid,
+                # but omits the forward transparent surface contribution.
+                if (mode == "lit" or technique == "forward-raster") and (
+                        zones["front"]["signal"] > .35 * clear["signal"]):
+                    failures.append(f"{key}/{mode} front glass did not attenuate the cut-plane grid: {zones}")
+                if zones["opaque"]["maxAbsoluteDelta"]:
+                    failures.append(f"{key}/{mode} cut-plane grid appeared over opaque geometry: {zones}")
+    if mode == "overview":
+        for cut in CAP_PLANE:
+            diagnostic = {f"forward-raster/{stage}": images[f"forward-raster/{cut}/{stage}"]
+                          for stage in GRID_STAGES}
+            evidence[f"{cut}/diagnostics"] = inspect_overview_diagnostics(
+                diagnostic, tuple(GRID_STAGES)[1:], f"Cut-plane grid {cut}")
+    print(f"Cut-plane grid {mode}/{extension}: {len(images)} captures, {len(failures)} failed pixel checks",
+          flush=True)
+    return failures
+
+
+def run_section_grid_depth(renderer, output, report, generate_only, *, lit_only=False):
+    bim = output / "section-grid-depth-ordering.bim"
+    section_cap_fixture(bim)
+    evidence = report["checks"].setdefault("sectionGridDepth", {})
+    lanes = [("lit", "png")]
+    if not lit_only:
+        lanes += [("overview", "png"), ("lit", "exr")]
+    failures = []
+    for mode, extension in lanes:
+        sequence = output / f"section-grid-ordering-{mode}-{extension}.sequence.json"
+        frames = section_cap_sequence(sequence, CAP_PLANE, GRID_STAGES)
+        captures = record(renderer, output, None, bim, sequence, frames, TECHNIQUES[0], extension,
+                          report, generate_only, mode=mode, ordering="section-grid")
+        if not generate_only:
+            failures.extend(compare_section_grid(captures, evidence.setdefault(f"{mode}/{extension}", {}),
+                                                mode=mode, extension=extension))
+    evidence["failures"] = failures
+    require(not failures, "\n".join(failures))
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--renderer", type=Path, required=True)
@@ -677,6 +759,8 @@ def main():
                          help="run only the depth-tested BIM hover sequence, optionally Lit only")
     focused.add_argument("--section-cap-ordering-only", nargs="?", const="all", choices=("lit", "all"),
                          help="run only the depth-tested section cap sequence, optionally Lit only")
+    focused.add_argument("--section-grid-ordering-only", nargs="?", const="all", choices=("lit", "all"),
+                         help="run only the depth-tested cut-plane grid sequence, optionally Lit only")
     baseline = parser.add_mutually_exclusive_group()
     baseline.add_argument("--expect-missing-forward-annotations", action="store_true",
                           help="check the older capture format on a build without Forward annotations")
@@ -684,8 +768,13 @@ def main():
                           help="expect only Technical elevation to be missing from Forward raster")
     args = parser.parse_args()
     expect_missing = args.expect_missing_forward_annotations or args.expect_missing_forward_technical
-    focused_mode = args.issue_pin_ordering_only or args.bim_hover_ordering_only or args.section_cap_ordering_only
-    if focused_mode and expect_missing:
+    focused_check = next(((runner, mode) for runner, mode in (
+        (run_pin_depth, args.issue_pin_ordering_only),
+        (run_hover_depth, args.bim_hover_ordering_only),
+        (run_section_cap_depth, args.section_cap_ordering_only),
+        (run_section_grid_depth, args.section_grid_ordering_only),
+    ) if mode), None)
+    if focused_check and expect_missing:
         parser.error("The depth-ordering checks require working raster annotation pipelines")
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_BIM_FLOOR_PLAN") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1 to run GPU captures")
@@ -703,10 +792,9 @@ def main():
     if not args.generate_only:
         report["rendererSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     try:
-        if focused_mode:
-            check_ordering = (run_pin_depth if args.issue_pin_ordering_only else
-                              run_hover_depth if args.bim_hover_ordering_only else run_section_cap_depth)
-            check_ordering(renderer, output, report, args.generate_only, lit_only=focused_mode == "lit")
+        if focused_check:
+            check_ordering, scope = focused_check
+            check_ordering(renderer, output, report, args.generate_only, lit_only=scope == "lit")
             if not args.generate_only:
                 require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["rendererSha256"], "Renderer changed")
                 report["passed"] = True
@@ -732,6 +820,7 @@ def main():
             run_pin_depth(renderer, output, report, args.generate_only)
             run_hover_depth(renderer, output, report, args.generate_only)
             run_section_cap_depth(renderer, output, report, args.generate_only)
+            run_section_grid_depth(renderer, output, report, args.generate_only)
         if not args.generate_only:
             require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["rendererSha256"], "Renderer changed")
             report["passed"] = True
