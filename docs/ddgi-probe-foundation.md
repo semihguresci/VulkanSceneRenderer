@@ -597,6 +597,9 @@ Lookup cost is included in Lighting, not an independently measured pass.
 
 ## Validation and remaining epic work
 
+Use the [DDGI device validation matrix](ddgi-device-matrix.md) to collect a
+comparable correctness and Release timing report for another Vulkan adapter.
+
 Build through the Visual Studio developer environment:
 
 ```powershell
