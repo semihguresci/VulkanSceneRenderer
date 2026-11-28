@@ -494,7 +494,12 @@ jobs:
           package="VulkanSceneRenderer-$version-linux-x64-nav2-preview"
           python3 -B tools/package_bim_nav2_preview.py --build-dir out/build/linux-ros2-contract \
             --version "$version" --output "$evidence/packages" | tee "$evidence/preview-package.log"
-          git rev-parse HEAD > "$evidence/packages/source-commit.txt"
+          source_commit="$(git -c safe.directory="$PWD" rev-parse HEAD)"
+          if [[ "$source_commit" != "$GITHUB_SHA" ]]; then
+            echo 'The Linux preview was built from an unexpected checkout.' >&2
+            exit 1
+          fi
+          printf '%s\n' "$source_commit" > "$evidence/packages/source-commit.txt"
           (
             cd "$evidence/packages"
             sha256sum "$package.tar.gz" > "$package.tar.gz.sha256"
