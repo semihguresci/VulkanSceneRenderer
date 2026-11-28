@@ -989,7 +989,7 @@ void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
   }
 
   if (lightDescriptorSetLayout_ == VK_NULL_HANDLE) {
-    const std::array<VkDescriptorSetLayoutBinding, 8> bindings = {{
+    std::array<VkDescriptorSetLayoutBinding, 8> bindings = {{
         {0, VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1,
          VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
         {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -1007,6 +1007,9 @@ void LightingManager::createDescriptorResources(uint32_t descriptorSetCount) {
         {7, VK_DESCRIPTOR_TYPE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT,
          nullptr},
     }};
+    if (device_->rayTracingPipelineSupported())
+      for (size_t index = 0; index < 3; ++index)
+        bindings[index].stageFlags |= VK_SHADER_STAGE_RAYGEN_BIT_KHR;
     lightDescriptorSetLayout_ = pipelineManager_.createDescriptorSetLayout(
         {bindings.begin(), bindings.end()}, std::vector<VkDescriptorBindingFlags>(bindings.size(), 0));
   }

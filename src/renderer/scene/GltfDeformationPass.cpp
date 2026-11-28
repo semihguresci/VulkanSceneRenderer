@@ -231,7 +231,8 @@ struct GltfDeformationPass::Impl {
     VkBufferUsageFlags usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
         VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_SRC_BIT;
     if (device->enabledVulkan12Features().bufferDeviceAddress) usage |= VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT;
-    if (device->rayQueriesEnabled()) usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
+    if (device->accelerationStructureSupported())
+      usage |= VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR;
     for (auto& frame : frames) {
       memory.destroyBuffer(frame.current);
       memory.destroyBuffer(frame.previous);
@@ -497,7 +498,7 @@ void GltfDeformationPass::record(VkCommandBuffer command, uint32_t frameIndex) {
   output.dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
   VkPipelineStageFlags destinations = VK_PIPELINE_STAGE_VERTEX_INPUT_BIT |
       VK_PIPELINE_STAGE_ALL_GRAPHICS_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
-  if (state.device->rayQueriesEnabled()) {
+  if (state.device->accelerationStructureSupported()) {
     destinations |= VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR;
     output.dstAccessMask |= VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
   }

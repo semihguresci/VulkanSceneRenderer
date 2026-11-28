@@ -54,8 +54,8 @@ VkDevice RayInstanceTransformPass::device() const noexcept {return impl_->device
 void RayInstanceTransformPass::createResources(const std::filesystem::path& root) {
   auto& s=*impl_;
   if(s.pipeline) return;
-  if(!s.device->rayQueriesEnabled() || s.properties.limits.maxPerStageDescriptorStorageBuffers<4)
-    fail("required ray-query or storage-buffer support is unavailable");
+  if(!s.device->accelerationStructureSupported() || s.properties.limits.maxPerStageDescriptorStorageBuffers<4)
+    fail("required acceleration structure or storage-buffer support is unavailable");
   std::vector<VkDescriptorSetLayoutBinding> bindings;
   for(uint32_t i=0;i<4;++i) bindings.push_back({i,VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,1,VK_SHADER_STAGE_COMPUTE_BIT,nullptr});
   s.setLayout=s.pipelines.createDescriptorSetLayout(bindings,{});
@@ -139,8 +139,11 @@ RayInstanceTransformPass::Publication RayInstanceTransformPass::record(VkCommand
   }
   barrier.srcAccessMask=VK_ACCESS_SHADER_WRITE_BIT;
   barrier.dstAccessMask=VK_ACCESS_SHADER_READ_BIT|VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR|VK_ACCESS_TRANSFER_READ_BIT;
-  vkCmdPipelineBarrier(cmd,VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR|
-      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT|VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT|VK_PIPELINE_STAGE_TRANSFER_BIT,0,1,&barrier,0,nullptr,0,nullptr);
+  VkPipelineStageFlags consumers = VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR |
+      VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_TRANSFER_BIT;
+  if (s.device->rayTracingPipelineSupported())
+    consumers |= VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
+  vkCmdPipelineBarrier(cmd, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, consumers, 0, 1, &barrier, 0, nullptr, 0, nullptr);
   return result;
 }
 }

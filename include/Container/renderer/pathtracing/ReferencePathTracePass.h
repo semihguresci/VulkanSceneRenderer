@@ -13,6 +13,8 @@
 
 namespace container::renderer {
 
+class NativeReferenceRayPipeline;
+
 struct ReferencePathTraceSettings {
   uint32_t samplesPerFrame{1}, sampleLimit{65536}, maxBounces{8};
   uint32_t rouletteDepth{3}, seed{1};
@@ -98,10 +100,17 @@ class ReferencePathTracePass {
   ~ReferencePathTracePass();
   ReferencePathTracePass(const ReferencePathTracePass&)=delete;
   ReferencePathTracePass& operator=(const ReferencePathTracePass&)=delete;
+  // Start native pipeline creation independently of the swapchain extent.
+  // Calling poll on the render thread adopts a finished pipeline and creates its binding table.
+  void beginNativePipeline(const std::filesystem::path& shaderRoot, VkDescriptorSetLayout materials,
+                           VkDescriptorSetLayout lights);
+  [[nodiscard]] bool pollNativePipeline();
   void createResources(const std::filesystem::path&,uint32_t imageCount,VkExtent2D,
                        VkDescriptorSetLayout materials,VkDescriptorSetLayout lights,
                        uint64_t imageBudgetBytes=kDefaultReferenceImageBudgetBytes,
-                       ReferenceOidnSettings oidn = {});
+                       ReferenceOidnSettings oidn = {}, bool nativeRayPipeline = false);
+  // Retire all readers before releasing size-dependent images and descriptors.
+  void releaseFrameResources();
   // Optional host views of the same material and ray generations build the
   // mesh-light proposal. They need only survive this call.
   void prepareFrame(uint32_t image, const ReferencePathTraceInput&,
@@ -142,6 +151,11 @@ class ReferencePathTracePass {
   [[nodiscard]] VkImage momentImage() const;
   [[nodiscard]] VkImageView displayView() const;
   [[nodiscard]] VkImageView meanView() const;
+  [[nodiscard]] bool usesNativeRayPipeline() const;
+  [[nodiscard]] std::shared_ptr<NativeReferenceRayPipeline> prepareNativeRayReload(
+      const std::filesystem::path& shaderRoot) const;
+  // The caller has retired the frames recorded with the previous pipeline.
+  void publishNativeRayReload(std::shared_ptr<NativeReferenceRayPipeline>) noexcept;
  private:
   struct Impl;
   std::unique_ptr<Impl> impl_;

@@ -887,7 +887,8 @@ public:
       }
       event.technique = value.value("technique", std::string{});
       if (!event.technique.empty() && event.technique != "forward-raster" &&
-          event.technique != "deferred-raster" && event.technique != "path-tracing")
+          event.technique != "deferred-raster" && event.technique != "path-tracing" &&
+          event.technique != "ray-tracing")
         throw std::invalid_argument("Invalid capture render technique");
       event.reload = value.value("reload", std::string{});
       if (value.contains("environmentYaw")) {

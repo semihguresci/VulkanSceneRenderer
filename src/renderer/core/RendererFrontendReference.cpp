@@ -31,16 +31,19 @@
 
 namespace container::renderer {
 namespace {
-void displayBarrier(VkCommandBuffer command, VkImage image, bool forReading) {
+void displayBarrier(VkCommandBuffer command, const ReferencePathTracePass& pass, bool forReading) {
+  VkPipelineStageFlags2 writerStages = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+  if (pass.usesNativeRayPipeline())
+    writerStages |= VK_PIPELINE_STAGE_2_RAY_TRACING_SHADER_BIT_KHR;
   VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
-  barrier.srcStageMask = forReading ? VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
+  barrier.srcStageMask = forReading ? writerStages : VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
   barrier.srcAccessMask = forReading ? VK_ACCESS_2_SHADER_WRITE_BIT : VK_ACCESS_2_MEMORY_READ_BIT;
-  barrier.dstStageMask = forReading ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
+  barrier.dstStageMask = forReading ? VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT : writerStages;
   barrier.dstAccessMask = forReading ? VK_ACCESS_2_MEMORY_READ_BIT : VK_ACCESS_2_SHADER_READ_BIT | VK_ACCESS_2_SHADER_WRITE_BIT;
   barrier.oldLayout = forReading ? VK_IMAGE_LAYOUT_GENERAL : VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
   barrier.newLayout = forReading ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL;
   barrier.srcQueueFamilyIndex = barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-  barrier.image = image;
+  barrier.image = pass.displayImage();
   barrier.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
   VkDependencyInfo dependency{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
   dependency.imageMemoryBarrierCount = 1;
@@ -61,9 +64,58 @@ ReferenceOidnSettings RendererFrontend::referenceDenoising() const {
                           : referenceDenoisingOverride_.value_or(svc_.config.pathOidn);
 }
 
+bool RendererFrontend::referencePipelineMatches(const PreparedReferencePath& prepared) const {
+  return prepared.pass && prepared.shaderGeneration == shaderReloadGeneration_ &&
+      prepared.materials == subs_.sceneManager->descriptorSetLayout() &&
+      prepared.lights == subs_.lightingManager->lightDescriptorSetLayout();
+}
+
+void RendererFrontend::setInteractiveNativePathRequested(bool requested) {
+  interactiveNativePathRequested_ = requested;
+  if (subs_.guiManager)
+    subs_.guiManager->setNativeRayPipelineCompiling(requested);
+}
+
+void RendererFrontend::processInteractiveNativePath() {
+  auto& prepared = preparedNativePath_;
+  try {
+    if (prepared.pass) {
+      if (!prepared.pass->pollNativePipeline()) return;
+      if (!referencePipelineMatches(prepared)) prepared = {};
+    }
+    if (!interactiveNativePathRequested_) return;
+    if (!prepared.pass) {
+      const auto root = activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory();
+      auto pass = std::make_unique<ReferencePathTracePass>(svc_.ctx.deviceWrapper,
+          *svc_.allocationManager.memoryManager(), svc_.pipelineManager);
+      const auto materials = subs_.sceneManager->descriptorSetLayout();
+      const auto lights = subs_.lightingManager->lightDescriptorSetLayout();
+      pass->beginNativePipeline(root, materials, lights);
+      prepared = {std::move(pass), shaderReloadGeneration_, materials, lights};
+      return;
+    }
+    setInteractiveNativePathRequested(false);
+    pendingRenderTechniqueChange_ = RenderTechniqueId::RayTracing;
+  } catch (const std::exception& error) {
+    const auto status = std::string("Ray tracing initialization failed: ") + error.what();
+    container::log::ContainerLogger::instance().renderer()->warn("{}", status);
+    if (interactiveNativePathRequested_ && subs_.guiManager)
+      subs_.guiManager->setStatusMessage(status);
+    setInteractiveNativePathRequested(false);
+    prepared = {};
+  }
+}
+
 void RendererFrontend::ensureReferencePathResources() {
   referenceRecorded_ = false;
   if (!referencePathActive()) return;
+  const bool nativeRayPipeline = subs_.activeTechnique->id() == RenderTechniqueId::RayTracing;
+  if (subs_.referencePathTracePass &&
+      subs_.referencePathTracePass->usesNativeRayPipeline() != nativeRayPipeline) {
+    subs_.frameSyncManager->waitForAllFrames();
+    retireReferencePathResources();
+    referenceStatus_.clear();
+  }
   const auto denoising = referenceDenoising();
   const auto shaderRoot = activeShaderReload_ ? activeShaderReload_->directory : container::util::executableDirectory();
   if (auto& current = subs_.referencePathTracePass) {
@@ -79,12 +131,17 @@ void RendererFrontend::ensureReferencePathResources() {
   }
   if (!referenceStatus_.empty()) return;
   try {
-    auto pass = std::make_unique<ReferencePathTracePass>(svc_.ctx.deviceWrapper,
-        *svc_.allocationManager.memoryManager(), svc_.pipelineManager);
+    auto& prepared = nativeRayPipeline ? preparedNativePath_ : preparedInlinePath_;
+    std::unique_ptr<ReferencePathTracePass> pass;
+    if (referencePipelineMatches(prepared) && (!nativeRayPipeline || prepared.pass->pollNativePipeline()))
+      pass = std::move(prepared.pass);
+    if (!pass)
+      pass = std::make_unique<ReferencePathTracePass>(svc_.ctx.deviceWrapper,
+          *svc_.allocationManager.memoryManager(), svc_.pipelineManager);
     pass->createResources(shaderRoot,
         uint32_t(svc_.swapChainManager.imageCount()), svc_.swapChainManager.extent(),
         subs_.sceneManager->descriptorSetLayout(), subs_.lightingManager->lightDescriptorSetLayout(),
-        kDefaultReferenceImageBudgetBytes, denoising);
+        kDefaultReferenceImageBudgetBytes, denoising, nativeRayPipeline);
     subs_.referencePathTracePass = std::move(pass);
     ++referenceTimingGeneration_;
     referenceDiagnosticSeen_.assign(svc_.swapChainManager.imageCount(), 0);
@@ -96,7 +153,7 @@ void RendererFrontend::ensureReferencePathResources() {
   } catch (const std::exception& error) {
     referenceStatus_ = std::string("Raster fallback: ") + error.what();
     container::log::ContainerLogger::instance().renderer()->warn("{}", referenceStatus_);
-    initializeRenderTechnique(RenderTechniqueId::DeferredRaster, "path tracing resource fallback");
+    initializeRenderTechnique(RenderTechniqueId::DeferredRaster, "reference ray tracing resource fallback");
     syncGuiRenderEngineOptions();
     if (subs_.guiManager) subs_.guiManager->setStatusMessage(referenceStatus_);
   }
@@ -246,14 +303,14 @@ bool RendererFrontend::recordReferencePathTrace(VkCommandBuffer command, const F
   pass.prepareFrame(image, input, subs_.sceneManager->gpuMaterialData(),
       subs_.rayShadowManager->surfaceInstanceMetadata(image));
   pass.record(command, image);
-  displayBarrier(command, pass.displayImage(), true);
+  displayBarrier(command, pass, true);
   referenceRecorded_ = true;
   return true;
 }
 
 void RendererFrontend::finishReferencePathTrace(VkCommandBuffer command) {
   if (referenceRecorded_ && subs_.referencePathTracePass)
-    displayBarrier(command, subs_.referencePathTracePass->displayImage(), false);
+    displayBarrier(command, *subs_.referencePathTracePass, false);
 }
 
 void RendererFrontend::collectReferenceDiagnostics(uint32_t image) {
@@ -335,7 +392,23 @@ void RendererFrontend::publishReferenceColorBinding(uint32_t image) {
       .view = subs_.referencePathTracePass->displayView(), .format = VK_FORMAT_R32G32B32A32_SFLOAT,
       .extent = {extent.width, extent.height, 1},
       .usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT};
-  for (auto technique : {RenderTechniqueId::DeferredRaster, RenderTechniqueId::ForwardRaster, RenderTechniqueId::PathTracing})
+  for (auto technique : {RenderTechniqueId::DeferredRaster, RenderTechniqueId::ForwardRaster, subs_.activeTechnique->id()})
     subs_.frameRuntimeResourceRegistry->bindImage(technique, "scene-color", image, binding);
+}
+
+void RendererFrontend::retireReferencePathResources(bool restoreColorBindings) {
+  auto retired = std::move(subs_.referencePathTracePass);
+  if (!retired) return;
+  if (restoreColorBindings) {
+    // Return post-process descriptors to their raster views before freeing the
+    // old accumulation and display images.
+    for (uint32_t image = 0; image < svc_.swapChainManager.imageCount(); ++image)
+      updateReferenceColorSource(image, false);
+  }
+  auto& prepared = retired->usesNativeRayPipeline() ? preparedNativePath_ : preparedInlinePath_;
+  if (prepared.pass) return;
+  retired->releaseFrameResources();
+  prepared = {std::move(retired), shaderReloadGeneration_, subs_.sceneManager->descriptorSetLayout(),
+              subs_.lightingManager->lightDescriptorSetLayout()};
 }
 } // namespace container::renderer

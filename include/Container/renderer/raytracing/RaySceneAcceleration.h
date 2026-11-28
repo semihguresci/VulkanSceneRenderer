@@ -65,7 +65,7 @@ class RaySceneAcceleration {
 public:
   RaySceneAcceleration(const container::gpu::VulkanDevice &device,
                        container::gpu::VulkanMemoryManager &memory);
-  [[nodiscard]] bool supported() const { return device_.rayQueriesEnabled(); }
+  [[nodiscard]] bool supported() const { return device_.accelerationStructureSupported(); }
   [[nodiscard]] std::string_view buildLimitFailure(const RaySceneInput &input) const noexcept;
 
   // Record outside rendering on the graphics queue. A previous generation may

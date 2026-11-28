@@ -570,7 +570,7 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
       .layerCount = 1u};
   // Path tracing composites the floor plan in its presentation pass.
   const bool floorPlanEnabled = floorPlan.enabled &&
-      p.runtime.activeTechnique != RenderTechniqueId::PathTracing;
+      !isReferenceRayTechnique(p.runtime.activeTechnique);
   (void)recordBimLightingOverlayFrameCommands(
       cmd, {.bimGeometryReady = hasBimPrimitiveFramePassGeometry(primitiveGeometry),
             .framebufferExtent = inputs.extent,

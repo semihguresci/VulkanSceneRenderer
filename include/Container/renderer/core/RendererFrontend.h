@@ -477,6 +477,18 @@ private:
 
   bool referencePathActive() const;
   [[nodiscard]] ReferencePathDisplayMode referencePathDisplay() const;
+  struct PreparedReferencePath {
+    std::unique_ptr<ReferencePathTracePass> pass;
+    uint64_t shaderGeneration{};
+    VkDescriptorSetLayout materials{};
+    VkDescriptorSetLayout lights{};
+  };
+  PreparedReferencePath preparedInlinePath_;
+  PreparedReferencePath preparedNativePath_;
+  bool interactiveNativePathRequested_{};
+  [[nodiscard]] bool referencePipelineMatches(const PreparedReferencePath&) const;
+  void processInteractiveNativePath();
+  void setInteractiveNativePathRequested(bool requested);
   void ensureReferencePathResources();
   bool recordReferencePathTrace(VkCommandBuffer, const FrameRecordParams&);
   void finishReferencePathTrace(VkCommandBuffer);
@@ -485,6 +497,8 @@ private:
                                    uint64_t generation, uint64_t epoch);
   void updateReferenceColorSource(uint32_t imageIndex, bool sceneLinear);
   void publishReferenceColorBinding(uint32_t imageIndex);
+  // The caller must drain in-flight frames before retiring these views.
+  void retireReferencePathResources(bool restoreColorBindings = true);
   [[nodiscard]] ReferenceOidnSettings referenceDenoising() const;
   std::vector<bool> referenceColorBound_;
   std::vector<uint64_t> referenceDiagnosticSeen_;

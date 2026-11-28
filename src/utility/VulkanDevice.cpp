@@ -359,8 +359,12 @@ void VulkanDevice::createLogicalDevice() {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
   VkPhysicalDeviceRayQueryFeaturesKHR rayQueryFeatures{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  VkPhysicalDeviceRayTracingPipelineFeaturesKHR rayTracingPipelineFeatures{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
   VkPhysicalDeviceOpacityMicromapFeaturesEXT opacityMicromapFeatures{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT};
+  const bool requestRayTracingPipeline = createInfo_.enableRayTracingPipeline &&
+      hasExtension(availableExtensions, VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
   // Only query extension structs advertised by the selected device.
   VkPhysicalDeviceFeatures2 rayFeatures{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
@@ -371,6 +375,10 @@ void VulkanDevice::createLogicalDevice() {
   if (rayQuerySupport_.rayQueryExtension) {
     rayQueryFeatures.pNext = rayFeatures.pNext;
     rayFeatures.pNext = &rayQueryFeatures;
+  }
+  if (requestRayTracingPipeline) {
+    rayTracingPipelineFeatures.pNext = rayFeatures.pNext;
+    rayFeatures.pNext = &rayTracingPipelineFeatures;
   }
   if (createInfo_.enableOpacityMicromaps &&
       hasExtension(availableExtensions, VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME)) {
@@ -383,6 +391,18 @@ void VulkanDevice::createLogicalDevice() {
   rayQuerySupport_.rayQueryFeature = rayQueryFeatures.rayQuery == VK_TRUE;
   rayQueriesEnabled_ =
       createInfo_.enableRayQueries && rayQuerySupport_.supported();
+  rayTracingPipelineEnabled_ = requestRayTracingPipeline &&
+      rayTracingPipelineFeatures.rayTracingPipeline == VK_TRUE &&
+      rayQuerySupport_.accelerationStructureExtension &&
+      rayQuerySupport_.accelerationStructureFeature &&
+      rayQuerySupport_.deferredHostOperationsExtension &&
+      rayQuerySupport_.bufferDeviceAddressEnabled;
+  accelerationStructureEnabled_ = rayQueriesEnabled_ || rayTracingPipelineEnabled_;
+  if (rayTracingPipelineEnabled_) {
+    VkPhysicalDeviceProperties2 properties{
+        VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2, &rayTracingPipelineProperties_};
+    vkGetPhysicalDeviceProperties2(physicalDevice_, &properties);
+  }
   opacityMicromapsEnabled_ = rayQueriesEnabled_ && opacityMicromapFeatures.micromap == VK_TRUE;
   std::vector<const char*> enabledExtensions;
   enabledExtensions.reserve(createInfo_.requiredExtensions.size() +
@@ -398,11 +418,14 @@ void VulkanDevice::createLogicalDevice() {
     addEnabledExtension(requiredExtension);
   }
   addEnabledExtension(maintenanceExtension);
-  if (rayQueriesEnabled_) {
+  if (accelerationStructureEnabled_) {
     addEnabledExtension(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
-    addEnabledExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
     addEnabledExtension(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
   }
+  if (rayQueriesEnabled_)
+    addEnabledExtension(VK_KHR_RAY_QUERY_EXTENSION_NAME);
+  if (rayTracingPipelineEnabled_)
+    addEnabledExtension(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
   if (opacityMicromapsEnabled_)
     addEnabledExtension(VK_EXT_OPACITY_MICROMAP_EXTENSION_NAME);
 
@@ -515,16 +538,26 @@ void VulkanDevice::createLogicalDevice() {
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
   VkPhysicalDeviceRayQueryFeaturesKHR enabledRayQuery{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
+  VkPhysicalDeviceRayTracingPipelineFeaturesKHR enabledRayTracingPipeline{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
   VkPhysicalDeviceOpacityMicromapFeaturesEXT enabledOpacityMicromap{
       VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_OPACITY_MICROMAP_FEATURES_EXT};
   const void *featureChain =
       enablePerformanceQuery ? &performanceQueryFeatures : coreFeatureChain;
-  if (rayQueriesEnabled_) {
+  if (accelerationStructureEnabled_) {
     enabledAcceleration.accelerationStructure = VK_TRUE;
     enabledAcceleration.pNext = const_cast<void *>(featureChain);
+    featureChain = &enabledAcceleration;
+  }
+  if (rayQueriesEnabled_) {
     enabledRayQuery.rayQuery = VK_TRUE;
-    enabledRayQuery.pNext = &enabledAcceleration;
+    enabledRayQuery.pNext = const_cast<void *>(featureChain);
     featureChain = &enabledRayQuery;
+  }
+  if (rayTracingPipelineEnabled_) {
+    enabledRayTracingPipeline.rayTracingPipeline = VK_TRUE;
+    enabledRayTracingPipeline.pNext = const_cast<void *>(featureChain);
+    featureChain = &enabledRayTracingPipeline;
   }
   if (opacityMicromapsEnabled_) {
     enabledOpacityMicromap.micromap = VK_TRUE;

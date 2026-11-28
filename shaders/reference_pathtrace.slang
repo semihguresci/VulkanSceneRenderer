@@ -7,6 +7,10 @@
 #include "ray_surface_common.slang"
 #include "ray_footprint_common.slang"
 #include "push_constants_common.slang"
+
+#ifndef REFERENCE_NATIVE_RAYS
+#define REFERENCE_NATIVE_RAYS 0
+#endif
 #ifndef REFERENCE_EMPTY_SCENE
 #define REFERENCE_EMPTY_SCENE 0
 #endif
@@ -196,65 +200,57 @@ float PtCoverage(GpuMaterial material, uint flags, RayTriangleData triangle,
         return alpha < material.alphaCutoff ? 0.0 : 1.0;
     return saturate(alpha);
 }
-PtHit PtClosest(RayDesc ray, uint coverageSeed, bool volumeOnly = false,
-                uint targetInstance = 0xffffffffu, uint targetTriangle = 0xffffffffu,
-                bool autofocus = false)
+#if !REFERENCE_EMPTY_SCENE
+bool PtAcceptCandidate(uint instanceIndex, uint primitive, float2 bary, bool frontFace,
+                       float3 position, uint coverageSeed, bool volumeOnly,
+                       uint targetInstance, uint targetTriangle, bool autofocus,
+                       inout uint fault)
+{
+    if (!volumeOnly && (SectionPlaneClips(position, frame.limits.w & 1u, frame.sectionPlane) ||
+        BoxClipPlanesClip(position, frame.boxClip))) return false;
+    if (instanceIndex >= frame.limits.x) { fault = 2u; PtMarkPathDiagnostic(33554432u); return false; }
+    RayInstanceData instance = instances[instanceIndex];
+    if (instance.info.x >= frame.limits.y || primitive >= frame.limits.y - instance.info.x ||
+        instance.info.y >= frame.limits.z) { fault = 2u; PtMarkPathDiagnostic(33554432u); return false; }
+    uint triangleIndex = instance.info.x + primitive;
+    if (instanceIndex == targetInstance && triangleIndex == targetTriangle) return false;
+    GpuMaterial material = materials[instance.info.y];
+    uint flags = instance.info.z | material.flags;
+    bool volume = PtPotentialVolume(material, flags);
+    if (volume)
+    {
+        RayTriangleData triangle = triangles[triangleIndex];
+        volume = PtBoundaryMetallic(material, PtTriangleUv(triangle, bary)) < 1.0;
+    }
+    if (volumeOnly && !volume) return false;
+    if (!frontFace && !volume && (flags & kGpuMaterialFlagDoubleSided) == 0u) return false;
+    if (volume && (flags & (kGpuMaterialFlagAlphaMask | kGpuMaterialFlagAlphaBlend)) != 0u)
+    { fault = 1u; return false; } // Coverage holes do not define a closed medium.
+    if ((flags & (kGpuMaterialFlagAlphaMask | kGpuMaterialFlagAlphaBlend)) != 0u)
+    {
+        float alpha = PtCoverage(material, flags, triangles[triangleIndex], bary, fault);
+        if (autofocus ? alpha < 0.5 : PtCoverageRandom(coverageSeed, instanceIndex, primitive) >= alpha)
+            return false;
+    }
+    return true;
+}
+
+PtHit PtResolveClosestTriangle(uint instanceIndex, uint primitive, float2 bary,
+                              bool frontFace, float distance)
 {
     PtHit result = (PtHit)0;
-#if !REFERENCE_EMPTY_SCENE
-    if (ray.TMin >= ray.TMax) return result;
-    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
-    query.TraceRayInline(scene, RAY_FLAG_NONE, 0xffu, ray);
-    while (query.Proceed())
-    {
-        if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
-        uint instanceIndex = query.CandidateInstanceID(), primitive = query.CandidatePrimitiveIndex();
-        float3 position = ray.Origin + ray.Direction * query.CandidateTriangleRayT();
-        if (!volumeOnly && (SectionPlaneClips(position, frame.limits.w & 1u, frame.sectionPlane) ||
-            BoxClipPlanesClip(position, frame.boxClip))) continue;
-        if (instanceIndex >= frame.limits.x) { result.fault = 2u; PtMarkPathDiagnostic(33554432u); continue; }
-        RayInstanceData instance = instances[instanceIndex];
-        if (instance.info.x >= frame.limits.y || primitive >= frame.limits.y - instance.info.x ||
-            instance.info.y >= frame.limits.z) { result.fault = 2u; PtMarkPathDiagnostic(33554432u); continue; }
-        if (instanceIndex == targetInstance && instance.info.x + primitive == targetTriangle)
-            continue;
-        GpuMaterial material = materials[instance.info.y];
-        uint flags = instance.info.z | material.flags;
-        bool volume = PtPotentialVolume(material, flags);
-        if (volume)
-        {
-            RayTriangleData triangle = triangles[instance.info.x + primitive];
-            volume = PtBoundaryMetallic(material, PtTriangleUv(triangle, query.CandidateTriangleBarycentrics())) < 1.0;
-        }
-        if (volumeOnly && !volume) continue;
-        if (!query.CandidateTriangleFrontFace() && !volume && (flags & kGpuMaterialFlagDoubleSided) == 0u) continue;
-        if (volume && (flags & (kGpuMaterialFlagAlphaMask | kGpuMaterialFlagAlphaBlend)) != 0u)
-        { result.fault = 1u; continue; } // Coverage holes do not define a closed medium.
-        if ((flags & (kGpuMaterialFlagAlphaMask | kGpuMaterialFlagAlphaBlend)) != 0u)
-        {
-            RayTriangleData triangle = triangles[instance.info.x + primitive];
-            float2 bary = query.CandidateTriangleBarycentrics();
-            float alpha = PtCoverage(material, flags, triangle, bary, result.fault);
-            if (autofocus ? alpha < 0.5 : PtCoverageRandom(coverageSeed, instanceIndex, primitive) >= alpha)
-                continue;
-        }
-        query.CommitNonOpaqueTriangleHit();
-    }
-    if (result.fault != 0u || query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return result;
-    uint instanceIndex = query.CommittedInstanceID();
     RayInstanceData instance = instances[instanceIndex];
-    uint triangle = instance.info.x + query.CommittedPrimitiveIndex();
+    uint triangle = instance.info.x + primitive;
     RayTriangleData triangleUv = triangles[triangle];
-    float2 bary = query.CommittedTriangleBarycentrics();
     GpuMaterial material = materials[instance.info.y];
     if (PtPotentialVolume(material, instance.info.z | material.flags))
         result.boundaryMetallic = PtBoundaryMetallic(material, PtTriangleUv(triangleUv, bary));
     result.point = ReconstructRaySurface(triangleUv, surfaceTriangles[triangle], instance,
-        surfaceInstances[instanceIndex], bary, query.CommittedTriangleFrontFace());
+        surfaceInstances[instanceIndex], bary, frontFace);
 #if REFERENCE_DLSS_RR
     result.barycentrics = bary;
 #endif
-    result.distance = query.CommittedRayT();
+    result.distance = distance;
     result.instanceIndex = instanceIndex;
     result.triangleIndex = triangle;
     result.hit = 1u;
@@ -277,8 +273,99 @@ PtHit PtClosest(RayDesc ray, uint coverageSeed, bool volumeOnly = false,
         }
 #endif
     }
-#endif
     return result;
+}
+
+#if REFERENCE_NATIVE_RAYS
+// Keep only traversal inputs and triangle attributes in flight. Raygen resolves
+// the same PtHit as the compute backend after TraceRay returns.
+struct PtNativePayload
+{
+    float2 barycentrics;
+    float distance;
+    uint instanceIndex;
+    uint primitiveIndex;
+    uint hitKind;
+    uint coverageSeed;
+    uint targetInstance;
+    uint targetTriangle;
+    uint searchFlags;
+    uint fault;
+};
+static const uint PT_SEARCH_VOLUME_ONLY = 1u;
+static const uint PT_SEARCH_AUTOFOCUS = 2u;
+
+[shader("anyhit")]
+void anyHitMain(inout PtNativePayload payload, BuiltInTriangleIntersectionAttributes attributes)
+{
+    float3 position = WorldRayOrigin() + WorldRayDirection() * RayTCurrent();
+    // Commit diagnostic writes before IgnoreHit terminates this invocation.
+    uint fault = payload.fault;
+    bool accepted = PtAcceptCandidate(InstanceID(), PrimitiveIndex(), attributes.barycentrics,
+        HitKind() == HIT_KIND_TRIANGLE_FRONT_FACE, position, payload.coverageSeed,
+        (payload.searchFlags & PT_SEARCH_VOLUME_ONLY) != 0u,
+        payload.targetInstance, payload.targetTriangle,
+        (payload.searchFlags & PT_SEARCH_AUTOFOCUS) != 0u, fault);
+    payload.fault = fault;
+    if (!accepted) IgnoreHit();
+}
+
+[shader("closesthit")]
+void closestHitMain(inout PtNativePayload payload, BuiltInTriangleIntersectionAttributes attributes)
+{
+    payload.barycentrics = attributes.barycentrics;
+    payload.distance = RayTCurrent();
+    payload.instanceIndex = InstanceID();
+    payload.primitiveIndex = PrimitiveIndex();
+    payload.hitKind = HitKind();
+}
+
+[shader("miss")]
+void missMain(inout PtNativePayload payload)
+{
+    payload.hitKind = 0u;
+}
+#endif
+#endif
+
+PtHit PtClosest(RayDesc ray, uint coverageSeed, bool volumeOnly = false,
+                uint targetInstance = 0xffffffffu, uint targetTriangle = 0xffffffffu,
+                bool autofocus = false)
+{
+    PtHit result = (PtHit)0;
+#if !REFERENCE_EMPTY_SCENE
+    if (ray.TMin >= ray.TMax) return result;
+#if REFERENCE_NATIVE_RAYS
+    PtNativePayload payload = (PtNativePayload)0;
+    payload.coverageSeed = coverageSeed;
+    payload.targetInstance = targetInstance;
+    payload.targetTriangle = targetTriangle;
+    payload.searchFlags = (volumeOnly ? PT_SEARCH_VOLUME_ONLY : 0u) |
+                          (autofocus ? PT_SEARCH_AUTOFOCUS : 0u);
+    TraceRay(scene, RAY_FLAG_FORCE_NON_OPAQUE, 0xffu, 0u, 0u, 0u, ray, payload);
+    result.fault = payload.fault;
+    if (result.fault != 0u || payload.hitKind == 0u) return result;
+    return PtResolveClosestTriangle(payload.instanceIndex, payload.primitiveIndex,
+        payload.barycentrics, payload.hitKind == HIT_KIND_TRIANGLE_FRONT_FACE, payload.distance);
+#else
+    RayQuery<RAY_FLAG_FORCE_NON_OPAQUE> query;
+    query.TraceRayInline(scene, RAY_FLAG_NONE, 0xffu, ray);
+    while (query.Proceed())
+    {
+        if (query.CandidateType() != CANDIDATE_NON_OPAQUE_TRIANGLE) continue;
+        float3 position = ray.Origin + ray.Direction * query.CandidateTriangleRayT();
+        if (PtAcceptCandidate(query.CandidateInstanceID(), query.CandidatePrimitiveIndex(),
+            query.CandidateTriangleBarycentrics(), query.CandidateTriangleFrontFace(),
+            position, coverageSeed, volumeOnly, targetInstance, targetTriangle, autofocus, result.fault))
+            query.CommitNonOpaqueTriangleHit();
+    }
+    if (result.fault != 0u || query.CommittedStatus() != COMMITTED_TRIANGLE_HIT) return result;
+    return PtResolveClosestTriangle(query.CommittedInstanceID(), query.CommittedPrimitiveIndex(),
+        query.CommittedTriangleBarycentrics(), query.CommittedTriangleFrontFace(), query.CommittedRayT());
+#endif
+#else
+    return result;
+#endif
 }
 static const float PT_GROUND_SURFACE = 1.0;
 static const float PT_GROUND_MATTE = 2.0;
@@ -1729,9 +1816,7 @@ float PtAutofocusDistance()
     return target.distance * dot(center.direction, forward);
 }
 
-[shader("compute")]
-[numthreads(8, 8, 1)]
-void computeMain(uint3 tid : SV_DispatchThreadID)
+void PtRenderPixel(uint3 tid)
 {
 #if REFERENCE_DLSS_RR
     if (any(tid.xy >= rrFrame.extentSequence.xy)) return;
@@ -1846,3 +1931,18 @@ void computeMain(uint3 tid : SV_DispatchThreadID)
     display[tid.xy] = flags != 0u ? float4(1.0, (flags & 2u) != 0u ? 1.0 : 0.0, (flags & 1u) != 0u ? 1.0 : 0.0, 1.0) : float4(shown, 1.0);
 #endif
 }
+
+#if REFERENCE_NATIVE_RAYS
+[shader("raygeneration")]
+void raygenMain()
+{
+    PtRenderPixel(DispatchRaysIndex());
+}
+#else
+[shader("compute")]
+[numthreads(8, 8, 1)]
+void computeMain(uint3 tid : SV_DispatchThreadID)
+{
+    PtRenderPixel(tid);
+}
+#endif

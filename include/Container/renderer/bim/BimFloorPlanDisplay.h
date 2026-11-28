@@ -16,12 +16,12 @@ enum class BimFloorPlanViewportRoute {
 };
 
 // Raster floor plans are in scene color before post_process.slang selects the
-// display buffer. Path tracing draws its floor plan after post-processing.
+// display buffer. Reference ray techniques draw floor plans after post-processing.
 [[nodiscard]] constexpr BimFloorPlanViewportRoute bimFloorPlanViewportRoute(
     RenderTechniqueId technique, ui::GBufferViewMode mode) {
   using Route = BimFloorPlanViewportRoute;
   using Mode = ui::GBufferViewMode;
-  if (technique == RenderTechniqueId::PathTracing)
+  if (isReferenceRayTechnique(technique))
     return Route::PresentationOverlay;
   switch (mode) {
   case Mode::Lit:

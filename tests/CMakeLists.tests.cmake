@@ -932,6 +932,20 @@ set_tests_properties(reference_material_parity_gpu_regression PROPERTIES
     LABELS "requires-vulkan;requires-display;ray-query;path-tracing;material;visual-regression")
 
 if(Python3_Interpreter_FOUND)
+    set(native_ray_tracing_validation_args)
+    if(VK_KHRONOS_VALIDATION_JSON)
+        list(APPEND native_ray_tracing_validation_args --layer-manifest "${VK_KHRONOS_VALIDATION_JSON}")
+    endif()
+    add_test(NAME native_vulkan_ray_tracing_gpu_regression
+        COMMAND "${Python3_EXECUTABLE}" -B
+            "${TEST_VALIDATION_DIR}/native_vulkan_ray_tracing_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/native-vulkan-ray-tracing"
+            ${native_ray_tracing_validation_args})
+    set_tests_properties(native_vulkan_ray_tracing_gpu_regression PROPERTIES
+        SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 1000
+        LABELS "requires-vulkan;requires-display;ray-tracing-pipeline;path-tracing;visual-regression")
+
     add_test(NAME reference_scene_convergence_gpu_regression
         COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/reference_scene_convergence_runtime_regression.py"
                 --renderer "$<TARGET_FILE:VulkanSceneRenderer>"

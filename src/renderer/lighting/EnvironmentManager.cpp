@@ -1139,11 +1139,14 @@ bool EnvironmentManager::submitEnvironment(
             mip, 1, 0, 6);
   }
 
-  // Env cube: full mip chain -> SHADER_READ_ONLY for sampling by filters.
+  // The published radiance cube also feeds native ray generation and misses.
+  VkPipelineStageFlags radianceReaders = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+  if (device_->rayTracingPipelineSupported())
+    radianceReaders |= VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
   barrier(envImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
           VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
           VK_ACCESS_TRANSFER_READ_BIT, VK_ACCESS_SHADER_READ_BIT,
-          VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+          VK_PIPELINE_STAGE_TRANSFER_BIT, radianceReaders,
           0, kEnvMips, 0, 6);
 
   // -- Env -> Irradiance --
@@ -1446,9 +1449,12 @@ void EnvironmentManager::createPlaceholderCubemaps() {
       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &clearColor, 1, &clearRange);
 
   // Transition to SHADER_READ_ONLY for sampling in the lighting pass.
+  VkPipelineStageFlags radianceReaders = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+  if (device_->rayTracingPipelineSupported())
+    radianceReaders |= VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR;
   transitionCube(radianceCubeImage_, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT,
-      VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT);
+      radianceReaders);
   transitionCube(irradianceCubeImage_,
       VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
       VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,

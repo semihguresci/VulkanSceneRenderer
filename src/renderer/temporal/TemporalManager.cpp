@@ -84,7 +84,7 @@ void initializeImage(VkCommandBuffer cmd, VkImage image) {
 
 bool needed(const FrameRecordParams &frame) {
   const auto *temporal = frame.services.temporalManager;
-  if (frame.runtime.activeTechnique == RenderTechniqueId::PathTracing || !temporal || !temporal->active())
+  if (isReferenceRayTechnique(frame.runtime.activeTechnique) || !temporal || !temporal->active())
     return false;
   const auto display = frame.debug.displayMode;
   if (temporal->upscalingActive())

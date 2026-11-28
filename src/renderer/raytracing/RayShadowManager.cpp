@@ -355,6 +355,9 @@ RayShadowSettings &RayShadowManager::settings() { return impl_->settings; }
 bool RayShadowManager::supported() const {
   return impl_->acceleration.supported();
 }
+bool RayShadowManager::inlineQueriesSupported() const {
+  return impl_->device->rayQueriesEnabled();
+}
 bool RayShadowManager::active() const { return impl_->enabled; }
 void RayShadowManager::requestSurfaceScene(bool requested,
                                            uint64_t budgetBytes) {
@@ -372,7 +375,7 @@ VkImageView RayShadowManager::visibilityView() const {
   return image ? static_cast<VkImageView>(*image->view) : VK_NULL_HANDLE;
 }
 VkDescriptorSetLayout RayShadowManager::traceDescriptorLayout() const {
-  return supported()
+  return inlineQueriesSupported()
              ? static_cast<VkDescriptorSetLayout>(*impl_->traceSetLayout)
              : VK_NULL_HANDLE;
 }
@@ -428,7 +431,7 @@ void RayShadowManager::createPipelines(const std::filesystem::path &root,
                                        VkDescriptorSetLayout scene,
                                        VkDescriptorSetLayout light) {
   auto &p = *impl_;
-  if (!supported() || *p.tracePipeline)
+  if (!inlineQueriesSupported() || *p.tracePipeline)
     return;
   const auto &vk = p.device->raii();
   std::vector<vk::DescriptorSetLayoutBinding> bindings;
@@ -491,7 +494,7 @@ void RayShadowManager::publishShaderReload(RayEffectPipelines candidate) noexcep
 std::unique_ptr<RayShadowManager> RayShadowManager::createDetachedGeneration() const {
   const auto& p = *impl_;
   if (!p.extent.width || !p.extent.height || p.slots.empty() ||
-      (supported() && (!*p.tracePipeline || !*p.filterPipeline)))
+      (inlineQueriesSupported() && (!*p.tracePipeline || !*p.filterPipeline)))
     throw std::logic_error("Ray scene generation requires prepared frame resources");
   auto candidate = std::make_unique<RayShadowManager>(p.device, p.memory);
   candidate->createPipelines(p.pipelineRoot, p.sceneLayout, p.lightLayout);
@@ -583,7 +586,7 @@ void RayShadowManager::prepare(VkExtent2D extent, uint32_t imageCount) {
     ReadData zero{};
     slot.read->write(&zero, sizeof(zero));
   }
-  if (!supported())
+  if (!inlineQueriesSupported())
     return;
   const std::array sizes{
       vk::DescriptorPoolSize(vk::DescriptorType::eUniformBuffer,
@@ -637,7 +640,7 @@ void RayShadowManager::update(
                                     draw.instanceCount != 0u;
                            });
       });
-  p.enabled = p.hasRayGeometry && supported() && geometryCompatible &&
+  p.enabled = p.hasRayGeometry && inlineQueriesSupported() && geometryCompatible &&
               p.settings.mode != RayShadowMode::Raster && *p.tracePipeline;
   p.surfaceEnabled = p.surfaceRequested && p.hasRayGeometry;
   if (!p.hasRayGeometry) {
@@ -649,7 +652,7 @@ void RayShadowManager::update(
     p.surfaceUnsupported.clear();
   } else if (p.surfaceRequested) {
     if (!supported())
-      p.rejectSurface("DDGI requires supported and enabled ray queries");
+      p.rejectSurface("Ray surfaces require a supported and enabled acceleration structure");
     else if (!geometryCompatible)
       p.rejectSurface("DDGI ray scene is incompatible with active geometry");
     else if (auto reason = p.surfaceBudgetFailure(sources); !reason.empty())

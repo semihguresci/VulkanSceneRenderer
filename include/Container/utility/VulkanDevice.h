@@ -20,6 +20,7 @@ struct DeviceCreateInfo {
   std::vector<const char*> validationLayers{};
   bool enableValidationLayers{false};
   bool enableRayQueries{false}; // Optional: never disqualifies a raster device.
+  bool enableRayTracingPipeline{false}; // Optional: independent of inline ray queries.
   bool enableOpacityMicromaps{false};
   bool enableReferenceOidn{false};
   bool enableFsrUpscaling{false};
@@ -74,6 +75,11 @@ class VulkanDevice {
   [[nodiscard]] bool rayQueriesEnabled() const noexcept {
     return rayQueriesEnabled_;
   }
+  // These capabilities describe what the logical device actually enabled.
+  [[nodiscard]] bool accelerationStructureSupported() const noexcept { return accelerationStructureEnabled_; }
+  [[nodiscard]] bool rayTracingPipelineSupported() const noexcept { return rayTracingPipelineEnabled_; }
+  [[nodiscard]] const VkPhysicalDeviceRayTracingPipelinePropertiesKHR&
+  rayTracingPipelineProperties() const noexcept { return rayTracingPipelineProperties_; }
   [[nodiscard]] bool opacityMicromapsEnabled() const noexcept { return opacityMicromapsEnabled_; }
   [[nodiscard]] bool referenceOidnEnabled() const noexcept { return referenceOidnEnabled_; }
   [[nodiscard]] bool referenceOidnCooperativeMatrix() const noexcept { return referenceOidnCooperativeMatrix_; }
@@ -110,7 +116,11 @@ class VulkanDevice {
   VkPhysicalDeviceFeatures enabledFeatures_{};
   VkPhysicalDeviceVulkan12Features enabledVulkan12Features_{};
   RayQuerySupport rayQuerySupport_{};
+  VkPhysicalDeviceRayTracingPipelinePropertiesKHR rayTracingPipelineProperties_{
+      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
   bool rayQueriesEnabled_{false};
+  bool accelerationStructureEnabled_{false};
+  bool rayTracingPipelineEnabled_{false};
   bool opacityMicromapsEnabled_{false};
   bool referenceOidnEnabled_{false};
   bool referenceOidnCooperativeMatrix_{false};

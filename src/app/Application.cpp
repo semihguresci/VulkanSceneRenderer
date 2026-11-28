@@ -530,6 +530,7 @@ void Application::screenshotCaptureLoop() {
 }
 
 void Application::cleanup() {
+  if (window_ && window_->shouldClose()) window_->hide();
   onCleanup();
 
   renderer_.reset();

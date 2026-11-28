@@ -889,6 +889,7 @@ public:
       container::renderer::RenderTechniqueId active);
   [[nodiscard]] std::optional<container::renderer::RenderTechniqueId>
   consumeRenderEngineChange();
+  void setNativeRayPipelineCompiling(bool compiling) { nativeRayPipelineCompiling_ = compiling; }
   void setReferencePathStatus(std::string status) { referencePathStatus_ = std::move(status); }
   void setReferencePathDisplay(container::renderer::ReferencePathDisplayMode mode) { referencePathDisplay_ = mode; }
   [[nodiscard]] container::renderer::ReferencePathDisplayMode referencePathDisplay() const { return referencePathDisplay_; }
@@ -1545,6 +1546,7 @@ private:
   uint32_t msaaSamples_{1u};
   std::optional<uint32_t> pendingMsaaSamples_{};
   std::vector<RenderEngineOption> renderEngineOptions_{};
+  bool nativeRayPipelineCompiling_{};
   std::string referencePathStatus_;
   container::renderer::ReferencePathDisplayMode referencePathDisplay_{};
   container::renderer::ReferencePathLensSettings referencePathLens_{};

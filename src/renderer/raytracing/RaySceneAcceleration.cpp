@@ -279,17 +279,12 @@ void buildStructure(const vk::raii::Device &device,
       vk::AccelerationStructureDeviceAddressInfoKHR(*result.handle));
 }
 
-void buildBarrier(const vk::raii::CommandBuffer &command, bool tracing) {
+void buildBarrier(const vk::raii::CommandBuffer &command, vk::PipelineStageFlags2 consumerStages) {
   vk::MemoryBarrier2 barrier{};
   barrier.srcStageMask =
       vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
   barrier.srcAccessMask = vk::AccessFlagBits2::eAccelerationStructureWriteKHR;
-  barrier.dstStageMask =
-      // Both depth-derived compute visibility and forward fragment queries
-      // consume the generation after this build on the graphics queue.
-      tracing ? vk::PipelineStageFlagBits2::eFragmentShader |
-                    vk::PipelineStageFlagBits2::eComputeShader
-              : vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR;
+  barrier.dstStageMask = consumerStages;
   barrier.dstAccessMask = vk::AccessFlagBits2::eAccelerationStructureReadKHR;
   vk::DependencyInfo dependency{};
   dependency.memoryBarrierCount = 1;
@@ -375,7 +370,7 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
     const std::shared_ptr<const RaySceneGeneration> &previous) const {
   if (!supported())
     throw std::runtime_error(
-        "ray-query backend is disabled; use raster fallback");
+        "ray acceleration structures are unavailable");
   validateRayScene(input);
   if(input.gpuTransforms) {
     if(!input.gpuTransforms->producer) throw std::invalid_argument("GPU ray instance producer is missing");
@@ -536,7 +531,7 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
     }
     state.bottom.push_back(std::move(bottom));
   }
-  buildBarrier(command, false);
+  buildBarrier(command, vk::PipelineStageFlagBits2::eAccelerationStructureBuildKHR);
   std::vector<VkAccelerationStructureInstanceKHR> instances;
   instances.reserve(input.instances.size());
   for (const auto &source : input.instances) {
@@ -573,7 +568,13 @@ std::shared_ptr<const RaySceneGeneration> RaySceneAcceleration::recordBuild(
                  static_cast<uint32_t>(instances.size()),
                  properties_.minAccelerationStructureScratchOffsetAlignment,
                  state.top, queueFamilies);
-  buildBarrier(command, true);
+  // Native dispatch and inline queries consume the same TLAS generation.
+  vk::PipelineStageFlags2 readers{};
+  if (device_.rayQueriesEnabled())
+    readers |= vk::PipelineStageFlagBits2::eFragmentShader | vk::PipelineStageFlagBits2::eComputeShader;
+  if (device_.rayTracingPipelineSupported())
+    readers |= vk::PipelineStageFlagBits2::eRayTracingShaderKHR;
+  buildBarrier(command, readers);
   state.stats.instanceCount = static_cast<uint32_t>(instances.size());
   state.stats.accelerationBytes += state.top.storage->size;
   state.stats.inputBytes += state.instances->size;

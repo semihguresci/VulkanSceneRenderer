@@ -1,5 +1,8 @@
+#include "Container/renderer/bim/BimFloorPlanDisplay.h"
+#include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderTechnique.h"
 #include "Container/renderer/core/RendererDeviceCapabilities.h"
+#include "Container/renderer/deferred/DeferredRasterFrameGraphContext.h"
 
 #include <gtest/gtest.h>
 
@@ -56,34 +59,6 @@ private:
   std::string reason_{};
 };
 
-class RayTracingRequiredTechnique final
-    : public container::renderer::RenderTechnique {
-public:
-  [[nodiscard]] container::renderer::RenderTechniqueId id() const override {
-    return container::renderer::RenderTechniqueId::RayTracing;
-  }
-
-  [[nodiscard]] std::string_view name() const override {
-    return container::renderer::renderTechniqueName(id());
-  }
-
-  [[nodiscard]] std::string_view displayName() const override {
-    return container::renderer::renderTechniqueDisplayName(id());
-  }
-
-  [[nodiscard]] container::renderer::RenderTechniqueAvailability availability(
-      const container::renderer::RenderSystemContext &context) const override {
-    if (context.deviceCapabilities == nullptr ||
-        !context.deviceCapabilities->supportsRayTracing()) {
-      return container::renderer::RenderTechniqueAvailability::unavailable(
-          "ray tracing device capabilities are unavailable");
-    }
-    return container::renderer::RenderTechniqueAvailability::availableNow();
-  }
-
-  void buildFrameGraph(container::renderer::RenderSystemContext &) override {}
-};
-
 [[nodiscard]] bool contains(std::string_view haystack,
                             std::string_view needle) {
   return haystack.find(needle) != std::string_view::npos;
@@ -128,7 +103,7 @@ TEST(RenderTechniqueRegistry, ParsesStableTechniqueNames) {
 }
 
 TEST(RenderTechniqueRegistry,
-     KnownTechniqueDescriptorsExposeFutureAlgorithmsWithoutRegisteringThem) {
+     KnownTechniqueDescriptorsDistinguishImplementedAndReservedTechniques) {
   using container::renderer::RenderTechniqueId;
 
   const auto descriptors =
@@ -153,7 +128,7 @@ TEST(RenderTechniqueRegistry,
 
   const auto rayTracing = findDescriptor(RenderTechniqueId::RayTracing);
   ASSERT_NE(rayTracing, descriptors.end());
-  EXPECT_FALSE(rayTracing->implemented);
+  EXPECT_TRUE(rayTracing->implemented);
   EXPECT_TRUE(rayTracing->requiresRayTracing);
 
   const auto pathTracing = findDescriptor(RenderTechniqueId::PathTracing);
@@ -163,9 +138,11 @@ TEST(RenderTechniqueRegistry,
 
   container::renderer::RenderTechniqueRegistry registry =
       container::renderer::createDefaultRenderTechniqueRegistry();
-  EXPECT_EQ(registry.techniques().size(), 3u);
-  EXPECT_EQ(registry.find(RenderTechniqueId::RayTracing), nullptr);
+  EXPECT_EQ(registry.techniques().size(), 4u);
+  EXPECT_NE(registry.find(RenderTechniqueId::RayTracing), nullptr);
   EXPECT_NE(registry.find(RenderTechniqueId::PathTracing), nullptr);
+  EXPECT_EQ(registry.find(RenderTechniqueId::GaussianSplatting), nullptr);
+  EXPECT_EQ(registry.find(RenderTechniqueId::RadianceField), nullptr);
 }
 
 TEST(RenderTechniqueRegistry, RejectsNullAndDuplicateRegistrations) {
@@ -204,40 +181,40 @@ TEST(RenderTechniqueRegistry, FallsBackToDeferredWhenRequestedUnavailable) {
                        "device extensions are unavailable"));
 }
 
-TEST(RenderTechniqueRegistry, UsesDeviceCapabilitiesForTechniqueAvailability) {
-  using container::renderer::RenderTechniqueId;
+TEST(RenderTechniqueRegistry, GatesNativePipelineAndInlineQueriesIndependently) {
+  using namespace container::renderer;
 
-  container::renderer::RenderTechniqueRegistry registry;
-  registry.registerTechnique(
-      std::make_unique<TestTechnique>(RenderTechniqueId::DeferredRaster));
-  registry.registerTechnique(std::make_unique<RayTracingRequiredTechnique>());
+  auto registry = createDefaultRenderTechniqueRegistry();
+  FrameRecorder recorder;
+  DeferredRasterFrameGraphContext rasterServices(DeferredRasterFrameGraphServices{});
+  RendererDeviceCapabilities device = RendererDeviceCapabilities::rasterOnly();
+  RenderSystemContext context{.frameRecorder = &recorder, .deferredRaster = &rasterServices,
+                              .deviceCapabilities = &device};
 
-  const container::renderer::RendererDeviceCapabilities rasterOnly =
-      container::renderer::RendererDeviceCapabilities::rasterOnly();
-  container::renderer::RenderSystemContext unavailableContext{
-      .deviceCapabilities = &rasterOnly};
-
-  const container::renderer::RenderTechniqueSelection fallback =
-      registry.select(RenderTechniqueId::RayTracing, unavailableContext);
+  const auto fallback = registry.select(RenderTechniqueId::RayTracing, context);
   EXPECT_TRUE(fallback.usedFallback);
   EXPECT_EQ(fallback.selected, RenderTechniqueId::DeferredRaster);
-  EXPECT_TRUE(
-      contains(fallback.unavailableReason, "ray tracing device capabilities"));
+  EXPECT_TRUE(contains(fallback.unavailableReason, "VK_KHR_ray_tracing_pipeline"));
 
-  container::renderer::RendererDeviceCapabilities rayTracing{};
-  rayTracing.descriptorIndexing = true;
-  rayTracing.bufferDeviceAddress = true;
-  rayTracing.accelerationStructure = true;
-  rayTracing.rayTracingPipeline = true;
-  container::renderer::RenderSystemContext availableContext{
-      .deviceCapabilities = &rayTracing};
+  device.bufferDeviceAddress = true;
+  device.accelerationStructure = true;
+  device.rayTracingPipeline = true;
 
-  const container::renderer::RenderTechniqueSelection selection =
-      registry.select(RenderTechniqueId::RayTracing, availableContext);
+  const auto selection = registry.select(RenderTechniqueId::RayTracing, context);
   EXPECT_FALSE(selection.usedFallback);
   EXPECT_EQ(selection.selected, RenderTechniqueId::RayTracing);
   ASSERT_NE(selection.technique, nullptr);
   EXPECT_EQ(selection.technique->id(), RenderTechniqueId::RayTracing);
+  const auto noQuery = registry.select(RenderTechniqueId::PathTracing, context);
+  EXPECT_TRUE(noQuery.usedFallback);
+  EXPECT_TRUE(contains(noQuery.unavailableReason, "ray queries"));
+
+  device.rayTracingPipeline = false;
+  device.rayQuery = true;
+  EXPECT_TRUE(registry.select(RenderTechniqueId::RayTracing, context).usedFallback);
+  const auto inlinePath = registry.select(RenderTechniqueId::PathTracing, context);
+  EXPECT_FALSE(inlinePath.usedFallback);
+  EXPECT_EQ(inlinePath.selected, RenderTechniqueId::PathTracing);
 }
 
 TEST(RendererDeviceCapabilities, ReportsMissingRayAndPathRequirements) {
@@ -280,7 +257,20 @@ TEST(RenderTechniqueRegistry, DefaultRegistryRegistersDeferredAndForwardRaster) 
       nullptr);
   ASSERT_NE(registry.find(container::renderer::RenderTechniqueId::ForwardRaster),
             nullptr);
-  EXPECT_EQ(registry.techniques().size(), 3u);
+  EXPECT_EQ(registry.techniques().size(), 4u);
+}
+
+TEST(RenderTechniqueRegistry, BothRayTechniquesCompositeBimPlansAfterPostProcessing) {
+  using namespace container::renderer;
+  using container::ui::GBufferViewMode;
+  for (const auto technique : {RenderTechniqueId::RayTracing, RenderTechniqueId::PathTracing}) {
+    EXPECT_EQ(bimFloorPlanViewportRoute(technique, GBufferViewMode::Lit),
+              BimFloorPlanViewportRoute::PresentationOverlay);
+  }
+  EXPECT_EQ(bimFloorPlanViewportRoute(RenderTechniqueId::DeferredRaster, GBufferViewMode::Lit),
+            BimFloorPlanViewportRoute::SceneColor);
+  EXPECT_EQ(bimFloorPlanViewportRoute(RenderTechniqueId::ForwardRaster, GBufferViewMode::Lit),
+            BimFloorPlanViewportRoute::SceneColor);
 }
 
 TEST(RenderTechniqueGuardrails, FrameRecorderDoesNotOwnGraphRegistration) {

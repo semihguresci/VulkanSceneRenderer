@@ -1669,7 +1669,7 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mixDrawList(params.bim.draws.transparentSingleSidedDrawCommands);
   mixDrawList(params.bim.draws.transparentWindingFlippedDrawCommands);
   mixDrawList(params.bim.draws.transparentDoubleSidedDrawCommands);
-  if (params.runtime.activeTechnique == RenderTechniqueId::PathTracing) {
+  if (isReferenceRayTechnique(params.runtime.activeTechnique)) {
     mix(params.screenshot.sceneLinear);
     mix(params.bim.floorPlan.enabled);
     mix(params.bim.floorPlan.depthTest);

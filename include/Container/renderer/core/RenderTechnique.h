@@ -36,6 +36,10 @@ enum class RenderTechniqueId {
   RadianceField,
 };
 
+[[nodiscard]] constexpr bool isReferenceRayTechnique(RenderTechniqueId id) {
+  return id == RenderTechniqueId::RayTracing || id == RenderTechniqueId::PathTracing;
+}
+
 struct RenderTechniqueDescriptor {
   RenderTechniqueId id{RenderTechniqueId::DeferredRaster};
   std::string_view name{};

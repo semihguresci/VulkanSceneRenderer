@@ -72,7 +72,7 @@ DeferredRasterFrameGraphContext::lifecycleHooks() const {
                                    const RenderGraph &graph) {
     if (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster ||
         p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
-        p.runtime.activeTechnique == RenderTechniqueId::PathTracing) {
+        isReferenceRayTechnique(p.runtime.activeTechnique)) {
       afterPrepareFrame(p, graph);
     }
   };
@@ -80,7 +80,7 @@ DeferredRasterFrameGraphContext::lifecycleHooks() const {
                                          const FrameRecordParams &p) {
     if (p.runtime.activeTechnique == RenderTechniqueId::DeferredRaster ||
         p.runtime.activeTechnique == RenderTechniqueId::ForwardRaster ||
-        p.runtime.activeTechnique == RenderTechniqueId::PathTracing) {
+        isReferenceRayTechnique(p.runtime.activeTechnique)) {
       afterCommandBufferBegin(cmd, p);
     }
   };
