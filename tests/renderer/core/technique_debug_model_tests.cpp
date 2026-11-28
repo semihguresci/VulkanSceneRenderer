@@ -771,7 +771,7 @@ TEST(TechniqueDebugModelGuardrails,
       rendererFrontend.substr(drawFrame, drawFrameEnd - drawFrame);
   const size_t processRequest =
       drawFrameBody.find("processPendingGuiModelLoadRequest();");
-  const size_t acquireImage = drawFrameBody.find("vkAcquireNextImageKHR(");
+  const size_t acquireImage = drawFrameBody.find("svc_.swapChainManager.acquire(");
   const size_t drawControls = drawFrameBody.find("presentSceneControls();");
   ASSERT_NE(processRequest, std::string::npos);
   ASSERT_NE(acquireImage, std::string::npos);

@@ -154,29 +154,33 @@ def verify_sample(name, state, color, route, model):
                 f"{name}: scroll did not move and partially preserve the grid")
 
 
-def timing(state, route):
+def timing(state, route, *, required=True):
     if route != "serialized":
         elapsed = state["ddgi"].get("asyncGpuMs")
         if elapsed is not None:
             require(math.isfinite(elapsed) and elapsed > 0, "Invalid async compute timestamp")
         return elapsed
     passes = {entry["name"]: entry for entry in state["passes"]}
-    scoped = [passes[name] for name in ("DdgiTrace", "DdgiUpdate")]
+    scoped = [passes.get(name, {}) for name in ("DdgiTrace", "DdgiUpdate")]
+    if not required and not all(entry.get("gpuTimed") for entry in scoped):
+        return None
     require(all(entry["active"] and entry["gpuTimed"] and math.isfinite(entry["gpuMs"]) and entry["gpuMs"] > 0
                 for entry in scoped), "Missing serialized DDGI graphics pass timings")
     return sum(entry["gpuMs"] for entry in scoped)
 
 
-def launch(args, output, case, route, command, layer_library):
+def launch(args, output, case, route, command, layer_library, *, environment=None, preference=None,
+           check_layers=verify_layers):
     log = case / "renderer.log"
-    env = dict(os.environ, CONTAINER_DDGI_ASYNC_QUEUE=ROUTES[route], VK_LOADER_DEBUG="layer",
+    env = dict(os.environ if environment is None else environment,
+               CONTAINER_DDGI_ASYNC_QUEUE=preference or ROUTES[route], VK_LOADER_DEBUG="layer",
                VK_LAYER_PATH=str(args.validation_dir), VK_LAYER_SETTINGS_PATH=str(output), VK_INSTANCE_LAYERS=VALIDATION)
     env.pop("VK_LOADER_LAYERS_ENABLE", None)
     with log.open("w", encoding="utf-8") as stream:
         process = subprocess.run(command, cwd=args.renderer.parent, env=env, stdout=stream, stderr=subprocess.STDOUT,
                                  timeout=args.timeout, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     raw = log.read_text(encoding="utf-8", errors="replace")
-    verify_layers(raw, layer_library, None)
+    check_layers(raw, layer_library, None)
     require(process.returncode == 0 and not validation_log_error(raw), f"Renderer exit or Vulkan validation failure: {log}")
     return log
 
@@ -193,12 +197,15 @@ def capture_command(renderer, technique, model, sequence, image):
         "--screenshot-viewport", "--capture-sequence", str(sequence), "--screenshot", str(image)]
 
 
-def run_case(args, output, route, technique, models, sequence, layer_library):
-    case = output / f"{route}-{technique}"
+def run_case(args, output, route, technique, models, sequence, layer_library, *,
+             environment=None, preference=None, name=None, require_serialized_timestamps=True,
+             check_layers=verify_layers):
+    case = output / (name or f"{route}-{technique}")
     case.mkdir()
     image = case / "capture.exr"
     command = capture_command(args.renderer, technique, models[0], sequence, image) + ["--ddgi-camera-follow"]
-    log = launch(args, output, case, route, command, layer_library)
+    log = launch(args, output, case, route, command, layer_library,
+                 environment=environment, preference=preference, check_layers=check_layers)
     states, samples, measured = {}, {}, []
     for name, frame in SAMPLES.items():
         capture = image if frame == max(SAMPLES.values()) else case / f"capture.frame-{frame:04d}.exr"
@@ -213,7 +220,7 @@ def run_case(args, output, route, technique, models, sequence, layer_library):
                 "asyncSubmittedUpdates", "asyncPublishedUpdates", "updateFrame", "updatedProbes", "tracedRays", "scroll",
                 "totalAllocatedBytes") if key in gi})
         if name.startswith("steady-"):
-            measured.append(timing(state, route))
+            measured.append(timing(state, route, required=require_serialized_timestamps))
 
     gi = {name: state["ddgi"] for name, state in states.items()}
     require(gi["paused"]["updateFrame"] >= gi["steady-3"]["updateFrame"] and

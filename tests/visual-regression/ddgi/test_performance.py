@@ -37,6 +37,39 @@ def telemetry(frame, budget=128, paused=False, off=False):
             "gpuProfiler": {"available": True, "resultLatencyFrames": 1}}
 
 
+def priority_batch(gi, budget, first, extra_contiguous=0):
+    fair_slots = (budget + 1) // 2
+    prefix = [(first + slot) % perf.PROBE_COUNT for slot in range(fair_slots)]
+    if budget == perf.PROBE_COUNT:
+        selected = [(first + slot) % perf.PROBE_COUNT for slot in range(budget)]
+        next_probe = first
+    else:
+        tail = [(first + fair_slots + slot) % perf.PROBE_COUNT
+                for slot in range(extra_contiguous)]
+        next_probe = (first + fair_slots + extra_contiguous) % perf.PROBE_COUNT
+        # Deliberately choose remote priority islands, retaining the first gap.
+        candidates = [probe for probe in reversed(range(perf.PROBE_COUNT))
+                      if probe not in prefix and probe not in tail and probe != next_probe]
+        selected = prefix + tail + candidates[:budget - len(prefix) - len(tail)]
+    gi.update(firstProbe=first, nextProbe=next_probe, schedulingCursor=next_probe,
+              selectedProbes=selected)
+
+
+def priority_frames(config, budget, paused=False, first=86, extra_contiguous=0):
+    frames = []
+    for index, frame in enumerate([config.warmup, *config.measurement_frames]):
+        source = telemetry(frame, budget=budget, paused=paused and index > 0)
+        if paused and index > 0:
+            source["ddgi"].update(selectedProbes=[], schedulingCursor=frames[0]["ddgi"]["schedulingCursor"])
+        else:
+            # There are unobserved settling submissions between the checkpoint
+            # and first sample; only adjacent samples must share a cursor.
+            start = first if index == 0 else (337 if index == 1 else frames[-1]["ddgi"]["schedulingCursor"])
+            priority_batch(source["ddgi"], budget, start, extra_contiguous)
+        frames.append(perf.compact_frame(frame, source))
+    return frames
+
+
 class PerformanceHarnessTests(unittest.TestCase):
     def setUp(self):
         self.config = perf.Config(samples=2, repeats=1)
@@ -141,6 +174,102 @@ class PerformanceHarnessTests(unittest.TestCase):
             with self.assertRaises(AssertionError):
                 perf.check_frames(case, self.config, bad)
 
+    def test_priority_paused_checkpoint_accepts_non_round_robin_cursor(self):
+        frames = priority_frames(self.config, 128, paused=True)
+        self.assertEqual(frames[0]["ddgi"]["firstProbe"], 86)
+        self.assertEqual(frames[0]["ddgi"]["nextProbe"], 150)
+        perf.check_frames(self.case, self.config, frames)
+        for index in (1, 2):
+            bad = copy.deepcopy(frames)
+            bad[index]["ddgi"]["selectedProbes"] = [86]
+            with self.assertRaises(AssertionError):
+                perf.check_frames(self.case, self.config, bad)
+
+    def test_priority_count_range_uniqueness_and_fairness_are_required(self):
+        case = perf.Case("deferred-raster", "low", 0)
+        frames = priority_frames(self.config, 16)
+        perf.check_frames(case, self.config, frames)
+        self.assertEqual(frames[1]["ddgi"]["selectedProbes"][:8], [337, 338, 339, 340, 341, 342, 0, 1])
+        selected = frames[1]["ddgi"]["selectedProbes"]
+        corruptions = [None, selected[:-1], selected + [5],
+                       [*selected[:-1], selected[0]],
+                       [*selected[:-1], -1], [*selected[:-1], 343],
+                       [*selected[:-1], True], [*selected[:-1], .5],
+                       [selected[1], selected[0], *selected[2:]]]
+        for corrupted in corruptions:
+            with self.subTest(selected=corrupted):
+                bad = copy.deepcopy(frames)
+                bad[1]["ddgi"]["selectedProbes"] = corrupted
+                with self.assertRaises(AssertionError):
+                    perf.check_frames(case, self.config, bad)
+
+    def test_priority_cursor_skips_only_contiguous_selected_probes(self):
+        case = perf.Case("deferred-raster", "default", 0)
+        frames = priority_frames(self.config, 128, extra_contiguous=2)
+        self.assertEqual(frames[0]["ddgi"]["nextProbe"], 152)
+        perf.check_frames(case, self.config, frames)
+        for key in ("nextProbe", "schedulingCursor"):
+            bad = copy.deepcopy(frames)
+            bad[0]["ddgi"][key] = 150
+            with self.assertRaises(AssertionError):
+                perf.check_frames(case, self.config, bad)
+        bad = priority_frames(self.config, 128)
+        bad[0]["ddgi"].update(nextProbe=151, schedulingCursor=151)
+        with self.assertRaises(AssertionError):
+            perf.check_frames(case, self.config, bad)
+
+    def test_priority_adjacent_samples_follow_prior_submission_and_retain_history(self):
+        case = perf.Case("deferred-raster", "low", 0)
+        frames = priority_frames(self.config, 16)
+        bad = copy.deepcopy(frames)
+        priority_batch(bad[2]["ddgi"], 16, (bad[1]["ddgi"]["schedulingCursor"] + 1) % 343)
+        with self.assertRaisesRegex(AssertionError, "prior submitted cursor"):
+            perf.check_frames(case, self.config, bad)
+        bad = copy.deepcopy(frames)
+        bad[1]["ddgi"]["historyResets"] += 1
+        with self.assertRaisesRegex(AssertionError, "warmed probe history"):
+            perf.check_frames(case, self.config, bad)
+
+    def test_priority_full_volume_retains_first_cursor_and_has_one_frame_sweep(self):
+        case = perf.Case("deferred-raster", "high", 0)
+        frames = priority_frames(self.config, 343)
+        # Full batches return to their own first probe, so adjacent submissions
+        # retain that same first probe rather than advancing by fairness slots.
+        for sample in frames:
+            priority_batch(sample["ddgi"], 343, 86)
+        perf.check_frames(case, self.config, frames)
+        summary = perf.summarize(case, self.config, frames)
+        self.assertEqual(summary["completeSweepSubmittedFrames"], 1)
+        bad = copy.deepcopy(frames)
+        bad[0]["ddgi"].update(nextProbe=87, schedulingCursor=87)
+        with self.assertRaises(AssertionError):
+            perf.check_frames(case, self.config, bad)
+
+    def test_priority_sweep_uses_conservative_fairness_bound(self):
+        case = perf.Case("deferred-raster", "low", 0)
+        frames = priority_frames(self.config, 16)
+        perf.check_frames(case, self.config, frames)
+        summary = perf.summarize(case, self.config, frames)
+        self.assertEqual(summary["completeSweepSubmittedFrames"], 43)
+        self.assertTrue(summary["completeSweepIsUpperBound"])
+        self.assertAlmostEqual(summary["completeSweepSimulationMs"], 1000 * 43 / 60)
+        self.assertAlmostEqual(summary["sweepGpuKnownMsEstimate"], 43 * 2.3)
+
+    def test_priority_selection_cannot_disappear_and_off_batches_are_empty(self):
+        frames = priority_frames(self.config, 128, paused=True)
+        del frames[1]["ddgi"]["selectedProbes"]
+        with self.assertRaises(AssertionError):
+            perf.check_frames(self.case, self.config, frames)
+        case = perf.Case("deferred-raster", "off", 0)
+        frames = [perf.compact_frame(frame, telemetry(frame, off=True))
+                  for frame in [120, *self.config.measurement_frames]]
+        for sample in frames:
+            sample["ddgi"]["selectedProbes"] = []
+        perf.check_frames(case, self.config, frames)
+        frames[1]["ddgi"]["selectedProbes"] = [0]
+        with self.assertRaises(AssertionError):
+            perf.check_frames(case, self.config, frames)
+
     def test_recreation_or_profiler_latency_contaminates_measurement(self):
         for key, value in (("deviceIdleWaits", 1), ("swapchainRecreates", 1), ("taaEnabled", True)):
             bad = copy.deepcopy(self.frames)
@@ -159,6 +288,7 @@ class PerformanceHarnessTests(unittest.TestCase):
         perf.check_frames(case, self.config, frames)
         summary = perf.summarize(case, self.config, frames)
         self.assertEqual(summary["completeSweepSubmittedFrames"], 22)
+        self.assertFalse(summary["completeSweepIsUpperBound"])
         self.assertAlmostEqual(summary["completeSweepSimulationMs"], 1000 * 22 / 60)
         self.assertAlmostEqual(summary["sweepGpuKnownMsEstimate"], 22 * 2.3)
 
@@ -171,6 +301,7 @@ class PerformanceHarnessTests(unittest.TestCase):
         self.assertAlmostEqual(values[0]["lightingRouteDeltaMs"], -.1)
 
     def test_invalid_capture_ranges_and_incomplete_warmup_are_rejected(self):
+        perf.validate_config(perf.Config(warmup=22))
         for config in (perf.Config(warmup=21), perf.Config(settle=5), perf.Config(samples=1),
                        perf.Config(samples=10000), perf.Config(width=0)):
             with self.assertRaises(AssertionError):

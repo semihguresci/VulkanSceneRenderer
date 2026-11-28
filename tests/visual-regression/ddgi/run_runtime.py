@@ -375,7 +375,7 @@ def check_frames(case, frames):
                 "continuous motion starved probes after motion stopped")
 
 
-def capture(case, exe, output, environment, timeout):
+def capture(case, exe, output, environment, timeout, *, frame_check=check_frames):
     command = command_for(case, exe, output)
     record = {"name": case.name, "command": command,
               "commandLine": subprocess.list2cmdline(command), "cwd": str(exe.parent),
@@ -416,7 +416,7 @@ def capture(case, exe, output, environment, timeout):
             record["failures"].append(str(error))
     if len(record["frames"]) == len(paths):
         try:
-            check_frames(case, record["frames"])
+            frame_check(case, record["frames"])
         except (AssertionError, KeyError, TypeError) as error:
             record["failures"].append(str(error))
     record["passed"] = not record["failures"]

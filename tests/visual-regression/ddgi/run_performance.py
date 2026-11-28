@@ -98,6 +98,13 @@ def write_json(path, value):
     path.write_text(json.dumps(value, indent=2, allow_nan=False) + "\n", encoding="utf-8")
 
 
+def sweep_frame_bound(budget):
+    # Priority scheduling reserves ceil(budget / 2) contiguous fairness slots.
+    # Priority selections can advance the cursor farther, so this is an upper
+    # bound on a complete sweep rather than an observed refresh latency.
+    return 1 if budget == PROBE_COUNT else math.ceil(PROBE_COUNT / ((budget + 1) // 2))
+
+
 def validate_config(config):
     require(config.warmup >= math.ceil(PROBE_COUNT / BUDGETS["low"]),
             "warmup must complete a sweep at the low update budget (at least 22 frames)")
@@ -204,6 +211,7 @@ def check_frames(case, config, frames):
     require(checkpoint["frame"] == config.warmup, "missing warmup checkpoint")
     require([f["frame"] for f in measurements] == config.measurement_frames,
             "incorrect measurement frame range")
+    priority_telemetry = "selectedProbes" in checkpoint["ddgi"]
     for sample in frames:
         prefix = f"frame {sample['frame']}: "
         gi = sample["ddgi"]
@@ -231,18 +239,24 @@ def check_frames(case, config, frames):
         cursor = gi.get("schedulingCursor")
         require(type(cursor) is int and 0 <= cursor < PROBE_COUNT,
                 prefix + "missing/invalid retained scheduling cursor")
+        require(("selectedProbes" in gi) == priority_telemetry,
+                prefix + "probe selection telemetry changed after warmup")
         if case.mode == "off":
             require(not gi["enabled"] and not gi["active"] and
                     gi["tracedRays"] == 0 and gi["updatedProbes"] == 0 and
                     gi["updateFrame"] == 0 and gi["firstProbe"] == 0 and
                     gi["nextProbe"] == 0 and cursor == 0,
                     prefix + "GI-off baseline still performs probe updates")
+            if priority_telemetry:
+                require(gi["selectedProbes"] == [], prefix + "GI-off baseline retained a selected batch")
             continue
         require(gi["enabled"] and gi["supported"] and gi["active"] and
                 gi["contentEpoch"] == 1 and gi["refreshRemainingProbes"] == 0,
                 prefix + "GI unsupported/inactive or initial sweep incomplete")
         require(sample["rayShadows"]["generation"] == 1,
                 prefix + "static scene unexpectedly rebuilt its acceleration structures")
+        require(gi["historyResets"] == checkpoint["ddgi"]["historyResets"],
+                prefix + "warmed probe history reset during static measurements")
         paused = case.mode == "paused" and sample is not checkpoint
         require(gi["paused"] == paused, prefix + "pause event did not apply")
         if paused:
@@ -253,18 +267,48 @@ def check_frames(case, config, frames):
                     gi["firstProbe"] == 0 and gi["nextProbe"] == 0 and
                     cursor == checkpoint["ddgi"]["schedulingCursor"],
                     prefix + "paused field updated or discarded warmed history")
+            if priority_telemetry:
+                require(gi["selectedProbes"] == [], prefix + "paused field retained a selected batch")
         else:
             budget = BUDGETS[case.mode]
             require(gi["updatedProbes"] == budget and gi["tracedRays"] == budget * RAYS_PER_PROBE and
                     gi["updateFrame"] == sample["frame"], prefix + "active update budget changed")
             # These counters publish the current successful submission, while
             # passesGpuMs can describe an earlier fence-retired frame.
-            require(gi["firstProbe"] == ((sample["frame"] - 1) * budget) % PROBE_COUNT and
-                    gi["nextProbe"] == (sample["frame"] * budget) % PROBE_COUNT and
-                    cursor == gi["nextProbe"],
-                    prefix + "active scheduling cursor does not match submitted round-robin batch")
+            if priority_telemetry:
+                selected = gi["selectedProbes"]
+                require(isinstance(selected, list) and len(selected) == budget and
+                        all(type(probe) is int and 0 <= probe < PROBE_COUNT for probe in selected) and
+                        len(set(selected)) == budget,
+                        prefix + "priority batch has invalid count, indices or duplicate probes")
+                first, next_probe = gi["firstProbe"], gi["nextProbe"]
+                require(type(first) is int and 0 <= first < PROBE_COUNT and
+                        type(next_probe) is int and 0 <= next_probe < PROBE_COUNT,
+                        prefix + "priority batch has invalid first/next probe")
+                fair_slots = (budget + 1) // 2
+                require(selected[:fair_slots] == [(first + slot) % PROBE_COUNT
+                                                  for slot in range(fair_slots)],
+                        prefix + "priority batch lost its contiguous fairness prefix")
+                expected_next = first
+                if budget != PROBE_COUNT:
+                    expected_next = (first + fair_slots) % PROBE_COUNT
+                    chosen = set(selected)
+                    while expected_next in chosen:
+                        expected_next = (expected_next + 1) % PROBE_COUNT
+                require(next_probe == expected_next and cursor == next_probe,
+                        prefix + "priority scheduling cursor skipped an unsubmitted probe")
+            else:
+                require(gi["firstProbe"] == ((sample["frame"] - 1) * budget) % PROBE_COUNT and
+                        gi["nextProbe"] == (sample["frame"] * budget) % PROBE_COUNT and
+                        cursor == gi["nextProbe"],
+                        prefix + "active scheduling cursor does not match submitted round-robin batch")
             require("DdgiTrace" in sample["passesGpuMs"] and "DdgiUpdate" in sample["passesGpuMs"],
                     prefix + "probe pass GPU timestamps unavailable")
+    if case.mode not in ("off", "paused"):
+        for previous, sample in zip(frames, frames[1:]):
+            if sample["frame"] == previous["frame"] + 1:
+                require(sample["ddgi"]["firstProbe"] == previous["ddgi"]["schedulingCursor"],
+                        f"frame {sample['frame']}: batch does not follow the prior submitted cursor")
 
 
 def summarize(case, config, frames):
@@ -280,8 +324,14 @@ def summarize(case, config, frames):
                "warmedSchedulingCursor": frames[0]["ddgi"]["schedulingCursor"],
                "finalSchedulingCursor": frames[-1]["ddgi"]["schedulingCursor"]}
     if case.mode not in ("off", "paused"):
-        sweep_frames = math.ceil(PROBE_COUNT / BUDGETS[case.mode])
+        priority = "selectedProbes" in frames[0]["ddgi"]
+        sweep_frames = (sweep_frame_bound(BUDGETS[case.mode]) if priority else
+                        math.ceil(PROBE_COUNT / BUDGETS[case.mode]))
         summary["completeSweepSubmittedFrames"] = sweep_frames
+        summary["completeSweepIsUpperBound"] = priority
+        summary["sweepFrameBoundPolicy"] = (
+            "contiguous ceil(budget/2) fairness slots; full-volume budget covers all probes in one frame"
+            if priority else "legacy contiguous round-robin batch")
         summary["completeSweepSimulationMs"] = sweep_frames * 1000 / 60
         summary["sweepGpuKnownMsEstimate"] = sweep_frames * summary["gpuKnownMs"]["median"]
     return summary

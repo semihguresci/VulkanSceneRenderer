@@ -155,7 +155,7 @@ def capture(exe, output, environment, scene, frames, timeout, *, technique,
     return result
 
 
-def compare_glass(cases, techniques=TECHNIQUES):
+def compare_glass(cases, techniques=TECHNIQUES, variants=VARIANTS):
     records = {}
     for case in cases:
         key = (case["technique"], case["fixture"], case["thinGlass"], case["primaryIndirect"])
@@ -180,7 +180,7 @@ def compare_glass(cases, techniques=TECHNIQUES):
 
     result = {}
     for technique in techniques:
-        measured = {variant: delta(technique, variant, True) for variant in VARIANTS}
+        measured = {variant: delta(technique, variant, True) for variant in variants}
         measured["glass-disabled"] = delta(technique, "glass-pane", False)
         if (technique, "tinted-pane", True, True) in records:
             measured["tinted-pane"] = delta(technique, "tinted-pane", True)
@@ -194,13 +194,16 @@ def compare_glass(cases, techniques=TECHNIQUES):
         # convergence preclude an exact zero-leak image assertion.
         black_limit = max(.002, .05 * open_indirect)
         for variant in ("glass-disabled", "opaque-behind", "layer-cap", "thick-unsupported"):
+            if variant not in measured:
+                continue
             require(abs(measured[variant]["isolatedIndirectLuminance"]) <= black_limit,
                     f"{variant}: unsupported/terminal geometry leaked indirect illumination")
         for value in measured.values():
             value["isolatedIndirectToOpenRatio"] = value["isolatedIndirectLuminance"] / open_indirect
-        result[technique] = {"receivers": measured, "blockedIndirectLimit": black_limit,
-            "policy": "Signed GI1-GI0 estimates isolate primary DDGI; alpha remains one. "
-                      "Nine sheets cluster between probe columns to test per-ray traversal exhaustion."}
+        policy = "Signed GI1-GI0 estimates isolate primary DDGI; alpha remains one."
+        if "layer-cap" in measured:
+            policy += " Nine sheets cluster between probe columns to test per-ray traversal exhaustion."
+        result[technique] = {"receivers": measured, "blockedIndirectLimit": black_limit, "policy": policy}
     return result
 
 
