@@ -1279,6 +1279,14 @@ set_tests_properties(bim_annotation_gpu_regression PROPERTIES
     SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 900
     LABELS "requires-vulkan;requires-display;visual-regression")
 
+add_test(NAME bim_technical_transparency_gpu_regression
+    COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/bim_technical_transparency_runtime_regression.py"
+            --renderer "$<TARGET_FILE:VulkanSceneRenderer>"
+            --output "${TEST_RESULTS_DIR}/bim-technical-transparency" --managed-output)
+set_tests_properties(bim_technical_transparency_gpu_regression PROPERTIES
+    SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 780
+    LABELS "bim;requires-vulkan;requires-display;visual-regression")
+
 add_test(NAME bim_hard_clash_gpu_regression
     COMMAND "${Python3_EXECUTABLE}" -B "${TEST_VALIDATION_DIR}/bim_hard_clash_runtime_regression.py"
             --renderer "$<TARGET_FILE:VulkanSceneRenderer>"

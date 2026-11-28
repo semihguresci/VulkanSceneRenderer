@@ -3,6 +3,7 @@
 #include "Container/renderer/temporal/TemporalVelocityVertexInput.h"
 #include "Container/geometry/Vertex.h"
 #include "Container/renderer/bim/BimFloorPlanDisplay.h"
+#include "Container/renderer/bim/BimLightingOverlayRecorder.h"
 #include "Container/renderer/bim/BimSurfacePassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
 #include "Container/renderer/core/RenderGraph.h"
@@ -901,7 +902,7 @@ void TemporalManager::recordResolve(VkCommandBuffer cmd,
        p.bim.coordinationMarkers.issueMarkersEnabled ||
        p.bim.coordinationMarkers.clashMarkersEnabled ||
        p.bim.sectionPlaneVisual.enabled || p.bim.sectionClipCapGeometry.valid() ||
-       (p.bim.technicalElevation.enabled &&
+       (p.bim.technicalElevation.enabled && !presentsBimTechnicalLines(p) &&
         (!p.bim.technicalElevation.hiddenLineOverlay || p.bim.technicalElevation.depthTestLines)) ||
        hasDrawCommands(p.draws.hoveredDrawCommands) ||
        hasDrawCommands(p.bim.draws.hoveredDrawCommands) ||

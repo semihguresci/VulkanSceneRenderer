@@ -542,6 +542,8 @@ constexpr std::array kPostProcessOptionalReads{
     RenderResourceId::ExposureState,
     RenderResourceId::ShadowAtlas,
     RenderResourceId::TileLightGrid,
+    RenderResourceId::SceneGeometry,
+    RenderResourceId::ObjectBuffer,
     RenderResourceId::BimGeometry,
     RenderResourceId::BimObjectBuffer,
 };

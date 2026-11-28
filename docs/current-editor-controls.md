@@ -210,7 +210,8 @@ filter. Choose **All storeys** to restore the full plan.
 
 In **BIM Elevation View**, choose **Technical** and apply the view to draw lines
 over the shaded model in Deferred or Forward raster. **Depth-tested lines**
-hides lines behind filled geometry.
+hides lines behind filled geometry. Turn it off to keep the lines visible
+through transparent geometry in Lit and in Overview's Lit tile.
 
 ## Rendering, lighting and diagnostics
 

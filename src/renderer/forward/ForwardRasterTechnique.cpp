@@ -1006,6 +1006,7 @@ void recordForwardRasterPostProcessPass(
        .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
        .recordAfterFullscreenDraw = [&sharedContext, &p, extent,
                                      postProcessSets, hasSelectionStroke](VkCommandBuffer passCmd) {
+         recordBimTechnicalPresentationLines(passCmd, p, extent, sharedContext.debugOverlay());
          recordBimPresentationFloorPlan(passCmd, p, extent, sharedContext.debugOverlay(),
              sharedContext.isPassActive(RenderPassId::DepthPrepass) &&
              sharedContext.isPassActive(RenderPassId::DepthToReadOnly));
@@ -1502,6 +1503,7 @@ void ForwardRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
         {RenderResourceId::DdgiIrradiance, RenderResourceId::TemporalColor,
          RenderResourceId::OitStorage, RenderResourceId::BloomTexture,
          RenderResourceId::ExposureState, RenderResourceId::ShadowAtlas,
+         RenderResourceId::SceneGeometry, RenderResourceId::ObjectBuffer,
          RenderResourceId::BimGeometry, RenderResourceId::BimObjectBuffer},
         {RenderResourceId::SwapchainImage});
     graph.setPassResourceTransitions(

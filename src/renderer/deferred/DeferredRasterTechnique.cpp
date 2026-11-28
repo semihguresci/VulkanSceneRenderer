@@ -1940,8 +1940,9 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
                   deferred->isPassActive(RenderPassId::OitResolve)},
          .captureSceneLinear = p.screenshot.sceneLinear,
          .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
-         .recordAfterFullscreenDraw = [deferred, &p,
+         .recordAfterFullscreenDraw = [deferred, &p, extent,
                                        ppSets, hasSelectionStroke](VkCommandBuffer passCmd) {
+           recordBimTechnicalPresentationLines(passCmd, p, extent, deferred->debugOverlay());
            recordBimPresentationFloorPlan(passCmd, p, deferred->swapchainExtent(), deferred->debugOverlay());
            recordBimXrayClashOverlay(passCmd, p, deferred->swapchainExtent(), deferred->debugOverlay());
            if (hasSelectionStroke)

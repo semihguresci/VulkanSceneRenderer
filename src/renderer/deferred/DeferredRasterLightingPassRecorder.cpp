@@ -702,7 +702,7 @@ void DeferredRasterLightingPassRecorder::record(
       cmd, debugOverlayRecordInputs);
   (void)recordDeferredDebugOverlaySurfaceNormalCommands(
       cmd, debugOverlayRecordInputs);
-  if (lightingState.wireframeOverlayMode) {
+  if (lightingState.wireframeOverlayMode && !presentsBimTechnicalLines(p)) {
     (void)recordDeferredDebugOverlayWireframeOverlayCommands(
         cmd, debugOverlayRecordInputs);
   }
