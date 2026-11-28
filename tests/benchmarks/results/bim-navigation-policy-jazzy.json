@@ -3,6 +3,15 @@
   "version": 1,
   "suiteConfig": "tests/fixtures/robotics/navigation/policy-benchmark-v1.json",
   "suiteConfigSha256": "441775a311818d2493820908953710a09c451d77f418aff09c0b84e1b2d6845a",
+  "suiteConfigLfSha256": "e1ecc9b099f118e3304a8590bf4f31d117504b6d0ec0ec7dba2eff36554f3100",
+  "trainingSourceFingerprints": {
+    "doorway.ifc": [
+      {
+        "byteSize": 2847,
+        "sha256": "602425e0e68080f193fb9fc1a2643103fdb4e946f29c83110b3da93e221586bd"
+      }
+    ]
+  },
   "environment": {
     "distribution": "Ubuntu 24.04 in Docker",
     "platform": [

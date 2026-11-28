@@ -60,7 +60,8 @@ def prepare(spec, exporter, collision, fixtures, output):
                 check(not evidence[0]['reachable'] and evidence[0]['reason'] == 'blocked',
                       f'{identifier} negative control failed its physical partition check')
             metadata = {'id': identifier, 'family': row['family'], 'source': str(source),
-                        'mapDirectory': str(directory), 'expected': row['expected']}
+                        'mapDirectory': str(directory), 'expected': row['expected'],
+                        'sceneSource': manifest['sceneSource'], 'imageSha256': manifest['imageSha256']}
             manifests[group].append(metadata)
             proofs.append({'case': identifier, 'family': row['family'], 'source': str(source),
                            'mapDirectory': str(directory), 'nativePassSweeps': len(walks) if route.reachable else 0,

@@ -1,5 +1,6 @@
 """CPU checks for the policy benchmark's path, learning, and scoring rules."""
 
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -7,12 +8,64 @@ import tempfile
 from types import SimpleNamespace
 import unittest
 
-from bim_navigation_policy_learner import TileQ, features, validate_case_split
+from bim_navigation_policy_benchmark import suite_config_hashes
+from bim_navigation_policy_learner import TileQ, features, validate_case_split, write
 from bim_navigation_policy_oracle import FREE, OCCUPIED, FrozenGrid, shortest_path
 from bim_navigation_policy_report import summary, verify_control, verify_trace
 
 
 class PolicyBenchmarkTests(unittest.TestCase):
+    def test_suite_provenance_records_raw_and_lf_hashes(self):
+        lf = b'{\n  "transitions": 120,\n  "seed": 287\n}\n'
+        crlf = lf.replace(b'\n', b'\r\n')
+        normalized = hashlib.sha256(lf).hexdigest()
+        self.assertEqual(suite_config_hashes(lf), {
+            'configSha256': normalized, 'configLfSha256': normalized,
+        })
+        self.assertEqual(suite_config_hashes(crlf), {
+            'configSha256': hashlib.sha256(crlf).hexdigest(), 'configLfSha256': normalized,
+        })
+        changed = crlf.replace(b'120', b'121')
+        self.assertNotEqual(suite_config_hashes(changed)['configLfSha256'], normalized)
+
+    def test_reference_matches_exact_suite_path_protocol_and_ifc_byte_identities(self):
+        repo = Path(__file__).resolve().parents[2]
+        config_name = 'tests/fixtures/robotics/navigation/policy-benchmark-v1.json'
+        reference = json.loads((repo / 'tests/benchmarks/results/bim-navigation-policy-jazzy.json').read_bytes())
+        self.assertEqual(reference['suiteConfig'], config_name)
+        config_bytes = (repo / config_name).read_bytes()
+        config = json.loads(config_bytes)
+        self.assertEqual(reference['protocol'], config['evaluation'])
+        # The historical Linux run read the host's CRLF checkout of the suite JSON.
+        lf_config = config_bytes.replace(b'\r\n', b'\n')
+        historical_sha = hashlib.sha256(lf_config.replace(b'\n', b'\r\n')).hexdigest()
+        self.assertEqual(reference['suiteConfigSha256'], historical_sha)
+        self.assertEqual(reference['suiteConfigLfSha256'], suite_config_hashes(config_bytes)['configLfSha256'])
+
+        fixtures = repo / 'tests/fixtures/robotics'
+        held_out = config['cases']['test'] + config['cases']['controls']
+        train_sources = {case['source'] for case in config['cases']['train']}
+        held_out_sources = {case['source'] for case in held_out}
+        self.assertEqual(len(train_sources | held_out_sources), 4)
+        self.assertTrue(train_sources.isdisjoint(held_out_sources))
+        identities = {}
+        for source in train_sources | held_out_sources:
+            data = (fixtures / source).read_bytes()
+            identities[source] = [{'byteSize': len(data), 'sha256': hashlib.sha256(data).hexdigest()}]
+        self.assertEqual(reference['trainingSourceFingerprints'],
+                         {source: identities[source] for source in train_sources})
+        self.assertEqual(set(reference['caseFingerprints']), {case['id'] for case in held_out})
+        for case in held_out:
+            with self.subTest(case=case['id']):
+                self.assertEqual(reference['caseFingerprints'][case['id']]['source']['layers'],
+                                 identities[case['source']])
+
+    def test_benchmark_json_writer_preserves_lf_on_all_platforms(self):
+        with tempfile.TemporaryDirectory() as out:
+            target = Path(out) / 'protocol.json'
+            write(target, {'seed': 287})
+            self.assertEqual(target.read_bytes(), b'{"seed":287}\n')
+
     def test_diagonal_cannot_pass_through_touching_wall_corners(self):
         grid = FrozenGrid(2, 2, 1., (0., 0.), (FREE, OCCUPIED, OCCUPIED, FREE))
         route = shortest_path(grid, (.5, .5), (1.5, 1.5), guarded=False)
@@ -45,6 +98,18 @@ class PolicyBenchmarkTests(unittest.TestCase):
         metrics, contrasts = summary(methods, {'rooms': ['lower', 'upper'], 'hall': ['hall']})
         self.assertEqual(metrics['navfn-rpp']['success']['estimate'], .5)
         self.assertEqual(contrasts['learned-100']['success'], {'estimate': 0., 'ci95': [0., 0.]})
+
+    def test_oracle_and_learned_summary_does_not_require_nav2(self):
+        good = {'success': True, 'collision': False, 'spl': 1., 'wallSeconds': 1.}
+        bad = {'success': False, 'collision': True, 'spl': 0., 'wallSeconds': 2.}
+        methods = {'oracle': {'grid': {'room': good, 'hall': good}},
+                   'learned-0': {'287': {'room': good, 'hall': bad}}}
+        metrics, contrasts = summary(methods, {'rooms': ['room'], 'halls': ['hall']})
+        self.assertEqual(set(metrics), {'oracle', 'learned-0'})
+        self.assertEqual(metrics['oracle']['success'], {'estimate': 1., 'ci95': [1., 1.]})
+        self.assertEqual(metrics['learned-0']['success']['estimate'], .5)
+        self.assertEqual(metrics['learned-0']['collision']['estimate'], .5)
+        self.assertEqual(contrasts, {})
 
     def test_native_blocking_tick_overrides_goal_proximity(self):
         rows = [{'tick': 0, 'base': {'position': [0, 0, 1]}, 'obstruction': 'none'},

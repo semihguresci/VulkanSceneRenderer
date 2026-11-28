@@ -30,6 +30,16 @@ logs, the unmodified NavFn path, native drive traces, frozen checkpoints,
 and the exact simulator and case fingerprints. `comparison.json` contains
 per-trial scores, aggregate estimates, and paired intervals.
 
+Add `--learned-only` to train and score the same holdouts with just the native
+tools and Python. On Windows, pass the corresponding `.exe` paths. This
+runs the geometric oracle, native collision control, and learned checkpoints.
+Its comparison contains the oracle and learned methods and omits paired
+Nav2 intervals.
+
+`protocol.json` records the suite file's raw SHA-256 and its SHA-256 after
+normalizing CRLF line endings to LF. It also records native IFC source and
+map image fingerprints for the training, holdout, and control cases.
+
 ## How trials are scored
 
 - The geometric oracle uses eight-neighbor grid edges without diagonal corner
@@ -69,4 +79,6 @@ recorded six collisions. At 24,000 transitions per seed, it completed 4 of 12
 and recorded one collision. The reference includes every checkpoint,
 per-route outcomes, and confidence intervals. A full rerun produced the
 same trial outcomes and all 12 checkpoint files matched byte for byte.
+The reference records both the original CRLF suite file fingerprint and the
+LF-normalized fingerprint, as well as the exact training IFC fingerprint.
 [Measured results](../tests/benchmarks/results/bim-navigation-policy-jazzy.json)
