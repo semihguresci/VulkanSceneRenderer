@@ -48,6 +48,7 @@ $tests = @(
     'bim_sensor_label_tests',
     'bim_robotics_scene_tests',
     'bim_robotics_usd_tests',
+    'robotics_isaac_compare_tests',
     'bim_collision_geometry_tests',
     'bim_asset_cache_tests',
     'dotbim_loader_tests',
@@ -57,7 +58,7 @@ $tests = @(
     'bim_model_compare_tests'
 )
 $scriptTests = @('robotics_module_boundaries', 'robotics_gpu_smoke_runner_tests', 'bim_robotics_benchmark_runner_tests',
-                 'bim_twin_cli', 'bim_twin_ingest_cli')
+                 'bim_twin_cli', 'bim_twin_ingest_cli', 'robotics_isaac_compare_tests')
 $tools = @('BimRoboticsScene', 'BimRoboticsUsd', 'BimRoboticsAssets', 'BimRoboticsDataset', 'BimRoboticsTwin')
 
 if ($physics) {
