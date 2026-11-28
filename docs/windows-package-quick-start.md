@@ -99,8 +99,9 @@ collections shown in the project gallery are not included in this package.
 The renderer performs startup checks for its required Vulkan 1.4 features;
 the API version alone does not guarantee that a device supports every feature.
 
-For native Vulkan ray tracing, choose **Scene Controls → Rendering Engine → Vulkan ray tracing**
-or launch:
+In **Scene Controls**, use **Go to → Rendering / display / overlays** to find
+**Rendering Engine** and choose **Vulkan ray tracing**. You can also launch it
+from PowerShell.
 
 ```powershell
 .\VulkanSceneRenderer.exe --render-technique ray-tracing
