@@ -3332,6 +3332,19 @@ if(Python3_Interpreter_FOUND)
         set_tests_properties(robotics_preview_dataset_tests PROPERTIES
             LABELS "robotics;cpu" TIMEOUT 90)
 
+        add_test(NAME bim_tekla_robotics_demo_tests
+            COMMAND "${Python3_EXECUTABLE}" -B
+                "${TESTS_DIR}/robotics/bim_tekla_robotics_demo_tests.py")
+        set_tests_properties(bim_tekla_robotics_demo_tests PROPERTIES
+            LABELS "robotics;cpu" TIMEOUT 30)
+        add_test(NAME bim_tekla_robotics_demo_cpu
+            COMMAND "${Python3_EXECUTABLE}" -B
+                "${CMAKE_SOURCE_DIR}/tools/bim_tekla_robotics_demo.py" --cpu-only --ctest
+                --bin-dir "$<TARGET_FILE_DIR:BimRoboticsSim>"
+                --output "${TEST_RESULTS_DIR}/tekla-robotics-demo")
+        set_tests_properties(bim_tekla_robotics_demo_cpu PROPERTIES
+            LABELS "robotics;cpu;requires-buildingSMART" SKIP_RETURN_CODE 77 TIMEOUT 600)
+
         add_test(NAME bim_robotics_dataset_pipeline_gpu_regression
             COMMAND "${Python3_EXECUTABLE}" -B
                 "${TEST_VALIDATION_DIR}/bim_robotics_dataset_pipeline_runtime_regression.py"

@@ -82,6 +82,17 @@ TEST(BimRoboticsUsd, WritesDeterministicNativeIfcWithSemanticsAndCollision) {
   EXPECT_EQ(output.read(), stage);
 }
 
+TEST(BimRoboticsUsd, FailedPublicationLeavesTheDestinationAndRemovesTheStagedLayer) {
+  const auto input = fs::path(CONTAINER_ROBOTICS_FIXTURES) / "lidar-corner.ifc";
+  const auto model = container::geometry::ifc::LoadFromFile(input);
+  TemporaryStage output;
+  ASSERT_TRUE(fs::create_directory(output.path()));
+
+  EXPECT_THROW((void)writeRoboticsOpenUsd(output.path(), model, {.sourceNamespace = "corner"}), std::runtime_error);
+  EXPECT_TRUE(fs::is_directory(output.path()));
+  EXPECT_EQ(std::distance(fs::directory_iterator(output.path().parent_path()), fs::directory_iterator{}), 1);
+}
+
 TEST(BimRoboticsUsd, IfcxSharedGuidKeepsBothOccurrencesAndRequiresMetricEvidence) {
   constexpr auto source = R"json({"data":[
     {"path":"root","children":{"First":"one","Second":"two"}},
