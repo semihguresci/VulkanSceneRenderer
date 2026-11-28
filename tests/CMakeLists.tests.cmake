@@ -3310,6 +3310,14 @@ if(Python3_Interpreter_FOUND)
         LABELS "robotics;requires-vulkan;requires-display"
         RUN_SERIAL TRUE SKIP_RETURN_CODE 77 TIMEOUT 900)
     if(ENABLE_PHYSICS)
+        add_test(NAME robotics_preview_dataset_tests
+            COMMAND "${Python3_EXECUTABLE}" -B
+                "${TESTS_DIR}/robotics/robotics_preview_dataset_tests.py"
+                --simulator "$<TARGET_FILE:BimRoboticsSim>"
+                --recorder "$<TARGET_FILE:BimRoboticsDataset>")
+        set_tests_properties(robotics_preview_dataset_tests PROPERTIES
+            LABELS "robotics;cpu" TIMEOUT 90)
+
         add_test(NAME bim_robotics_dataset_pipeline_gpu_regression
             COMMAND "${Python3_EXECUTABLE}" -B
                 "${TEST_VALIDATION_DIR}/bim_robotics_dataset_pipeline_runtime_regression.py"
