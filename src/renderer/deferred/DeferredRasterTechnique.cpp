@@ -1941,6 +1941,7 @@ void DeferredRasterTechnique::buildFrameGraph(RenderSystemContext &context) {
          .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
          .recordAfterFullscreenDraw = [deferred, &p,
                                        ppSets](VkCommandBuffer passCmd) {
+           recordBimPresentationFloorPlan(passCmd, p, deferred->swapchainExtent(), deferred->debugOverlay());
            recordBimXrayClashOverlay(passCmd, p, deferred->swapchainExtent(), deferred->debugOverlay());
            recordBimSunHoursOverlay(passCmd, p);
            if (p.screenshot.viewportOnly) {

@@ -3668,31 +3668,21 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
   const auto displayMode = frame
       ? static_cast<container::ui::GBufferViewMode>(frame->debug.displayMode)
       : frontendDisplayMode(subs_.guiManager.get(), configuredDisplayMode(svc_.config));
-  const auto viewportRoute = bimFloorPlanViewportRouteName(
-      bimFloorPlanViewportRoute(technique, displayMode));
-  const bool overviewOverlay = bimFloorPlanUsesOverviewOverlay(technique, displayMode, style.depthTest);
+  const auto viewportRoute = bimFloorPlanViewportRoute(technique, displayMode, style.depthTest);
+  const bool presentationOverlay = bimFloorPlanUsesPresentationOverlay(technique, displayMode, style.depthTest);
+  const bool overviewOverlay = viewportRoute == BimFloorPlanViewportRoute::Overview && presentationOverlay;
   auto pipelineTechnique = technique;
   std::string_view pipeline;
-  switch (technique) {
-  case RenderTechniqueId::DeferredRaster:
-    pipeline = deferredRasterPipelineName(style.depthTest
-        ? DeferredRasterPipelineId::BimFloorPlanDepth : DeferredRasterPipelineId::BimFloorPlanNoDepth);
-    break;
-  case RenderTechniqueId::ForwardRaster:
-    if (overviewOverlay)
-      pipeline = forwardRasterPipelineName(ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth);
-    else
-      pipeline = forwardRasterPipelineName(style.depthTest
-          ? ForwardRasterPipelineId::BimFloorPlanDepth : ForwardRasterPipelineId::BimFloorPlanNoDepth);
-    break;
-  case RenderTechniqueId::PathTracing:
-  case RenderTechniqueId::RayTracing:
+  if (presentationOverlay) {
     pipelineTechnique = RenderTechniqueId::ForwardRaster;
     pipeline = forwardRasterPipelineName(style.depthTest
         ? ForwardRasterPipelineId::BimFloorPlanDisplayDepth : ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth);
-    break;
-  default:
-    break;
+  } else if (technique == RenderTechniqueId::DeferredRaster) {
+    pipeline = deferredRasterPipelineName(style.depthTest
+        ? DeferredRasterPipelineId::BimFloorPlanDepth : DeferredRasterPipelineId::BimFloorPlanNoDepth);
+  } else if (technique == RenderTechniqueId::ForwardRaster) {
+    pipeline = forwardRasterPipelineName(style.depthTest
+        ? ForwardRasterPipelineId::BimFloorPlanDepth : ForwardRasterPipelineId::BimFloorPlanNoDepth);
   }
   const auto *registry = resources_.builtPipelines.pipelines.handleRegistry.get();
   const bool pipelineReady = !pipeline.empty() && registry &&
@@ -3712,7 +3702,7 @@ void RendererFrontend::appendBimFloorPlanTelemetry(
                  {"technique", renderTechniqueName(technique)},
                  {"floorPlan", {{"requested", requested},
                      {"enabled", style.enabled},
-                     {"viewportRoute", viewportRoute},
+                     {"viewportRoute", bimFloorPlanViewportRouteName(viewportRoute)},
                      {"storeyFilter", storey},
                      {"elevation", elevation == Elevation::SourceElevation ? "source-elevation" : "projected-ground"},
                      {"depthTest", style.depthTest},

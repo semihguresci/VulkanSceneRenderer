@@ -7828,7 +7828,8 @@ void GuiManager::drawSceneControls(
       ImGui::Checkbox("Floor plan overlay", &bimFloorPlanOverlayState_.enabled);
       if (bimFloorPlanOverlayState_.enabled) {
         using container::renderer::BimFloorPlanViewportRoute;
-        switch (container::renderer::bimFloorPlanViewportRoute(activeRenderEngine_, gBufferViewMode_)) {
+        switch (container::renderer::bimFloorPlanViewportRoute(
+            activeRenderEngine_, gBufferViewMode_, bimFloorPlanOverlayState_.depthTest)) {
         case BimFloorPlanViewportRoute::ExcludedByDisplayMode:
           ImGui::TextWrapped("This display mode hides floor plans. Select Lit to see the overlay.");
           break;

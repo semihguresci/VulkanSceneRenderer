@@ -4,7 +4,6 @@
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/bim/BimLightingOverlayRecorder.h"
-#include "Container/renderer/bim/BimFloorPlanDisplay.h"
 #include "Container/renderer/bim/BimManager.h"
 #include "Container/renderer/bim/BimSurfaceRasterPassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
@@ -408,15 +407,10 @@ forwardRasterSceneDepthGeometryReady(const FrameRecordParams &p) {
          p.scene.indexSlice.buffer != VK_NULL_HANDLE;
 }
 
-[[nodiscard]] bool floorPlanVisible(const FrameRecordParams &p) {
-  return !p.screenshot.sceneLinear && p.bim.floorPlan.enabled &&
-         p.bim.floorPlanDrawCommands != nullptr &&
-         !p.bim.floorPlanDrawCommands->empty();
-}
-
 [[nodiscard]] bool pathTracingFloorPlanNeedsDepth(const FrameRecordParams &p) {
   return isReferenceRayTechnique(p.runtime.activeTechnique) &&
-         floorPlanVisible(p) && p.bim.floorPlan.depthTest;
+         !p.screenshot.sceneLinear && p.bim.floorPlan.enabled && p.bim.floorPlan.depthTest &&
+         p.bim.floorPlanDrawCommands != nullptr && !p.bim.floorPlanDrawCommands->empty();
 }
 
 [[nodiscard]] RenderPassReadiness
@@ -960,84 +954,6 @@ void recordForwardRasterTransformGizmoOverlay(VkCommandBuffer cmd,
   return renderPassReady();
 }
 
-void recordPresentationFloorPlan(
-    VkCommandBuffer cmd, const FrameRecordParams &p,
-    const DeferredRasterFrameGraphContext &sharedContext, VkExtent2D extent) {
-  const auto &style = p.bim.floorPlan;
-  const auto mode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
-  const bool overview = bimFloorPlanUsesOverviewOverlay(p.runtime.activeTechnique, mode, style.depthTest);
-  if (!floorPlanVisible(p) || (!overview && !isReferenceRayTechnique(p.runtime.activeTechnique))) {
-    return;
-  }
-  const auto layout = forwardRasterPipelineLayout(
-      p, ForwardRasterPipelineLayoutId::BimFloorPlanDisplay);
-  const auto bimSet =
-      forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::BimScene);
-  const auto &geometry = p.bim.scene;
-  if (layout == VK_NULL_HANDLE || bimSet == VK_NULL_HANDLE ||
-      geometry.vertexSlice.buffer == VK_NULL_HANDLE ||
-      geometry.indexSlice.buffer == VK_NULL_HANDLE ||
-      p.pushConstants.wireframe == nullptr) {
-    return;
-  }
-
-  WireframePushConstants overlayPushConstants = *p.pushConstants.wireframe;
-  if (overview) {
-    if (!recordOverviewLitTileViewport(cmd, extent))
-      return;
-    overlayPushConstants.useUnjitteredCamera = 1u;
-  }
-  if (style.depthTest) {
-    const auto frameLighting = forwardRasterDescriptorSet(
-        p, ForwardRasterDescriptorSetId::FrameLighting);
-    const auto *depth =
-        forwardRasterImageBinding(p, ForwardRasterImageId::DepthSamplingView);
-    if (frameLighting == VK_NULL_HANDLE || depth == nullptr ||
-        depth->view == VK_NULL_HANDLE || depth->extent.width != extent.width ||
-        depth->extent.height != extent.height ||
-        !sharedContext.isPassActive(RenderPassId::DepthPrepass) ||
-        !sharedContext.isPassActive(RenderPassId::DepthToReadOnly)) {
-      return;
-    }
-    vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, layout, 1, 1,
-                            &frameLighting, 0, nullptr);
-    // Account for UNORM24 quantization when the floor plan coincides with a surface.
-    if (depth->format == VK_FORMAT_D24_UNORM_S8_UINT) {
-      overlayPushConstants.floorPlanDepthTolerance = 2.0f / 16777215.0f;
-    }
-  }
-
-  if (p.pushConstants.bindless != nullptr) {
-    overlayPushConstants.sectionPlaneEnabled =
-        p.pushConstants.bindless->sectionPlaneEnabled;
-    overlayPushConstants.sectionPlane = p.pushConstants.bindless->sectionPlane;
-  }
-  (void)recordBimLightingOverlayFrameCommands(
-      cmd,
-      {.bimGeometryReady = true,
-       .framebufferExtent = extent,
-       .floorPlan = {.enabled = true,
-                     .depthTest = style.depthTest,
-                     .color = style.color,
-                     .opacity = style.opacity,
-                     .lineWidth = overview ? overviewLitTileLineWidth(style.lineWidth) : style.lineWidth},
-       .draws = {.floorPlan = p.bim.floorPlanDrawCommands},
-       .pipelines = {.bimFloorPlanDepth = forwardRasterPipelineHandle(
-                         p, ForwardRasterPipelineId::BimFloorPlanDisplayDepth),
-                     .bimFloorPlanNoDepth = forwardRasterPipelineHandle(
-                         p, ForwardRasterPipelineId::BimFloorPlanDisplayNoDepth)},
-       .wireframeLayout = layout,
-       .bim = {.descriptorSet = bimSet,
-               .vertexSlice = geometry.vertexSlice,
-               .indexSlice = geometry.indexSlice,
-               .indexType = geometry.indexType},
-       .wireframePushConstants = &overlayPushConstants,
-       .debugOverlay = sharedContext.debugOverlay(),
-       .lineListWideLinesSupported = p.debug.lineListWideLinesSupported});
-  if (overview)
-    recordSceneViewportAndScissor(cmd, extent);
-}
-
 void recordForwardRasterPostProcessPass(
     VkCommandBuffer cmd, const FrameRecordParams &p,
     const DeferredRasterFrameGraphContext &sharedContext) {
@@ -1089,7 +1005,9 @@ void recordForwardRasterPostProcessPass(
        .encodeSrgbOutput = p.postProcess.encodeSrgbOutput,
        .recordAfterFullscreenDraw = [&sharedContext, &p, extent,
                                      postProcessSets](VkCommandBuffer passCmd) {
-         recordPresentationFloorPlan(passCmd, p, sharedContext, extent);
+         recordBimPresentationFloorPlan(passCmd, p, extent, sharedContext.debugOverlay(),
+             sharedContext.isPassActive(RenderPassId::DepthPrepass) &&
+             sharedContext.isPassActive(RenderPassId::DepthToReadOnly));
          recordBimXrayClashOverlay(passCmd, p, extent, sharedContext.debugOverlay());
          recordBimSunHoursOverlay(passCmd, p);
          if (p.screenshot.viewportOnly) {

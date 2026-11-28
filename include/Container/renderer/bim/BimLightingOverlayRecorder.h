@@ -141,6 +141,10 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                              const BimRasterOverlayRecordInputs &inputs,
                              BimRasterOverlayPhase phase = BimRasterOverlayPhase::All);
 
+void recordBimPresentationFloorPlan(VkCommandBuffer cmd, const FrameRecordParams &p,
+                                    VkExtent2D extent, const DebugOverlayRenderer *debugOverlay,
+                                    bool resolvedDepthAvailable = false);
+
 void recordBimXrayClashOverlay(VkCommandBuffer cmd, const FrameRecordParams &p,
                                VkExtent2D extent, const DebugOverlayRenderer *debugOverlay);
 

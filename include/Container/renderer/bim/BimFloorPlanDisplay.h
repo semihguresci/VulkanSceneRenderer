@@ -15,22 +15,23 @@ enum class BimFloorPlanViewportRoute {
   PresentationOverlay,
 };
 
-[[nodiscard]] constexpr bool bimFloorPlanUsesOverviewOverlay(
+[[nodiscard]] constexpr bool bimFloorPlanUsesPresentationOverlay(
     RenderTechniqueId technique, ui::GBufferViewMode mode, bool depthTest) {
-  return technique == RenderTechniqueId::ForwardRaster &&
-         mode == ui::GBufferViewMode::Overview && !depthTest;
+  return isReferenceRayTechnique(technique) ||
+         ((technique == RenderTechniqueId::ForwardRaster || technique == RenderTechniqueId::DeferredRaster) &&
+          !depthTest && (mode == ui::GBufferViewMode::Lit || mode == ui::GBufferViewMode::Overview));
 }
 
-// Raster floor plans are in scene color before post_process.slang selects the
-// display buffer. Reference ray techniques draw floor plans after post-processing.
 [[nodiscard]] constexpr BimFloorPlanViewportRoute bimFloorPlanViewportRoute(
-    RenderTechniqueId technique, ui::GBufferViewMode mode) {
+    RenderTechniqueId technique, ui::GBufferViewMode mode, bool depthTest) {
   using Route = BimFloorPlanViewportRoute;
   using Mode = ui::GBufferViewMode;
   if (isReferenceRayTechnique(technique))
     return Route::PresentationOverlay;
   switch (mode) {
   case Mode::Lit:
+    return bimFloorPlanUsesPresentationOverlay(technique, mode, depthTest)
+        ? Route::PresentationOverlay : Route::SceneColor;
   case Mode::SurfaceNormals:
   case Mode::ObjectSpaceNormals:
     return Route::SceneColor;
