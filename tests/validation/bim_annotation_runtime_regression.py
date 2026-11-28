@@ -30,6 +30,8 @@ PIN_DEPTH_ZONES = (
 )
 PIN_DEPTH_STAGES = ("off", *(zone[0] for zone in PIN_DEPTH_ZONES), "off-again")
 PIN_HEIGHT = 1.2
+HOVER_DEPTH_STAGES = (*PIN_DEPTH_STAGES[:-1], "front-pick", "opaque-pick", "off-again")
+HOVER_CAMERA_HEIGHT = 1.2
 
 
 def require(condition, message):
@@ -100,6 +102,59 @@ def pin_depth_sequence(path, techniques, stages):
     return frames
 
 
+def hover_depth_fixture(path):
+    meshes, elements = [], []
+
+    def add(name, kind, bounds, z, alpha, gray=180):
+        mesh_id = len(meshes) + 1
+        meshes.append(panel(mesh_id, bounds, z))
+        elements.append(dict(mesh_id=mesh_id, guid=name, type=kind, color=dict(r=gray, g=gray, b=gray, a=alpha)))
+
+    for zone, x, depths, alpha in PIN_DEPTH_ZONES:
+        # A pickable translucent target leaves the rear glass visible within
+        # its triangle edges on both native and shader-based wireframe routes.
+        add(f"{zone}-target", "IfcWall", (x - .24, .55, x + .24, 1.90), 0, 64)
+        lower_bounds = (x - .33, .45, x + .33, 1.10)
+        if zone == "clear":
+            # Match the brightness of the surface behind the hovered target
+            # in the rear-glass lane without adding another OIT layer here.
+            add("clear-backdrop", "IfcRoof", lower_bounds, -1.5, 255, gray=204)
+        for index, depth in enumerate(depths):
+            # Leave an exposed pick region above the roof while fully covering
+            # the target's measured lower edges.
+            add(f"{zone}-roof-{index}", "IfcRoof", lower_bounds, depth, alpha)
+    path.write_text(json.dumps(dict(schema_version="1.1.0", meshes=meshes, elements=elements), indent=2) + "\n",
+                    encoding="utf-8")
+
+
+def hover_depth_sequence(path, techniques, stages):
+    frames, probes = {}, {}
+    events = [{"frame": 1, "orthographic": True}]
+    # The fixed orthographic width of 3.2 places the four centers at x=64,
+    # 192, 320 and 448. y=128 is exposed, y=248 is inside the partial cover.
+    pointer = {"off": ([5, 5], None), "off-again": ([5, 5], None),
+               "clear": ([64, 128], "clear-target"), "behind": ([192, 248], "behind-target"),
+               "front": ([320, 128], "front-target"), "opaque": ([448, 128], "opaque-target"),
+               "front-pick": ([320, 248], "front-roof-1"), "opaque-pick": ([448, 248], "opaque-roof-0")}
+    active_technique = techniques[0]
+    for technique in techniques:
+        for stage in stages:
+            frame = (len(frames) + 1) * 4
+            label = f"{technique}/{stage}"
+            frames[label] = frame
+            pixel, guid = pointer[stage]
+            probes[label] = (pixel, guid)
+            # The renderer consumes the pointer after submitting a frame.
+            if technique != active_technique:
+                events.append({"frame": frame - 2, "technique": technique})
+                active_technique = technique
+            events.extend([{"frame": frame - 1, "viewportPointer": {"action": "hover", "pixel": pixel}},
+                           {"frame": frame, "depthProbe": pixel}])
+    path.write_text(json.dumps(dict(schemaVersion=1, frames=max(frames.values()), sampleFrames=list(frames.values()),
+                                    events=events), indent=2) + "\n", encoding="utf-8")
+    return frames, probes
+
+
 def sequence_plan(frames):
     snapshots = {
         "off": {}, "issue-pin": {"issuePin": [-1.8, 2.45, -.25]},
@@ -148,14 +203,14 @@ def read_capture(path, technique, *, extent=(WIDTH, HEIGHT), mode=None):
 
 
 def record(renderer, output, model, bim, sequence, frames, technique, extension, report, generate_only, *,
-           mode="lit", pin_ordering=False):
-    name = f"issue-pin-ordering-{mode}-{extension}" if pin_ordering else f"{technique}-{extension}"
+           mode="lit", ordering=None, probes=None):
+    name = f"{ordering}-ordering-{mode}-{extension}" if ordering else f"{technique}-{extension}"
     screenshot = output / f"{name}.{extension}"
     log = output / f"{name}.log"
-    extent = OVERVIEW_EXTENT if pin_ordering else (WIDTH, HEIGHT)
+    extent = OVERVIEW_EXTENT if ordering else (WIDTH, HEIGHT)
     width, height = extent
-    camera_height = str(PIN_HEIGHT) if pin_ordering else "1"
-    model_args = ["--model", str(bim)] if pin_ordering else ["--model", str(model), "--bim-model", str(bim)]
+    camera_height = str({"issue-pin": PIN_HEIGHT, "bim-hover": HOVER_CAMERA_HEIGHT}.get(ordering, 1))
+    model_args = ["--model", str(bim)] if ordering else ["--model", str(model), "--bim-model", str(bim)]
     command = [str(renderer), *model_args, "--import-scale", "1",
                "--hidden", "--no-ui", "--validation", "--width", str(width), "--height", str(height),
                "--msaa", "1", "--no-taa", "--no-bloom", "--render-technique", technique,
@@ -164,7 +219,7 @@ def record(renderer, output, model, bim, sequence, frames, technique, extension,
                "--exposure", "1", "--directional-intensity", "2", "--directional-direction", "-.3", "-.2", "-1",
                "--environment-intensity", "0", "--bounce-intensity", ".2", "--fixed-dt", ".016666667",
                "--screenshot-viewport", "--capture-sequence", str(sequence), "--screenshot", str(screenshot)]
-    if pin_ordering:
+    if ordering:
         command += ["--no-ddgi", "--no-ray-query", "--tone-map", "neutral"]
     row = dict(technique=technique, mode=mode, format=extension, command=command, log=str(log), captures=[])
     report["runs"].append(row)
@@ -183,12 +238,12 @@ def record(renderer, output, model, bim, sequence, frames, technique, extension,
     projection = None
     for kind, frame in frames.items():
         image = screenshot if frame == max(frames.values()) else output / f"{name}.frame-{frame:04}.{extension}"
-        active_technique = kind.split("/", 1)[0] if pin_ordering else technique
-        pixels, state = read_capture(image, active_technique, extent=extent, mode=mode if pin_ordering else None)
+        active_technique = kind.split("/", 1)[0] if ordering else technique
+        pixels, state = read_capture(image, active_technique, extent=extent, mode=mode if ordering else None)
         require(Path(state["scene"]["auxiliary"]).resolve() == bim
-                and state["scene"]["auxiliaryObjectCount"] >= (5 if pin_ordering else 3),
+                and state["scene"]["auxiliaryObjectCount"] >= (10 if probes else 5 if ordering else 3),
                 f"Incomplete fixture in {image}")
-        if pin_ordering:
+        if ordering:
             current = state["camera"]["unjitteredViewProjColumns"]
             if projection is None:
                 projection = current
@@ -197,9 +252,16 @@ def record(renderer, output, model, bim, sequence, frames, technique, extension,
                     and {"OitClear", "OitResolve"} <= active_passes and not state["oit"]["overflowed"],
                     f"Expected fixed orthographic camera and transparent surfaces in {image}")
         images[kind] = pixels
-        row["captures"].append(dict(kind=kind, frame=frame, technique=active_technique,
-                                     image=str(image), revision=state["build"]["revision"],
-                                    decodedSha256=hashlib.sha256(pixels.tobytes()).hexdigest()))
+        sample = dict(kind=kind, frame=frame, technique=active_technique, image=str(image),
+                      revision=state["build"]["revision"], decodedSha256=hashlib.sha256(pixels.tobytes()).hexdigest())
+        if probes:
+            probe = state["depthProbe"]
+            sample["depthProbe"] = probe
+            pixel, expected_guid = probes[kind]
+            hit = probe["sceneInteraction"]["bim"]
+            require(probe["pixel"] == pixel and probe["sceneInteraction"]["rawGpuId"] is not None
+                    and (hit["guid"] if hit else None) == expected_guid, f"{kind}: unexpected viewport hit: {probe}")
+        row["captures"].append(sample)
     return images
 
 
@@ -290,19 +352,25 @@ def inspect_pin_depth(images, techniques, evidence, *, mode="lit"):
                 f"{technique}/{mode}: pin leaked through opaque depth or changed an unrelated zone: {zones}")
 
     if mode == "overview":
-        diagnostics = {}
-        for label, pane, threshold in (
-                ("transparency", overview_panel_slice(.026, .506, .334, .724), 32),
-                ("revealage", overview_panel_slice(.346, .506, .654, .724), 223)):
-            off_tile = images["forward-raster/off"][pane]
-            brightness = off_tile.max(axis=2)
-            roof_pixels = np.count_nonzero(brightness > threshold if label == "transparency" else brightness < threshold)
-            require(roof_pixels > 100, f"Forward Overview {label} diagnostic lacks transparent roofs")
-            for stage in PIN_DEPTH_STAGES[1:-1]:
-                np.testing.assert_array_equal(images[f"forward-raster/{stage}"][pane], off_tile,
-                                              err_msg=f"Issue pin changed Forward Overview {label} at {stage}")
-            diagnostics[label] = {"roofPixels": int(roof_pixels), "changedPixels": 0}
-        evidence["diagnostics"] = diagnostics
+        evidence["diagnostics"] = inspect_overview_diagnostics(images, PIN_DEPTH_STAGES[1:-1], "Issue pin")
+
+
+def inspect_overview_diagnostics(images, stages, annotation):
+    import numpy as np
+
+    diagnostics = {}
+    for label, pane, threshold in (
+            ("transparency", overview_panel_slice(.026, .506, .334, .724), 32),
+            ("revealage", overview_panel_slice(.346, .506, .654, .724), 223)):
+        off_tile = images["forward-raster/off"][pane]
+        brightness = off_tile.max(axis=2)
+        roof_pixels = np.count_nonzero(brightness > threshold if label == "transparency" else brightness < threshold)
+        require(roof_pixels > 100, f"Forward Overview {label} diagnostic lacks transparent surfaces")
+        for stage in stages:
+            np.testing.assert_array_equal(images[f"forward-raster/{stage}"][pane], off_tile,
+                                          err_msg=f"{annotation} changed Forward Overview {label} at {stage}")
+        diagnostics[label] = {"roofPixels": int(roof_pixels), "changedPixels": 0}
+    return diagnostics
 
 
 def inspect_linear_pin_depth(images):
@@ -323,7 +391,7 @@ def run_pin_depth(renderer, output, report, generate_only, *, lit_only=False):
     sequence = output / "issue-pin-ordering-lit.sequence.json"
     frames = pin_depth_sequence(sequence, TECHNIQUES, PIN_DEPTH_STAGES)
     lit = record(renderer, output, None, bim, sequence, frames, TECHNIQUES[0], "png", report, generate_only,
-                 pin_ordering=True)
+                 ordering="issue-pin")
     evidence = report["checks"].setdefault("issuePinDepth", {})
     if not generate_only:
         inspect_pin_depth(lit, TECHNIQUES, evidence.setdefault("lit", {}))
@@ -333,14 +401,123 @@ def run_pin_depth(renderer, output, report, generate_only, *, lit_only=False):
     sequence = output / "issue-pin-ordering-linear.sequence.json"
     frames = pin_depth_sequence(sequence, TECHNIQUES, ("off", "behind", "front"))
     linear = record(renderer, output, None, bim, sequence, frames, TECHNIQUES[0], "exr", report, generate_only,
-                    pin_ordering=True)
+                    ordering="issue-pin")
     sequence = output / "issue-pin-ordering-overview.sequence.json"
     frames = pin_depth_sequence(sequence, ("forward-raster",), PIN_DEPTH_STAGES)
     overview = record(renderer, output, None, bim, sequence, frames, "forward-raster", "png", report, generate_only,
-                      mode="overview", pin_ordering=True)
+                      mode="overview", ordering="issue-pin")
     if not generate_only:
         evidence["sceneLinear"] = inspect_linear_pin_depth(linear)
         inspect_pin_depth(overview, ("forward-raster",), evidence.setdefault("overview", {}), mode="overview")
+
+
+def inspect_hover_depth(images, techniques, evidence, *, mode="lit"):
+    import numpy as np
+
+    viewport = overview_panel_slice(.026, .046, .334, .264) if mode == "overview" else np.s_[:, :]
+
+    def cyan(rgb):
+        return np.minimum(rgb[:, :, 1] - rgb[:, :, 0], rgb[:, :, 2] - rgb[:, :, 0])
+
+    for technique in techniques:
+        off = images[f"{technique}/off"][viewport].astype(np.int16)
+        height, width = off.shape[:2]
+        # The common lower target area sits entirely inside each roof, and
+        # separate upper rows prove that real hover activated each target.
+        upper = slice(round(.17 * height), round(.51 * height))
+        lower = slice(round(.57 * height), round(.80 * height))
+        before = cyan(off)
+        zones = evidence[technique] = {}
+        for index, (stage, _, _, _) in enumerate(PIN_DEPTH_ZONES):
+            image = images[f"{technique}/{stage}"][viewport].astype(np.int16)
+            start, end = index * width // 4, (index + 1) * width // 4
+            ink = np.maximum(cyan(image) - before, 0)[:, start:end]
+            delta = np.any(image != off, axis=2)
+            zones[stage] = dict(upperCyanPixels=int(np.count_nonzero(ink[upper] > 5)),
+                                upperCyanSignal=int(ink[upper].sum()),
+                                lowerCyanPixels=int(np.count_nonzero(ink[lower] > 5)),
+                                lowerCyanSignal=int(ink[lower].sum()), lowerChangedPixels=int(delta[lower, start:end].sum()),
+                                lowerBackground=float(off[round(.65 * height), (start + end) // 2].mean()),
+                                changedOutsideZone=int(delta[:, :start].sum() + delta[:, end:].sum()))
+        for index, stage in ((2, "front-pick"), (3, "opaque-pick")):
+            image = images[f"{technique}/{stage}"][viewport].astype(np.int16)
+            start, end = index * width // 4, (index + 1) * width // 4
+            ink = np.maximum(cyan(image) - before, 0)[:, start:end]
+            # The foreground roof is wider than the target. Its outer edge
+            # provides a visible witness independent of the GPU pick GUID.
+            outer_width = round(.18 * ink.shape[1])
+            roof_cyan = np.count_nonzero(ink[:, :outer_width] > 5) + np.count_nonzero(ink[:, -outer_width:] > 5)
+            zones[stage] = dict(roofEdgeCyanPixels=int(roof_cyan),
+                                upperChangedPixels=int(np.any(image[upper] != off[upper], axis=2).sum()))
+        if mode == "lit":
+            # The mirror lanes have the same pixel-aligned projection. Check
+            # background parity along the line itself, including its edges.
+            quarter = width // 4
+            clear = images[f"{technique}/clear"][viewport].astype(np.int16)
+            outline = (cyan(clear) - before)[lower, :quarter] > 5
+            background_delta = np.abs(off[lower, :quarter] - off[lower, quarter:2 * quarter]).max(axis=2)
+            zones["clear"]["lowerBackgroundMaxChannelDelta"] = int(background_delta[outline].max(initial=0))
+        print(f"{technique}/{mode}: depth-ordered BIM hover {zones}", flush=True)
+
+    for technique, zones in evidence.items():
+        np.testing.assert_array_equal(images[f"{technique}/off-again"], images[f"{technique}/off"],
+                                      err_msg=f"{technique}/{mode}: moving the pointer away left hover ink")
+        clear, behind, front, opaque = (zones[stage] for stage, _, _, _ in PIN_DEPTH_ZONES)
+        minimum = 8 if mode == "overview" else 20
+        require(all(zone["upperCyanPixels"] >= minimum and zone["changedOutsideZone"] == 0
+                    for zone in (clear, behind, front, opaque))
+                and clear["lowerCyanPixels"] >= minimum, f"{technique}/{mode}: target hover control failed: {zones}")
+        for stage in ("front-pick", "opaque-pick"):
+            require(zones[stage]["roofEdgeCyanPixels"] >= minimum and zones[stage]["upperChangedPixels"] == 0,
+                    f"{technique}/{mode}: pointer did not move the highlight to the foreground roof: {zones}")
+        require(min(zone["lowerBackground"] for zone in (clear, behind, front, opaque)) > 120,
+                f"{technique}/{mode}: a panel missed the target wireframe: {zones}")
+        require(abs(clear["lowerBackground"] - behind["lowerBackground"]) <= 8,
+                f"{technique}/{mode}: clear and rear-glass backgrounds did not match: {zones}")
+        if mode == "lit":
+            require(clear["lowerBackgroundMaxChannelDelta"] <= 8,
+                    f"{technique}: backgrounds differ along the sampled hover outline: {zones}")
+        if mode == "overview":
+            # Tile downsampling can miss thin edges in one lane more than
+            # another. Normalize to that same target's exposed upper edges.
+            for zone in (clear, behind, front, opaque):
+                zone["coveredToExposedCyanRatio"] = zone["lowerCyanSignal"] / zone["upperCyanSignal"]
+        signal = "coveredToExposedCyanRatio" if mode == "overview" else "lowerCyanSignal"
+        require(behind[signal] >= .65 * clear[signal],
+                f"{technique}/{mode}: rear transparency attenuated the hovered BIM mesh: {zones}")
+        require(.01 * clear[signal] < front[signal] < .70 * clear[signal],
+                f"{technique}/{mode}: front transparency did not partially attenuate hover: {zones}")
+        require(behind[signal] > 2 * front[signal],
+                f"{technique}/{mode}: rear and front transparency produced similar hover: {zones}")
+        require(opaque["lowerChangedPixels"] == 0, f"{technique}/{mode}: hover leaked through opaque geometry: {zones}")
+
+    if mode == "overview":
+        evidence["diagnostics"] = inspect_overview_diagnostics(images, HOVER_DEPTH_STAGES[1:-1], "BIM hover")
+
+
+def run_hover_depth(renderer, output, report, generate_only, *, lit_only=False):
+    bim = output / "bim-hover-depth-ordering.bim"
+    hover_depth_fixture(bim)
+    evidence = report["checks"].setdefault("bimHoverDepth", {})
+    lanes = [("lit", "png", TECHNIQUES, HOVER_DEPTH_STAGES)]
+    if not lit_only:
+        lanes += [("lit", "exr", TECHNIQUES, ("off", "behind")),
+                  ("overview", "png", ("forward-raster",), HOVER_DEPTH_STAGES)]
+    for mode, extension, techniques, stages in lanes:
+        sequence = output / f"bim-hover-ordering-{mode}-{extension}.sequence.json"
+        frames, probes = hover_depth_sequence(sequence, techniques, stages)
+        captures = record(renderer, output, None, bim, sequence, frames, techniques[0], extension, report,
+                          generate_only, mode=mode, ordering="bim-hover", probes=probes)
+        if generate_only:
+            continue
+        if extension == "exr":
+            for technique in techniques:
+                off = captures[f"{technique}/off"]
+                require(float(off.max()) > .01 and off.tobytes() == captures[f"{technique}/behind"].tobytes(),
+                        f"BIM hover entered {technique} scene-linear export or the reference is empty")
+            evidence["sceneLinear"] = {"unchangedOnFrames": len(techniques)}
+        else:
+            inspect_hover_depth(captures, techniques, evidence.setdefault(mode, {}), mode=mode)
 
 
 def main():
@@ -349,8 +526,11 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--generate-only", action="store_true")
     parser.add_argument("--managed-output", action="store_true", help="Make a fresh run directory beneath the output.")
-    parser.add_argument("--issue-pin-ordering-only", nargs="?", const="all", choices=("lit", "all"),
-                        help="run only the depth-tested issue-pin sequence, optionally Lit only")
+    focused = parser.add_mutually_exclusive_group()
+    focused.add_argument("--issue-pin-ordering-only", nargs="?", const="all", choices=("lit", "all"),
+                         help="run only the depth-tested issue-pin sequence, optionally Lit only")
+    focused.add_argument("--bim-hover-ordering-only", nargs="?", const="all", choices=("lit", "all"),
+                         help="run only the depth-tested BIM hover sequence, optionally Lit only")
     baseline = parser.add_mutually_exclusive_group()
     baseline.add_argument("--expect-missing-forward-annotations", action="store_true",
                           help="check the older capture format on a build without Forward annotations")
@@ -358,8 +538,9 @@ def main():
                           help="expect only Technical elevation to be missing from Forward raster")
     args = parser.parse_args()
     expect_missing = args.expect_missing_forward_annotations or args.expect_missing_forward_technical
-    if args.issue_pin_ordering_only and expect_missing:
-        parser.error("The issue-pin ordering check requires working raster annotation pipelines")
+    focused_mode = args.issue_pin_ordering_only or args.bim_hover_ordering_only
+    if focused_mode and expect_missing:
+        parser.error("The depth-ordering checks require working raster annotation pipelines")
     if not args.generate_only and os.environ.get("CONTAINER_RUN_GPU_BIM_FLOOR_PLAN") != "1":
         print("SKIP: set CONTAINER_RUN_GPU_BIM_FLOOR_PLAN=1 to run GPU captures")
         return 77
@@ -376,8 +557,9 @@ def main():
     if not args.generate_only:
         report["rendererSha256"] = hashlib.sha256(renderer.read_bytes()).hexdigest()
     try:
-        if args.issue_pin_ordering_only:
-            run_pin_depth(renderer, output, report, args.generate_only, lit_only=args.issue_pin_ordering_only == "lit")
+        if focused_mode:
+            check_ordering = run_pin_depth if args.issue_pin_ordering_only else run_hover_depth
+            check_ordering(renderer, output, report, args.generate_only, lit_only=focused_mode == "lit")
             if not args.generate_only:
                 require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["rendererSha256"], "Renderer changed")
                 report["passed"] = True
@@ -401,6 +583,7 @@ def main():
                 print(technique, checks, flush=True)
         if not expect_missing:
             run_pin_depth(renderer, output, report, args.generate_only)
+            run_hover_depth(renderer, output, report, args.generate_only)
         if not args.generate_only:
             require(hashlib.sha256(renderer.read_bytes()).hexdigest() == report["rendererSha256"], "Renderer changed")
             report["passed"] = True
