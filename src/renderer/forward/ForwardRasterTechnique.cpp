@@ -275,6 +275,9 @@ void registerForwardRasterPipelineRecipes(PipelineRegistry &registry) {
     registerGraphicsRecipe(pipeline, {"spv_shaders/wireframe_debug.vert.spv",
                                       "spv_shaders/bim_native_oit.frag.spv"}, kBimNativeOitLayout);
   }
+  registerGraphicsRecipe(kBimIssueMarkerOitPipeline,
+                         {"spv_shaders/wireframe_fallback.vert.spv", "spv_shaders/wireframe_fallback.geom.spv",
+                          "spv_shaders/bim_issue_marker_oit.frag.spv"}, kBimNativeOitLayout);
   registerGraphicsRecipe("selection-outline",
                          {"spv_shaders/selection_outline.vert.spv",
                           "spv_shaders/selection_outline.frag.spv"},

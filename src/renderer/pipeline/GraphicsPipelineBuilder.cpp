@@ -159,6 +159,7 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
       loadModule("spv_shaders/wireframe_fallback.geom.spv");
   VkShaderModule wfFbFrag =
       loadModule("spv_shaders/wireframe_fallback.frag.spv");
+  const auto bimIssueMarkerOitFrag = loadModule("spv_shaders/bim_issue_marker_oit.frag.spv");
   VkShaderModule selOutlineVert =
       loadModule("spv_shaders/selection_outline.vert.spv");
   VkShaderModule selOutlineFrag =
@@ -1120,6 +1121,20 @@ PipelineBuildResult GraphicsPipelineBuilder::build(
   wfPCI.pDepthStencilState = &wfDepthDS;
   pipelines.wireframeDepth = pipelineManager_.createGraphicsPipeline(
       wfPCI, "wireframe_depth_pipeline");
+
+  // Sorted issue pins use shader edges so their requested width works without
+  // optional polygon wireframe or wide-line support.
+  auto issueMarkerOitStages = wfFbStages;
+  issueMarkerOitStages.back() = makeStage(bimIssueMarkerOitFrag, VK_SHADER_STAGE_FRAGMENT_BIT);
+  auto issueMarkerOitPCI = wfPCI;
+  issueMarkerOitPCI.stageCount = static_cast<uint32_t>(issueMarkerOitStages.size());
+  issueMarkerOitPCI.pStages = issueMarkerOitStages.data();
+  issueMarkerOitPCI.pRasterizationState = &wfFbDepthRaster;
+  issueMarkerOitPCI.pColorBlendState = &noColorBlend;
+  issueMarkerOitPCI.pDynamicState = &dynState;
+  issueMarkerOitPCI.layout = bimNativeOitLayout;
+  pipelines.extraHandles.push_back({.key = {RenderTechniqueId::ForwardRaster, kBimIssueMarkerOitPipeline},
+      .pipeline = pipelineManager_.createGraphicsPipeline(issueMarkerOitPCI, kBimIssueMarkerOitPipeline)});
 
   if (useNativeWireframe) {
     wfPCI.pRasterizationState = &wfDepthFrontCullRaster;

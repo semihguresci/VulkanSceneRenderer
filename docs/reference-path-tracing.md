@@ -116,6 +116,10 @@ Path tracing applies scene clipping to rays. The section-plane visual and cap
 previews are separate display routes. Interactive hard-clash detection is
 tracked in [#155](https://github.com/semihguresci/VulkanSceneRenderer/issues/155).
 
+Issue pins use their scene depth for transparency in both raster engines'
+**Lit** view and in **Forward Overview**. Transparent foreground surfaces dim
+the pin. A transparent surface behind it leaves the pin visible.
+
 A capture sequence can set the floor-plan display for a fixed camera. Each
 `bimFloorPlan` event supplies all settings and applies them until the next
 event. RGB channels use `[0, 1]`, opacity uses `[0.05, 1]`, and width uses
