@@ -305,7 +305,7 @@ void recordForwardEditorOverlays(
 
 void recordForwardBimOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
                               const DebugOverlayRenderer &debugOverlay,
-                              VkExtent2D extent) {
+                              VkExtent2D extent, VkDescriptorSet nativeOitSet) {
   if (p.pushConstants.wireframe == nullptr) {
     return;
   }
@@ -351,7 +351,8 @@ void recordForwardBimOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
       .capFill = pipeline(ForwardRasterPipelineId::BimSectionClipCapFill),
       .capHatch = pipeline(ForwardRasterPipelineId::BimSectionClipCapHatch),
       .wireframePushConstants = &pushConstants,
-      .debugOverlay = &debugOverlay};
+      .debugOverlay = &debugOverlay,
+      .nativeOitSet = nativeOitSet};
 
   recordForwardEditorOverlays(cmd, p, overlay);
   recordBimRasterOverlays(cmd, p, overlay);
@@ -725,7 +726,8 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p) {
 }
 
 bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
-                                             const FrameRecordParams& p) {
+                                             const FrameRecordParams& p,
+                                             bool oitActive) {
   if (commandBuffer == VK_NULL_HANDLE ||
       !checkForwardRasterLightingPassReadiness(p).ready) {
     return false;
@@ -784,7 +786,8 @@ bool recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
   }
 
   recordForwardBimOverlays(commandBuffer, p, debugOverlay,
-                           transparentFramebuffer->extent);
+      transparentFramebuffer->extent, oitActive && !fullWireframe
+          ? forwardRasterDescriptorSet(p, ForwardRasterDescriptorSetId::Oit) : VK_NULL_HANDLE);
 
   (void)recordRenderPassEndCommands(commandBuffer);
   return true;

@@ -2,6 +2,7 @@
 
 #include "Container/renderer/bim/BimManager.h"
 
+#include <array>
 #include <limits>
 
 namespace container::renderer {
@@ -86,9 +87,13 @@ bool recordBimPrimitivePassCommands(
     vkCmdSetLineWidth(cmd,
                       inputs.wideLinesSupported ? plan.primitiveSize : 1.0f);
   }
+  const std::array descriptorSets{inputs.sceneDescriptorSet,
+                                  inputs.oitDescriptorSet};
+  const uint32_t descriptorSetCount =
+      inputs.oitDescriptorSet != VK_NULL_HANDLE ? 2u : 1u;
   vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS,
-                          inputs.wireframeLayout, 0, 1,
-                          &inputs.sceneDescriptorSet, 0, nullptr);
+                          inputs.wireframeLayout, 0, descriptorSetCount,
+                          descriptorSets.data(), 0, nullptr);
   bindGeometry(cmd, inputs.vertexSlice, inputs.indexSlice, inputs.indexType);
 
   WireframePushConstants pc = *inputs.pushConstants;
@@ -143,7 +148,8 @@ bool recordBimPrimitiveFramePassCommands(
             .bimManager = inputs.bimManager,
             .color = inputs.style.color,
             .recordLineWidth = inputs.style.recordLineWidth,
-            .wideLinesSupported = inputs.style.wideLinesSupported});
+            .wideLinesSupported = inputs.style.wideLinesSupported,
+            .oitDescriptorSet = inputs.oitDescriptorSet});
 }
 
 } // namespace container::renderer

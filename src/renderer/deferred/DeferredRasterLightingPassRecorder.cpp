@@ -121,7 +121,7 @@ DeferredLightingFrameInputs deferredLightingFrameInputs(
       deferredRasterImageViewReady(p, DeferredRasterImageId::DepthSamplingView);
   inputs.tiledDescriptorSetReady =
       deferredRasterTiledLightingDescriptorSet(p) != VK_NULL_HANDLE;
-  inputs.transparentDrawCommandsAvailable = hasTransparentDrawCommands(p);
+  inputs.transparentDrawCommandsAvailable = hasTransparentDrawCommands(p) || hasBimNativeOitDrawCommands(p);
   inputs.pointLightCount = pointLightCount;
   inputs.pipelines = {.directionalLight = deferredRasterPipelineReady(
                           p, DeferredRasterPipelineId::DirectionalLight),
@@ -492,7 +492,7 @@ void DeferredRasterLightingPassRecorder::record(
     VkCommandBuffer cmd, const FrameRecordParams &p, VkDescriptorSet sceneSet,
     const std::array<VkDescriptorSet, 2> &lightingDescriptorSets,
     const std::array<VkDescriptorSet, 4> &transparentDescriptorSets,
-    bool deferBimDisplayOverlays) const {
+    bool deferBimDisplayOverlays, bool oitActive) const {
   const LightingManager *lightingManager = services_.lightingManager;
   const uint32_t pointLightCount =
       lightingManager
@@ -707,7 +707,10 @@ void DeferredRasterLightingPassRecorder::record(
         cmd, debugOverlayRecordInputs);
   }
 
-  recordBimRasterOverlays(cmd, p, bimRasterOverlayInputs(p, services_),
+  auto bimOverlays = bimRasterOverlayInputs(p, services_);
+  if (oitActive && transparentOitEnabled)
+    bimOverlays.nativeOitSet = deferredRasterDescriptorSet(p, DeferredRasterDescriptorSetId::Oit);
+  recordBimRasterOverlays(cmd, p, bimOverlays,
       deferBimDisplayOverlays ? BimRasterOverlayPhase::Native : BimRasterOverlayPhase::All);
 
   static_cast<void>(recordRenderPassEndCommands(cmd));

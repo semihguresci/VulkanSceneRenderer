@@ -16,6 +16,7 @@ checkForwardRasterLightingPassReadiness(const FrameRecordParams& p);
 
 [[nodiscard]] bool
 recordForwardRasterLightingPassCommands(VkCommandBuffer commandBuffer,
-                                        const FrameRecordParams& p);
+                                        const FrameRecordParams& p,
+                                        bool oitActive = false);
 
 }  // namespace container::renderer

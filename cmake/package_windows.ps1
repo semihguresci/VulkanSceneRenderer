@@ -330,6 +330,7 @@ $requiredFiles = @(
     'spv_shaders/reference_pathtrace.rgen.spv', 'spv_shaders/reference_pathtrace.rmiss.spv',
     'spv_shaders/reference_pathtrace.rchit.spv', 'spv_shaders/reference_pathtrace.rahit.spv',
     'spv_shaders/bim_viewport_occlusion.comp.spv',
+    'spv_shaders/bim_native_oit.frag.spv',
     'spv_shaders/ray_shadow_trace.comp.spv',
     'spv_shaders/ray_shadow_filter.comp.spv',
     'spv_shaders/ddgi_trace.comp.spv',

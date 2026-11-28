@@ -1,4 +1,5 @@
 #include "Container/renderer/deferred/DeferredRasterFrameState.h"
+#include "Container/renderer/bim/BimLightingOverlayRecorder.h"
 
 #include "Container/renderer/deferred/DeferredRasterPipelineBridge.h"
 #include "Container/renderer/deferred/DeferredRasterResourceBridge.h"
@@ -156,11 +157,14 @@ bool shouldRecordTransparentOit(const FrameRecordParams &p,
 bool shouldRecordTransparentOit(
     const FrameRecordParams &p, const container::ui::GuiManager *guiManager,
     container::ui::GBufferViewMode fallbackDisplayMode) {
-  if (!hasTransparentDrawCommands(p)) {
+  const auto displayMode = currentDisplayMode(guiManager, fallbackDisplayMode);
+  const bool nativeOitDisplayMode = displayMode == container::ui::GBufferViewMode::Lit ||
+      displayMode == container::ui::GBufferViewMode::Transparency ||
+      displayMode == container::ui::GBufferViewMode::Revealage;
+  if (!hasTransparentDrawCommands(p) && !(nativeOitDisplayMode && hasBimNativeOitDrawCommands(p))) {
     return false;
   }
 
-  const auto displayMode = currentDisplayMode(guiManager, fallbackDisplayMode);
   if (static_cast<uint32_t>(displayMode) < 100u &&
       displayMode != container::ui::GBufferViewMode::Lit &&
       displayMode != container::ui::GBufferViewMode::Overview &&

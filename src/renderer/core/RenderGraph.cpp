@@ -2,6 +2,7 @@
 #include "Container/renderer/temporal/TemporalManager.h"
 
 #include "Container/renderer/core/FrameRecorder.h"
+#include "Container/renderer/bim/BimLightingOverlayRecorder.h"
 #include "Container/renderer/deferred/DeferredRasterLightingPassRecorder.h"
 #include "Container/renderer/effects/OpenVdbVolumeRenderer.h"
 
@@ -1673,6 +1674,7 @@ uint64_t RenderGraph::computePreparedFrameSignature(
   mixDrawList(params.bim.draws.transparentSingleSidedDrawCommands);
   mixDrawList(params.bim.draws.transparentWindingFlippedDrawCommands);
   mixDrawList(params.bim.draws.transparentDoubleSidedDrawCommands);
+  mix(hasBimNativeOitDrawCommands(params));
   if (isReferenceRayTechnique(params.runtime.activeTechnique)) {
     mix(params.screenshot.sceneLinear);
     mix(params.bim.floorPlan.enabled);
