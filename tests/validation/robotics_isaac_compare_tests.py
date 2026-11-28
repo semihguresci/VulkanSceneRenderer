@@ -237,7 +237,7 @@ class NativeFixtureTests(unittest.TestCase):
             self.assertEqual(len(bundle["samples"]), 91)
             self.assertEqual(bundle["witnessTicks"], [0, 30, 60, 90])
             self.assertEqual([ray["sourceId"] for ray in bundle["rays"]], [27, 37, 17, None])
-            self.assertEqual(bundle["stage"], moved / "replay.usda")
+            self.assertEqual(bundle["stage"], (moved / "replay.usda").resolve(strict=True))
             self.assertEqual(manifest["provenance"]["rendererImportScale"], 2.5)
             if importlib.util.find_spec("pxr") is not None:
                 from pxr import Usd
