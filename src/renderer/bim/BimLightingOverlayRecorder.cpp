@@ -1,5 +1,6 @@
 #include "Container/renderer/bim/BimLightingOverlayRecorder.h"
 
+#include "Container/renderer/bim/BimFloorPlanDisplay.h"
 #include "Container/renderer/bim/BimPrimitivePassRecorder.h"
 #include "Container/renderer/bim/BimSectionClipCapPassRecorder.h"
 #include "Container/renderer/core/FrameRecorder.h"
@@ -568,9 +569,10 @@ void recordBimRasterOverlays(VkCommandBuffer cmd, const FrameRecordParams &p,
       .rect = {.offset = {0, 0}, .extent = inputs.extent},
       .baseArrayLayer = 0u,
       .layerCount = 1u};
-  // Path tracing composites the floor plan in its presentation pass.
+  const auto displayMode = static_cast<ui::GBufferViewMode>(p.debug.displayMode);
   const bool floorPlanEnabled = floorPlan.enabled &&
-      !isReferenceRayTechnique(p.runtime.activeTechnique);
+      !isReferenceRayTechnique(p.runtime.activeTechnique) &&
+      !bimFloorPlanUsesOverviewOverlay(p.runtime.activeTechnique, displayMode, floorPlan.depthTest);
   (void)recordBimLightingOverlayFrameCommands(
       cmd, {.bimGeometryReady = hasBimPrimitiveFramePassGeometry(primitiveGeometry),
             .framebufferExtent = inputs.extent,
